@@ -1,0 +1,27 @@
+// Tier 1 float benchmark: Mandelbrot escape iterations (float64 kernel).
+import { console } from "std:console";
+
+function mandelIters(cx: float64, cy: float64): float64 {
+    let x = 0.0;
+    let y = 0.0;
+    let i = 0.0;
+    while (i < 200.0) {
+        const xx = x * x - y * y + cx;
+        const yy = 2.0 * x * y + cy;
+        x = xx;
+        y = yy;
+        if (x * x + y * y > 4.0) { return i; }
+        i = i + 1.0;
+    }
+    return i;
+}
+
+let acc = 0.0;
+for (let row = 0; row < 400; row++) {
+    for (let col = 0; col < 400; col++) {
+        const cx = -2.0 + 0.0075 * (col as float64);
+        const cy = -1.5 + 0.0075 * (row as float64);
+        acc = acc + mandelIters(cx, cy);
+    }
+}
+console.log("checksum:", acc);

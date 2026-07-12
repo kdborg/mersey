@@ -429,9 +429,27 @@ pub struct Interp {
     call_counts: HashMap<usize, u32>,
 }
 
-/// A JIT-compiled kernel: takes int32 arguments, returns a tagged result
-/// (high 32 bits: 0 = int32 payload, 1 = null).
-pub type JitFn = Rc<dyn Fn(&[i32]) -> i64>;
+/// An argument to a JIT kernel (kernels are homogeneous: all int or all float).
+#[derive(Clone, Copy)]
+pub enum JitArg {
+    I32(i32),
+    F64(f64),
+}
+
+/// What a JIT kernel returned. `Bail` means the kernel hit a condition the
+/// spec says must throw (`x / 0`, `INT_MIN / -1`) — the interpreter re-runs
+/// the call so the error carries a proper message and stack trace. This is a
+/// trap at the *edge*, not a deopt in the middle: compiled code never
+/// resumes.
+pub enum JitResult {
+    I32(i32),
+    F64(f64),
+    Null,
+    Bail,
+}
+
+/// A JIT-compiled kernel.
+pub type JitFn = Rc<dyn Fn(&[JitArg]) -> JitResult>;
 /// Backend entry: compile a chunk whose parameters are the given simple
 /// names; None = outside the JIT-able subset.
 pub type JitHook = fn(&vm::Chunk, &[String]) -> Option<JitFn>;
@@ -1408,18 +1426,23 @@ impl Interp {
             .or_insert_with(|| hook(chunk, &names))
             .clone();
         let Some(f) = compiled else { return Ok(None) };
+        // Entry guard: every argument must match the kernel's numeric world.
         let mut args = Vec::with_capacity(names.len());
         for n in &names {
             match env_get(scope, n) {
-                Some(Value::I32(v)) => args.push(v),
+                Some(Value::I32(v)) => args.push(JitArg::I32(v)),
+                Some(Value::F64(v)) => args.push(JitArg::F64(v)),
                 _ => return Ok(None), // guard failed: interpret instead
             }
         }
-        let packed = f(&args);
-        Ok(Some(match packed >> 32 {
-            1 => Value::Null,
-            _ => Value::I32(packed as i32),
-        }))
+        Ok(match f(&args) {
+            JitResult::I32(v) => Some(Value::I32(v)),
+            JitResult::F64(v) => Some(Value::F64(v)),
+            JitResult::Null => Some(Value::Null),
+            // The kernel hit a trapping condition: re-run interpreted so the
+            // error is raised properly (with its position and stack).
+            JitResult::Bail => None,
+        })
     }
 
     fn bind_params(

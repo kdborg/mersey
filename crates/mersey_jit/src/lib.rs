@@ -1,13 +1,23 @@
 //! Tier 1: Cranelift JIT for hot MBC kernels (ROADMAP Phase 4, at
 //! deopt-free scale).
 //!
-//! Accepted subset — chosen so no runtime error is possible inside compiled
-//! code, which is what keeps the design deopt-free (engine.md): int32
-//! locals and constants; wrapping `+ - *`, masked shifts, bitwise ops,
-//! comparisons; control flow. No calls, no division (would need trap
-//! plumbing), no heap values. The entry guard in `mersey_interp::try_jit`
-//! re-interprets any call whose arguments aren't all int32 — guard at
-//! entry, never deopt in the middle.
+//! Accepted subset — chosen so a compiled function can only ever fail in
+//! ways it declares up front, which is what keeps the design deopt-free
+//! (engine.md):
+//!
+//! - **int32** kernels: locals/constants, wrapping `+ - *`, masked shifts,
+//!   bitwise ops, comparisons, control flow;
+//! - **float64** kernels: locals/constants, `+ - * /`, comparisons;
+//! - **integer division/remainder**, which *can* fault (`x / 0`,
+//!   `INT_MIN / -1` — spec §3.6 says both trap). Rather than deoptimize
+//!   mid-function, the compiled code checks the divisor and returns a
+//!   `TRAP` tag; the interpreter re-runs that call and raises the proper
+//!   `RangeError` with a stack trace. Guard at entry, trap at the edge,
+//!   never deopt in the middle.
+//!
+//! No calls and no heap values. The entry guard in `mersey_interp::try_jit`
+//! re-interprets any call whose arguments don't match the compiled kernel's
+//! parameter types.
 //!
 //! Translation: the stack machine becomes SSA by keeping an abstract stack
 //! of Cranelift values; jump targets become blocks whose parameters carry
@@ -26,18 +36,34 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use mersey_front::ast::{BinOp, UnaryOp};
 use mersey_interp::vm::{analyze, Chunk, Op};
-use mersey_interp::{JitFn, Value};
+use mersey_interp::{JitArg, JitFn, JitResult, Value};
+
+/// Numeric world a kernel operates in. A kernel is homogeneous: either all
+/// int32 or all float64 (mixed kernels would need per-value types, which is
+/// the typed-bytecode work).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    I32,
+    F64,
+}
 
 /// The hook registered on the interpreter by native hosts.
 pub fn hook(chunk: &Chunk, params: &[String]) -> Option<JitFn> {
-    let slots = plan_slots(chunk, params)?;
-    let depths = analyze(chunk).ok()?;
-    compile(chunk, params.len(), &slots, &depths)
+    // Try an int32 kernel, then a float64 one.
+    for kind in [Kind::I32, Kind::F64] {
+        if let Some(slots) = plan_slots(chunk, params, kind) {
+            let depths = analyze(chunk).ok()?;
+            if let Some(f) = compile(chunk, params.len(), &slots, &depths, kind) {
+                return Some(f);
+            }
+        }
+    }
+    None
 }
 
 /// Map every name to a flat local slot; reject anything outside the subset
 /// (reads of undeclared non-param names, redeclaration, unsupported ops).
-fn plan_slots(chunk: &Chunk, params: &[String]) -> Option<HashMap<u16, usize>> {
+fn plan_slots(chunk: &Chunk, params: &[String], kind: Kind) -> Option<HashMap<u16, usize>> {
     let mut slots: HashMap<u16, usize> = HashMap::new();
     let mut by_name: HashMap<&str, usize> = HashMap::new();
     for (i, p) in params.iter().enumerate() {
@@ -94,26 +120,38 @@ fn plan_slots(chunk: &Chunk, params: &[String]) -> Option<HashMap<u16, usize>> {
                 slots.insert(ni, slot);
             }
             // Whole-op acceptance check happens here too.
-            Op::Const(ci) => match chunk.consts[ci as usize] {
-                Value::I32(_) | Value::Bool(_) => {}
+            Op::Const(ci) => match (&chunk.consts[ci as usize], kind) {
+                (Value::I32(_) | Value::Bool(_), Kind::I32) => {}
+                // A float kernel may use int constants (loop counters are
+                // still int32 in the bytecode) — but only as float literals.
+                (Value::F64(_), Kind::F64) => {}
                 _ => return None,
             },
-            Op::Bin(op) => match op {
-                BinOp::Add
-                | BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Shl
-                | BinOp::Shr
-                | BinOp::BitAnd
-                | BinOp::BitOr
-                | BinOp::BitXor
-                | BinOp::Lt
-                | BinOp::Gt
-                | BinOp::Le
-                | BinOp::Ge
-                | BinOp::Eq
-                | BinOp::Ne => {}
-                _ => return None, // Div/Rem/Pow trap or allocate
+            Op::Bin(op) => match (op, kind) {
+                (
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Le
+                    | BinOp::Ge
+                    | BinOp::Eq
+                    | BinOp::Ne,
+                    _,
+                ) => {}
+                (
+                    BinOp::Shl
+                    | BinOp::Shr
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Div
+                    | BinOp::Rem,
+                    Kind::I32,
+                ) => {}
+                (BinOp::Div, Kind::F64) => {} // IEEE: no trap
+                _ => return None,
             },
             Op::Un(op) => match op {
                 UnaryOp::Neg | UnaryOp::BitNot | UnaryOp::Not => {}
@@ -135,11 +173,20 @@ fn plan_slots(chunk: &Chunk, params: &[String]) -> Option<HashMap<u16, usize>> {
     Some(slots)
 }
 
+/// Result tags packed into the i64 return value.
+const TAG_INT: i64 = 0;
+const TAG_NULL: i64 = 1;
+const TAG_FLOAT: i64 = 2;
+/// The kernel hit a condition the spec says must throw (`x / 0`,
+/// `INT_MIN / -1`): the interpreter re-runs the call and raises it properly.
+const TAG_TRAP: i64 = 3;
+
 fn compile(
     chunk: &Chunk,
     n_params: usize,
     slots: &HashMap<u16, usize>,
     depths: &[Option<i32>],
+    kind: Kind,
 ) -> Option<JitFn> {
     // Non-PIC, no colocated libcalls: required for JIT on aarch64 (no PLT).
     let mut flags = settings::builder();
@@ -155,10 +202,16 @@ fn compile(
 
     let mut ctx = module.make_context();
     let ptr_ty = module.target_config().pointer_type();
-    // extern "C" fn(args: *const i32, len: usize) -> i64
+    // extern "C" fn(args: *const u8, len: usize) -> i64
+    // Return value: (tag << 32) | payload for ints; for floats the payload is
+    // the f64 bit pattern in a second out-slot (see below).
     ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.returns.push(AbiParam::new(types::I64));
+    let val_ty = match kind {
+        Kind::I32 => types::I32,
+        Kind::F64 => types::F64,
+    };
 
     let mut fbc = FunctionBuilderContext::new();
     {
@@ -171,20 +224,19 @@ fn compile(
         let n_slots = slots.values().copied().max().map(|m| m + 1).unwrap_or(n_params);
         let n_slots = n_slots.max(n_params);
         for i in 0..n_slots {
-            b.declare_var(cranelift_frontend::Variable::from_u32(i as u32), types::I32);
+            b.declare_var(cranelift_frontend::Variable::from_u32(i as u32), val_ty);
         }
         let args_ptr = b.block_params(entry)[0];
+        let width = if kind == Kind::I32 { 4 } else { 8 };
         for i in 0..n_params {
-            let v = b.ins().load(
-                types::I32,
-                MemFlags::trusted(),
-                args_ptr,
-                (i * 4) as i32,
-            );
+            let v = b.ins().load(val_ty, MemFlags::trusted(), args_ptr, (i * width) as i32);
             b.def_var(cranelift_frontend::Variable::from_u32(i as u32), v);
         }
         for i in n_params..n_slots {
-            let zero = b.ins().iconst(types::I32, 0);
+            let zero = match kind {
+                Kind::I32 => b.ins().iconst(types::I32, 0),
+                Kind::F64 => b.ins().f64const(0.0),
+            };
             b.def_var(cranelift_frontend::Variable::from_u32(i as u32), zero);
         }
 
@@ -204,7 +256,7 @@ fn compile(
             let blk = b.create_block();
             let depth = depths.get(t).copied().flatten().unwrap_or(0);
             for _ in 0..depth {
-                b.append_block_param(blk, types::I32);
+                b.append_block_param(blk, val_ty);
             }
             blocks.insert(t, blk);
         }
@@ -231,12 +283,12 @@ fn compile(
             }
             match *op {
                 Op::Const(ci) => {
-                    let v = match chunk.consts[ci as usize] {
-                        Value::I32(n) => n as i64,
-                        Value::Bool(t) => t as i64,
+                    let c = match (&chunk.consts[ci as usize], kind) {
+                        (Value::I32(n), Kind::I32) => b.ins().iconst(types::I32, *n as i64),
+                        (Value::Bool(t), Kind::I32) => b.ins().iconst(types::I32, *t as i64),
+                        (Value::F64(f), Kind::F64) => b.ins().f64const(*f),
                         _ => unreachable!("plan_slots"),
                     };
-                    let c = b.ins().iconst(types::I32, v);
                     stack.push(c);
                 }
                 Op::LoadName(ni) => {
@@ -258,15 +310,55 @@ fn compile(
                 Op::Bin(binop) => {
                     let r = stack.pop()?;
                     let l = stack.pop()?;
-                    let v = lower_bin(&mut b, binop, l, r);
-                    stack.push(v);
+                    // Integer division can fault (spec §3.6): check the
+                    // divisor and bail to the interpreter, which raises the
+                    // RangeError with a proper stack trace.
+                    if kind == Kind::I32 && matches!(binop, BinOp::Div | BinOp::Rem) {
+                        let safe = b.create_block();
+                        let trap = b.create_block();
+                        // divisor == 0  ||  (l == INT_MIN && r == -1)
+                        let zero = b.ins().icmp_imm(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            r,
+                            0,
+                        );
+                        let min = b.ins().icmp_imm(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            l,
+                            i32::MIN as i64,
+                        );
+                        let neg1 = b.ins().icmp_imm(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            r,
+                            -1,
+                        );
+                        let overflow = b.ins().band(min, neg1);
+                        let faulting = b.ins().bor(zero, overflow);
+                        b.ins().brif(faulting, trap, &[], safe, &[]);
+
+                        b.switch_to_block(trap);
+                        let tag = b.ins().iconst(types::I64, TAG_TRAP << 32);
+                        b.ins().return_(&[tag]);
+
+                        b.switch_to_block(safe);
+                        let v = if binop == BinOp::Div {
+                            b.ins().sdiv(l, r)
+                        } else {
+                            b.ins().srem(l, r)
+                        };
+                        stack.push(v);
+                    } else {
+                        let v = lower_bin(&mut b, binop, l, r, kind);
+                        stack.push(v);
+                    }
                 }
                 Op::Un(u) => {
                     let v = stack.pop()?;
-                    let out = match u {
-                        UnaryOp::Neg => b.ins().ineg(v),
-                        UnaryOp::BitNot => b.ins().bnot(v),
-                        UnaryOp::Not => {
+                    let out = match (u, kind) {
+                        (UnaryOp::Neg, Kind::I32) => b.ins().ineg(v),
+                        (UnaryOp::Neg, Kind::F64) => b.ins().fneg(v),
+                        (UnaryOp::BitNot, Kind::I32) => b.ins().bnot(v),
+                        (UnaryOp::Not, Kind::I32) => {
                             let c = b.ins().icmp_imm(
                                 cranelift_codegen::ir::condcodes::IntCC::Equal,
                                 v,
@@ -280,12 +372,26 @@ fn compile(
                 }
                 Op::Truthy => {
                     let v = stack.pop()?;
-                    let c = b.ins().icmp_imm(
-                        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-                        v,
-                        0,
-                    );
-                    let out = b.ins().uextend(types::I32, c);
+                    let out = match kind {
+                        Kind::I32 => {
+                            let c = b.ins().icmp_imm(
+                                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                                v,
+                                0,
+                            );
+                            b.ins().uextend(types::I32, c)
+                        }
+                        Kind::F64 => {
+                            let z = b.ins().f64const(0.0);
+                            let c = b.ins().fcmp(
+                                cranelift_codegen::ir::condcodes::FloatCC::NotEqual,
+                                v,
+                                z,
+                            );
+                            let i = b.ins().uextend(types::I64, c);
+                            b.ins().fcvt_from_uint(types::F64, i)
+                        }
+                    };
                     stack.push(out);
                 }
                 Op::Jump(t) => {
@@ -295,26 +401,47 @@ fn compile(
                 }
                 Op::JumpIfFalse(t) | Op::JumpIfTrue(t) => {
                     let v = stack.pop()?;
+                    let cond = match kind {
+                        Kind::I32 => v,
+                        Kind::F64 => {
+                            let z = b.ins().f64const(0.0);
+                            let c = b.ins().fcmp(
+                                cranelift_codegen::ir::condcodes::FloatCC::NotEqual,
+                                v,
+                                z,
+                            );
+                            b.ins().uextend(types::I32, c)
+                        }
+                    };
                     let fall = b.create_block();
                     let taken: Vec<ClValue> = stack.clone();
                     if matches!(op, Op::JumpIfFalse(_)) {
                         // nonzero -> fall through, zero -> target
-                        b.ins().brif(v, fall, &[], blocks[&t], &taken);
+                        b.ins().brif(cond, fall, &[], blocks[&t], &taken);
                     } else {
-                        b.ins().brif(v, blocks[&t], &taken, fall, &[]);
+                        b.ins().brif(cond, blocks[&t], &taken, fall, &[]);
                     }
                     b.switch_to_block(fall);
                 }
                 Op::Return => {
                     let v = stack.pop()?;
-                    let wide = b.ins().uextend(types::I64, v);
-                    // tag 0 in high bits, low 32 = value (mask for safety)
-                    let mask = b.ins().band_imm(wide, 0xFFFF_FFFF);
-                    b.ins().return_(&[mask]);
+                    let packed = match kind {
+                        Kind::I32 => {
+                            let wide = b.ins().uextend(types::I64, v);
+                            // tag 0 in the high bits, value in the low 32
+                            b.ins().band_imm(wide, 0xFFFF_FFFF)
+                        }
+                        Kind::F64 => {
+                            // The payload is the f64 bit pattern; the tag
+                            // travels in a side channel (see the wrapper).
+                            b.ins().bitcast(types::I64, MemFlags::new(), v)
+                        }
+                    };
+                    b.ins().return_(&[packed]);
                     reachable = false;
                 }
                 Op::ReturnNull => {
-                    let null = b.ins().iconst(types::I64, 1i64 << 32);
+                    let null = b.ins().iconst(types::I64, TAG_NULL << 32);
                     b.ins().return_(&[null]);
                     reachable = false;
                 }
@@ -322,7 +449,7 @@ fn compile(
             }
         }
         if reachable {
-            let null = b.ins().iconst(types::I64, 1i64 << 32);
+            let null = b.ins().iconst(types::I64, TAG_NULL << 32);
             b.ins().return_(&[null]);
         }
         b.seal_all_blocks();
@@ -338,12 +465,67 @@ fn compile(
     let ptr = module.get_finalized_function(id);
     // The module owns the code pages; keep it alive for the process.
     Box::leak(Box::new(module));
-    let f: extern "C" fn(*const i32, usize) -> i64 = unsafe { std::mem::transmute(ptr) };
-    Some(Rc::new(move |args: &[i32]| f(args.as_ptr(), args.len())))
+    let f: extern "C" fn(*const u8, usize) -> i64 = unsafe { std::mem::transmute(ptr) };
+    Some(Rc::new(move |args: &[JitArg]| {
+        // Marshal the arguments into the kernel's flat frame.
+        let mut buf: Vec<u8> = Vec::with_capacity(args.len() * 8);
+        for a in args {
+            match (a, kind) {
+                (JitArg::I32(v), Kind::I32) => buf.extend_from_slice(&v.to_ne_bytes()),
+                (JitArg::F64(v), Kind::F64) => buf.extend_from_slice(&v.to_ne_bytes()),
+                // The entry guard already checked the types.
+                _ => return JitResult::Bail,
+            }
+        }
+        let raw = f(buf.as_ptr(), args.len());
+        match kind {
+            Kind::I32 => match raw >> 32 {
+                TAG_NULL => JitResult::Null,
+                TAG_TRAP => JitResult::Bail, // interpreter re-runs and throws
+                _ => JitResult::I32(raw as i32),
+            },
+            Kind::F64 => {
+                // Null/trap are still tagged in the high bits; a real f64
+                // result is the bit pattern (NaN payloads collide with the
+                // tags only for signalling NaNs, which we never produce).
+                match raw >> 32 {
+                    TAG_NULL => JitResult::Null,
+                    TAG_TRAP => JitResult::Bail,
+                    _ => JitResult::F64(f64::from_bits(raw as u64)),
+                }
+            }
+        }
+    }))
 }
 
-fn lower_bin(b: &mut FunctionBuilder, op: BinOp, l: ClValue, r: ClValue) -> ClValue {
-    use cranelift_codegen::ir::condcodes::IntCC;
+fn lower_bin(
+    b: &mut FunctionBuilder,
+    op: BinOp,
+    l: ClValue,
+    r: ClValue,
+    kind: Kind,
+) -> ClValue {
+    use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+    if kind == Kind::F64 {
+        let fcmp = |b: &mut FunctionBuilder, cc: FloatCC, l, r| {
+            let c = b.ins().fcmp(cc, l, r);
+            let i = b.ins().uextend(types::I64, c);
+            b.ins().fcvt_from_uint(types::F64, i)
+        };
+        return match op {
+            BinOp::Add => b.ins().fadd(l, r),
+            BinOp::Sub => b.ins().fsub(l, r),
+            BinOp::Mul => b.ins().fmul(l, r),
+            BinOp::Div => b.ins().fdiv(l, r), // IEEE: inf/NaN, never traps
+            BinOp::Lt => fcmp(b, FloatCC::LessThan, l, r),
+            BinOp::Gt => fcmp(b, FloatCC::GreaterThan, l, r),
+            BinOp::Le => fcmp(b, FloatCC::LessThanOrEqual, l, r),
+            BinOp::Ge => fcmp(b, FloatCC::GreaterThanOrEqual, l, r),
+            BinOp::Eq => fcmp(b, FloatCC::Equal, l, r),
+            BinOp::Ne => fcmp(b, FloatCC::NotEqual, l, r),
+            _ => unreachable!("plan_slots filtered"),
+        };
+    }
     let cmp = |b: &mut FunctionBuilder, cc: IntCC, l, r| {
         let c = b.ins().icmp(cc, l, r);
         b.ins().uextend(types::I32, c)

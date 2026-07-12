@@ -100,10 +100,16 @@ the suite actually pins; the program count grows organically from here.
       and as built-in generic classes in the checker
 - [x] `mersey compile`: verified bytecode disassembly
 - [x] Allocation-stress runtime case
-- Scale notes: values are `Rc`-heaped (refcounting GC; cycles can leak —
-  the precise moving GC is deferred with the native-engine work); bytecode
-  is untyped Tier 0 (typed registers arrive with the JIT tier's needs);
-  names resolve through scope chains, CPython-style
+- [x] **Cycle collector** (2026-07-12, `gc.rs`): mark–sweep over a weak
+      registry, marking from real roots (module scopes, exports, callbacks,
+      pending tasks, suspended coroutines, class stack) and sweeping by
+      clearing unreachable objects — which drops the edges and lets the
+      refcounts fall to zero. Runs only at host boundaries (no live VM
+      frames), so `gc.collect()` *requests* a collection rather than doing
+      one mid-expression. Proven: 5,000 instance→closure→scope→instance
+      cycles reclaimed, heap left quiescent
+- Scale notes: bytecode is untyped Tier 0 (typed registers remain future
+  work); names resolve through scope chains, CPython-style
 
 **Exit (met):** conformance suite green end-to-end on the bytecode VM;
 tree-walker kept as differential oracle; verifier runs on every chunk.
@@ -147,10 +153,15 @@ stdlib APIs conform to §1.3 by review.
       subset-membership test (kernels must actually compile, not fall back)
 - [x] `bench/`: hot int kernel — **7.5× end-to-end speedup** (7.48s → 1.0s
       release, including warmup + compile) with identical checksums
-- Scale notes: Tier 1 covers int kernels (the JIT grows opcode-by-opcode
-  from here — floats, then calls with trap plumbing for division);
-  moving/generational GC and unboxed arrays remain deferred with the
-  native-engine track, as recorded in Phase 2
+- [x] **float64 kernels** (2026-07-12): `+ - * /`, comparisons, control
+      flow — **31× on the Mandelbrot benchmark** (8.56s → 0.27s)
+- [x] **Trapping integer division**: `x / 0` and `INT_MIN / -1` must throw
+      (§3.6). Compiled code checks the divisor and returns a TRAP tag; the
+      interpreter re-runs that call and raises the `RangeError` with its
+      position and stack. A trap at the *edge*, not a deopt in the middle —
+      compiled code never resumes, so the deopt-free design holds
+- Scale notes: kernels are homogeneous (all-int or all-float) — mixed
+  kernels need the typed-bytecode work; calls are still not compiled
 
 **Exit (met, revised with data):** measured 7.5× on the kernel benchmark;
 no deopt paths exist; engine.md's ±1.5×-of-C target stays open until the
