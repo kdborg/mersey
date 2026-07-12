@@ -1,0 +1,20 @@
+// Register a Mersey service worker, then fetch a path only it can answer.
+import { console } from "std:console";
+import { document, navigator, fetch } from "browser:dom";
+
+const out = document.getElementById("out") as Element;
+
+async function main(): void {
+    const reg = await (navigator.serviceWorker as ServiceWorkerContainer)
+        .register("mersey-sw.js?src=demo/sw.mersey", { type: "module" });
+    console.log("sw: registered");
+
+    // Wait for control, then hit the path the worker intercepts.
+    await (navigator.serviceWorker as ServiceWorkerContainer).ready;
+    const resp = await fetch("/hello-from-mersey");
+    const body = await resp.text();
+    out.textContent = body;
+    console.log(`sw: response = ${body}`);
+}
+
+main();

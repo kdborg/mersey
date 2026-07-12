@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Mersey — CSP + SRI</title>
+<!-- NOTE: the polyfill needs 'wasm-unsafe-eval' because the engine IS a WASM
+     module. Stage B does not: the engine is native, so a page can run Mersey
+     under a strict `script-src 'self'` with no eval-ish permission at all. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'">
+<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm"></script>
+</head><body>
+<h1>CSP + SRI</h1>
+<div id="out">loading…</div>
+<button id="btn">Click me</button>
+<!-- Correct integrity: runs. -->
+<script type="text/mersey" src="demo/app.mersey" integrity="sha384-JSpqBbnH67fM4mStKXxmtt5LqNsLdZBaBe4RXs4+zPvBCml/2ZEA+pVsDVWcpP4y"></script>
+<!-- Wrong integrity: must be refused. -->
+<script type="text/mersey" src="demo/modular.mersey" integrity="sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"></script>
+</body></html>

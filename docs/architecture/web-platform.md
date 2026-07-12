@@ -192,6 +192,46 @@ The last pieces of the initial integration, all verified in real Chromium
   back, so long-lived pages that churn through DOM objects don't retain
   handles forever.
 
+## 6. Modules, errors, binary data, security, workers
+
+The initial integration is complete. Beyond §5:
+
+- **Module graph** (spec §4.5). `import { X } from "./lib/x.mersey";` works:
+  the engine reports the specifiers it needs (`msy_scan_imports`), the host
+  fetches them, and `msy_run_graph` links a dependency-first graph (cycles
+  rejected). One `Checker` spans the graph, so **a class declared in one
+  module is the same type when imported into another** — `instanceof` holds
+  across module boundaries. The CLI loads graphs from disk; the loader,
+  workers and service workers all fetch them.
+- **Error positions and stack traces.** Chunks carry a pc→position table and
+  the engine keeps a frame stack, so a runtime error reports
+  `file:line:col` with a trace, readable from Mersey as `e.stack`.
+- **Binary data without per-element hops.** `std:bytes` gives a native
+  `Bytes` buffer (O(1) access, bounds-checked, uint8 wrapping). A host typed
+  array is bulk-copied in once, the loop runs natively, and the result is
+  bulk-copied back once: **0.34 µs vs 3.98 µs per element — 11× faster**
+  (measured on a 200×200 ImageData fill in real Chromium, canvas contents
+  verified).
+- **CSP and SRI** (spec §5.4). A `.mersey` source is not a script to the
+  browser, so `script-src` does not govern its fetch — the loader therefore
+  enforces the page's own policy itself and verifies `integrity="sha384-…"`
+  on both entry scripts and imported modules. A tampered hash refuses the
+  module. *Honest caveat:* the polyfill needs `'wasm-unsafe-eval'` in the
+  page CSP, because **the engine is a WASM module**. Stage B does not — a
+  native engine runs under a strict `script-src 'self'` with no eval-ish
+  permission at all.
+- **Service Workers.** `mersey-sw.js` runs a Mersey program as a service
+  worker. The SW spec requires a `fetch` listener registered *synchronously
+  during initial evaluation*, which an async WASM boot cannot do — so the
+  shim registers the real listener up front, holds each request until the
+  engine is ready, and dispatches it to the Mersey handlers. Verified: a
+  Mersey service worker intercepts a request and serves the response itself.
+- **Mersey promises cross the bridge as real JS promises** (found while
+  building the SW: `event.respondWith(promise)` demanded it).
+- **String methods**: `indexOf`, `contains`, `startsWith`/`endsWith`,
+  `slice`, `split`, `toUpperCase`/`toLowerCase`, `trim` — code-point
+  indexed, per §3.4.
+
 ## Known limits
 
 - **Record field order** is not preserved across the bridge (Mersey records

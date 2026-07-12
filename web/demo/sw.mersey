@@ -1,0 +1,17 @@
+// A service worker, in Mersey. Runs in the SW global scope, so the ambient
+// globals are the SW's own (`addEventListener`, `caches`, `clients`).
+import { console } from "std:console";
+import { addEventListener } from "browser:dom";
+import { Promise } from "std:async";
+
+console.log("[sw] mersey service worker booted");
+
+// Intercept fetches for a marker path and answer them ourselves.
+addEventListener("fetch", (ev: JsAny) => {
+    const event = ev as FetchEvent;
+    const url = (event.request as Request).url;
+    if (url.contains("/hello-from-mersey")) {
+        const body = new Response("served by a Mersey service worker 🌊");
+        event.respondWith(Promise.resolve(body));
+    }
+});

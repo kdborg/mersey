@@ -117,7 +117,7 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
     return JSON.parse(readPacked(exports.msy_scan_imports(p, l)));
   };
 
-  async function loadGraph(entrySpec, entrySource) {
+  async function loadGraph(entrySpec, entrySource, fetchModule) {
     const sources = new Map([[entrySpec, entrySource]]);
     const deps = new Map();
     const queue = [entrySpec];
@@ -129,9 +129,7 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
         const target = resolve(spec, imp);
         edges.push(target);
         if (!sources.has(target)) {
-          const resp = await fetch(target);
-          if (!resp.ok) throw new Error(`cannot load module ${target} (${resp.status})`);
-          sources.set(target, await resp.text());
+          sources.set(target, await fetchModule(target));
           queue.push(target);
         }
       }
@@ -163,8 +161,9 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
       return exports.msy_run(ptr, len);
     },
     /// Fetch and run a whole module graph rooted at `entrySpec`.
-    async runGraph(entrySpec, entrySource) {
-      const modules = await loadGraph(entrySpec, entrySource);
+    async runGraph(entrySpec, entrySource, fetchModule) {
+      const load = fetchModule ?? (async (u) => (await fetch(u)).text());
+      const modules = await loadGraph(entrySpec, entrySource, load);
       const payload = JSON.stringify({ entry: entrySpec, modules });
       const [ptr, len] = writeStr(payload);
       return exports.msy_run_graph(ptr, len);

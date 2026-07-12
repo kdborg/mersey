@@ -2968,11 +2968,29 @@ impl Checker {
                 Ty::Err
             }
             Ty::Any | Ty::Err => Ty::Any,
-            Ty::Str => match name {
-                "length" => Ty::Int(IntKind::I32),
-                "toString" => to_string_fn(),
-                _ => self.no_member("string", name, pos),
-            },
+            Ty::Str => {
+                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+                let f = |params: Vec<ParamTy>, ret: Ty| {
+                    Ty::Fn(Rc::new(FnTy { tparams: vec![], params, ret }))
+                };
+                match name {
+                    "length" => Ty::Int(IntKind::I32),
+                    "toString" => to_string_fn(),
+                    "indexOf" => f(vec![p(Ty::Str)], Ty::Int(IntKind::I32)),
+                    "contains" => f(vec![p(Ty::Str)], Ty::Bool),
+                    "startsWith" | "endsWith" => f(vec![p(Ty::Str)], Ty::Bool),
+                    "slice" => f(
+                        vec![
+                            p(Ty::Int(IntKind::I32)),
+                            ParamTy { ty: Ty::Int(IntKind::I32), optional: true, rest: false },
+                        ],
+                        Ty::Str,
+                    ),
+                    "split" => f(vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
+                    "toUpperCase" | "toLowerCase" | "trim" => f(vec![], Ty::Str),
+                    _ => self.no_member("string", name, pos),
+                }
+            }
             Ty::Char | Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::BigInt | Ty::BigDec
             | Ty::Enum(_) => match name {
                 "toString" => to_string_fn(),

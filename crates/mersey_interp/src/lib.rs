@@ -166,6 +166,10 @@ pub enum Value {
     Resolver(Rc<RefCell<PromiseState>>, bool),
     /// Internal reaction used by `Promise.all` (slot index, is_reject).
     AllSlot(u32, bool),
+    /// Executor handed to `new Promise(…)` on the host side: receives the
+    /// host's (resolve, reject) and wires them to a Mersey promise, so a
+    /// Mersey promise can cross the bridge as a *real* JS promise.
+    PromiseExec(Rc<RefCell<PromiseState>>),
     Native(&'static str),
 }
 
@@ -1361,6 +1365,13 @@ impl Interp {
     fn call_value(&mut self, callee: &Value, args: Vec<Value>) -> VResult {
         match callee {
             Value::Closure(c) => self.call_closure(c, args),
+            Value::PromiseExec(p) => {
+                let p = p.clone();
+                let mut it = args.into_iter();
+                let (resolve, reject) = (it.next(), it.next());
+                self.promise_then(&p, resolve, reject);
+                Ok(Value::Null)
+            }
             Value::AllSlot(slot, is_reject) => {
                 let (slot, is_reject) = (*slot as usize, *is_reject);
                 let v = args.into_iter().next().unwrap_or(Value::Null);
@@ -2254,7 +2265,60 @@ impl Interp {
                     _ => self.type_error(format!("no method `{name}` on Set")),
                 }
             }
-            Value::Str(_) | Value::Char(_) | Value::I32(_) | Value::I64(_) | Value::U32(_)
+            Value::Str(s) => {
+                let text: String = s.iter().collect();
+                let arg0 = || -> String {
+                    match args.first() {
+                        Some(Value::Str(a)) => a.iter().collect(),
+                        Some(other) => to_display(other),
+                        None => String::new(),
+                    }
+                };
+                match name {
+                    "toString" => Ok(Value::Str(s.clone())),
+                    "indexOf" => {
+                        let needle = arg0();
+                        // Code-point index, not byte index (§3.4).
+                        Ok(Value::I32(match text.find(&needle) {
+                            Some(b) => text[..b].chars().count() as i32,
+                            None => -1,
+                        }))
+                    }
+                    "contains" => Ok(Value::Bool(text.contains(&arg0()))),
+                    "startsWith" => Ok(Value::Bool(text.starts_with(&arg0()))),
+                    "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
+                    "toUpperCase" => Ok(Value::Str(Rc::new(text.to_uppercase().chars().collect()))),
+                    "toLowerCase" => Ok(Value::Str(Rc::new(text.to_lowercase().chars().collect()))),
+                    "trim" => Ok(Value::Str(Rc::new(text.trim().chars().collect()))),
+                    "slice" => {
+                        let len = s.len() as i64;
+                        let norm = |v: i64| v.clamp(0, len) as usize;
+                        let start = norm(args.first().and_then(as_i64).unwrap_or(0));
+                        let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
+                        let out: Vec<char> = if start < end {
+                            s[start..end].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        Ok(Value::Str(Rc::new(out)))
+                    }
+                    "split" => {
+                        let sep = arg0();
+                        let parts: Vec<Value> = if sep.is_empty() {
+                            text.chars()
+                                .map(|c| Value::Str(Rc::new(vec![c])))
+                                .collect()
+                        } else {
+                            text.split(&sep as &str)
+                                .map(|p| Value::Str(Rc::new(p.chars().collect())))
+                                .collect()
+                        };
+                        Ok(Value::Array(Rc::new(RefCell::new(parts))))
+                    }
+                    _ => self.type_error(format!("no method `{name}` on string")),
+                }
+            }
+            Value::Char(_) | Value::I32(_) | Value::I64(_) | Value::U32(_)
             | Value::U64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_)
                 if name == "toString" =>
             {
@@ -2600,10 +2664,25 @@ impl Interp {
                     r.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 Json::Obj(entries.into_iter().map(|(k, v)| (k, self.to_web(&v))).collect())
             }
-            Value::Closure(_) | Value::Native(_) | Value::Resolver(..) | Value::AllSlot(..) => {
+            Value::Closure(_)
+            | Value::Native(_)
+            | Value::Resolver(..)
+            | Value::AllSlot(..)
+            | Value::PromiseExec(..) => {
                 let id = self.callbacks.len() as u32;
                 self.callbacks.push(v.clone());
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
+            }
+            // A Mersey promise crosses as a real host promise: construct one
+            // whose executor forwards settlement from ours.
+            Value::PromiseV(p) => {
+                let exec = Value::PromiseExec(p.clone());
+                match self.web_new("Promise", vec![exec]) {
+                    Ok(Value::JsRef(h)) => {
+                        Json::Obj(vec![("__ref__".into(), Json::Num(h as f64))])
+                    }
+                    _ => Json::Null,
+                }
             }
             other => Json::Str(to_display(other)),
         }
@@ -3416,7 +3495,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::JsRef(_) => "web object",
         Value::Bytes(_) => "Bytes",
         Value::PromiseV(_) => "Promise",
-        Value::Resolver(..) | Value::AllSlot(..) => "function",
+        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "function",
         Value::Native(_) => "native function",
     }
 }
@@ -3467,7 +3546,7 @@ pub fn to_display(v: &Value) -> String {
         Value::JsRef(h) => format!("<web:{h}>"),
         Value::Bytes(b) => format!("<Bytes[{}]>", b.borrow().len()),
         Value::PromiseV(_) => "<Promise>".to_string(),
-        Value::Resolver(..) | Value::AllSlot(..) => "<function>".to_string(),
+        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "<function>".to_string(),
     }
 }
 
