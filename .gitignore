@@ -3,3 +3,6 @@
 /web/mersey_wasm.wasm
 /native/host_demo
 mersey.lock
+
+# `mersey doc` output: generated, never edited by hand.
+site/

@@ -3,6 +3,7 @@
 //! Implemented so far (Phase 1): `lex`, `check` (lexical checks only),
 //! `convert`. `run`, `fmt`, `compile`, `audit` arrive in later phases.
 
+mod doc;
 mod lsp;
 
 use std::process::ExitCode;
@@ -29,6 +30,7 @@ commands:
   check <file.mersey>     report diagnostics (currently: encoding + syntax)
   parse <file.mersey>     dump the AST (debugging / conformance)
   test [path]             run every *.test.mersey (default: ./)
+  doc [outdir]            build the documentation site (default: ./site)
   fetch <file.mersey>     download remote imports into .mersey/cache, pin hashes
   lex <file.mersey>       dump the token stream (debugging / conformance)
   convert <file>          transcode UTF-16/UTF-32 source to UTF-8 on stdout
@@ -73,6 +75,7 @@ fn main() -> ExitCode {
             let path = rest.first().map(|s| s.as_str()).unwrap_or(".");
             test_cmd(path)
         }
+        ("doc", rest) => doc::build(rest.first().map(|s| s.as_str()).unwrap_or("site")),
         ("fetch", [file]) => fetch_cmd(file),
         ("audit", [file]) => audit(file),
         ("lock", [file]) => lock_cmd(file, false),

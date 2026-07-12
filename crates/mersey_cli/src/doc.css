@@ -1,0 +1,133 @@
+/* Mersey documentation. Reads in both themes; no external anything. */
+:root {
+  --bg: #fbfbfa;
+  --fg: #1b1b1a;
+  --muted: #6a6a68;
+  --rule: #e2e2df;
+  --code-bg: #f2f1ee;
+  --accent: #7a3e12;
+  --fn: #1f5c3a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a;
+    --fg: #e6e6e4;
+    --muted: #9a9a97;
+    --rule: #2c2e33;
+    --code-bg: #1f2126;
+    --accent: #e0a06a;
+    --fn: #7ec99b;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16171a; --fg: #e6e6e4; --muted: #9a9a97; --rule: #2c2e33;
+  --code-bg: #1f2126; --accent: #e0a06a; --fn: #7ec99b;
+}
+:root[data-theme="light"] {
+  --bg: #fbfbfa; --fg: #1b1b1a; --muted: #6a6a68; --rule: #e2e2df;
+  --code-bg: #f2f1ee; --accent: #7a3e12; --fn: #1f5c3a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 ui-serif, Georgia, "Times New Roman", serif;
+  -webkit-text-size-adjust: 100%;
+}
+header {
+  border-bottom: 1px solid var(--rule);
+  padding: 0.9rem 1.5rem;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+header nav a {
+  margin-right: 1.25rem;
+  color: var(--fg);
+  text-decoration: none;
+  font: 600 0.85rem/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+header nav a:hover { color: var(--accent); }
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+footer {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 1rem; }
+h2 {
+  font-size: 1.3rem;
+  margin: 2.75rem 0 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rule);
+}
+h3 { font-size: 1.05rem; margin: 1.75rem 0 0.5rem; }
+p { margin: 0 0 1rem; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+.note { color: var(--muted); font-size: 0.85rem; }
+.empty { color: var(--muted); font-style: italic; }
+a { color: var(--accent); }
+
+code, pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+pre {
+  background: var(--code-bg);
+  padding: 0.9rem 1rem;
+  border-radius: 5px;
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+}
+pre code { background: none; padding: 0; }
+pre.import { border-style: dashed; }
+
+ul { padding-left: 1.25rem; }
+li { margin: 0.35rem 0; }
+ul.cards { list-style: none; padding: 0; }
+ul.cards li {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  margin: 0.5rem 0;
+  background: var(--code-bg);
+}
+
+nav.toc { margin: 1.5rem 0 0; }
+nav.toc ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+nav.toc li { margin: 0; }
+nav.toc a {
+  display: block;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  text-decoration: none;
+  font-size: 0.8rem;
+  background: var(--code-bg);
+}
+
+/* Wide content scrolls inside its own box; the page itself never does. */
+.table-wrap { overflow-x: auto; margin: 0 0 1rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td {
+  text-align: left;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+th { font: 600 0.75rem/1.4 ui-sans-serif, system-ui, sans-serif; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+table.api td:first-child { white-space: nowrap; }
+code.name.fn { color: var(--fn); }
+code.name.value { color: var(--accent); }
+
+pre.output { border-left: 3px solid var(--fn); background: transparent; }
+section { scroll-margin-top: 4rem; }

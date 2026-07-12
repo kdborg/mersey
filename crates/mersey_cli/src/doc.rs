@@ -1,0 +1,494 @@
+//! `mersey doc` — the documentation site.
+//!
+//! The API reference is **generated from the checker**, not written alongside
+//! it: every signature on those pages is produced by the same `member_access`
+//! that typechecks the call. A hand-written reference is wrong the first time
+//! someone adds a method and forgets the docs; this one cannot be.
+//!
+//! The language reference is the specification in `docs/spec`, rendered — so
+//! there is one normative text, not a spec and a "guide" that disagree.
+
+use std::fmt::Write as _;
+use std::fs;
+use std::path::Path;
+use std::process::ExitCode;
+
+use mersey_front::check;
+
+pub fn build(outdir: &str) -> ExitCode {
+    let out = Path::new(outdir);
+    if let Err(e) = fs::create_dir_all(out) {
+        eprintln!("mersey: cannot create {outdir}: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = fs::write(out.join("style.css"), STYLE) {
+        eprintln!("mersey: cannot write style.css: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut pages: Vec<(String, String)> = Vec::new(); // (file, title)
+
+    // The language: the specification, rendered.
+    let mut spec_pages = Vec::new();
+    for entry in read_sorted(&root.join("docs/spec")) {
+        let Some(name) = entry.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(md) = fs::read_to_string(&entry) else {
+            continue;
+        };
+        let title = first_heading(&md).unwrap_or_else(|| name.to_string());
+        let file = format!("spec-{name}.html");
+        let body = markdown(&md);
+        write_page(out, &file, &title, &body, &pages_nav());
+        spec_pages.push((file, title));
+    }
+
+    // The architecture notes, likewise.
+    let mut arch_pages = Vec::new();
+    for entry in read_sorted(&root.join("docs/architecture")) {
+        let Some(name) = entry.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(md) = fs::read_to_string(&entry) else {
+            continue;
+        };
+        let title = first_heading(&md).unwrap_or_else(|| name.to_string());
+        let file = format!("arch-{name}.html");
+        let body = markdown(&md);
+        write_page(out, &file, &title, &body, &pages_nav());
+        arch_pages.push((file, title));
+    }
+
+    // The library: enumerated from the checker.
+    let api = check::api_reference();
+    let mut body = String::new();
+    body.push_str("<h1>Standard library</h1>\n");
+    body.push_str(
+        "<p class=\"lede\">Every signature on this page was produced by the compiler's own \
+         type checker — the same code that checks the call when you write it. This page \
+         cannot describe a member that does not exist, or describe one differently from \
+         how it behaves.</p>\n",
+    );
+
+    body.push_str("<nav class=\"toc\"><ul>");
+    for g in &api {
+        let _ = write!(
+            body,
+            "<li><a href=\"#{}\">{}</a></li>",
+            slug(&g.title),
+            esc(&g.title)
+        );
+    }
+    body.push_str("</ul></nav>\n");
+
+    for g in &api {
+        let _ = write!(
+            body,
+            "<section id=\"{}\">\n<h2>{}</h2>\n",
+            slug(&g.title),
+            esc(&g.title)
+        );
+        if !g.import.is_empty() {
+            let _ = write!(
+                body,
+                "<pre class=\"import\"><code>import {{ {} }} from \"{}\";</code></pre>\n",
+                esc(&g.title),
+                esc(&g.import)
+            );
+        }
+        if g.members.is_empty() {
+            body.push_str("<p class=\"empty\">No members.</p>\n");
+        } else {
+            body.push_str("<div class=\"table-wrap\"><table class=\"api\">\n<thead><tr><th>Member</th><th>Type</th></tr></thead>\n<tbody>\n");
+            for m in &g.members {
+                let kind = if m.is_fn { "fn" } else { "value" };
+                let _ = write!(
+                    body,
+                    "<tr><td><code class=\"name {kind}\">{}</code></td><td><code>{}</code></td></tr>\n",
+                    esc(&m.name),
+                    esc(&m.signature)
+                );
+            }
+            body.push_str("</tbody></table></div>\n");
+        }
+        body.push_str("</section>\n");
+    }
+    write_page(out, "library.html", "Standard library", &body, &pages_nav());
+
+    // Worked examples: the conformance suite. Every program on that page is
+    // executed by the test suite on both engines and compared against the output
+    // shown beneath it — so an example there cannot be wrong, or go stale, or
+    // quietly stop compiling.
+    let mut ex = String::new();
+    ex.push_str("<h1>Examples</h1>\n");
+    ex.push_str(
+        "<p class=\"lede\">These are the conformance suite. Every program here is run by the \
+         test suite on both engines — the tree-walker and the bytecode VM — and its output is \
+         compared against what you see below it. An example on this page cannot be wrong, go \
+         stale, or quietly stop compiling.</p>\n",
+    );
+    let mut examples: Vec<(String, String, String)> = Vec::new(); // (name, src, out)
+    for entry in read_sorted_ext(&root.join("tests/conformance/runtime"), "mersey") {
+        let Some(stem) = entry.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(src) = fs::read_to_string(&entry) else {
+            continue;
+        };
+        let expect = entry.with_extension("expect");
+        let Ok(out_text) = fs::read_to_string(&expect) else {
+            continue;
+        };
+        examples.push((stem.to_string(), src, out_text));
+    }
+    ex.push_str("<nav class=\"toc\"><ul>");
+    for (name, _, _) in &examples {
+        let _ = write!(ex, "<li><a href=\"#{}\">{}</a></li>", slug(name), esc(name));
+    }
+    ex.push_str("</ul></nav>\n");
+    for (name, src, out_text) in &examples {
+        let _ = write!(
+            ex,
+            "<section id=\"{}\">\n<h2>{}</h2>\n<pre><code>{}</code></pre>\n             <p class=\"note\">Output:</p>\n<pre class=\"output\"><code>{}</code></pre>\n</section>\n",
+            slug(name),
+            esc(name),
+            esc(src.trim_end()),
+            esc(out_text.trim_end())
+        );
+    }
+    write_page(out, "examples.html", "Examples", &ex, &pages_nav());
+
+    // Index.
+    let mut idx = String::from(
+        "<h1>Mersey</h1>\n<p class=\"lede\">A statically typed, class-based language for the \
+         browser. JavaScript syntax; not JavaScript semantics.</p>\n",
+    );
+    idx.push_str("<h2>The language</h2>\n<ul class=\"cards\">\n");
+    for (file, title) in &spec_pages {
+        let _ = write!(idx, "<li><a href=\"{file}\">{}</a></li>\n", esc(title));
+    }
+    idx.push_str("</ul>\n<h2>The library</h2>\n<ul class=\"cards\">\n");
+    let _ = write!(
+        idx,
+        "<li><a href=\"library.html\">Standard library</a> <span class=\"note\">({} modules and \
+         types, generated from the type checker</span></li>\n",
+        api.len()
+    );
+    let _ = write!(
+        idx,
+        "<li><a href=\"examples.html\">Examples</a> <span class=\"note\">({} programs, each one \
+         executed and checked by the test suite)</span></li>\n",
+        examples.len()
+    );
+    idx.push_str("</ul>\n<h2>The engine</h2>\n<ul class=\"cards\">\n");
+    for (file, title) in &arch_pages {
+        let _ = write!(idx, "<li><a href=\"{file}\">{}</a></li>\n", esc(title));
+    }
+    idx.push_str("</ul>\n");
+    write_page(out, "index.html", "Mersey", &idx, &pages_nav());
+
+    pages.push(("index.html".into(), "Mersey".into()));
+    println!(
+        "wrote {} pages to {outdir}: {} spec chapters, {} library groups, {} examples, \
+         {} architecture notes",
+        spec_pages.len() + arch_pages.len() + 3,
+        spec_pages.len(),
+        api.len(),
+        examples.len(),
+        arch_pages.len()
+    );
+    ExitCode::SUCCESS
+}
+
+fn read_sorted_ext(dir: &Path, ext: &str) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == ext))
+        .collect();
+    v.sort();
+    v
+}
+
+fn read_sorted(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    v.sort();
+    v
+}
+
+fn pages_nav() -> String {
+    "<a href=\"index.html\">Mersey</a><a href=\"library.html\">Library</a>\
+     <a href=\"examples.html\">Examples</a>"
+        .to_string()
+}
+
+fn first_heading(md: &str) -> Option<String> {
+    md.lines().find(|l| l.starts_with("# ")).map(|l| {
+        let h = l[2..].trim();
+        // "Mersey Language Specification — 3. Types and Conversions" is the title
+        // of the *document*; on a page that is already the specification, the
+        // part worth reading is what comes after the dash.
+        h.split_once(" — ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(h)
+            .to_string()
+    })
+}
+
+fn slug(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn write_page(out: &Path, file: &str, title: &str, body: &str, nav: &str) {
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t} — Mersey</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><nav>{nav}</nav></header>
+<main>
+{body}
+</main>
+<footer>Generated by <code>mersey doc</code>. The library reference is produced by the compiler's
+own type checker.</footer>
+</body>
+</html>
+"#,
+        t = esc(title),
+        nav = nav,
+        body = body
+    );
+    let _ = fs::write(out.join(file), html);
+}
+
+/// A small Markdown renderer: headings, paragraphs, lists, fenced and indented
+/// code, inline code, bold, links, tables.
+///
+/// Deliberately not a dependency. The spec is written in a narrow subset, and a
+/// renderer that handles exactly that subset is smaller than the argument about
+/// which crate to use.
+fn markdown(md: &str) -> String {
+    let mut out = String::new();
+    let mut lines = md.lines().peekable();
+    let mut in_code = false;
+    let mut para: Vec<String> = Vec::new();
+    let mut list: Vec<String> = Vec::new();
+    let mut table: Vec<String> = Vec::new();
+
+    fn flush_para(out: &mut String, para: &mut Vec<String>) {
+        if !para.is_empty() {
+            let _ = write!(out, "<p>{}</p>\n", inline(&para.join(" ")));
+            para.clear();
+        }
+    }
+    fn flush_list(out: &mut String, list: &mut Vec<String>) {
+        if !list.is_empty() {
+            out.push_str("<ul>\n");
+            for item in list.iter() {
+                let _ = write!(out, "<li>{}</li>\n", inline(item));
+            }
+            out.push_str("</ul>\n");
+            list.clear();
+        }
+    }
+    fn flush_table(out: &mut String, table: &mut Vec<String>) {
+        if table.is_empty() {
+            return;
+        }
+        out.push_str("<div class=\"table-wrap\"><table>\n");
+        for (i, row) in table.iter().enumerate() {
+            // The `|---|---|` separator row carries no content.
+            if row.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
+                continue;
+            }
+            let cells: Vec<&str> = row.trim_matches('|').split('|').collect();
+            let tag = if i == 0 { "th" } else { "td" };
+            out.push_str("<tr>");
+            for c in cells {
+                let _ = write!(out, "<{tag}>{}</{tag}>", inline(c.trim()));
+            }
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</table></div>\n");
+        table.clear();
+    }
+
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                out.push_str("</code></pre>\n");
+                in_code = false;
+            } else {
+                flush_para(&mut out, &mut para);
+                flush_list(&mut out, &mut list);
+                out.push_str("<pre><code>");
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            let _ = write!(out, "{}\n", esc(line));
+            continue;
+        }
+        // An indented block is code too — the spec uses both.
+        if line.starts_with("    ") && para.is_empty() && list.is_empty() && table.is_empty() {
+            out.push_str("<pre><code>");
+            let _ = write!(out, "{}\n", esc(&line[4..]));
+            while let Some(next) = lines.peek() {
+                if next.starts_with("    ") || next.trim().is_empty() {
+                    let l = lines.next().unwrap();
+                    let _ = write!(out, "{}\n", esc(l.strip_prefix("    ").unwrap_or("")));
+                } else {
+                    break;
+                }
+            }
+            out.push_str("</code></pre>\n");
+            continue;
+        }
+        let t = line.trim_end();
+        if t.starts_with('|') {
+            flush_para(&mut out, &mut para);
+            flush_list(&mut out, &mut list);
+            table.push(t.to_string());
+            continue;
+        }
+        flush_table(&mut out, &mut table);
+        if let Some(rest) = t.strip_prefix("### ") {
+            flush_para(&mut out, &mut para);
+            flush_list(&mut out, &mut list);
+            let _ = write!(out, "<h3 id=\"{}\">{}</h3>\n", slug(rest), inline(rest));
+        } else if let Some(rest) = t.strip_prefix("## ") {
+            flush_para(&mut out, &mut para);
+            flush_list(&mut out, &mut list);
+            let _ = write!(out, "<h2 id=\"{}\">{}</h2>\n", slug(rest), inline(rest));
+        } else if let Some(rest) = t.strip_prefix("# ") {
+            flush_para(&mut out, &mut para);
+            flush_list(&mut out, &mut list);
+            let _ = write!(out, "<h1>{}</h1>\n", inline(rest));
+        } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            flush_para(&mut out, &mut para);
+            list.push(rest.to_string());
+        } else if t.trim().is_empty() {
+            flush_para(&mut out, &mut para);
+            flush_list(&mut out, &mut list);
+        } else if !list.is_empty() && t.starts_with("  ") {
+            // A continuation of the previous bullet.
+            if let Some(last) = list.last_mut() {
+                last.push(' ');
+                last.push_str(t.trim());
+            }
+        } else {
+            para.push(t.to_string());
+        }
+    }
+    flush_para(&mut out, &mut para);
+    flush_list(&mut out, &mut list);
+    flush_table(&mut out, &mut table);
+    if in_code {
+        out.push_str("</code></pre>\n");
+    }
+    out
+}
+
+/// Inline markup: `code`, **bold**, *italic*, [text](href).
+fn inline(s: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '`' => {
+                if let Some(end) = chars[i + 1..].iter().position(|c| *c == '`') {
+                    let code: String = chars[i + 1..i + 1 + end].iter().collect();
+                    let _ = write!(out, "<code>{}</code>", esc(&code));
+                    i += end + 2;
+                    continue;
+                }
+                out.push_str("&#96;");
+                i += 1;
+            }
+            '*' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                if let Some(end) = find_seq(&chars, i + 2, "**") {
+                    let inner: String = chars[i + 2..end].iter().collect();
+                    let _ = write!(out, "<strong>{}</strong>", esc(&inner));
+                    i = end + 2;
+                    continue;
+                }
+                out.push_str("**");
+                i += 2;
+            }
+            '[' => {
+                if let (Some(close), Some(open)) = (
+                    chars[i..].iter().position(|c| *c == ']').map(|p| i + p),
+                    chars[i..].iter().position(|c| *c == '(').map(|p| i + p),
+                ) {
+                    if let Some(rp) = chars[open..]
+                        .iter()
+                        .position(|c| *c == ')')
+                        .map(|p| open + p)
+                    {
+                        if close < open {
+                            let text: String = chars[i + 1..close].iter().collect();
+                            let href: String = chars[open + 1..rp].iter().collect();
+                            let _ = write!(out, "<a href=\"{}\">{}</a>", esc(&href), esc(&text));
+                            i = rp + 1;
+                            continue;
+                        }
+                    }
+                }
+                out.push_str("&#91;");
+                i += 1;
+            }
+            c => {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '"' => out.push_str("&quot;"),
+                    other => out.push(other),
+                }
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn find_seq(chars: &[char], from: usize, seq: &str) -> Option<usize> {
+    let s: Vec<char> = seq.chars().collect();
+    (from..chars.len().saturating_sub(s.len() - 1)).find(|&i| chars[i..i + s.len()] == s[..])
+}
+
+const STYLE: &str = include_str!("doc.css");

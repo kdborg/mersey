@@ -21,6 +21,20 @@ jobs:
       - name: goldens are not stale
         run: git diff --exit-code tests/conformance
 
+  # The reference is generated from the type checker, so a build failure here
+  # means the checker and the docs have got out of step — which is exactly what
+  # generating them is meant to prevent.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --release -p mersey_cli -- doc site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: site/
+
   # The GC's write barrier is what makes a minor collection sound. Running the
   # suite with it *verified* (every minor collection cross-checked against a full
   # trace) is slow, so it is its own job rather than the default.

@@ -208,82 +208,277 @@ impl Analysis {
 /// in the AST does not carry one — and a marker also survives the parser.
 pub const COMPLETION_MARKER: &str = "MERSEY__COMPLETE";
 
+fn to_api(m: Completion) -> ApiMember {
+    ApiMember {
+        name: m.label,
+        signature: m.detail,
+        is_fn: m.kind == KIND_METHOD,
+    }
+}
+
+/// One documented item: a member, with the type the checker gives it.
+pub struct ApiMember {
+    pub name: String,
+    pub signature: String,
+    pub is_fn: bool,
+}
+
+/// A documented group: a `std:` module, or a builtin type.
+pub struct ApiGroup {
+    pub title: String,
+    /// The import that brings it into scope, if any.
+    pub import: String,
+    pub members: Vec<ApiMember>,
+}
+
+/// The whole standard library, **as the checker sees it**.
+///
+/// Not a second description of the API that could drift from the first: every
+/// signature here is produced by the same `member_access` that typechecks the
+/// call. If a member is added and this list is not updated, the test notices; if
+/// this list names something that does not exist, the test notices that too.
+pub fn api_reference() -> Vec<ApiGroup> {
+    let mut c = Checker::new();
+    let n = c.diags.len();
+    c.collect(crate::webapi::webapi().module);
+    c.diags.truncate(n);
+
+    let mut out = Vec::new();
+
+    let namespaces = [
+        Ns::Console,
+        Ns::Math,
+        Ns::Format,
+        Ns::Parse,
+        Ns::Json,
+        Ns::Time,
+        Ns::Random,
+        Ns::Regex,
+        Ns::Bytes,
+        Ns::PromiseNs,
+        Ns::Fs,
+        Ns::Env,
+        Ns::Caps,
+        Ns::Gc,
+    ];
+    for ns in namespaces {
+        let members = c
+            .members_of(&Type::Namespace(ns))
+            .into_iter()
+            .map(|m| ApiMember {
+                name: m.label,
+                signature: m.detail,
+                is_fn: m.kind == KIND_METHOD,
+            })
+            .collect();
+        out.push(ApiGroup {
+            title: namespace_module(ns).trim_start_matches("std:").to_string(),
+            import: namespace_module(ns).to_string(),
+            members,
+        });
+    }
+
+    // Builtin types: the members you get on a value, not on a module.
+    let i32t = Type::Int(IntKind::I32);
+    let strings = c.members_of(&Type::Str);
+    out.push(ApiGroup {
+        title: "string".to_string(),
+        import: String::new(),
+        members: strings.into_iter().map(to_api).collect(),
+    });
+
+    // `flat` exists only on an array *of arrays* (`T[][] -> T[]`), so asking a
+    // plain `int32[]` about it gets an honest "no such member" — and the
+    // reference would then be missing a method that works. Ask both.
+    let mut array_members: Vec<ApiMember> = c
+        .members_of(&Type::Array(Rc::new(i32t.clone())))
+        .into_iter()
+        .map(to_api)
+        .collect();
+    let nested = Type::Array(Rc::new(Type::Array(Rc::new(i32t))));
+    for m in c.members_of(&nested).into_iter().map(to_api) {
+        if !array_members.iter().any(|x| x.name == m.name) {
+            array_members.push(m);
+        }
+    }
+    array_members.sort_by(|a, b| a.name.cmp(&b.name));
+    out.push(ApiGroup {
+        title: "T[] (array)".to_string(),
+        import: String::new(),
+        members: array_members,
+    });
+
+    // Generic builtin classes (Map, Set, Iter, Regex, bytes, …).
+    for name in ["Map", "Set", "Iter", "AsyncIter", "Regex", "bytes"] {
+        if let Some(TypeDef::Class(id)) = c.type_defs.get(name).cloned() {
+            let args: Vec<Type> = c.classes[id]
+                .tparams
+                .iter()
+                .map(|_| Type::Unknown)
+                .collect();
+            let ty = Type::Class(id, Rc::new(args));
+            let members = c
+                .members_of(&ty)
+                .into_iter()
+                .map(|m| ApiMember {
+                    name: m.label,
+                    signature: m.detail,
+                    is_fn: m.kind == KIND_METHOD,
+                })
+                .collect();
+            out.push(ApiGroup {
+                title: name.to_string(),
+                import: String::new(),
+                members,
+            });
+        }
+    }
+    out
+}
+
+/// Every member of every `std:` namespace, in one place.
+///
+/// The checker's `member_type` dispatches on these names; documentation and
+/// editor completion *enumerate* them. One list, so a member cannot exist
+/// without being documented, or be documented without existing — the test
+/// `every_documented_member_exists` checks both directions.
+pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
+    match ns {
+        Ns::Console => &["log", "warn", "error", "info", "debug"],
+        Ns::Math => &[
+            "abs", "min", "max", "floor", "ceil", "round", "trunc", "sign", "clamp", "sqrt",
+            "cbrt", "pow", "exp", "log", "log2", "log10", "hypot", "sin", "cos", "tan", "asin",
+            "acos", "atan", "atan2", "isNaN", "isFinite", "PI", "E",
+        ],
+        Ns::Format => &["pad", "fixed"],
+        Ns::Fs => &["readText"],
+        Ns::Env => &["get"],
+        Ns::Caps => &["has", "list", "drop"],
+        Ns::Json => &["stringify", "parse"],
+        Ns::Random => &["float", "int", "bytes"],
+        Ns::PromiseNs => &["resolve", "reject", "all"],
+        Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
+        Ns::Gc => &["collect", "stats"],
+        Ns::Regex => &["compile"],
+        Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
+        Ns::Bytes => &[
+            "alloc",
+            "fill",
+            "fromHost",
+            "toHost",
+            "encodeUtf8",
+            "decodeUtf8",
+        ],
+        Ns::Document => &["getElementById", "createElement"],
+        Ns::Opaque => &[],
+    }
+}
+
+/// The `std:` module each namespace is imported from.
+pub fn namespace_module(ns: Ns) -> &'static str {
+    match ns {
+        Ns::Console => "std:console",
+        Ns::Math => "std:math",
+        Ns::Format => "std:format",
+        Ns::Fs => "std:fs",
+        Ns::Env => "std:env",
+        Ns::Caps => "std:caps",
+        Ns::Json => "std:json",
+        Ns::Random => "std:random",
+        Ns::PromiseNs => "std:async",
+        Ns::Time => "std:time",
+        Ns::Gc => "std:gc",
+        Ns::Regex => "std:regex",
+        Ns::Parse => "std:parse",
+        Ns::Bytes => "std:bytes",
+        Ns::Document => "browser:dom",
+        Ns::Opaque => "",
+    }
+}
+
 /// Member names probed against the builtin types. The checker owns the truth
 /// about what an array or a string has; this is just the list of questions.
+/// Every member name the builtin *types* have — strings, arrays, Map, Set,
+/// Iter, Regex, bytes.
+///
+/// The checker's `member_access` is the authority on what each one *means*; this
+/// is the list of what to ask it about, for documentation and for editor
+/// completion. `builtin_members_are_complete` fails if a member is added to the
+/// checker and not to this list — a list that quietly goes stale is how a method
+/// ends up undocumented and unsuggestable while working perfectly.
 const BUILTIN_MEMBERS: &[&str] = &[
+    // shared
     "length",
     "size",
-    "push",
-    "pop",
-    "shift",
-    "unshift",
-    "slice",
-    "splice",
-    "concat",
-    "join",
-    "reverse",
-    "sort",
+    "toString",
+    "at",
     "indexOf",
     "lastIndexOf",
-    "includes",
-    "find",
-    "findIndex",
-    "filter",
-    "map",
-    "reduce",
-    "forEach",
-    "some",
-    "every",
-    "at",
-    "fill",
-    "flat",
+    "contains",
+    "slice",
+    "concat",
     "keys",
     "values",
     "entries",
-    "get",
-    "set",
-    "has",
-    "delete",
     "clear",
-    "add",
-    "next",
-    "toArray",
-    "toString",
+    // array
+    "push",
+    "pop",
+    "insertAt",
+    "removeAt",
+    "fillInPlace",
+    "flat",
+    "join",
+    "map",
+    "reduce",
+    "filter",
+    "find",
+    "findIndex",
+    "some",
+    "every",
+    "forEach",
+    "sortInPlace",
+    "reverseInPlace",
+    "toSorted",
+    "toReversed",
+    // string
+    "startsWith",
+    "endsWith",
+    "substring",
+    "charAt",
+    "codePointAt",
+    "split",
     "toUpperCase",
     "toLowerCase",
     "trim",
     "trimStart",
     "trimEnd",
-    "split",
-    "charAt",
-    "codePointAt",
-    "startsWith",
-    "endsWith",
     "replace",
     "replaceAll",
     "repeat",
     "padStart",
     "padEnd",
-    "substring",
+    // Map / Set
+    "get",
+    "set",
+    "has",
+    "add",
+    "remove",
+    // Iter / generators
+    "next",
+    "toArray",
+    "take",
+    // Regex
     "test",
     "exec",
-    "match",
+    "findAll",
+    // bytes
+    "alloc",
+    "fill",
+    // promises
     "then",
     "catch",
     "finally",
-    "log",
-    "warn",
-    "error",
-    "info",
-    "abs",
-    "min",
-    "max",
-    "floor",
-    "ceil",
-    "round",
-    "sqrt",
-    "pow",
-    "random",
 ];
 
 fn add_all(out: &mut Vec<Completion>, items: Vec<Completion>) {
@@ -1512,7 +1707,21 @@ impl Checker {
                 "({}) => {}",
                 f.params
                     .iter()
-                    .map(|p| self.show(&p.ty))
+                    .map(|p| {
+                        // A rest parameter and an optional one are *part of the
+                        // signature*. Printing `(unknown) => void` for
+                        // `console.log` said it takes exactly one argument,
+                        // which is not what it does — in the reference, and in
+                        // every error message that ever showed a signature.
+                        let ty = self.show(&p.ty);
+                        if p.rest {
+                            format!("...{ty}[]")
+                        } else if p.optional {
+                            format!("{ty}?")
+                        } else {
+                            ty
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", "),
                 self.show(&f.ret)
@@ -2828,7 +3037,7 @@ impl Checker {
 
     /// Everything you can write after a `.` on this type. Only public members:
     /// completion must not suggest what the checker will then reject (§4.2).
-    fn members_of(&mut self, t: &Type) -> Vec<Completion> {
+    pub(crate) fn members_of(&mut self, t: &Type) -> Vec<Completion> {
         let mut out: Vec<Completion> = Vec::new();
         match strip_null(t) {
             Type::Class(id, _) | Type::ClassMeta(id) => {
@@ -2928,10 +3137,33 @@ impl Checker {
                     .collect();
                 add_all(&mut out, found);
             }
-            // Arrays, strings, maps, sets, namespaces: rather than keep a
-            // second copy of what they offer, ask the checker the same
-            // question it asks itself — so completion cannot suggest a member
-            // that checking would then reject.
+            // A namespace's members are listed once (`namespace_members`) and
+            // *typed* by the checker, so documentation, completion and checking
+            // cannot disagree about what exists.
+            Type::Namespace(ns) => {
+                for name in namespace_members(ns) {
+                    if let Some(ty) = self.member_type_quiet(&Type::Namespace(ns), name) {
+                        let kind = if matches!(ty, Type::Fn(_)) {
+                            KIND_METHOD
+                        } else {
+                            KIND_FIELD
+                        };
+                        let detail = self.show(&ty);
+                        add_all(
+                            &mut out,
+                            vec![Completion {
+                                label: (*name).to_string(),
+                                detail,
+                                kind,
+                            }],
+                        );
+                    }
+                }
+            }
+            // Arrays, strings, maps, sets: rather than keep a second copy of
+            // what they offer, ask the checker the same question it asks itself
+            // — so completion cannot suggest a member that checking would then
+            // reject.
             other => {
                 for name in BUILTIN_MEMBERS {
                     if let Some(ty) = self.member_type_quiet(&other, name) {
@@ -4835,7 +5067,22 @@ impl Checker {
                 })
             }
             Type::Err => Some(Type::Err),
-            _ => None,
+            // Everything else — strings, arrays, namespaces — goes through the
+            // *same* typing as a real member access, with the diagnostics
+            // suppressed. So documentation and completion cannot describe a
+            // member differently from how it is checked, or miss one entirely,
+            // because they are asking the checker rather than keeping a list.
+            other => {
+                let n = self.diags.len();
+                let ty = self.member_access(&other, name, false, Pos { line: 0, col: 0 });
+                let failed = self.diags.len() > n;
+                self.diags.truncate(n);
+                if failed || matches!(ty, Type::Err) {
+                    None
+                } else {
+                    Some(ty)
+                }
+            }
         }
     }
 
