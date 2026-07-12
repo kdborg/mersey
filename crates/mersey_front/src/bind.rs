@@ -37,6 +37,13 @@ const PRELUDE_CLASSES: &[&str] = &[
     "Bytes",
     "Regex",
     "Iter",
+    "AsyncIter",
+    // The protocols a class can opt into (§3): what JavaScript spells with
+    // well-known symbols, as interfaces the checker can see.
+    "Iterable",
+    "AsyncIterable",
+    "Display",
+    "Numeric",
 ];
 
 pub fn bind(module: &Module) -> BindOutput {

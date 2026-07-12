@@ -1,0 +1,4 @@
+error[E0409] @ 5:7: class `Missing` is missing `iter` required by interface `Iterable`
+error[E0409] @ 12:7: `iter` is `() => Iter<string>` on class `WrongElement`, but interface `Iterable` requires `() => Iter<int32>`
+error[E0409] @ 19:7: `toString` is `() => int32` on class `WrongDisplay`, but interface `Display` requires `() => string`
+error[E0401] @ 34:17: `for of` needs an array, string, an iterator, or a class that implements `Iterable<T>`, got `NotDeclared`

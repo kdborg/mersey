@@ -1,0 +1,9 @@
+6
+Bag(1,2,3)
+bag: Bag(1,2,3)
+Bag(1,2,3) | Bag(1,2,3)
+{inside: Bag(1,2,3)}
+<Plain>
+page: 10
+page: 20
+page: 30

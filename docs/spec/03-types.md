@@ -194,3 +194,32 @@ rest of the block its else-branch:
 A union has a member when **every** arm has it, at the same type: then reading it
 is safe whichever arm the value turns out to be. If one arm lacks it, or the arms
 disagree about its type, it is an error — narrow first.
+
+
+## 3.12 Protocols: `Iterable<T>`, `AsyncIterable<T>`, `Display`
+
+A class opts into a language protocol by **implementing an interface**:
+
+    class Bag implements Iterable<int32>, Display {
+        public iter(): Iter<int32> { for (const n of this.items) { yield n; } }
+        public toString(): string { return `Bag(${this.items.join(",")})`; }
+    }
+
+- `Iterable<T>` — `iter(): Iter<T>`. `for … of` accepts it.
+- `AsyncIterable<T>` — `iter(): AsyncIter<T>`. `for await` accepts it. (An
+  `async` method whose body yields *is* an async generator, so it returns
+  `AsyncIter<T>`, not `Promise<AsyncIter<T>>`.)
+- `Display` — `toString(): string`. Honoured by `console.log`, template
+  literals, `join`, and inside arrays and records.
+
+JavaScript spells these with well-known symbols (`Symbol.iterator`,
+`Symbol.toPrimitive`). **Mersey has no symbols, and does not need them.** A
+symbol-keyed method is a runtime convention the type system cannot see: nothing
+tells you that you forgot it, nothing checks its signature, and no editor can
+suggest it. An interface is the same extension point, declared and checked — a
+class that claims `Iterable<int32>` and provides `iter(): Iter<string>` is a
+compile error, not strings arriving where numbers were expected.
+
+Opting in is **explicit**. A class with a suitable `iter()` that never declared
+`Iterable` is not iterable: a protocol you can join by accident is a protocol
+nobody can rely on.

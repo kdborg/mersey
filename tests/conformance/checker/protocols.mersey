@@ -1,0 +1,36 @@
+// The protocols are *interfaces*, so the checker enforces them. That is the whole
+// difference from a symbol-keyed method, which the type system cannot see.
+
+// Claims it, does not have it.
+class Missing implements Iterable<int32> {
+    public n: int32 = 1;
+}
+
+// Has it, with the wrong element type. An interface that only checked the *name*
+// would let this through, and then `for … of` would hand you strings where you
+// asked for numbers.
+class WrongElement implements Iterable<int32> {
+    public iter(): Iter<string> {
+        yield "x";
+    }
+}
+
+// Claims Display, returns the wrong thing.
+class WrongDisplay implements Display {
+    public toString(): int32 {
+        return 1;
+    }
+}
+
+// Opting in is explicit: a class with a suitable `iter()` that never *declared*
+// `Iterable` is not iterable. A protocol you can join by accident is a protocol
+// nobody can rely on.
+class NotDeclared {
+    public iter(): Iter<int32> {
+        yield 1;
+    }
+}
+const n = new NotDeclared();
+for (const x of n) {
+    const y = x;
+}

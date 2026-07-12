@@ -1089,6 +1089,9 @@ struct Checker {
     regex_id: Option<ClassId>,
     iter_id: Option<ClassId>,
     numeric_id: Option<IfaceId>,
+    iterable_id: Option<IfaceId>,
+    async_iterable_id: Option<IfaceId>,
+    display_id: Option<IfaceId>,
     async_iter_id: Option<ClassId>,
     /// Element type of the generator currently being checked.
     yield_ty: Option<Type>,
@@ -1160,6 +1163,9 @@ impl Checker {
             regex_id: None,
             iter_id: None,
             numeric_id: None,
+            iterable_id: None,
+            async_iterable_id: None,
+            display_id: None,
             async_iter_id: None,
             yield_ty: None,
             module_spec: String::new(),
@@ -1336,6 +1342,7 @@ impl Checker {
         self.install_numeric();
         self.install_iter();
         self.install_async_iter();
+        self.install_protocols();
     }
 
     /// `Iter<T>` — what a generator returns and what `for … of` consumes.
@@ -1359,6 +1366,95 @@ impl Checker {
         });
         self.type_defs.insert("Numeric".into(), TypeDef::Iface(id));
         self.numeric_id = Some(id);
+    }
+
+    /// `Iterable<T>`, `AsyncIterable<T>`, `Display`: the protocols a class can opt
+    /// into.
+    ///
+    /// JavaScript spells these with well-known symbols — `Symbol.iterator`,
+    /// `Symbol.toPrimitive`. A symbol-keyed method is a *runtime convention the
+    /// type system cannot see*: nothing tells you that you forgot it, nothing
+    /// checks its signature, and no editor can suggest it. An interface is the
+    /// same extension point with none of the invisibility — declared, checked at
+    /// the class rather than discovered at the call site, and visible in the type.
+    fn install_protocols(&mut self) {
+        // Iterable<T> { iter(): Iter<T> }
+        let t = self.fresh_tv("T");
+        let elem = Type::Var(t);
+        let iter_ret = self.iter_of(elem.clone());
+        let id = self.ifaces.len();
+        self.ifaces.push(IfaceInfo {
+            name: "Iterable".into(),
+            tparams: vec![t],
+            extends: vec![],
+            members: vec![IfaceMember {
+                name: "iter".into(),
+                ty: Type::Fn(Rc::new(FnType {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: iter_ret,
+                })),
+                optional: false,
+            }],
+        });
+        self.type_defs.insert("Iterable".into(), TypeDef::Iface(id));
+        self.iterable_id = Some(id);
+
+        // AsyncIterable<T> { iter(): AsyncIter<T> }
+        let t = self.fresh_tv("T");
+        let elem = Type::Var(t);
+        let aiter_ret = self.async_iter_of(elem);
+        let id = self.ifaces.len();
+        self.ifaces.push(IfaceInfo {
+            name: "AsyncIterable".into(),
+            tparams: vec![t],
+            extends: vec![],
+            members: vec![IfaceMember {
+                name: "iter".into(),
+                ty: Type::Fn(Rc::new(FnType {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: aiter_ret,
+                })),
+                optional: false,
+            }],
+        });
+        self.type_defs
+            .insert("AsyncIterable".into(), TypeDef::Iface(id));
+        self.async_iterable_id = Some(id);
+
+        // Display { toString(): string }
+        let id = self.ifaces.len();
+        self.ifaces.push(IfaceInfo {
+            name: "Display".into(),
+            tparams: vec![],
+            extends: vec![],
+            members: vec![IfaceMember {
+                name: "toString".into(),
+                ty: Type::Fn(Rc::new(FnType {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: Type::Str,
+                })),
+                optional: false,
+            }],
+        });
+        self.type_defs.insert("Display".into(), TypeDef::Iface(id));
+        self.display_id = Some(id);
+    }
+
+    /// The type arguments this class supplies to `iface`, if it implements it —
+    /// including through a base class.
+    fn implemented_args(&self, class: ClassId, iface: IfaceId) -> Option<Vec<Type>> {
+        let mut cur = Some(class);
+        while let Some(id) = cur {
+            let info = &self.classes[id];
+            if let Some((_, args)) = info.ifaces.iter().find(|(i, _)| *i == iface) {
+                return Some(args.clone());
+            }
+            cur = info.parent.as_ref().map(|(p, _)| *p);
+        }
+        None
     }
 
     /// A type parameter bounded by `Numeric`, ready to use in a signature.
@@ -2405,8 +2501,24 @@ impl Checker {
                 let params = self.resolve_params(params);
                 let ret = self.resolve_type(ret);
                 self.tp_scopes.pop();
-                let ret = if *is_async && self.unwrap_promise(&ret).is_none() {
+                // A method is typed by exactly the same rules as a function —
+                // including the one for a generator. An `async` method whose body
+                // yields is an *async generator*, so it returns `AsyncIter<T>`,
+                // not `Promise<AsyncIter<T>>`. That rule was applied to functions
+                // and not to methods, so a class could not implement
+                // `AsyncIterable<T>` at all: the signature it was required to
+                // have was one the checker would not let it write.
+                let yields = body.as_ref().is_some_and(|b| body_yields(b));
+                let ret = if *is_async && yields {
+                    if self.unwrap_async_iter(&ret).is_none() {
+                        self.async_iter_of(ret)
+                    } else {
+                        ret
+                    }
+                } else if *is_async && self.unwrap_promise(&ret).is_none() {
                     self.promise_of(ret)
+                } else if yields && self.unwrap_iter(&ret).is_none() {
+                    self.iter_of(ret)
                 } else {
                     ret
                 };
@@ -3318,22 +3430,60 @@ impl Checker {
                 .map(|m| (m.name.clone(), subst(&m.ty, &imap), m.optional))
                 .collect();
             for (name, want, optional) in members {
-                let has = match &want {
-                    Type::Fn(_) => self.method_sig(id, &name, false).is_some(),
-                    _ => {
-                        self.field_info(id, &name).is_some()
-                            || self.classes[id].getters.iter().any(|g| g.name == name)
-                    }
+                // What the class actually provides — and its *type*, not just
+                // whether the name exists. An interface that only checks names is
+                // barely an interface: `implements Iterable<int32>` with an
+                // `iter(): Iter<string>` used to compile, and then `for … of`
+                // would hand you strings where you asked for numbers.
+                let got: Option<Type> = match &want {
+                    Type::Fn(_) => self.method_sig(id, &name, false).map(|sig| {
+                        let map = self.subst_map(id, &[]);
+                        Type::Fn(Rc::new(FnType {
+                            tparams: sig.tparams.clone(),
+                            params: sig
+                                .params
+                                .iter()
+                                .map(|p| ParamType {
+                                    ty: subst(&p.ty, &map),
+                                    ..p.clone()
+                                })
+                                .collect(),
+                            ret: subst(&sig.ret, &map),
+                        }))
+                    }),
+                    _ => self.field_info(id, &name).map(|(t, ..)| t).or_else(|| {
+                        self.classes[id]
+                            .getters
+                            .iter()
+                            .find(|g| g.name == name)
+                            .map(|g| g.ty.clone())
+                    }),
                 };
-                if !has && !optional {
-                    self.error(
-                        Code::BadOverride,
-                        format!(
-                            "class `{}` is missing `{name}` required by interface `{}`",
-                            self.classes[id].name, self.ifaces[iid].name
-                        ),
-                        pos,
-                    );
+                match got {
+                    None if !optional => {
+                        self.error(
+                            Code::BadOverride,
+                            format!(
+                                "class `{}` is missing `{name}` required by interface `{}`",
+                                self.classes[id].name, self.ifaces[iid].name
+                            ),
+                            pos,
+                        );
+                    }
+                    Some(have) if !self.assignable(&have, &want) => {
+                        self.error(
+                            Code::BadOverride,
+                            format!(
+                                "`{name}` is `{}` on class `{}`, but interface `{}` requires `{}`",
+                                self.show(&have),
+                                self.classes[id].name,
+                                self.ifaces[iid].name,
+                                self.show(&want)
+                            ),
+                            pos,
+                        );
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3510,12 +3660,28 @@ impl Checker {
                         Some(e) => e,
                         None => match strip_null(&it) {
                             Type::Err => Type::Err,
+                            // A class that declared `implements AsyncIterable<T>`.
+                            Type::Class(id, ref args)
+                                if self
+                                    .async_iterable_id
+                                    .and_then(|i| self.implemented_args(id, i))
+                                    .is_some() =>
+                            {
+                                let iface = self.async_iterable_id.expect("checked");
+                                let iargs = self.implemented_args(id, iface).expect("checked");
+                                let map = self.subst_map(id, args);
+                                iargs
+                                    .first()
+                                    .map(|t| subst(t, &map))
+                                    .unwrap_or(Type::Unknown)
+                            }
                             other => {
                                 self.error(
                                     Code::BadOperand,
                                     format!(
-                                        "`for await` needs an `AsyncIter<T>` (an `async` \
-                                         function that yields), found `{}`",
+                                        "`for await` needs an `AsyncIter<T>` (an `async` function that \
+                                         yields) or a class implementing `AsyncIterable<T>`, \
+                                         found `{}`",
                                         self.show(&other)
                                     ),
                                     pos_of(iter),
@@ -3541,11 +3707,29 @@ impl Checker {
                     Type::Iface(..) => Type::Unknown,
                     // A generator / iterator.
                     ref t if self.unwrap_iter(t).is_some() => self.unwrap_iter(t).expect("checked"),
+                    // A class that declared `implements Iterable<T>`. This is
+                    // what JS spells `Symbol.iterator` — as an interface, so the
+                    // checker can see it.
+                    Type::Class(id, args)
+                        if self
+                            .iterable_id
+                            .and_then(|i| self.implemented_args(id, i))
+                            .is_some() =>
+                    {
+                        let iface = self.iterable_id.expect("checked");
+                        let iargs = self.implemented_args(id, iface).expect("checked");
+                        let map = self.subst_map(id, &args);
+                        iargs
+                            .first()
+                            .map(|t| subst(t, &map))
+                            .unwrap_or(Type::Unknown)
+                    }
                     other => {
                         self.error(
                             Code::TypeMismatch,
                             format!(
-                                "`for of` needs an array, string, or host iterable, got `{}`",
+                                "`for of` needs an array, string, an iterator, or a class that \
+                                 implements `Iterable<T>`, got `{}`",
                                 self.show(&other)
                             ),
                             pos_of(iter),

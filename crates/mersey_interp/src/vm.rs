@@ -121,6 +121,8 @@ pub enum Op {
     CastOp(u16, bool),
     /// `x is T`: pops a value, pushes a bool.
     IsOp(u16),
+    /// Pops an async iterable, pushes its async iterator.
+    AsyncIterInit,
     /// Snapshot an iterable (array clone / string chars) for `for of`.
     IterArray,
     PushHandler(usize),
@@ -629,6 +631,9 @@ impl C {
                     let n_item = self.name(&item);
                     let n_next = self.name("next");
                     self.expr(iter);
+                    // A class implementing `AsyncIterable<T>` hands over its
+                    // iterator here; an `AsyncIter` is already one.
+                    self.emit(Op::AsyncIterInit);
                     self.emit(Op::DeclareName(n_ait));
                     self.emit(Op::Null);
                     self.emit(Op::DeclareName(n_item));
@@ -1816,7 +1821,10 @@ fn exec(
             }
             Op::ToDisplayStr => {
                 let v = stack.pop().expect("tds");
-                stack.push(Value::Str(Rc::new(to_display(&v).chars().collect())));
+                // A class implementing `Display` gets its `toString()` called —
+                // which means this can run Mersey code, and can throw.
+                let shown = throwing!(i.display(&v));
+                stack.push(Value::Str(Rc::new(shown.chars().collect())));
             }
             Op::Call(argc) => {
                 let args = split_args(stack, argc as usize);
@@ -2036,22 +2044,16 @@ fn exec(
                 let out = i.value_is(&v, chunk.types[ti as usize]);
                 stack.push(Value::Bool(out));
             }
+            Op::AsyncIterInit => {
+                let v = stack.pop().expect("aiter");
+                let it = throwing!(i.async_iter_of(&v));
+                stack.push(it);
+            }
             Op::IterArray => {
                 let v = stack.pop().expect("iter");
-                let items: Vec<Value> = match &v {
-                    Value::Array(a) => a.borrow().clone(),
-                    Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
-                    // Host iterables (NodeList, HTMLCollection, Set, …).
-                    Value::JsRef(h) => throwing!(i.web_iterate(*h)),
-                    // A generator: drain it.
-                    Value::IterV(_) => throwing!(i.drain_iter(&v)),
-                    _ => {
-                        throwing!(
-                            i.type_error::<()>("`for of` needs an array, string, or host iterable")
-                        );
-                        continue;
-                    }
-                };
+                // Arrays, strings, host iterables, generators — and a class that
+                // implements `Iterable<T>`, whose `iter()` is called here.
+                let items: Vec<Value> = throwing!(i.iter_values(&v));
                 stack.push(crate::new_array(items));
             }
             Op::PushHandler(t) => handlers.push((t, scopes.len(), stack.len())),
@@ -2254,6 +2256,7 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
                 bounds(i, chunk.types.len(), "type")?;
                 (1, 1)
             }
+            Op::AsyncIterInit => (1, 1),
             Op::PushHandler(t) => {
                 work.push((t, depth + 1));
                 (0, 0)

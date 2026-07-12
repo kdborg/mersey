@@ -1,0 +1,76 @@
+import { console } from "std:console";
+
+// `Iterable<T>`, `AsyncIterable<T>` and `Display` are the protocols a class can
+// opt into. JavaScript spells these with well-known symbols — `Symbol.iterator`,
+// `Symbol.toPrimitive`. A symbol-keyed method is a *runtime convention the type
+// system cannot see*: nothing tells you that you forgot it, nothing checks its
+// signature, and no editor can suggest it.
+//
+// An interface is the same extension point with none of the invisibility. It is
+// declared, checked at the class rather than discovered at the call site, and it
+// shows up in the type.
+
+class Bag implements Iterable<int32>, Display {
+    private items: int32[] = [];
+
+    public add(n: int32): void {
+        this.items.push(n);
+    }
+
+    // `Symbol.iterator`, as a method the checker knows the signature of.
+    public iter(): Iter<int32> {
+        for (const n of this.items) {
+            yield n;
+        }
+    }
+
+    // `Symbol.toPrimitive`, likewise.
+    public toString(): string {
+        return `Bag(${this.items.join(",")})`;
+    }
+}
+
+const b = new Bag();
+b.add(1);
+b.add(2);
+b.add(3);
+
+// `for … of` works because the class said `implements Iterable<int32>` — opting
+// in is explicit. A class with an `iter()` it never declared is not iterable.
+let total: int32 = 0;
+for (const x of b) {
+    total += x;
+}
+console.log(total);
+
+// `Display` is honoured everywhere a program shows a value.
+console.log(b);
+console.log(`bag: ${b}`);
+console.log([b, b].join(" | "));
+console.log({ inside: b });
+
+// A class without `Display` is unchanged.
+class Plain {
+    public n: int32 = 1;
+}
+console.log(new Plain());
+
+// `AsyncIterable<T>` is the same idea for `for await`. An `async` method whose
+// body yields is an async generator, so it returns `AsyncIter<T>`.
+async function load(n: int32): int32 {
+    return n * 10;
+}
+
+class Pages implements AsyncIterable<int32> {
+    public async iter(): AsyncIter<int32> {
+        let i: int32 = 1;
+        while (i <= 3) {
+            yield await load(i);
+            i += 1;
+        }
+    }
+}
+
+for await (const p of new Pages()) {
+    console.log("page:", p);
+}

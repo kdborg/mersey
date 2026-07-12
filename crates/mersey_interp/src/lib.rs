@@ -1676,28 +1676,7 @@ impl Interp {
                 target, iter, body, ..
             } => {
                 let iterable = self.eval(iter, env)?;
-                let items: Vec<Value> = match &iterable {
-                    Value::Array(a) => a.borrow().clone(),
-                    Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
-                    Value::JsRef(h) => {
-                        let h = *h;
-                        self.web_iterate(h)?
-                    }
-                    Value::IterV(g) => {
-                        let g = g.clone();
-                        let mut out = Vec::new();
-                        loop {
-                            match self.gen_next(g.clone())? {
-                                Value::Null => break,
-                                v => out.push(v),
-                            }
-                        }
-                        out
-                    }
-                    _ => {
-                        return self.type_error("`for of` needs an array, string, or host iterable")
-                    }
-                };
+                let items: Vec<Value> = self.iter_values(&iterable)?;
                 for item in items {
                     let scope = child_env(env);
                     self.bind_pattern(target, item, &scope)?;
@@ -2167,7 +2146,11 @@ impl Interp {
     fn call_native(&mut self, name: &str, recv: Option<&Value>, args: Vec<Value>) -> VResult {
         match name {
             "console.log" | "console.warn" | "console.error" | "console.info" | "console.debug" => {
-                let line = args.iter().map(to_display).collect::<Vec<_>>().join(" ");
+                let mut parts: Vec<String> = Vec::with_capacity(args.len());
+                for a in &args {
+                    parts.push(self.display(a)?);
+                }
+                let line = parts.join(" ");
                 match name {
                     "console.log" => self.host.print(&line),
                     level => self.host.print_level(&level["console.".len()..], &line),
@@ -2970,7 +2953,8 @@ impl Interp {
                         TplPart::Text(t) => out.push_str(&unescape(t)),
                         TplPart::Expr(e) => {
                             let v = self.eval(e, env)?;
-                            out.push_str(&to_display(&v));
+                            let shown = self.display(&v)?;
+                            out.push_str(&shown);
                         }
                     }
                 }
@@ -3356,7 +3340,11 @@ impl Interp {
                             Some(Value::Str(s)) => s.iter().collect::<String>(),
                             _ => String::new(),
                         };
-                        let parts: Vec<String> = a.borrow().iter().map(to_display).collect();
+                        let items = a.borrow().clone();
+                        let mut parts: Vec<String> = Vec::with_capacity(items.len());
+                        for it in &items {
+                            parts.push(self.display(it)?);
+                        }
                         Ok(Value::Str(Rc::new(parts.join(&sep).chars().collect())))
                     }
                     "map" => {
@@ -4901,6 +4889,106 @@ impl Interp {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// How a value looks when a *program* shows it — `console.log`, a template
+    /// literal, `join`.
+    ///
+    /// A class that implements `Display` has its `toString()` called. This is
+    /// what JavaScript reaches `Symbol.toPrimitive` for; here it is an ordinary
+    /// method named by an interface the checker can see, so forgetting it is a
+    /// compile error rather than a `<Money>` in your output.
+    ///
+    /// Containers recurse, so an array of `Display` values shows them properly.
+    pub(crate) fn display(&mut self, v: &Value) -> Result<String, Thrown> {
+        match v {
+            Value::Instance(inst) => {
+                let has = find_in_chain(&inst.borrow().class, |c| {
+                    c.methods.get("toString").map(|_| ())
+                })
+                .is_some();
+                if !has {
+                    return Ok(to_display(v));
+                }
+                let out = self.call_member(v, "toString", Vec::new())?;
+                match out {
+                    Value::Str(s) => Ok(s.iter().collect()),
+                    other => Ok(to_display(&other)),
+                }
+            }
+            Value::Array(a) | Value::SetV(a) => {
+                let items = a.borrow().clone();
+                let mut parts = Vec::with_capacity(items.len());
+                for it in &items {
+                    parts.push(self.display(it)?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            Value::Record(r) => {
+                let items = r.borrow().clone();
+                let mut parts = Vec::with_capacity(items.len());
+                for (k, val) in &items {
+                    parts.push(format!("{k}: {}", self.display(val)?));
+                }
+                Ok(format!("{{{}}}", parts.join(", ")))
+            }
+            other => Ok(to_display(other)),
+        }
+    }
+
+    /// The async iterator behind a `for await`: an `AsyncIter` is already one; a
+    /// class implementing `AsyncIterable<T>` hands one over from `iter()`.
+    pub(crate) fn async_iter_of(&mut self, v: &Value) -> VResult {
+        match v {
+            Value::IterV(_) => Ok(v.clone()),
+            Value::Instance(inst) => {
+                let has_iter =
+                    find_in_chain(&inst.borrow().class, |c| c.methods.get("iter").map(|_| ()))
+                        .is_some();
+                if !has_iter {
+                    return self.type_error(
+                        "`for await` needs an `AsyncIter<T>` or a class implementing                          `AsyncIterable<T>`",
+                    );
+                }
+                self.call_member(v, "iter", Vec::new())
+            }
+            // A host object may be async-iterable on its own terms.
+            _ => Ok(v.clone()),
+        }
+    }
+
+    /// The values a `for … of` will walk: an array, a string, a host iterable, a
+    /// generator — or a class that implements `Iterable<T>`, whose `iter()` gives
+    /// back the iterator to drain.
+    ///
+    /// This is what JavaScript reaches `Symbol.iterator` for. Here it is an
+    /// ordinary method, named by an interface the checker can see.
+    pub(crate) fn iter_values(&mut self, v: &Value) -> Result<Vec<Value>, Thrown> {
+        match v {
+            Value::Array(a) => Ok(a.borrow().clone()),
+            Value::Str(s) => Ok(s.iter().map(|c| Value::Char(*c)).collect()),
+            Value::JsRef(h) => {
+                let h = *h;
+                self.web_iterate(h)
+            }
+            Value::IterV(_) => self.drain_iter(v),
+            Value::Instance(inst) => {
+                let has_iter = find_in_chain(&inst.borrow().class, |c| {
+                    c.methods.get("iter").map(|_| ())
+                })
+                .is_some();
+                if !has_iter {
+                    return self.type_error(
+                        "`for of` needs an array, string, an iterator, or a class that implements                          `Iterable<T>`",
+                    );
+                }
+                let it = self.call_member(v, "iter", Vec::new())?;
+                self.drain_iter(&it)
+            }
+            _ => self.type_error(
+                "`for of` needs an array, string, an iterator, or a class that implements                  `Iterable<T>`",
+            ),
         }
     }
 
