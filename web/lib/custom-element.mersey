@@ -1,0 +1,89 @@
+// Custom elements, idiomatically.
+//
+// Mersey classes cannot extend a host class (the browser constructs the
+// element, not us), so this module wraps the loader's handler API in a base
+// class: subclass `CustomElement`, override the lifecycle methods, register
+// with `defineElement`. One Mersey instance is created per DOM element and
+// bound to it, so `this.element` is *your* element and instance state is
+// per-element — which is what `extends HTMLElement` would have given you.
+import { document, merseyDefineElement } from "browser:dom";
+
+export abstract class CustomElement {
+    // The DOM element this instance is bound to (set before `connected`).
+    protected element: Element? = null;
+
+    /// Attributes to observe; changes call `attributeChanged`.
+    public observedAttributes(): string[] { return []; }
+
+    /// The element entered the document.
+    public connected(): void {}
+    /// The element left the document.
+    public disconnected(): void {}
+    /// An observed attribute changed.
+    public attributeChanged(name: string, oldValue: string, newValue: string): void {}
+
+    // ---- helpers so subclasses rarely touch the raw handle ----
+    protected el(): Element {
+        return this.element as Element;
+    }
+    protected setText(text: string): void {
+        this.el().textContent = text;
+    }
+    protected attr(name: string): string {
+        return this.el().getAttribute(name) ?? "";
+    }
+    protected setAttr(name: string, value: string): void {
+        this.el().setAttribute(name, value);
+    }
+    protected on(event: string, handler: () => void): void {
+        this.el().addEventListener(event, handler);
+    }
+    protected append(tag: string, text: string): Element {
+        const child = document.createElement(tag);
+        child.textContent = text;
+        this.el().appendChild(child);
+        return child;
+    }
+
+    /// Called by `defineElement`; not part of the subclass surface.
+    public bind(element: Element): void {
+        this.element = element;
+    }
+}
+
+/// Register `tag` as a custom element backed by a fresh instance of the
+/// class `create()` returns — one instance per element, bound to it.
+export function defineElement(tag: string, create: () => CustomElement): void {
+    const instances = new Map<Element, CustomElement>();
+
+    // The browser fires `attributeChangedCallback` BEFORE `connectedCallback`
+    // for attributes already present at upgrade, so the instance is created
+    // on whichever callback arrives first.
+    const instanceFor = (el: Element): CustomElement => {
+        const existing = instances.get(el);
+        if (existing != null) {
+            return existing;
+        }
+        const created = create();
+        created.bind(el);
+        instances.set(el, created);
+        return created;
+    };
+
+    merseyDefineElement(tag, {
+        connected: (el: Element) => {
+            instanceFor(el).connected();
+        },
+        disconnected: (el: Element) => {
+            const instance = instances.get(el);
+            if (instance != null) {
+                instance.disconnected();
+                instances.remove(el);
+            }
+        },
+        attributeChanged: (el: Element, name: string, oldValue: string, newValue: string) => {
+            instanceFor(el).attributeChanged(name, oldValue, newValue);
+        },
+        observed: create().observedAttributes(),
+    });
+}

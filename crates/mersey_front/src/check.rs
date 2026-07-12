@@ -2589,6 +2589,10 @@ impl Checker {
         if matches!(a, Ty::Any | Ty::Err) || matches!(b, Ty::Any | Ty::Err) {
             return true;
         }
+        // Host objects compare by identity.
+        if matches!(a, Ty::Iface(..)) && matches!(b, Ty::Iface(..)) {
+            return true;
+        }
         if self.numeric_common(&a, &b).is_some() {
             return true;
         }

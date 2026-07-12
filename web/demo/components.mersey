@@ -1,0 +1,54 @@
+// Custom elements that look like ordinary classes: subclass, override,
+// register. Each <mersey-counter> gets its own instance and its own state.
+import { console } from "std:console";
+import { document } from "browser:dom";
+import { CustomElement, defineElement } from "../lib/custom-element.mersey";
+
+class CounterBadge extends CustomElement {
+    private count: int32 = 0;
+    private label: string = "clicks";
+
+    public override observedAttributes(): string[] {
+        return ["label"];
+    }
+
+    public override connected(): void {
+        this.render();
+        this.on("click", () => {
+            this.count += 1;
+            this.render();
+        });
+        console.log(`[counter] connected (label=${this.label})`);
+    }
+
+    public override attributeChanged(name: string, oldValue: string, newValue: string): void {
+        if (name == "label") {
+            this.label = newValue;
+            this.render();
+        }
+    }
+
+    public override disconnected(): void {
+        console.log(`[counter] disconnected after ${this.count} ${this.label}`);
+    }
+
+    private render(): void {
+        this.setText(`${this.label}: ${this.count}`);
+    }
+}
+
+class HelloTag extends CustomElement {
+    public override connected(): void {
+        this.setText("hello from a Mersey component 🌊");
+    }
+}
+
+defineElement("mersey-counter", () => new CounterBadge());
+defineElement("mersey-hello", () => new HelloTag());
+
+console.log("components: registered");
+
+// Elements already in the page get upgraded; new ones work the same.
+const added = document.createElement("mersey-counter");
+added.setAttribute("label", "taps");
+(document.getElementById("host") as Element).appendChild(added);

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Mersey components</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; }
+  mersey-counter, mersey-hello { display: inline-block; padding: .4rem .8rem; margin: .3rem;
+    background: #0af; color: #fff; border-radius: 5px; cursor: pointer; }
+</style>
+<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm"></script>
+</head><body>
+<h1>Custom elements as Mersey classes</h1>
+<!-- Declared in HTML, upgraded by Mersey: -->
+<mersey-counter id="a" label="clicks"></mersey-counter>
+<mersey-counter id="b" label="votes"></mersey-counter>
+<mersey-hello></mersey-hello>
+<div id="host"></div>
+<script type="text/mersey" src="demo/components.mersey"></script>
+</body></html>

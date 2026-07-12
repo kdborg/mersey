@@ -3013,6 +3013,9 @@ impl Interp {
             (Value::Str(x), Value::Str(y)) => x == y,
             (Value::BigIntV(x), Value::BigIntV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
             (Value::BigDecV(x), Value::BigDecV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
+            // Host objects compare by identity: the bridge's handle table
+            // dedups by object, so equal handles are the same object.
+            (Value::JsRef(x), Value::JsRef(y)) => x == y,
             (Value::Bytes(x), Value::Bytes(y)) => Rc::ptr_eq(x, y),
             (Value::MapV(x), Value::MapV(y)) => Rc::ptr_eq(x, y),
             (Value::SetV(x), Value::SetV(y)) => Rc::ptr_eq(x, y),

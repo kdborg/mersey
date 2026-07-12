@@ -159,9 +159,42 @@ The last pieces of the initial integration, all verified in real Chromium
   the iterator protocol, with an array-like fallback. Tree walking
   (`childNodes`, `nodeType`, `Node.ELEMENT_NODE`) and node construction /
   attachment behave as expected.
-- **Custom Elements.** A Mersey class cannot extend a host class, so the
-  loader builds the JS class and forwards the lifecycle into Mersey
-  closures:
+- **Custom Elements — as ordinary classes.** `web/lib/custom-element.mersey`
+  is a *Mersey* library (loaded through the module graph) that wraps the
+  handler API in a base class, so components are written the way you would
+  write them with `extends HTMLElement`:
+
+  ```mersey
+  import { CustomElement, defineElement } from "../lib/custom-element.mersey";
+
+  class CounterBadge extends CustomElement {
+      private count: int32 = 0;
+      public override observedAttributes(): string[] { return ["label"]; }
+      public override connected(): void {
+          this.render();
+          this.on("click", () => { this.count += 1; this.render(); });
+      }
+      public override attributeChanged(name: string, old: string, now: string): void { … }
+      private render(): void { this.setText(`${this.label}: ${this.count}`); }
+  }
+
+  defineElement("mersey-counter", () => new CounterBadge());
+  ```
+
+  One instance is created per element and bound to it, so `this.element` is
+  *your* element and state is per-element — exactly what subclassing would
+  give you. Verified in Chromium: elements declared in HTML are upgraded,
+  attributes reach the subclass, sibling instances keep independent state,
+  `disconnected()` runs on the right instance, and elements created *from*
+  Mersey upgrade too.
+
+  Two constraints remain, and they are inherent: the Mersey object is a
+  *companion* to the host element rather than the element itself (so
+  `myBadge instanceof HTMLElement` is false — use `this.element`), and the
+  browser can only call the lifecycle hooks, not arbitrary methods.
+
+  Under the hood the loader still builds the JS class and forwards the
+  lifecycle into Mersey closures:
 
   ```mersey
   merseyDefineElement("mersey-badge", {
@@ -239,8 +272,10 @@ The initial integration is complete. Beyond §5:
   different order.
 - **Host handles are released manually** (`release(obj)`), not by GC — the
   engine's refcounting heap doesn't yet trace into the host's handle table.
-- **Mersey classes still cannot extend a host class**; custom elements go
-  through the handler-record API above rather than `extends HTMLElement`.
+- **Mersey classes still cannot extend a host class.** Custom elements get
+  an idiomatic class API through `web/lib/custom-element.mersey` (subclass +
+  override), but the Mersey object is a companion bound to the element, not
+  the element itself.
 - **`iterable<>` / `maplike` declarations** are not expanded, so
   `for (const x of someWebIterable)` needs an explicit index loop.
 - Callbacks are retained for the page's lifetime (no handle release yet).
