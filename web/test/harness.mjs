@@ -67,6 +67,8 @@ async function engine() {
         // The existing tests fire `listeners` directly, which means clicks.
         if (ev === "click") el.listeners.push(() => exports.msy_invoke(cb));
       },
+      host_print_level: (lp, ll, p, l) => { logs.push(readStr(p, l)); },
+      host_random_bytes: () => 0,
       host_dom_create: (tp, tl) => {
         const id = `--mersey-${nextId++}`;
         const el = element(id);

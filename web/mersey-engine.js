@@ -74,6 +74,24 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
         // because the host is what owns the event loop.
         if (el) el.addEventListener(readStr(ep, el_), () => exports.msy_invoke(cb));
       },
+      // Randomness is denied unless the page grants it — deny by default, like
+      // every other capability (§5.3). The grant is on the script tag:
+      //   <script type="text/mersey" src="app.mersey" data-allow="random">
+      host_print_level: (lp, ll, p, l) => {
+        const level = readStr(lp, ll);
+        const line = readStr(p, l);
+        // A level in Mersey is the same level in the browser's console.
+        (realm.console[level] ?? realm.console.log).call(realm.console, line);
+      },
+      host_random_bytes: (ptr, len) => {
+        if (!realm.__merseyAllow?.has?.("random")) return 0;
+        const view = new Uint8Array(exports.memory.buffer, Number(ptr), Number(len));
+        // The platform CSPRNG, in chunks it will actually serve.
+        for (let off = 0; off < view.length; off += 65536) {
+          realm.crypto.getRandomValues(view.subarray(off, Math.min(off + 65536, view.length)));
+        }
+        return 1;
+      },
       host_dom_create: () => 0n,
       host_dom_append: () => {},
       host_dom_remove: () => {},

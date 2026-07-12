@@ -827,10 +827,21 @@ impl Marker<'_> {
     }
 
     fn gen_contents(&mut self, g: &Rc<GcCell<GenState>>) {
-        let (saved, pending) = {
+        let (saved, pending, adapted) = {
             let st = g.borrow();
-            (st.saved(), st.pending_next())
+            (st.saved(), st.pending_next(), st.adapter_edges())
         };
+        // A derived iterator (`it.map(f)`) is kept alive by nothing but the one
+        // holding it: the iterator below it and the closure it applies are only
+        // reachable through here.
+        if let Some((inner, func)) = adapted {
+            if self.enter(Rc::as_ptr(&inner) as usize) {
+                self.gen_contents(&inner);
+            }
+            if let Some(f) = func {
+                self.value(&f);
+            }
+        }
         if let Some(coro) = saved {
             self.coro(&coro);
         }

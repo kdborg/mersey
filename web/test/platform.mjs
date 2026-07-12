@@ -111,6 +111,8 @@ const imports = {
     host_dom_set_text: noop,
     host_dom_get_text: () => 0n,
     host_dom_add_listener: noop,
+    host_print_level: noop,
+    host_random_bytes: () => 0,
     host_dom_create: () => 0n,
     host_dom_append: noop,
     host_dom_remove: noop,

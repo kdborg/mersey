@@ -78,6 +78,13 @@ function cspAllows(url) {
 async function boot() {
   const engine = await startEngine({ engineUrl, realm: globalThis });
   for (const tag of document.querySelectorAll('script[type="text/mersey"]')) {
+    // Capabilities are granted by the page, per script, and denied otherwise
+    // (§5.3): <script type="text/mersey" src="app.mersey" data-allow="random">
+    const allow = (tag.getAttribute("data-allow") || "")
+      .split(/[\s,]+/)
+      .filter(Boolean);
+    globalThis.__merseyAllow = new Set(allow);
+
     const spec = tag.getAttribute("src");
     try {
       let status;

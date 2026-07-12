@@ -17,7 +17,8 @@ usage: mersey <command> [args]
 
 commands:
   run [caps] <file>       check, then execute (bytecode VM; AST fallback)
-                          caps: --allow-read --allow-env (deny by default, §5.3)
+                          caps: --allow-read --allow-env --allow-random
+                          (deny by default, §5.3)
   audit <file.mersey>     report the module's import/capability surface
   lock <file.mersey>      write mersey.lock: content hashes for the graph
   verify <file.mersey>    check the graph against mersey.lock
@@ -50,6 +51,7 @@ fn main() -> ExitCode {
                 match a.as_str() {
                     "--allow-read" => caps.push("read".to_string()),
                     "--allow-env" => caps.push("env".to_string()),
+                    "--allow-random" => caps.push("random".to_string()),
                     other if !other.starts_with("--") && file.is_none() => {
                         file = Some(other.to_string())
                     }
@@ -225,6 +227,29 @@ impl interp::Host for CliHost {
             return Err("no `read` capability (run with --allow-read)".into());
         }
         std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))
+    }
+    /// A warning or an error belongs on stderr: it survives `mersey run app > out`,
+    /// which is the whole reason a level exists.
+    fn print_level(&mut self, level: &str, s: &str) {
+        match level {
+            "warn" | "error" => eprintln!("{s}"),
+            _ => println!("{s}"),
+        }
+    }
+
+    /// The OS CSPRNG, and only with the capability. `getrandom(2)` on Linux,
+    /// via /dev/urandom — no userspace PRNG, no seeding, nothing to get wrong.
+    fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
+        if !self.caps.iter().any(|c| c == "random") {
+            return Err("no `random` capability (run with --allow-random)".into());
+        }
+        use std::io::Read;
+        let mut f = std::fs::File::open("/dev/urandom")
+            .map_err(|e| format!("cannot open the system CSPRNG: {e}"))?;
+        let mut buf = vec![0u8; n];
+        f.read_exact(&mut buf)
+            .map_err(|e| format!("cannot read the system CSPRNG: {e}"))?;
+        Ok(buf)
     }
     fn env_var(&mut self, name: &str) -> Option<String> {
         if self.caps.iter().any(|c| c == "env") {
@@ -566,6 +591,7 @@ fn audit(path: &str) -> ExitCode {
         let cap = match im.from.as_str() {
             "std:fs" => "  [requires --allow-read]",
             "std:env" => "  [requires --allow-env]",
+            "std:random" => "  [requires --allow-random]",
             "browser:dom" => "  [browser: DOM access]",
             _ => "",
         };

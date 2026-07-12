@@ -1,0 +1,13 @@
+// Randomness is a capability, not arithmetic: the page has to grant it.
+import { console } from "std:console";
+import { document } from "browser:dom";
+import { random } from "std:random";
+
+const f = random.float();
+const i = random.int(1l, 6l);
+const b = random.bytes(16);
+
+const ok = f >= 0.0 && f < 1.0 && i >= 1l && i <= 6l && b.length == 16;
+const out = document.getElementById("out") as Element;
+out.textContent = ok ? "random: granted and in range" : "random: WRONG";
+console.log(`random ok=${ok}`);

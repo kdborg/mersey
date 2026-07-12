@@ -624,6 +624,7 @@ pub enum Ns {
     Env,
     Caps,
     Json,
+    Random,
     /// The `Promise` value from `std:async` (`resolve`/`reject`/`all`), as
     /// distinct from the `Promise<T>` *type*.
     PromiseNs,
@@ -1023,6 +1024,49 @@ impl Checker {
         let t = self.fresh_tv("T");
         let tv = Ty::Var(t);
         let id = self.classes.len();
+        // `map`/`filter`/`take` are lazy: each returns a new `Iter` that pulls
+        // from this one, so `it.map(f).take(3)` runs the generator three times
+        // rather than to exhaustion.
+        let u = self.fresh_tv("U");
+        let self_ty = Ty::Class(id, Rc::new(vec![tv.clone()]));
+        let p = |ty: Ty| ParamTy {
+            ty,
+            optional: false,
+            rest: false,
+        };
+        let meth = |name: &str, tparams: Vec<TvId>, params: Vec<ParamTy>, ret: Ty| MethodInfo {
+            name: name.to_string(),
+            sig: FnTy {
+                tparams,
+                params,
+                ret,
+            },
+            access: Access::Public,
+            is_static: false,
+            is_abstract: false,
+            is_final: false,
+            has_override: false,
+        };
+        let mapper = Ty::Fn(Rc::new(FnTy {
+            tparams: vec![],
+            params: vec![p(tv.clone())],
+            ret: Ty::Var(u),
+        }));
+        let pred = Ty::Fn(Rc::new(FnTy {
+            tparams: vec![],
+            params: vec![p(tv.clone())],
+            ret: Ty::Bool,
+        }));
+        let adapters = vec![
+            meth(
+                "map",
+                vec![u],
+                vec![p(mapper)],
+                Ty::Class(id, Rc::new(vec![Ty::Var(u)])),
+            ),
+            meth("filter", vec![], vec![p(pred)], self_ty.clone()),
+            meth("take", vec![], vec![p(Ty::Int(IntKind::I32))], self_ty),
+        ];
         self.classes.push(ClassInfo {
             name: "Iter".into(),
             tparams: vec![t],
@@ -1057,7 +1101,10 @@ impl Checker {
                     is_final: false,
                     has_override: false,
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(adapters)
+            .collect(),
             getters: vec![],
             setters: vec![],
             ctor: None,
@@ -1195,6 +1242,9 @@ impl Checker {
                 m("test", vec![p(Ty::Str)], Ty::Bool),
                 m("find", vec![p(Ty::Str)], nullable(match_ty.clone())),
                 m("findAll", vec![p(Ty::Str)], Ty::Array(Rc::new(match_ty))),
+                // `replace` does the first match only; `replaceAll` does all of
+                // them. Neither name can be mistaken for the other (§1.3).
+                m("replace", vec![p(Ty::Str), p(Ty::Str)], Ty::Str),
                 m("replaceAll", vec![p(Ty::Str), p(Ty::Str)], Ty::Str),
                 m("split", vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
             ],
@@ -1681,6 +1731,7 @@ impl Checker {
                         ("std:env", _) => Ty::Namespace(Ns::Env),
                         ("std:caps", _) => Ty::Namespace(Ns::Caps),
                         ("std:json", _) => Ty::Namespace(Ns::Json),
+                        ("std:random", _) => Ty::Namespace(Ns::Random),
                         ("std:async", _) => Ty::Namespace(Ns::PromiseNs),
                         ("browser:dom", global) => {
                             // An interface NAME imported as a value is the
@@ -4978,6 +5029,21 @@ impl Checker {
                         params: vec![p(bytes_ty), p(Ty::Int(IntKind::I32))],
                         ret: Ty::Void,
                     })),
+                    // A Mersey string is a sequence of code points (§2.1); bytes
+                    // are what a file or a socket actually holds. These are the
+                    // only two functions that cross between them.
+                    "encodeUtf8" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::Str)],
+                        ret: bytes_ty,
+                    })),
+                    // `null` when the bytes are not valid UTF-8 — no replacement
+                    // characters silently papering over a decoding failure.
+                    "decodeUtf8" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(bytes_ty)],
+                        ret: nullable(Ty::Str),
+                    })),
                     _ => self.no_member("bytes", name, pos),
                 }
             }
@@ -5031,6 +5097,9 @@ impl Checker {
                     "float64" => f(vec![s], nullable(Ty::F64)),
                     "bigint" => f(vec![s], nullable(Ty::BigInt)),
                     "bigdec" => f(vec![s], nullable(Ty::BigDec)),
+                    // Only "true"/"false", and null for anything else — no
+                    // truthiness games, and no sentinel (§1.3).
+                    "bool" => f(vec![s], nullable(Ty::Bool)),
                     _ => self.no_member("parse", name, pos),
                 }
             }
@@ -5089,6 +5158,26 @@ impl Checker {
                         }],
                         ret: Ty::F64,
                     })),
+                    // ISO-8601 in UTC, both ways. Null on a parse failure —
+                    // never a guess (§1.3).
+                    "format" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy {
+                            ty: Ty::F64,
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: Ty::Str,
+                    })),
+                    "parse" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy {
+                            ty: Ty::Str,
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: nullable(Ty::F64),
+                    })),
                     _ => self.no_member("time", name, pos),
                 }
             }
@@ -5113,8 +5202,12 @@ impl Checker {
                     // `abs` keeps the width it was given (§3.3), so it is the
                     // one member here that is not simply float64 in, float64 out.
                     "abs" => f(vec![p(Ty::Any)], Ty::Any),
-                    "floor" | "ceil" | "sqrt" => f(vec![p(num.clone())], num),
-                    "pow" => f(vec![p(num.clone()), p(num.clone())], num),
+                    "floor" | "ceil" | "sqrt" | "round" | "trunc" | "sign" | "cbrt" | "exp"
+                    | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos"
+                    | "atan" => f(vec![p(num.clone())], num),
+                    "pow" | "atan2" | "hypot" => f(vec![p(num.clone()), p(num.clone())], num),
+                    "clamp" => f(vec![p(num.clone()), p(num.clone()), p(num.clone())], num),
+                    "isNaN" | "isFinite" => f(vec![p(num.clone())], Ty::Bool),
                     "min" | "max" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
                         params: vec![ParamTy {
@@ -5200,6 +5293,42 @@ impl Checker {
                     _ => self.no_member("caps", name, pos),
                 }
             }
+            // Randomness is authority, not arithmetic: it seeds tokens and keys,
+            // and it is an observable side channel. So it lives behind a
+            // capability (§5.3) rather than in `math` where it would be reached
+            // for without a thought.
+            Ty::Namespace(Ns::Random) => {
+                let bytes_ty = match self.bytes_id {
+                    Some(id) => Ty::Class(id, Rc::new(vec![])),
+                    None => Ty::Any,
+                };
+                let i32t = Ty::Int(IntKind::I32);
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
+                match name {
+                    // Uniform in [0, 1).
+                    "float" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret: Ty::F64,
+                    })),
+                    // Uniform in [lo, hi] — inclusive, and unbiased.
+                    "int" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::Int(IntKind::I64)), p(Ty::Int(IntKind::I64))],
+                        ret: Ty::Int(IntKind::I64),
+                    })),
+                    "bytes" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(i32t)],
+                        ret: bytes_ty,
+                    })),
+                    _ => self.no_member("random", name, pos),
+                }
+            }
             Ty::Namespace(Ns::Json) => match name {
                 "stringify" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
@@ -5261,7 +5390,7 @@ impl Checker {
                 }
             }
             Ty::Namespace(Ns::Console) => match name {
-                "log" => Ty::Fn(Rc::new(FnTy {
+                "log" | "warn" | "error" | "info" | "debug" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
                     params: vec![ParamTy {
                         ty: Ty::Any,

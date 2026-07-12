@@ -65,6 +65,22 @@ pub trait Host {
     fn env_var(&mut self, _name: &str) -> Option<String> {
         None
     }
+    /// Fill `n` bytes with cryptographically secure randomness.
+    ///
+    /// Denied by default, like every other capability (§5.3). Randomness is
+    /// gated because it is *authority*: it seeds tokens and keys, and it is an
+    /// observable side channel — a program that can ask for it can fingerprint,
+    /// and one that can only ask through the host can be given a deterministic
+    /// stream for a reproducible test run.
+    fn random_bytes(&mut self, _n: usize) -> Result<Vec<u8>, String> {
+        Err("no `random` capability (run with --allow-random)".into())
+    }
+
+    /// `console.warn`/`error`/`info`/`debug`. The default sends everything to
+    /// `print`, so a host that does not care about levels needs to do nothing.
+    fn print_level(&mut self, _level: &str, s: &str) {
+        self.print(s);
+    }
     fn caps(&self) -> Vec<String> {
         Vec::new()
     }
@@ -269,6 +285,34 @@ pub struct GenState {
     is_async: bool,
     /// The promise handed out by the `next()` now in flight.
     pending: Option<Rc<GcCell<PromiseState>>>,
+    /// A *derived* iterator: it has no coroutine of its own, it pulls from
+    /// another one and transforms. This is what makes `map`/`filter`/`take`
+    /// lazy — `it.map(f).take(3)` runs the generator three times, not to
+    /// exhaustion and then throws the rest away.
+    adapter: Option<Adapter>,
+}
+
+#[derive(Clone)]
+pub(crate) enum Adapter {
+    Map(Rc<GcCell<GenState>>, Value),
+    Filter(Rc<GcCell<GenState>>, Value),
+    /// The remaining count is shared, because the adapter is cloned out of the
+    /// GenState to be run without holding a borrow on it.
+    Take(Rc<GcCell<GenState>>, Rc<std::cell::Cell<i64>>),
+}
+
+impl Adapter {
+    pub(crate) fn inner(&self) -> Rc<GcCell<GenState>> {
+        match self {
+            Adapter::Map(i, _) | Adapter::Filter(i, _) | Adapter::Take(i, _) => i.clone(),
+        }
+    }
+    pub(crate) fn func(&self) -> Option<Value> {
+        match self {
+            Adapter::Map(_, f) | Adapter::Filter(_, f) => Some(f.clone()),
+            Adapter::Take(..) => None,
+        }
+    }
 }
 
 impl GenState {
@@ -296,8 +340,16 @@ impl GenState {
         if let Some(coro) = self.coro.take() {
             out.extend(coro.stack);
         }
+        if let Some(a) = self.adapter.take() {
+            out.extend(a.func());
+        }
         self.pending = None;
         self.done = true;
+    }
+
+    /// The iterator this one pulls from, and the closure it applies.
+    pub(crate) fn adapter_edges(&self) -> Option<(Rc<GcCell<GenState>>, Option<Value>)> {
+        self.adapter.as_ref().map(|a| (a.inner(), a.func()))
     }
 }
 
@@ -1084,7 +1136,10 @@ impl Interp {
         match im.from.as_str() {
             "std:console" => {
                 let mut entries = HashMap::new();
-                entries.insert("log".to_string(), Value::Native("console.log"));
+                for level in ["log", "warn", "error", "info", "debug"] {
+                    let id: &'static str = Box::leak(format!("console.{level}").into_boxed_str());
+                    entries.insert(level.to_string(), Value::Native(id));
+                }
                 let console = Value::Namespace(Rc::new(Namespace {
                     name: "console".to_string(),
                     entries,
@@ -1098,7 +1153,10 @@ impl Interp {
                 let (ns_name, natives): (&str, &[&str]) = if im.from == "std:regex" {
                     ("regex", &["compile"])
                 } else {
-                    ("parse", &["int32", "int64", "float64", "bigint", "bigdec"])
+                    (
+                        "parse",
+                        &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
+                    )
                 };
                 let mut entries = HashMap::new();
                 for n in natives {
@@ -1131,7 +1189,7 @@ impl Interp {
             }
             "std:time" => {
                 let mut entries = HashMap::new();
-                for n in ["now", "monotonic", "parts", "fromParts"] {
+                for n in ["now", "monotonic", "parts", "fromParts", "format", "parse"] {
                     let id: &'static str = Box::leak(format!("time.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(id));
                 }
@@ -1146,7 +1204,14 @@ impl Interp {
             }
             "std:bytes" => {
                 let mut entries = HashMap::new();
-                for n in ["alloc", "fromHost", "toHost", "fill"] {
+                for n in [
+                    "alloc",
+                    "fromHost",
+                    "toHost",
+                    "fill",
+                    "encodeUtf8",
+                    "decodeUtf8",
+                ] {
                     let id: &'static str = Box::leak(format!("bytes.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(id));
                 }
@@ -1174,13 +1239,20 @@ impl Interp {
                 }
                 Ok(())
             }
-            "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" | "std:json" => {
+            "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" | "std:json"
+            | "std:random" => {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
                         "std:json" => ("json", &["stringify", "parse"], &[]),
+                        "std:random" => ("random", &["float", "int", "bytes"], &[]),
                         "std:math" => (
                             "math",
-                            &["abs", "min", "max", "floor", "ceil", "sqrt", "pow"],
+                            &[
+                                "abs", "min", "max", "floor", "ceil", "sqrt", "pow", "round",
+                                "trunc", "sign", "clamp", "exp", "log", "log2", "log10", "cbrt",
+                                "hypot", "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+                                "isNaN", "isFinite",
+                            ],
                             &[
                                 ("PI", Value::F64(std::f64::consts::PI)),
                                 ("E", Value::F64(std::f64::consts::E)),
@@ -1855,6 +1927,7 @@ impl Interp {
                         done: false,
                         is_async: false,
                         pending: None,
+                        adapter: None,
                     }));
                     gc::track_gen(&g);
                     return Ok(Value::IterV(g));
@@ -1899,6 +1972,7 @@ impl Interp {
                     done: false,
                     is_async: true,
                     pending: None,
+                    adapter: None,
                 }));
                 gc::track_gen(&g);
                 return Ok(Value::IterV(g));
@@ -2088,9 +2162,12 @@ impl Interp {
 
     fn call_native(&mut self, name: &str, recv: Option<&Value>, args: Vec<Value>) -> VResult {
         match name {
-            "console.log" => {
+            "console.log" | "console.warn" | "console.error" | "console.info" | "console.debug" => {
                 let line = args.iter().map(to_display).collect::<Vec<_>>().join(" ");
-                self.host.print(&line);
+                match name {
+                    "console.log" => self.host.print(&line),
+                    level => self.host.print_level(&level["console.".len()..], &line),
+                }
                 Ok(Value::Null)
             }
             "dom.getElementById" => {
@@ -2163,14 +2240,71 @@ impl Interp {
                 }
                 Ok(best.unwrap_or(Value::Null))
             }
-            "math.floor" | "math.ceil" | "math.sqrt" => {
+            // Single-argument float64 -> float64. `round` is round-half-away
+            // -from-zero (Rust's `f64::round`), which is what people expect and
+            // what IEEE calls roundTiesToAway.
+            "math.floor" | "math.ceil" | "math.sqrt" | "math.round" | "math.trunc"
+            | "math.cbrt" | "math.exp" | "math.log" | "math.log2" | "math.log10" | "math.sin"
+            | "math.cos" | "math.tan" | "math.asin" | "math.acos" | "math.atan" | "math.sign" => {
                 let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
                 Ok(Value::F64(match name {
                     "math.floor" => x.floor(),
                     "math.ceil" => x.ceil(),
+                    "math.round" => x.round(),
+                    "math.trunc" => x.trunc(),
+                    "math.cbrt" => x.cbrt(),
+                    "math.exp" => x.exp(),
+                    "math.log" => x.ln(),
+                    "math.log2" => x.log2(),
+                    "math.log10" => x.log10(),
+                    "math.sin" => x.sin(),
+                    "math.cos" => x.cos(),
+                    "math.tan" => x.tan(),
+                    "math.asin" => x.asin(),
+                    "math.acos" => x.acos(),
+                    "math.atan" => x.atan(),
+                    // NaN has no sign; propagating it beats inventing one.
+                    "math.sign" => {
+                        if x.is_nan() {
+                            f64::NAN
+                        } else if x > 0.0 {
+                            1.0
+                        } else if x < 0.0 {
+                            -1.0
+                        } else {
+                            x // preserves -0.0
+                        }
+                    }
                     _ => x.sqrt(),
                 }))
             }
+            "math.atan2" | "math.hypot" => {
+                let y = args.first().and_then(as_num).unwrap_or(f64::NAN);
+                let x = args.get(1).and_then(as_num).unwrap_or(f64::NAN);
+                Ok(Value::F64(if name == "math.atan2" {
+                    y.atan2(x)
+                } else {
+                    y.hypot(x)
+                }))
+            }
+            "math.clamp" => {
+                let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
+                let lo = args.get(1).and_then(as_num).unwrap_or(f64::NEG_INFINITY);
+                let hi = args.get(2).and_then(as_num).unwrap_or(f64::INFINITY);
+                if lo > hi {
+                    return Err(self.throw(
+                        "RangeError",
+                        format!("clamp: lower bound {lo} is above upper bound {hi}"),
+                    ));
+                }
+                Ok(Value::F64(x.clamp(lo, hi)))
+            }
+            "math.isNaN" => Ok(Value::Bool(
+                args.first().and_then(as_num).is_none_or(|x| x.is_nan()),
+            )),
+            "math.isFinite" => Ok(Value::Bool(
+                args.first().and_then(as_num).is_some_and(|x| x.is_finite()),
+            )),
             "math.pow" => {
                 let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
                 let y = args.get(1).and_then(as_num).unwrap_or(f64::NAN);
@@ -2205,6 +2339,65 @@ impl Interp {
                     Some(j) => Ok(self.from_web(&j)),
                     None => Err(self.throw("Error", "invalid JSON")),
                 }
+            }
+            // Every one of these draws from the host's CSPRNG, and every one of
+            // them is refused unless the `random` capability was granted.
+            "random.bytes" => {
+                let n = args.first().and_then(as_i64).unwrap_or(0);
+                if !(0..=(1 << 24)).contains(&n) {
+                    return Err(self.throw(
+                        "RangeError",
+                        format!("random.bytes: {n} is outside 0..=16777216"),
+                    ));
+                }
+                match self.host.random_bytes(n as usize) {
+                    Ok(b) => Ok(Value::Bytes(Rc::new(RefCell::new(b)))),
+                    Err(msg) => Err(self.throw("Error", msg)),
+                }
+            }
+            "random.float" => {
+                let b = match self.host.random_bytes(8) {
+                    Ok(b) => b,
+                    Err(msg) => return Err(self.throw("Error", msg)),
+                };
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(&b);
+                // 53 bits of mantissa: the largest integer range f64 represents
+                // exactly, so every value in [0, 1) is equally likely.
+                let bits = u64::from_le_bytes(raw) >> 11;
+                Ok(Value::F64(bits as f64 / (1u64 << 53) as f64))
+            }
+            "random.int" => {
+                let lo = args.first().and_then(as_i64).unwrap_or(0);
+                let hi = args.get(1).and_then(as_i64).unwrap_or(0);
+                if lo > hi {
+                    return Err(self.throw("RangeError", format!("random.int: {lo} is above {hi}")));
+                }
+                let span = (hi - lo) as u64 + 1; // inclusive
+                let b = match self.host.random_bytes(8) {
+                    Ok(b) => b,
+                    Err(msg) => return Err(self.throw("Error", msg)),
+                };
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(&b);
+                let r = u64::from_le_bytes(raw);
+                // Modulo would bias the low values; rejection sampling does not.
+                let limit = u64::MAX - (u64::MAX % span);
+                let mut r = r;
+                let mut tries = 0;
+                while r >= limit {
+                    tries += 1;
+                    if tries > 64 {
+                        break; // astronomically unlikely; do not spin forever
+                    }
+                    let b = match self.host.random_bytes(8) {
+                        Ok(b) => b,
+                        Err(msg) => return Err(self.throw("Error", msg)),
+                    };
+                    raw.copy_from_slice(&b);
+                    r = u64::from_le_bytes(raw);
+                }
+                Ok(Value::I64(lo + (r % span) as i64))
             }
             "fs.readText" => {
                 let path = self.want_string(args.first())?;
@@ -2300,6 +2493,16 @@ impl Interp {
                     Err(msg) => Err(self.throw("Error", format!("bad regex: {msg}"))),
                 }
             }
+            "parse.bool" => {
+                let text = self.want_string(args.first())?;
+                // Exactly "true" or "false". Nothing else is a boolean, and
+                // guessing at one is how `"no"` becomes `true` elsewhere.
+                Ok(match text.trim() {
+                    "true" => Value::Bool(true),
+                    "false" => Value::Bool(false),
+                    _ => Value::Null,
+                })
+            }
             "parse.int32" | "parse.int64" | "parse.float64" | "parse.bigint" | "parse.bigdec" => {
                 let text = self.want_string(args.first())?;
                 let t = text.trim();
@@ -2344,6 +2547,32 @@ impl Interp {
             }
             // Civil calendar from a millisecond timestamp (Howard Hinnant's
             // days-from-civil algorithm, proleptic Gregorian).
+            // ISO-8601 in UTC — the one format that round-trips, sorts as text,
+            // and means the same thing to every other system. No locale
+            // formatting: that is presentation, and it belongs to the host.
+            "time.format" => {
+                let ms = args.first().and_then(as_num).unwrap_or(0.0);
+                let secs = (ms / 1000.0).floor() as i64;
+                let ms_part = (ms - (secs as f64) * 1000.0).round() as i64;
+                let days = secs.div_euclid(86_400);
+                let tod = secs.rem_euclid(86_400);
+                let (y, m, d) = civil_from_days(days);
+                let text = format!(
+                    "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms_part:03}Z",
+                    tod / 3600,
+                    (tod % 3600) / 60,
+                    tod % 60,
+                );
+                Ok(Value::Str(Rc::new(text.chars().collect())))
+            }
+            "time.parse" => {
+                let text = self.want_string(args.first())?;
+                Ok(match parse_iso8601(text.trim()) {
+                    // Null on failure, like every other parser here (§1.3).
+                    Some(ms) => Value::F64(ms),
+                    None => Value::Null,
+                })
+            }
             "time.parts" => {
                 let ms = args.first().and_then(as_num).unwrap_or(0.0);
                 let secs = (ms / 1000.0).floor() as i64;
@@ -2381,6 +2610,21 @@ impl Interp {
             "bytes.alloc" => {
                 let n = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
                 Ok(Value::Bytes(Rc::new(RefCell::new(vec![0u8; n]))))
+            }
+            "bytes.encodeUtf8" => {
+                let text = self.want_string(args.first())?;
+                Ok(Value::Bytes(Rc::new(RefCell::new(text.into_bytes()))))
+            }
+            "bytes.decodeUtf8" => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("bytes.decodeUtf8 needs bytes");
+                };
+                // Invalid UTF-8 is `null`, not U+FFFD: a decode that quietly
+                // succeeds on garbage is how corrupt data travels.
+                Ok(match String::from_utf8(b.borrow().clone()) {
+                    Ok(text) => Value::Str(Rc::new(text.chars().collect())),
+                    Err(_) => Value::Null,
+                })
             }
             "bytes.fromHost" => {
                 let Some(Value::JsRef(h)) = args.first() else {
@@ -3057,6 +3301,7 @@ impl Interp {
                     }
                     Ok(new_array(out))
                 }
+                "map" | "filter" | "take" => self.iter_adapt(g.clone(), name, args),
                 _ => self.type_error(format!("no method `{name}` on Iter")),
             },
             Value::PromiseV(p) => {
@@ -3420,6 +3665,22 @@ impl Interp {
                             }
                         }
                         Ok(new_array(out))
+                    }
+                    "replace" => {
+                        let with = match args.get(1) {
+                            Some(Value::Str(w)) => w.iter().collect::<String>(),
+                            Some(other) => to_display(other),
+                            None => String::new(),
+                        };
+                        Ok(match re.find_at(&chars, 0) {
+                            Some(m) => {
+                                let mut out: Vec<char> = chars[..m.start].to_vec();
+                                out.extend(with.chars());
+                                out.extend(&chars[m.end..]);
+                                Value::Str(Rc::new(out))
+                            }
+                            None => Value::Str(Rc::new(chars.clone())),
+                        })
                     }
                     "replaceAll" => {
                         let with = match args.get(1) {
@@ -4492,6 +4753,67 @@ impl Interp {
     }
 
     /// Resume a generator to its next `yield` (or to completion).
+    fn iter_next_adapted(&mut self, g: &Rc<GcCell<GenState>>, a: Adapter) -> VResult {
+        // `null` is the end of the sequence, the same signal a plain generator
+        // uses.
+        match a {
+            Adapter::Map(inner, f) => {
+                let v = self.gen_next(inner)?;
+                if matches!(v, Value::Null) {
+                    g.borrow_mut().done = true;
+                    return Ok(Value::Null);
+                }
+                self.call_value(&f, vec![v])
+            }
+            Adapter::Filter(inner, f) => loop {
+                let v = self.gen_next(inner.clone())?;
+                if matches!(v, Value::Null) {
+                    g.borrow_mut().done = true;
+                    return Ok(Value::Null);
+                }
+                let keep = self.call_value(&f, vec![v.clone()])?;
+                if self.value_truthy(&keep)? {
+                    return Ok(v);
+                }
+            },
+            Adapter::Take(inner, left) => {
+                if left.get() <= 0 {
+                    g.borrow_mut().done = true;
+                    return Ok(Value::Null);
+                }
+                let v = self.gen_next(inner)?;
+                if matches!(v, Value::Null) {
+                    g.borrow_mut().done = true;
+                    return Ok(Value::Null);
+                }
+                left.set(left.get() - 1);
+                Ok(v)
+            }
+        }
+    }
+
+    /// `it.map(f)` / `it.filter(f)` / `it.take(n)`: a new iterator that pulls
+    /// from this one. Nothing is evaluated until someone calls `next()`.
+    fn iter_adapt(&mut self, g: Rc<GcCell<GenState>>, name: &str, args: Vec<Value>) -> VResult {
+        let adapter = match name {
+            "map" => Adapter::Map(g, args.into_iter().next().unwrap_or(Value::Null)),
+            "filter" => Adapter::Filter(g, args.into_iter().next().unwrap_or(Value::Null)),
+            _ => {
+                let n = args.first().and_then(as_i64).unwrap_or(0).max(0);
+                Adapter::Take(g, Rc::new(std::cell::Cell::new(n)))
+            }
+        };
+        let out = Rc::new(GcCell::new(GenState {
+            coro: None,
+            done: false,
+            is_async: false,
+            pending: None,
+            adapter: Some(adapter),
+        }));
+        gc::track_gen(&out);
+        Ok(Value::IterV(out))
+    }
+
     /// `next()` on an async generator: a promise that settles at the next
     /// `yield` (with the value), at the end (with `null`), or with whatever the
     /// body threw.
@@ -4580,6 +4902,12 @@ impl Interp {
         }
         if g.borrow().done {
             return Ok(Value::Null);
+        }
+        // A derived iterator has no coroutine: it pulls one element from the
+        // one below it, and only as many as it is asked for.
+        let adapter = g.borrow().adapter.clone();
+        if let Some(a) = adapter {
+            return self.iter_next_adapted(&g, a);
         }
         let Some(mut coro) = g.borrow_mut().coro.take() else {
             g.borrow_mut().done = true;
@@ -5248,6 +5576,36 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// `YYYY-MM-DDTHH:MM:SS[.mmm]Z` -> milliseconds since the epoch.
+///
+/// Strict on purpose: a date parser that guesses is how "01/02/03" becomes
+/// three different days in three different places.
+fn parse_iso8601(t: &str) -> Option<f64> {
+    let b: Vec<char> = t.chars().collect();
+    if b.len() < 20 || b[4] != '-' || b[7] != '-' || b[10] != 'T' || b[13] != ':' || b[16] != ':' {
+        return None;
+    }
+    if *b.last()? != 'Z' {
+        return None; // UTC only: an offset is a different value, not a format
+    }
+    let num = |a: usize, z: usize| -> Option<i64> { t.get(a..z)?.parse::<i64>().ok() };
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    let millis = if b[19] == '.' {
+        num(20, 23)?
+    } else if b.len() == 20 {
+        0
+    } else {
+        return None;
+    };
+    let days = days_from_civil(y, mo, d);
+    let secs = days * 86_400 + h * 3600 + mi * 60 + sec;
+    Some(secs as f64 * 1000.0 + millis as f64)
 }
 
 fn as_num(v: &Value) -> Option<f64> {

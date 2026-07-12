@@ -41,6 +41,13 @@ extern "C" {
     fn host_dom_create(tag_ptr: *const u8, tag_len: usize) -> u64;
     fn host_dom_append(p_ptr: *const u8, p_len: usize, c_ptr: *const u8, c_len: usize);
     fn host_dom_remove(id_ptr: *const u8, id_len: usize);
+    /// Fill `len` bytes at `ptr` with CSPRNG output. Returns 0 when the page
+    /// has not granted the `random` capability — deny by default, like every
+    /// other capability (§5.3).
+    fn host_random_bytes(ptr: *mut u8, len: usize) -> u32;
+    /// `console.warn`/`error`/`info`/`debug`, so a level in Mersey is the same
+    /// level in the browser's console rather than all of them collapsing to log.
+    fn host_print_level(lv_ptr: *const u8, lv_len: usize, ptr: *const u8, len: usize);
     fn host_dom_get_value(id_ptr: *const u8, id_len: usize) -> u64;
     fn host_dom_set_value(id_ptr: *const u8, id_len: usize, v_ptr: *const u8, v_len: usize);
 
@@ -114,6 +121,19 @@ impl Host for WasmHost {
         let len = (packed & 0xFFFF_FFFF) as usize;
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
         Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+    fn print_level(&mut self, level: &str, s: &str) {
+        unsafe { host_print_level(level.as_ptr(), level.len(), s.as_ptr(), s.len()) }
+    }
+    fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; n];
+        let ok = unsafe { host_random_bytes(buf.as_mut_ptr(), n) };
+        if ok == 0 {
+            return Err(
+                "no `random` capability (the page did not grant it: data-allow=\"random\")".into(),
+            );
+        }
+        Ok(buf)
     }
     fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
         unsafe { host_dom_add_listener(id.as_ptr(), id.len(), event.as_ptr(), event.len(), cb) }
