@@ -257,6 +257,7 @@ pub enum Ty {
 pub enum Ns {
     Console,
     Document,
+    Bytes,
     Opaque,
 }
 
@@ -385,6 +386,7 @@ struct Checker {
     element_id: ClassId,
     /// The generated `interface Promise<T>` (webapi), resolved lazily.
     promise_id: Option<IfaceId>,
+    bytes_id: Option<ClassId>,
     /// The module being checked (diagnostics/context).
     module_spec: String,
     /// Type names pulled in from other modules (not declared here).
@@ -438,6 +440,7 @@ impl Checker {
             error_id: 0,
             element_id: 0,
             promise_id: None,
+            bytes_id: None,
             module_spec: String::new(),
             imported: std::collections::HashSet::new(),
         };
@@ -578,6 +581,34 @@ impl Checker {
                 .insert(name.to_string(), VarInfo { ty: Ty::ClassMeta(id), is_const: true });
         }
         self.install_collections();
+        self.install_bytes();
+    }
+
+    /// `Bytes`: packed byte buffer with O(1) element access (spec §3.8-ish;
+    /// the engine-side home for pixel/audio/binary data).
+    fn install_bytes(&mut self) {
+        let id = self.classes.len();
+        self.classes.push(ClassInfo {
+            name: "Bytes".into(),
+            tparams: vec![],
+            parent: None,
+            ifaces: vec![],
+            fields: vec![FieldInfo {
+                name: "length".into(),
+                ty: Ty::Int(IntKind::I32),
+                access: Access::Public,
+                is_static: false,
+                readonly: true,
+            }],
+            methods: vec![],
+            getters: vec![],
+            setters: vec![],
+            ctor: None,
+            is_abstract: false,
+            is_final: true,
+        });
+        self.type_defs.insert("Bytes".into(), TypeDef::Class(id));
+        self.bytes_id = Some(id);
     }
 
     /// Built-in generic collections (spec §3.8): Map<K,V>, Set<T>. Methods
@@ -912,6 +943,7 @@ impl Checker {
                     let local = s.alias.as_ref().unwrap_or(&s.name);
                     let ty = match (im.from.as_str(), s.name.text.as_str()) {
                         ("std:console", "console") => Ty::Namespace(Ns::Console),
+                        ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
                         ("browser:dom", global) => {
                             match crate::webapi::global_type(global) {
                                 Some(ast_ty) => self.resolve_type(ast_ty),
@@ -2307,6 +2339,8 @@ impl Checker {
                     // Host objects are indexable (`nodeList[0]`, `obj[key]`);
                     // the element type is not knowable from IDL.
                     Ty::Iface(..) => Ty::Any,
+                    // Bytes: uint8 elements, promoted to int32 (§3.3).
+                    Ty::Class(id, _) if Some(*id) == self.bytes_id => Ty::Int(IntKind::I32),
                     Ty::Nullable(_) => {
                         self.error(
                             Code::NullableMisuse,
@@ -3050,6 +3084,36 @@ impl Checker {
                     Ty::Enum(id)
                 } else {
                     self.no_member(&self.enums[id].name.clone(), name, pos)
+                }
+            }
+            Ty::Namespace(Ns::Bytes) => {
+                let bytes_ty = match self.bytes_id {
+                    Some(id) => Ty::Class(id, Rc::new(vec![])),
+                    None => Ty::Any,
+                };
+                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+                match name {
+                    "alloc" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::Int(IntKind::I32))],
+                        ret: bytes_ty,
+                    })),
+                    "fromHost" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::Any)],
+                        ret: bytes_ty,
+                    })),
+                    "toHost" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(bytes_ty)],
+                        ret: Ty::Any,
+                    })),
+                    "fill" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(bytes_ty), p(Ty::Int(IntKind::I32))],
+                        ret: Ty::Void,
+                    })),
+                    _ => self.no_member("bytes", name, pos),
                 }
             }
             Ty::Namespace(Ns::Console) => match name {

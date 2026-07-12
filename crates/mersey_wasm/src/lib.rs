@@ -66,6 +66,12 @@ extern "C" {
     fn host_web_call_str(target: i64, name_id: u32, a_ptr: *const u8, a_len: usize) -> u64;
     fn host_web_iterate(target: i64) -> u64;
     fn host_web_release(target: i64);
+    /// Bulk transfer: host typed array → engine memory. Returns packed
+    /// (ptr<<32|len) of a buffer the host allocated with msy_alloc, or 0.
+    fn host_web_bytes_read(target: i64) -> u64;
+    /// Bulk transfer: engine memory → a fresh host Uint8Array. Returns its
+    /// handle, or -1.
+    fn host_web_bytes_write(ptr: *const u8, len: usize) -> i64;
 }
 
 fn read_packed(packed: u64) -> String {
@@ -176,6 +182,18 @@ impl Host for WasmHost {
     }
     fn web_release(&mut self, target: i64) {
         unsafe { host_web_release(target) }
+    }
+    fn web_bytes_read(&mut self, target: i64) -> Option<Vec<u8>> {
+        let packed = unsafe { host_web_bytes_read(target) };
+        if packed == 0 {
+            return None;
+        }
+        let ptr = (packed >> 32) as usize as *const u8;
+        let len = (packed & 0xFFFF_FFFF) as usize;
+        Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+    }
+    fn web_bytes_write(&mut self, bytes: &[u8]) -> i64 {
+        unsafe { host_web_bytes_write(bytes.as_ptr(), bytes.len()) }
     }
 }
 

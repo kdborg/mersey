@@ -94,6 +94,15 @@ async function engine() {
       host_web_call_str: (t, id, ap, al) => packed(bridge.callStr(Number(t), id, readStr(ap, al))),
       host_web_iterate: (t) => packed(bridge.iterate(Number(t))),
       host_web_release: (t) => bridge.release(Number(t)),
+      host_web_bytes_read: (t) => {
+        const b = bridge.bytesRead(Number(t));
+        if (!b) return 0n;
+        const ptr = exports.msy_alloc(b.length);
+        mem().set(b, ptr);
+        return (BigInt(ptr) << 32n) | BigInt(b.length);
+      },
+      host_web_bytes_write: (ptr, len) =>
+        BigInt(bridge.bytesWrite(mem().subarray(Number(ptr), Number(ptr) + Number(len)))),
     },
   };
   const bridge = makeBridge({}, (cb, argsJson) => {

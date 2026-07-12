@@ -1,0 +1,41 @@
+// Zero-hop pixel work: pull the canvas buffer into engine memory ONCE,
+// run the loop natively, push it back ONCE. Compare with the naive path
+// where every pixel crosses the bridge.
+import { console } from "std:console";
+import { document, performance } from "browser:dom";
+import { bytes } from "std:bytes";
+
+const canvas = document.getElementById("c") as HTMLCanvasElement;
+const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+const W = 200;
+const H = 200;
+const N = W * H * 4;
+
+// --- Fast path: bulk in, native loop, bulk out
+const t0 = performance.now();
+const img = ctx.createImageData(W, H);
+const buf = bytes.fromHost(img.data);
+for (let i = 0; i < N; i += 4) {
+    buf[i] = (i / 4) % 256;         // r
+    buf[i + 1] = 128;               // g
+    buf[i + 2] = 255 - ((i / 4) % 256); // b
+    buf[i + 3] = 255;               // a
+}
+const outData = bytes.toHost(buf);
+const t1 = performance.now();
+
+// Paint it (ImageData wants its own array; construct from our bytes)
+const painted = new ImageData(outData, W, H);
+ctx.putImageData(painted, 0, 0);
+
+// --- Naive path: every pixel through the bridge (same work, no Bytes)
+const t2 = performance.now();
+const img2 = ctx.createImageData(W, H);
+const raw = img2.data;
+for (let i = 0; i < N; i += 4) {
+    raw[i] = 10;
+}
+const t3 = performance.now();
+
+console.log(`PIXELS bytes ${N} in ${(t1 - t0) as int32}ms`);
+console.log(`PIXELS bridge ${N / 4} writes in ${(t3 - t2) as int32}ms`);

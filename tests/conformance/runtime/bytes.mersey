@@ -1,0 +1,22 @@
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+// Packed byte buffers: O(1) element access, no per-element host hops.
+const buf = bytes.alloc(8);
+console.log(buf.length, buf[0]);
+buf[0] = 255;
+buf[1] = 256;      // wraps to 0 (uint8 store, §3.6)
+buf[7] = 42;
+console.log(buf[0], buf[1], buf[7]);
+bytes.fill(buf, 7);
+console.log(buf[0], buf[3], buf.length);
+
+let sum = 0;
+for (let i = 0; i < buf.length; i++) { sum += buf[i]; }
+console.log("sum:", sum);
+
+try {
+    let bad = buf[99];
+} catch (e: RangeError) {
+    console.log("bounds:", e.message);
+}

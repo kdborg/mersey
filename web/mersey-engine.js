@@ -69,6 +69,15 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
         packed(bridge.callStr(Number(t), id, readStr(ap, al))),
       host_web_iterate: (t) => packed(bridge.iterate(Number(t))),
       host_web_release: (t) => bridge.release(Number(t)),
+      host_web_bytes_read: (t) => {
+        const bytes = bridge.bytesRead(Number(t));
+        if (!bytes) return 0n;
+        const ptr = exports.msy_alloc(bytes.length);
+        mem().set(bytes, ptr);
+        return (BigInt(ptr) << 32n) | BigInt(bytes.length);
+      },
+      host_web_bytes_write: (ptr, len) =>
+        BigInt(bridge.bytesWrite(mem().subarray(Number(ptr), Number(ptr) + Number(len)))),
     },
   };
 

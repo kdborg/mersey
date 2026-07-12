@@ -27,7 +27,7 @@ pub struct BindOutput {
 
 /// Names every module sees without importing: the built-in error classes
 /// (spec §4.6 — only `Error` subclasses may be thrown).
-const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element"];
+const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element", "Bytes"];
 
 pub fn bind(module: &Module) -> BindOutput {
     let mut prelude = Scope::default();

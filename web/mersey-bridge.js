@@ -197,6 +197,20 @@ export function makeBridge(globalObject, invokeCallback) {
         return err(e);
       }
     },
+    /// Bulk read: a host typed array / ArrayBuffer as raw bytes.
+    bytesRead(target) {
+      const obj = handles[target];
+      if (obj == null) return null;
+      if (ArrayBuffer.isView(obj)) {
+        return new Uint8Array(obj.buffer, obj.byteOffset, obj.byteLength);
+      }
+      if (obj instanceof ArrayBuffer) return new Uint8Array(obj);
+      return null;
+    },
+    /// Bulk write: raw bytes → a fresh host Uint8ClampedArray (canvas-ready).
+    bytesWrite(view) {
+      return handleFor(new Uint8ClampedArray(view)); // copies out of wasm memory
+    },
     /// Drop a handle: the object becomes collectable by the JS GC.
     release(target) {
       const obj = handles[target];

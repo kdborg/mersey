@@ -111,6 +111,16 @@ pub trait Host {
     }
     /// Drop a host handle (and any callbacks it retained).
     fn web_release(&mut self, _target: i64) {}
+
+    /// Bulk-copy a host typed array / ArrayBuffer into engine memory.
+    fn web_bytes_read(&mut self, _target: i64) -> Option<Vec<u8>> {
+        None
+    }
+    /// Bulk-copy engine bytes back into a fresh host Uint8ClampedArray-ish
+    /// object; returns its handle (or -1).
+    fn web_bytes_write(&mut self, _bytes: &[u8]) -> i64 {
+        -1
+    }
 }
 
 // ---- values -------------------------------------------------------------------
@@ -146,6 +156,9 @@ pub enum Value {
     /// Opaque handle to a host (JS) object, reached via the universal
     /// bridge. Handle 0 is the global object (window).
     JsRef(i64),
+    /// Packed byte buffer with O(1) element access — the engine-side home
+    /// for pixel/audio/binary data (no per-element bridge hops).
+    Bytes(Rc<RefCell<Vec<u8>>>),
     /// A Mersey promise (§ async/await).
     PromiseV(Rc<RefCell<PromiseState>>),
     /// A callable that settles a promise; handed to host `.then(…)` so JS
@@ -645,6 +658,21 @@ impl Interp {
                 }));
                 for n in names {
                     env_define(&self.globals, &n.text, console.clone());
+                }
+                Ok(())
+            }
+            "std:bytes" => {
+                let mut entries = HashMap::new();
+                for n in ["alloc", "fromHost", "toHost", "fill"] {
+                    let id: &'static str = Box::leak(format!("bytes.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: "bytes".to_string(),
+                    entries,
+                }));
+                for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())
             }
@@ -1538,6 +1566,40 @@ impl Interp {
                 }
                 Ok(Value::PromiseV(out))
             }
+            "bytes.alloc" => {
+                let n = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
+                Ok(Value::Bytes(Rc::new(RefCell::new(vec![0u8; n]))))
+            }
+            "bytes.fromHost" => {
+                let Some(Value::JsRef(h)) = args.first() else {
+                    return self.type_error("bytes.fromHost needs a host typed array");
+                };
+                let h = *h;
+                match self.host.web_bytes_read(h) {
+                    Some(v) => Ok(Value::Bytes(Rc::new(RefCell::new(v)))),
+                    None => self.type_error("value is not a typed array / ArrayBuffer"),
+                }
+            }
+            "bytes.toHost" => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("bytes.toHost needs a Bytes buffer");
+                };
+                let data = b.borrow().clone();
+                let handle = self.host.web_bytes_write(&data);
+                if handle < 0 {
+                    self.type_error("host cannot accept byte buffers")
+                } else {
+                    Ok(Value::JsRef(handle))
+                }
+            }
+            "bytes.fill" => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("bytes.fill needs a Bytes buffer");
+                };
+                let v = (args.get(1).and_then(as_i64).unwrap_or(0) & 0xFF) as u8;
+                b.borrow_mut().iter_mut().for_each(|x| *x = v);
+                Ok(Value::Null)
+            }
             "web.release" => {
                 if let Some(v) = args.first() {
                     self.web_release_value(v);
@@ -1626,6 +1688,10 @@ impl Interp {
                 let h = *h;
                 self.web_get(h, name).map(Some)
             }
+            Value::Bytes(b) => Ok(match name {
+                "length" => Some(Value::I32(b.borrow().len() as i32)),
+                _ => None,
+            }),
             Value::MapV(m) => Ok(match name {
                 "size" => Some(Value::I32(m.borrow().len() as i32)),
                 _ => None,
@@ -2225,6 +2291,18 @@ impl Interp {
     }
 
     fn index_get(&mut self, o: &Value, i: &Value) -> VResult {
+        if let Value::Bytes(b) = o {
+            let ix = as_i64(i).unwrap_or(-1);
+            let bytes = b.borrow();
+            return if ix < 0 || ix as usize >= bytes.len() {
+                Err(self.throw(
+                    "RangeError",
+                    format!("index {ix} out of bounds (length {})", bytes.len()),
+                ))
+            } else {
+                Ok(Value::I32(bytes[ix as usize] as i32))
+            };
+        }
         // Host objects: `list[0]`, `obj["key"]` → bridge property read.
         if let Value::JsRef(h) = o {
             let (h, prop) = (*h, to_display(i));
@@ -2257,6 +2335,21 @@ impl Interp {
     }
 
     fn index_set(&mut self, o: &Value, i: &Value, value: Value) -> Result<(), Thrown> {
+        if let Value::Bytes(b) = o {
+            let ix = as_i64(i).unwrap_or(-1);
+            let v = as_i64(&value).unwrap_or(0);
+            let mut bytes = b.borrow_mut();
+            return if ix < 0 || ix as usize >= bytes.len() {
+                Err(self.throw(
+                    "RangeError",
+                    format!("index {ix} out of bounds (length {})", bytes.len()),
+                ))
+            } else {
+                // Wrapping, like a Uint8 store (§3.6).
+                bytes[ix as usize] = (v & 0xFF) as u8;
+                Ok(())
+            };
+        }
         if let Value::JsRef(h) = o {
             let (h, prop) = (*h, to_display(i));
             return self.web_set(h, &prop, value);
@@ -2841,6 +2934,7 @@ impl Interp {
             (Value::Str(x), Value::Str(y)) => x == y,
             (Value::BigIntV(x), Value::BigIntV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
             (Value::BigDecV(x), Value::BigDecV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
+            (Value::Bytes(x), Value::Bytes(y)) => Rc::ptr_eq(x, y),
             (Value::MapV(x), Value::MapV(y)) => Rc::ptr_eq(x, y),
             (Value::SetV(x), Value::SetV(y)) => Rc::ptr_eq(x, y),
             (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
@@ -3320,6 +3414,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::Namespace(_) => "namespace",
         Value::Dom(_) => "dom element",
         Value::JsRef(_) => "web object",
+        Value::Bytes(_) => "Bytes",
         Value::PromiseV(_) => "Promise",
         Value::Resolver(..) | Value::AllSlot(..) => "function",
         Value::Native(_) => "native function",
@@ -3370,6 +3465,7 @@ pub fn to_display(v: &Value) -> String {
         Value::Namespace(ns) => format!("<{}>", ns.name),
         Value::Dom(id) => format!("<#{id}>"),
         Value::JsRef(h) => format!("<web:{h}>"),
+        Value::Bytes(b) => format!("<Bytes[{}]>", b.borrow().len()),
         Value::PromiseV(_) => "<Promise>".to_string(),
         Value::Resolver(..) | Value::AllSlot(..) => "<function>".to_string(),
     }
