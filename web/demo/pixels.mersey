@@ -31,9 +31,9 @@ ctx.putImageData(painted, 0, 0);
 // --- Naive path: every pixel through the bridge (same work, no Bytes)
 const t2 = performance.now();
 const img2 = ctx.createImageData(W, H);
-// `ImageData.data` is a `Uint8ClampedArray` in the IDL, but the generator emits
-// it as `JsAny` — so it arrives as `unknown` and has to be narrowed. (The IDL
-// knows the type; the generator loses it. Worth fixing there.)
+// `ImageData.data` is `(Uint8ClampedArray | Float16Array)` in the IDL — a real
+// union now, not `JsAny`. So this narrows a union to the arm we want, which is
+// a claim the checker can hold us to, rather than papering over an untyped hole.
 const raw = img2.data as Uint8ClampedArray;
 for (let i = 0; i < N; i += 4) {
     raw[i] = 10;

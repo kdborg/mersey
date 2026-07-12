@@ -155,7 +155,13 @@ function mapType(t, depth = 0) {
     interfaces.has(base) ||
     dictionaries.has(base) ||
     typedefs.has(base) ||
-    callbacks.has(base)
+    callbacks.has(base) ||
+    // Typed arrays, DataView, BufferSource: WebIDL *references* these but does
+    // not define them (they are ECMAScript), so they are not in the corpus and
+    // used to fall through to `JsAny`. They are declared in ES_AMBIENT below,
+    // so the name resolves — `ImageData.data` is a `Uint8ClampedArray`, and the
+    // IDL knew that all along.
+    ES_DEFINED.has(base)
   )
     out = base;
   else if (enums.has(base)) out = "string";
@@ -190,19 +196,29 @@ const RESERVED_TYPE_NAMES = new Set([
   "Map", "Set", "Error", "RangeError", "TypeError", "JSON", "Math",
   "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array",
   "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray",
-  "BigInt64Array", "BigUint64Array", "DataView", "ArrayBufferView",
-  "BufferSource", "Promise", "JsAny",
+  "BigInt64Array", "BigUint64Array", "Float16Array", "DataView", "ArrayBufferView",
+  "BufferSource", "ArrayBuffer", "Promise", "JsAny",
 ]);
 
 // ECMAScript-defined types that WebIDL references but doesn't define
 // (typed arrays, JSON, Math…): declared so IDL signatures resolve and the
 // bridge can reach them.
+/// ECMAScript types that WebIDL references but does not define. Declared in
+/// ES_AMBIENT, and therefore mappable by name rather than to `JsAny`.
+const ES_DEFINED = new Set([
+  "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array",
+  "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray",
+  "BigInt64Array", "BigUint64Array", "Float16Array", "DataView",
+  "ArrayBufferView", "BufferSource", "ArrayBuffer",
+]);
+
 const TYPED_ARRAYS = [
   "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array",
   "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray",
-  "BigInt64Array", "BigUint64Array", "DataView",
+  "BigInt64Array", "BigUint64Array", "Float16Array", "DataView",
 ];
-const ES_AMBIENT = `interface ArrayBufferView { readonly byteLength: int32; }
+const ES_AMBIENT = `interface ArrayBuffer { readonly byteLength: int32; }
+interface ArrayBufferView { readonly byteLength: int32; }
 interface BufferSource extends ArrayBufferView {}
 ${TYPED_ARRAYS.map(
   (t) => `interface ${t} extends BufferSource { readonly length: int32; }`,

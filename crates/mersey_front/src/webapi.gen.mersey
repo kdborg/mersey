@@ -6,6 +6,7 @@ interface Promise<T> {
     then(p0: (value: T) => void, p1?: (reason: JsAny) => void): Promise<JsAny>;
     catch(p0: (reason: JsAny) => void): Promise<JsAny>;
 }
+interface ArrayBuffer { readonly byteLength: int32; }
 interface ArrayBufferView { readonly byteLength: int32; }
 interface BufferSource extends ArrayBufferView {}
 interface Uint8Array extends BufferSource { readonly length: int32; }
@@ -19,6 +20,7 @@ interface Float64Array extends BufferSource { readonly length: int32; }
 interface Uint8ClampedArray extends BufferSource { readonly length: int32; }
 interface BigInt64Array extends BufferSource { readonly length: int32; }
 interface BigUint64Array extends BufferSource { readonly length: int32; }
+interface Float16Array extends BufferSource { readonly length: int32; }
 interface DataView extends BufferSource { readonly length: int32; }
 interface __JSON {
     stringify(p0: JsAny, p1?: JsAny, p2?: JsAny): string;
@@ -94,7 +96,7 @@ type SanitizerElement = (string | SanitizerElementNamespace);
 type SanitizerElementWithAttributes = (string | SanitizerElementNamespaceWithAttributes);
 type SanitizerPI = (string | SanitizerProcessingInstruction);
 type SanitizerAttribute = (string | SanitizerAttributeNamespace);
-type ImageDataArray = JsAny;
+type ImageDataArray = (Uint8ClampedArray | Float16Array);
 type ImageBitmapSource = (CanvasImageSource | Blob | ImageData);
 type MessageEventSource = JsAny;
 type ConstrainPoint2D = (Point2D[] | ConstrainPoint2DParameters);
@@ -110,7 +112,7 @@ type Megabit = float64;
 type Millisecond = float64;
 type ObserverUnion = (ObservableSubscriptionCallback | SubscriptionObserver);
 type ObservableInspectorUnion = (ObservableSubscriptionCallback | ObservableInspector);
-type RotationMatrixType = JsAny;
+type RotationMatrixType = (Float32Array | Float64Array | DOMMatrix);
 type PerformanceEntryList = PerformanceEntry[];
 type LanguageModelPrompt = (LanguageModelMessage[] | string);
 type LanguageModelMessageValue = (ImageBitmapSource | AudioBuffer | BufferSource | string);
@@ -137,7 +139,7 @@ type COSEAlgorithmIdentifier = int32;
 type ImageBufferSource = (AllowSharedBufferSource | ReadableStream);
 type AlgorithmIdentifier = JsAny;
 type HashAlgorithmIdentifier = AlgorithmIdentifier;
-type BigInteger = JsAny;
+type BigInteger = Uint8Array;
 type NamedCurve = string;
 type GLenum = int32;
 type GLboolean = bool;
@@ -154,11 +156,11 @@ type GLuint = int32;
 type GLfloat = float64;
 type GLclampf = float64;
 type TexImageSource = (ImageBitmap | ImageData | HTMLImageElement | HTMLCanvasElement | HTMLVideoElement | OffscreenCanvas | VideoFrame);
-type Float32List = JsAny;
-type Int32List = JsAny;
+type Float32List = (Float32Array | GLfloat[]);
+type Int32List = (Int32Array | GLint[]);
 type GLint64 = float64;
 type GLuint64 = float64;
-type Uint32List = JsAny;
+type Uint32List = (Uint32Array | GLuint[]);
 type GPUBufferUsageFlags = int32;
 type GPUMapModeFlags = int32;
 type GPUTextureUsageFlags = int32;
@@ -652,7 +654,7 @@ type LockGrantedCallback = (p0: Lock?) => Promise<JsAny>;
 type DecodeErrorCallback = (p0: DOMException) => void;
 type DecodeSuccessCallback = (p0: AudioBuffer) => void;
 type AudioWorkletProcessorConstructor = (p0: JsAny) => AudioWorkletProcessor;
-type AudioWorkletProcessCallback = (p0: JsAny[][], p1: JsAny[][], p2: JsAny) => bool;
+type AudioWorkletProcessCallback = (p0: Float32Array[][], p1: Float32Array[][], p2: JsAny) => bool;
 type AudioDataOutputCallback = (p0: AudioData) => void;
 type VideoFrameOutputCallback = (p0: VideoFrame) => void;
 type EncodedAudioChunkOutputCallback = (p0: EncodedAudioChunk, p1?: EncodedAudioChunkMetadata) => void;
@@ -683,7 +685,7 @@ type AttributionAggregationService = { protocol?: string };
 type AttributionImpressionOptions = { histogramIndex?: int32, matchValue?: int32, conversionSites?: string[], conversionCallers?: string[], lifetimeDays?: int32, priority?: int32 };
 type AttributionImpressionResult = JsAny;
 type AttributionConversionOptions = { aggregationService?: string, epsilon?: float64, histogramSize?: int32, lookbackDays?: int32, matchValues?: int32[], impressionSites?: string[], impressionCallers?: string[], credit?: float64[], value?: int32, maxValue?: int32 };
-type AttributionConversionResult = { report?: JsAny };
+type AttributionConversionResult = { report?: Uint8Array };
 type AudioOutputOptions = { deviceId?: string };
 type AutofillEventInit = { autofillValues?: AutofillValueEntry[], allowRefill?: bool, bubbles?: bool, cancelable?: bool, composed?: bool };
 type BackgroundFetchUIOptions = { icons?: ImageResource[], title?: string };
@@ -781,8 +783,8 @@ type TextEncoderEncodeIntoResult = { read?: float64, written?: float64 };
 type MediaKeySystemConfiguration = { label?: string, initDataTypes?: string[], audioCapabilities?: MediaKeySystemMediaCapability[], videoCapabilities?: MediaKeySystemMediaCapability[], distinctiveIdentifier?: string, persistentState?: string, sessionTypes?: string[] };
 type MediaKeySystemMediaCapability = { contentType?: string, encryptionScheme?: string, robustness?: string };
 type MediaKeysPolicy = { minHdcpVersion?: string };
-type MediaKeyMessageEventInit = { messageType?: string, message?: JsAny, bubbles?: bool, cancelable?: bool, composed?: bool };
-type MediaEncryptedEventInit = { initDataType?: string, initData?: JsAny, bubbles?: bool, cancelable?: bool, composed?: bool };
+type MediaKeyMessageEventInit = { messageType?: string, message?: ArrayBuffer, bubbles?: bool, cancelable?: bool, composed?: bool };
+type MediaEncryptedEventInit = { initDataType?: string, initData?: ArrayBuffer, bubbles?: bool, cancelable?: bool, composed?: bool };
 type FileSystemFlags = { create?: bool, exclusive?: bool };
 type PerformanceObserverInit = { durationThreshold?: DOMHighResTimeStamp, entryTypes?: string[], type?: string, buffered?: bool };
 type ColorSelectionResult = { sRGBHex?: string };
@@ -807,10 +809,10 @@ type FenceEvent = { eventType?: string, eventData?: string, destination?: string
 type RequestInit = { method?: string, headers?: HeadersInit, body?: BodyInit, referrer?: string, referrerPolicy?: string, mode?: string, credentials?: string, cache?: string, redirect?: string, integrity?: string, keepalive?: bool, signal?: AbortSignal, duplex?: string, priority?: string, window?: JsAny, targetAddressSpace?: string, privateToken?: PrivateToken };
 type ResponseInit = { status?: int32, statusText?: string, headers?: HeadersInit };
 type DeferredRequestInit = { activateAfter?: DOMHighResTimeStamp, method?: string, headers?: HeadersInit, body?: BodyInit, referrer?: string, referrerPolicy?: string, mode?: string, credentials?: string, cache?: string, redirect?: string, integrity?: string, keepalive?: bool, signal?: AbortSignal, duplex?: string, priority?: string, window?: JsAny, targetAddressSpace?: string, privateToken?: PrivateToken };
-type AuthenticationExtensionsClientInputs = { credentialProtectionPolicy?: string, enforceCredentialProtectionPolicy?: bool, credBlob?: JsAny, getCredBlob?: bool, minPinLength?: bool, pinComplexityPolicy?: bool, hmacCreateSecret?: bool, hmacGetSecret?: HMACGetSecretInput, payment?: AuthenticationExtensionsPaymentInputs, appid?: string, appidExclude?: string, credProps?: bool, prf?: AuthenticationExtensionsPRFInputs, largeBlob?: AuthenticationExtensionsLargeBlobInputs, remoteClientDataJSON?: string };
-type AuthenticationExtensionsClientOutputs = { credBlob?: bool, getCredBlob?: JsAny, hmacCreateSecret?: bool, hmacGetSecret?: HMACGetSecretOutput, payment?: AuthenticationExtensionsPaymentOutputs, appid?: bool, appidExclude?: bool, credProps?: CredentialPropertiesOutput, prf?: AuthenticationExtensionsPRFOutputs, largeBlob?: AuthenticationExtensionsLargeBlobOutputs, remoteClientDataJSON?: bool };
-type HMACGetSecretInput = { salt1?: JsAny, salt2?: JsAny };
-type HMACGetSecretOutput = { output1?: JsAny, output2?: JsAny };
+type AuthenticationExtensionsClientInputs = { credentialProtectionPolicy?: string, enforceCredentialProtectionPolicy?: bool, credBlob?: ArrayBuffer, getCredBlob?: bool, minPinLength?: bool, pinComplexityPolicy?: bool, hmacCreateSecret?: bool, hmacGetSecret?: HMACGetSecretInput, payment?: AuthenticationExtensionsPaymentInputs, appid?: string, appidExclude?: string, credProps?: bool, prf?: AuthenticationExtensionsPRFInputs, largeBlob?: AuthenticationExtensionsLargeBlobInputs, remoteClientDataJSON?: string };
+type AuthenticationExtensionsClientOutputs = { credBlob?: bool, getCredBlob?: ArrayBuffer, hmacCreateSecret?: bool, hmacGetSecret?: HMACGetSecretOutput, payment?: AuthenticationExtensionsPaymentOutputs, appid?: bool, appidExclude?: bool, credProps?: CredentialPropertiesOutput, prf?: AuthenticationExtensionsPRFOutputs, largeBlob?: AuthenticationExtensionsLargeBlobOutputs, remoteClientDataJSON?: bool };
+type HMACGetSecretInput = { salt1?: ArrayBuffer, salt2?: ArrayBuffer };
+type HMACGetSecretOutput = { output1?: ArrayBuffer, output2?: ArrayBuffer };
 type FileSystemPermissionDescriptor = { handle?: FileSystemHandle, mode?: string, name?: string };
 type FileSystemHandlePermissionDescriptor = { mode?: string };
 type FilePickerAcceptType = { description?: string, accept?: JsAny };
@@ -1040,7 +1042,7 @@ type ViewTimelineOptions = { subject?: Element, axis?: string, inset?: (string |
 type SecurePaymentConfirmationRequest = { challenge?: BufferSource, rpId?: string, credentialIds?: BufferSource[], instrument?: PaymentCredentialInstrument, timeout?: int32, payeeName?: string, payeeOrigin?: string, paymentEntitiesLogos?: PaymentEntityLogo[], extensions?: AuthenticationExtensionsClientInputs, browserBoundPubKeyCredParams?: PublicKeyCredentialParameters[], locale?: string[], showOptOut?: bool };
 type AuthenticationExtensionsPaymentInputs = { isPayment?: bool, browserBoundPubKeyCredParams?: PublicKeyCredentialParameters[], rpId?: string, topOrigin?: string, payeeName?: string, payeeOrigin?: string, paymentEntitiesLogos?: PaymentEntityLogo[], total?: PaymentCurrencyAmount, instrument?: PaymentCredentialInstrument };
 type AuthenticationExtensionsPaymentOutputs = { browserBoundSignature?: BrowserBoundSignature };
-type BrowserBoundSignature = { signature?: JsAny };
+type BrowserBoundSignature = { signature?: ArrayBuffer };
 type CollectedClientPaymentData = { payment?: (CollectedClientAdditionalPaymentData | CollectedClientAdditionalPaymentRegistrationData), type?: string, challenge?: string, origin?: string, crossOrigin?: bool, topOrigin?: string };
 type CollectedClientAdditionalPaymentData = { rpId?: string, topOrigin?: string, payeeName?: string, payeeOrigin?: string, paymentEntitiesLogos?: PaymentEntityLogo[], total?: PaymentCurrencyAmount, instrument?: PaymentCredentialInstrument, browserBoundPublicKey?: string };
 type CollectedClientAdditionalPaymentRegistrationData = { browserBoundPublicKey?: string };
@@ -1230,7 +1232,7 @@ type AuthenticationExtensionsPRFOutputs = { enabled?: bool, results?: Authentica
 type AuthenticationExtensionsPRFOutputsJSON = { enabled?: bool, results?: AuthenticationExtensionsPRFValuesJSON };
 type AuthenticationExtensionsLargeBlobInputs = { support?: string, read?: bool, write?: BufferSource };
 type AuthenticationExtensionsLargeBlobInputsJSON = { support?: string, read?: bool, write?: Base64URLString };
-type AuthenticationExtensionsLargeBlobOutputs = { supported?: bool, blob?: JsAny, written?: bool };
+type AuthenticationExtensionsLargeBlobOutputs = { supported?: bool, blob?: ArrayBuffer, written?: bool };
 type AuthenticationExtensionsLargeBlobOutputsJSON = { supported?: bool, blob?: Base64URLString, written?: bool };
 type AudioEncoderConfig = { aac?: AacEncoderConfig, flac?: FlacEncoderConfig, opus?: OpusEncoderConfig, codec?: string, sampleRate?: int32, numberOfChannels?: int32, bitrate?: float64, bitrateMode?: string };
 type AacEncoderConfig = { format?: string };
@@ -1257,21 +1259,21 @@ type AudioEncoderSupport = { supported?: bool, config?: AudioEncoderConfig };
 type VideoEncoderSupport = { supported?: bool, config?: VideoEncoderConfig };
 type AudioDecoderConfig = { codec?: string, sampleRate?: int32, numberOfChannels?: int32, description?: AllowSharedBufferSource };
 type VideoDecoderConfig = { codec?: string, description?: AllowSharedBufferSource, codedWidth?: int32, codedHeight?: int32, displayAspectWidth?: int32, displayAspectHeight?: int32, colorSpace?: VideoColorSpaceInit, hardwareAcceleration?: string, optimizeForLatency?: bool, rotation?: float64, flip?: bool };
-type EncodedAudioChunkInit = { type?: string, timestamp?: float64, duration?: float64, data?: AllowSharedBufferSource, transfer?: JsAny[] };
-type EncodedVideoChunkInit = { type?: string, timestamp?: float64, duration?: float64, data?: AllowSharedBufferSource, transfer?: JsAny[] };
-type AudioDataInit = { format?: string, sampleRate?: float64, numberOfFrames?: int32, numberOfChannels?: int32, timestamp?: float64, data?: BufferSource, transfer?: JsAny[] };
+type EncodedAudioChunkInit = { type?: string, timestamp?: float64, duration?: float64, data?: AllowSharedBufferSource, transfer?: ArrayBuffer[] };
+type EncodedVideoChunkInit = { type?: string, timestamp?: float64, duration?: float64, data?: AllowSharedBufferSource, transfer?: ArrayBuffer[] };
+type AudioDataInit = { format?: string, sampleRate?: float64, numberOfFrames?: int32, numberOfChannels?: int32, timestamp?: float64, data?: BufferSource, transfer?: ArrayBuffer[] };
 type AudioDataCopyToOptions = { planeIndex?: int32, frameOffset?: int32, frameCount?: int32, format?: string };
 type VideoFrameInit = { duration?: float64, timestamp?: float64, alpha?: string, visibleRect?: DOMRectInit, rotation?: float64, flip?: bool, displayWidth?: int32, displayHeight?: int32, metadata?: VideoFrameMetadata };
-type VideoFrameBufferInit = { format?: string, codedWidth?: int32, codedHeight?: int32, timestamp?: float64, duration?: float64, layout?: PlaneLayout[], visibleRect?: DOMRectInit, rotation?: float64, flip?: bool, displayWidth?: int32, displayHeight?: int32, colorSpace?: VideoColorSpaceInit, transfer?: JsAny[], metadata?: VideoFrameMetadata };
+type VideoFrameBufferInit = { format?: string, codedWidth?: int32, codedHeight?: int32, timestamp?: float64, duration?: float64, layout?: PlaneLayout[], visibleRect?: DOMRectInit, rotation?: float64, flip?: bool, displayWidth?: int32, displayHeight?: int32, colorSpace?: VideoColorSpaceInit, transfer?: ArrayBuffer[], metadata?: VideoFrameMetadata };
 type VideoFrameMetadata = JsAny;
 type VideoFrameCopyToOptions = { rect?: DOMRectInit, layout?: PlaneLayout[], format?: string, colorSpace?: string };
 type PlaneLayout = { offset?: int32, stride?: int32 };
 type VideoColorSpaceInit = { primaries?: string, transfer?: string, matrix?: string, fullRange?: bool };
-type ImageDecoderInit = { type?: string, data?: ImageBufferSource, colorSpaceConversion?: string, desiredWidth?: int32, desiredHeight?: int32, preferAnimation?: bool, transfer?: JsAny[] };
+type ImageDecoderInit = { type?: string, data?: ImageBufferSource, colorSpaceConversion?: string, desiredWidth?: int32, desiredHeight?: int32, preferAnimation?: bool, transfer?: ArrayBuffer[] };
 type ImageDecodeOptions = { frameIndex?: int32, completeFramesOnly?: bool };
 type ImageDecodeResult = { image?: VideoFrame, complete?: bool };
-type EncapsulatedKey = { sharedKey?: CryptoKey, ciphertext?: JsAny };
-type EncapsulatedBits = { sharedKey?: JsAny, ciphertext?: JsAny };
+type EncapsulatedKey = { sharedKey?: CryptoKey, ciphertext?: ArrayBuffer };
+type EncapsulatedBits = { sharedKey?: ArrayBuffer, ciphertext?: ArrayBuffer };
 type JsonWebKey = { pub?: string, priv?: string, kty?: string, use?: string, key_ops?: string[], alg?: string, ext?: bool, crv?: string, x?: string, y?: string, d?: string, n?: string, e?: string, p?: string, q?: string, dp?: string, dq?: string, qi?: string, oth?: RsaOtherPrimesInfo[], k?: string };
 type ContextParams = { context?: BufferSource, name?: string };
 type AeadParams = { iv?: BufferSource, additionalData?: BufferSource, tagLength?: int32, name?: string };
@@ -1378,7 +1380,7 @@ type GPUExtent3DDict = { width?: GPUIntegerCoordinate, height?: GPUIntegerCoordi
 type HIDDeviceRequestOptions = { filters?: HIDDeviceFilter[], exclusionFilters?: HIDDeviceFilter[] };
 type HIDDeviceFilter = { vendorId?: int32, productId?: int32, usagePage?: int32, usage?: int32 };
 type HIDConnectionEventInit = { device?: HIDDevice, bubbles?: bool, cancelable?: bool, composed?: bool };
-type HIDInputReportEventInit = { device?: HIDDevice, reportId?: int32, data?: JsAny, bubbles?: bool, cancelable?: bool, composed?: bool };
+type HIDInputReportEventInit = { device?: HIDDevice, reportId?: int32, data?: DataView, bubbles?: bool, cancelable?: bool, composed?: bool };
 type HIDCollectionInfo = { usagePage?: int32, usage?: int32, type?: int32, children?: HIDCollectionInfo[], inputReports?: HIDReportInfo[], outputReports?: HIDReportInfo[], featureReports?: HIDReportInfo[] };
 type HIDReportInfo = { reportId?: int32, items?: HIDReportItem[] };
 type HIDReportItem = { isAbsolute?: bool, isArray?: bool, isBufferedBytes?: bool, isConstant?: bool, isLinear?: bool, isRange?: bool, isVolatile?: bool, hasNull?: bool, hasPreferredState?: bool, wrap?: bool, usages?: int32[], usageMinimum?: int32, usageMaximum?: int32, reportSize?: int32, reportCount?: int32, unitExponent?: int32, unitSystem?: string, unitFactorLengthExponent?: int32, unitFactorMassExponent?: int32, unitFactorTimeExponent?: int32, unitFactorTemperatureExponent?: int32, unitFactorCurrentExponent?: int32, unitFactorLuminousIntensityExponent?: int32, logicalMinimum?: int32, logicalMaximum?: int32, physicalMinimum?: int32, physicalMaximum?: int32, strings?: string[] };
@@ -1388,7 +1390,7 @@ type ToolAnnotations = { readOnlyHint?: bool, untrustedContentHint?: bool };
 type ModelContextRegisterToolOptions = { signal?: AbortSignal, exposedTo?: string[] };
 type MidiPermissionDescriptor = { sysex?: bool, name?: string };
 type MIDIOptions = { sysex?: bool, software?: bool };
-type MIDIMessageEventInit = { data?: JsAny, bubbles?: bool, cancelable?: bool, composed?: bool };
+type MIDIMessageEventInit = { data?: Uint8Array, bubbles?: bool, cancelable?: bool, composed?: bool };
 type MIDIConnectionEventInit = { port?: MIDIPort, bubbles?: bool, cancelable?: bool, composed?: bool };
 type MLContextOptions = { powerPreference?: string, accelerated?: bool };
 type MLContextLostInfo = { message?: string };
@@ -1545,7 +1547,7 @@ type XRSessionEventInit = { session?: XRSession, bubbles?: bool, cancelable?: bo
 type XRInputSourceEventInit = { frame?: XRFrame, inputSource?: XRInputSource, bubbles?: bool, cancelable?: bool, composed?: bool };
 type XRInputSourcesChangeEventInit = { session?: XRSession, added?: XRInputSource[], removed?: XRInputSource[], bubbles?: bool, cancelable?: bool, composed?: bool };
 type XRReferenceSpaceEventInit = { referenceSpace?: XRReferenceSpace, transform?: XRRigidTransform, bubbles?: bool, cancelable?: bool, composed?: bool };
-type XRVisibilityMaskChangeEventInit = { session?: XRSession, eye?: string, index?: int32, vertices?: JsAny, indices?: JsAny, bubbles?: bool, cancelable?: bool, composed?: bool };
+type XRVisibilityMaskChangeEventInit = { session?: XRSession, eye?: string, index?: int32, vertices?: Float32Array, indices?: Uint32Array, bubbles?: bool, cancelable?: bool, composed?: bool };
 type XRSessionSupportedPermissionDescriptor = { mode?: string, name?: string };
 type XRPermissionDescriptor = { mode?: string, requiredFeatures?: string[], optionalFeatures?: string[], name?: string };
 type XRProjectionLayerInit = { textureType?: string, colorFormat?: GLenum, depthFormat?: GLenum, scaleFactor?: float64, clearOnAccess?: bool };
@@ -1722,9 +1724,9 @@ interface Blob {
     slice(p0?: float64, p1?: float64, p2?: string): Blob;
     stream(): ReadableStream;
     text(): Promise<string>;
-    arrayBuffer(): Promise<JsAny>;
+    arrayBuffer(): Promise<ArrayBuffer>;
     textStream(): ReadableStream;
-    bytes(): Promise<JsAny>;
+    bytes(): Promise<Uint8Array>;
 }
 interface __static_Blob {
 
@@ -1751,7 +1753,7 @@ interface FileReader extends EventTarget {
     readAsDataURL(p0: Blob): void;
     abort(): void;
     readonly readyState: int32;
-    readonly result: JsAny;
+    readonly result: (string | ArrayBuffer)?;
     readonly error: DOMException?;
     onloadstart: EventHandler;
     onprogress: EventHandler;
@@ -1766,7 +1768,7 @@ interface __static_FileReader {
     readonly DONE: int32;
 }
 interface FileReaderSync {
-    readAsArrayBuffer(p0: Blob): JsAny;
+    readAsArrayBuffer(p0: Blob): ArrayBuffer;
     readAsBinaryString(p0: Blob): string;
     readAsText(p0: Blob, p1?: string): string;
     readAsDataURL(p0: Blob): string;
@@ -3240,17 +3242,17 @@ interface __static_WEBGL_lose_context {
 
 }
 interface WEBGL_multi_draw {
-    multiDrawArraysWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: JsAny, p4: float64, p5: GLsizei): void;
-    multiDrawElementsWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: GLenum, p4: JsAny, p5: float64, p6: GLsizei): void;
-    multiDrawArraysInstancedWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: JsAny, p4: float64, p5: JsAny, p6: float64, p7: GLsizei): void;
-    multiDrawElementsInstancedWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: GLenum, p4: JsAny, p5: float64, p6: JsAny, p7: float64, p8: GLsizei): void;
+    multiDrawArraysWEBGL(p0: GLenum, p1: (Int32Array | GLint[]), p2: float64, p3: (Int32Array | GLsizei[]), p4: float64, p5: GLsizei): void;
+    multiDrawElementsWEBGL(p0: GLenum, p1: (Int32Array | GLsizei[]), p2: float64, p3: GLenum, p4: (Int32Array | GLsizei[]), p5: float64, p6: GLsizei): void;
+    multiDrawArraysInstancedWEBGL(p0: GLenum, p1: (Int32Array | GLint[]), p2: float64, p3: (Int32Array | GLsizei[]), p4: float64, p5: (Int32Array | GLsizei[]), p6: float64, p7: GLsizei): void;
+    multiDrawElementsInstancedWEBGL(p0: GLenum, p1: (Int32Array | GLsizei[]), p2: float64, p3: GLenum, p4: (Int32Array | GLsizei[]), p5: float64, p6: (Int32Array | GLsizei[]), p7: float64, p8: GLsizei): void;
 }
 interface __static_WEBGL_multi_draw {
 
 }
 interface WEBGL_multi_draw_instanced_base_vertex_base_instance {
-    multiDrawArraysInstancedBaseInstanceWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: JsAny, p4: float64, p5: JsAny, p6: float64, p7: JsAny, p8: float64, p9: GLsizei): void;
-    multiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(p0: GLenum, p1: JsAny, p2: float64, p3: GLenum, p4: JsAny, p5: float64, p6: JsAny, p7: float64, p8: JsAny, p9: float64, p10: JsAny, p11: float64, p12: GLsizei): void;
+    multiDrawArraysInstancedBaseInstanceWEBGL(p0: GLenum, p1: (Int32Array | GLint[]), p2: float64, p3: (Int32Array | GLsizei[]), p4: float64, p5: (Int32Array | GLsizei[]), p6: float64, p7: (Uint32Array | GLuint[]), p8: float64, p9: GLsizei): void;
+    multiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(p0: GLenum, p1: (Int32Array | GLsizei[]), p2: float64, p3: GLenum, p4: (Int32Array | GLsizei[]), p5: float64, p6: (Int32Array | GLsizei[]), p7: float64, p8: (Int32Array | GLint[]), p9: float64, p10: (Uint32Array | GLuint[]), p11: float64, p12: GLsizei): void;
 }
 interface __static_WEBGL_multi_draw_instanced_base_vertex_base_instance {
 
@@ -3304,8 +3306,8 @@ interface XRFrame {
     readonly detectedMeshes: XRMeshSet;
     getDepthInformation(p0: XRView): XRCPUDepthInformation?;
     getJointPose(p0: XRJointSpace, p1: XRSpace): XRJointPose?;
-    fillJointRadii(p0: XRJointSpace[], p1: JsAny): bool;
-    fillPoses(p0: XRSpace[], p1: XRSpace, p2: JsAny): bool;
+    fillJointRadii(p0: XRJointSpace[], p1: Float32Array): bool;
+    fillPoses(p0: XRSpace[], p1: XRSpace, p2: Float32Array): bool;
     getHitTestResults(p0: XRHitTestSource): XRHitTestResult[];
     getHitTestResultsForTransientInput(p0: XRTransientInputHitTestSource): XRTransientInputHitTestResult[];
     getLightEstimate(p0: XRLightProbe): XRLightEstimate?;
@@ -3338,7 +3340,7 @@ interface XRSession extends EventTarget {
     initiateRoomCapture(): Promise<JsAny>;
     readonly visibilityState: string;
     readonly frameRate: float64?;
-    readonly supportedFrameRates: JsAny;
+    readonly supportedFrameRates: Float32Array?;
     readonly renderState: XRRenderState;
     readonly inputSources: XRInputSourceArray;
     readonly trackedSources: XRInputSourceArray;
@@ -7185,8 +7187,8 @@ interface __static_TextDecoder {
 
 }
 interface TextEncoder {
-    encode(p0?: string): JsAny;
-    encodeInto(p0: string, p1: JsAny): TextEncoderEncodeIntoResult;
+    encode(p0?: string): Uint8Array;
+    encodeInto(p0: string, p1: Uint8Array): TextEncoderEncodeIntoResult;
     readonly encoding: string;
 }
 interface __static_TextEncoder {
@@ -7252,14 +7254,14 @@ interface __static_MediaKeyStatusMap {
 }
 interface MediaKeyMessageEvent extends Event {
     readonly messageType: string;
-    readonly message: JsAny;
+    readonly message: ArrayBuffer;
 }
 interface __static_MediaKeyMessageEvent {
 
 }
 interface MediaEncryptedEvent extends Event {
     readonly initDataType: string;
-    readonly initData: JsAny;
+    readonly initData: ArrayBuffer?;
 }
 interface __static_MediaEncryptedEvent {
 
@@ -7508,9 +7510,9 @@ interface Request {
     readonly targetAddressSpace: string;
     readonly body: ReadableStream?;
     readonly bodyUsed: bool;
-    arrayBuffer(): Promise<JsAny>;
+    arrayBuffer(): Promise<ArrayBuffer>;
     blob(): Promise<Blob>;
-    bytes(): Promise<JsAny>;
+    bytes(): Promise<Uint8Array>;
     formData(): Promise<FormData>;
     json(): Promise<JsAny>;
     text(): Promise<string>;
@@ -7530,9 +7532,9 @@ interface Response {
     clone(): Response;
     readonly body: ReadableStream?;
     readonly bodyUsed: bool;
-    arrayBuffer(): Promise<JsAny>;
+    arrayBuffer(): Promise<ArrayBuffer>;
     blob(): Promise<Blob>;
-    bytes(): Promise<JsAny>;
+    bytes(): Promise<Uint8Array>;
     formData(): Promise<FormData>;
     json(): Promise<JsAny>;
     text(): Promise<string>;
@@ -8010,12 +8012,12 @@ interface __static_StorageManager {
 interface GamepadPose {
     readonly hasOrientation: bool;
     readonly hasPosition: bool;
-    readonly position: JsAny;
-    readonly linearVelocity: JsAny;
-    readonly linearAcceleration: JsAny;
-    readonly orientation: JsAny;
-    readonly angularVelocity: JsAny;
-    readonly angularAcceleration: JsAny;
+    readonly position: Float32Array?;
+    readonly linearVelocity: Float32Array?;
+    readonly linearAcceleration: Float32Array?;
+    readonly orientation: Float32Array?;
+    readonly angularVelocity: Float32Array?;
+    readonly angularAcceleration: Float32Array?;
 }
 interface __static_GamepadPose {
 
@@ -8235,14 +8237,14 @@ interface DOMMatrixReadOnly {
     flipY(): DOMMatrix;
     inverse(): DOMMatrix;
     transformPoint(p0?: DOMPointInit): DOMPoint;
-    toFloat32Array(): JsAny;
-    toFloat64Array(): JsAny;
+    toFloat32Array(): Float32Array;
+    toFloat64Array(): Float64Array;
     toJSON(): JsAny;
 }
 interface __static_DOMMatrixReadOnly {
     fromMatrix(p0?: DOMMatrixInit): DOMMatrixReadOnly;
-    fromFloat32Array(p0: JsAny): DOMMatrixReadOnly;
-    fromFloat64Array(p0: JsAny): DOMMatrixReadOnly;
+    fromFloat32Array(p0: Float32Array): DOMMatrixReadOnly;
+    fromFloat64Array(p0: Float64Array): DOMMatrixReadOnly;
 }
 interface DOMMatrix extends DOMMatrixReadOnly {
     a: float64;
@@ -8282,8 +8284,8 @@ interface DOMMatrix extends DOMMatrixReadOnly {
 }
 interface __static_DOMMatrix {
     fromMatrix(p0?: DOMMatrixInit): DOMMatrix;
-    fromFloat32Array(p0: JsAny): DOMMatrix;
-    fromFloat64Array(p0: JsAny): DOMMatrix;
+    fromFloat32Array(p0: Float32Array): DOMMatrix;
+    fromFloat64Array(p0: Float64Array): DOMMatrix;
 }
 interface Gyroscope extends Sensor {
     readonly x: float64?;
@@ -11365,7 +11367,7 @@ interface PresentationConnection extends EventTarget {
     onmessage: EventHandler;
     send(p0: string): void;
     send$1(p0: Blob): void;
-    send$2(p0: JsAny): void;
+    send$2(p0: ArrayBuffer): void;
     send$3(p0: ArrayBufferView): void;
 }
 interface __static_PresentationConnection {
@@ -11441,7 +11443,7 @@ interface __static_PushManager {
 }
 interface PushSubscriptionOptions {
     readonly userVisibleOnly: bool;
-    readonly applicationServerKey: JsAny;
+    readonly applicationServerKey: ArrayBuffer?;
 }
 interface __static_PushSubscriptionOptions {
 
@@ -11450,7 +11452,7 @@ interface PushSubscription {
     readonly endpoint: string;
     readonly expirationTime: EpochTimeStamp?;
     readonly options: PushSubscriptionOptions;
-    getKey(p0: string): JsAny;
+    getKey(p0: string): ArrayBuffer?;
     unsubscribe(): Promise<bool>;
     toJSON(): PushSubscriptionJSON;
 }
@@ -11458,9 +11460,9 @@ interface __static_PushSubscription {
 
 }
 interface PushMessageData {
-    arrayBuffer(): JsAny;
+    arrayBuffer(): ArrayBuffer;
     blob(): Blob;
-    bytes(): JsAny;
+    bytes(): Uint8Array;
     json(): JsAny;
     text(): string;
 }
@@ -11488,7 +11490,7 @@ interface XRView {
     readonly index: int32;
     readonly recommendedViewportScale: float64?;
     requestViewportScale(p0: float64?): void;
-    readonly projectionMatrix: JsAny;
+    readonly projectionMatrix: Float32Array;
     readonly transform: XRRigidTransform;
 }
 interface __static_XRView {
@@ -11521,8 +11523,8 @@ interface __static_XRWebGLBinding {
 }
 interface XRMesh {
     readonly meshSpace: XRSpace;
-    readonly vertices: JsAny;
-    readonly indices: JsAny;
+    readonly vertices: Float32Array;
+    readonly indices: Uint32Array;
     readonly lastChangedTime: DOMHighResTimeStamp;
     readonly semanticLabel: string?;
 }
@@ -12111,7 +12113,7 @@ interface __static_ReadableByteStreamController {
 
 }
 interface ReadableStreamBYOBRequest {
-    readonly view: JsAny;
+    readonly view: Uint8Array?;
     respond(p0: float64): void;
     respondWithNewView(p0: ArrayBufferView): void;
 }
@@ -12500,7 +12502,7 @@ interface Module {
 interface __static_Module {
     exports(p0: Module): ModuleExportDescriptor[];
     imports(p0: Module): ModuleImportDescriptor[];
-    customSections(p0: Module, p1: string): JsAny[];
+    customSections(p0: Module, p1: string): ArrayBuffer[];
 }
 interface Instance {
     readonly exports: JsAny;
@@ -12510,9 +12512,9 @@ interface __static_Instance {
 }
 interface Memory {
     grow(p0: AddressValue): AddressValue;
-    toFixedLengthBuffer(): JsAny;
-    toResizableBuffer(): JsAny;
-    readonly buffer: JsAny;
+    toFixedLengthBuffer(): ArrayBuffer;
+    toResizableBuffer(): ArrayBuffer;
+    readonly buffer: ArrayBuffer;
 }
 interface __static_Memory {
 
@@ -12720,8 +12722,8 @@ interface __static_Bluetooth {
 
 }
 interface BluetoothDataFilter {
-    readonly dataPrefix: JsAny;
-    readonly mask: JsAny;
+    readonly dataPrefix: ArrayBuffer;
+    readonly mask: ArrayBuffer;
 }
 interface __static_BluetoothDataFilter {
 
@@ -12849,10 +12851,10 @@ interface BluetoothRemoteGATTCharacteristic extends EventTarget {
     readonly service: BluetoothRemoteGATTService;
     readonly uuid: UUID;
     readonly properties: BluetoothCharacteristicProperties;
-    readonly value: JsAny;
+    readonly value: DataView?;
     getDescriptor(p0: BluetoothDescriptorUUID): Promise<BluetoothRemoteGATTDescriptor>;
     getDescriptors(p0?: BluetoothDescriptorUUID): Promise<BluetoothRemoteGATTDescriptor[]>;
-    readValue(): Promise<JsAny>;
+    readValue(): Promise<DataView>;
     writeValue(p0: BufferSource): Promise<JsAny>;
     writeValueWithResponse(p0: BufferSource): Promise<JsAny>;
     writeValueWithoutResponse(p0: BufferSource): Promise<JsAny>;
@@ -12880,8 +12882,8 @@ interface __static_BluetoothCharacteristicProperties {
 interface BluetoothRemoteGATTDescriptor {
     readonly characteristic: BluetoothRemoteGATTCharacteristic;
     readonly uuid: UUID;
-    readonly value: JsAny;
-    readValue(): Promise<JsAny>;
+    readonly value: DataView?;
+    readValue(): Promise<DataView>;
     writeValue(p0: BufferSource): Promise<JsAny>;
 }
 interface __static_BluetoothRemoteGATTDescriptor {
@@ -12921,7 +12923,7 @@ interface NDEFRecord {
     readonly recordType: string;
     readonly mediaType: string?;
     readonly id: string?;
-    readonly data: JsAny;
+    readonly data: DataView?;
     readonly encoding: string?;
     readonly lang: string?;
     toRecords(): NDEFRecord[]?;
@@ -12979,7 +12981,7 @@ interface BaseAudioContext extends EventTarget {
     createScriptProcessor(p0?: int32, p1?: int32, p2?: int32): ScriptProcessorNode;
     createStereoPanner(): StereoPannerNode;
     createWaveShaper(): WaveShaperNode;
-    decodeAudioData(p0: JsAny, p1?: DecodeSuccessCallback?, p2?: DecodeErrorCallback?): Promise<AudioBuffer>;
+    decodeAudioData(p0: ArrayBuffer, p1?: DecodeSuccessCallback?, p2?: DecodeErrorCallback?): Promise<AudioBuffer>;
 }
 interface __static_BaseAudioContext {
 
@@ -13031,9 +13033,9 @@ interface AudioBuffer {
     readonly length: int32;
     readonly duration: float64;
     readonly numberOfChannels: int32;
-    getChannelData(p0: int32): JsAny;
-    copyFromChannel(p0: JsAny, p1: int32, p2?: int32): void;
-    copyToChannel(p0: JsAny, p1: int32, p2?: int32): void;
+    getChannelData(p0: int32): Float32Array;
+    copyFromChannel(p0: Float32Array, p1: int32, p2?: int32): void;
+    copyToChannel(p0: Float32Array, p1: int32, p2?: int32): void;
 }
 interface __static_AudioBuffer {
 
@@ -13084,10 +13086,10 @@ interface __static_AudioScheduledSourceNode {
 
 }
 interface AnalyserNode extends AudioNode {
-    getFloatFrequencyData(p0: JsAny): void;
-    getByteFrequencyData(p0: JsAny): void;
-    getFloatTimeDomainData(p0: JsAny): void;
-    getByteTimeDomainData(p0: JsAny): void;
+    getFloatFrequencyData(p0: Float32Array): void;
+    getByteFrequencyData(p0: Uint8Array): void;
+    getFloatTimeDomainData(p0: Float32Array): void;
+    getByteTimeDomainData(p0: Uint8Array): void;
     fftSize: int32;
     readonly frequencyBinCount: int32;
     minDecibels: float64;
@@ -13145,7 +13147,7 @@ interface BiquadFilterNode extends AudioNode {
     readonly detune: AudioParam;
     readonly Q: AudioParam;
     readonly gain: AudioParam;
-    getFrequencyResponse(p0: JsAny, p1: JsAny, p2: JsAny): void;
+    getFrequencyResponse(p0: Float32Array, p1: Float32Array, p2: Float32Array): void;
 }
 interface __static_BiquadFilterNode {
 
@@ -13199,7 +13201,7 @@ interface __static_GainNode {
 
 }
 interface IIRFilterNode extends AudioNode {
-    getFrequencyResponse(p0: JsAny, p1: JsAny, p2: JsAny): void;
+    getFrequencyResponse(p0: Float32Array, p1: Float32Array, p2: Float32Array): void;
 }
 interface __static_IIRFilterNode {
 
@@ -13278,7 +13280,7 @@ interface __static_StereoPannerNode {
 
 }
 interface WaveShaperNode extends AudioNode {
-    curve: JsAny;
+    curve: Float32Array?;
     oversample: string;
 }
 interface __static_WaveShaperNode {
@@ -13335,7 +13337,7 @@ interface __static_AudioPlaybackStats {
 
 }
 interface PublicKeyCredential extends Credential {
-    readonly rawId: JsAny;
+    readonly rawId: ArrayBuffer;
     readonly response: AuthenticatorResponse;
     readonly authenticatorAttachment: string?;
     getClientExtensionResults(): AuthenticationExtensionsClientOutputs;
@@ -13352,25 +13354,25 @@ interface __static_PublicKeyCredential {
     signalCurrentUserDetails(p0: CurrentUserDetailsOptions): Promise<JsAny>;
 }
 interface AuthenticatorResponse {
-    readonly clientDataJSON: JsAny;
+    readonly clientDataJSON: ArrayBuffer;
 }
 interface __static_AuthenticatorResponse {
 
 }
 interface AuthenticatorAttestationResponse extends AuthenticatorResponse {
-    readonly attestationObject: JsAny;
+    readonly attestationObject: ArrayBuffer;
     getTransports(): string[];
-    getAuthenticatorData(): JsAny;
-    getPublicKey(): JsAny;
+    getAuthenticatorData(): ArrayBuffer;
+    getPublicKey(): ArrayBuffer?;
     getPublicKeyAlgorithm(): COSEAlgorithmIdentifier;
 }
 interface __static_AuthenticatorAttestationResponse {
 
 }
 interface AuthenticatorAssertionResponse extends AuthenticatorResponse {
-    readonly authenticatorData: JsAny;
-    readonly signature: JsAny;
-    readonly userHandle: JsAny;
+    readonly authenticatorData: ArrayBuffer;
+    readonly signature: ArrayBuffer;
+    readonly userHandle: ArrayBuffer?;
 }
 interface __static_AuthenticatorAssertionResponse {
 
@@ -13529,19 +13531,19 @@ interface SubtleCrypto {
     encapsulateKey(p0: AlgorithmIdentifier, p1: CryptoKey, p2: AlgorithmIdentifier, p3: bool, p4: string[]): Promise<EncapsulatedKey>;
     encapsulateBits(p0: AlgorithmIdentifier, p1: CryptoKey): Promise<EncapsulatedBits>;
     decapsulateKey(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource, p3: AlgorithmIdentifier, p4: bool, p5: string[]): Promise<CryptoKey>;
-    decapsulateBits(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<JsAny>;
+    decapsulateBits(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<ArrayBuffer>;
     getPublicKey(p0: CryptoKey, p1: string[]): Promise<CryptoKey>;
-    encrypt(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<JsAny>;
-    decrypt(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<JsAny>;
-    sign(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<JsAny>;
+    encrypt(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<ArrayBuffer>;
+    decrypt(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<ArrayBuffer>;
+    sign(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource): Promise<ArrayBuffer>;
     verify(p0: AlgorithmIdentifier, p1: CryptoKey, p2: BufferSource, p3: BufferSource): Promise<bool>;
-    digest(p0: AlgorithmIdentifier, p1: BufferSource): Promise<JsAny>;
+    digest(p0: AlgorithmIdentifier, p1: BufferSource): Promise<ArrayBuffer>;
     generateKey(p0: AlgorithmIdentifier, p1: bool, p2: string[]): Promise<(CryptoKey | CryptoKeyPair)>;
     deriveKey(p0: AlgorithmIdentifier, p1: CryptoKey, p2: AlgorithmIdentifier, p3: bool, p4: string[]): Promise<CryptoKey>;
-    deriveBits(p0: AlgorithmIdentifier, p1: CryptoKey, p2?: int32?): Promise<JsAny>;
+    deriveBits(p0: AlgorithmIdentifier, p1: CryptoKey, p2?: int32?): Promise<ArrayBuffer>;
     importKey(p0: string, p1: (BufferSource | JsonWebKey), p2: AlgorithmIdentifier, p3: bool, p4: string[]): Promise<CryptoKey>;
-    exportKey(p0: string, p1: CryptoKey): Promise<JsAny>;
-    wrapKey(p0: string, p1: CryptoKey, p2: CryptoKey, p3: AlgorithmIdentifier): Promise<JsAny>;
+    exportKey(p0: string, p1: CryptoKey): Promise<(ArrayBuffer | JsonWebKey)>;
+    wrapKey(p0: string, p1: CryptoKey, p2: CryptoKey, p3: AlgorithmIdentifier): Promise<ArrayBuffer>;
     unwrapKey(p0: string, p1: BufferSource, p2: CryptoKey, p3: AlgorithmIdentifier, p4: AlgorithmIdentifier, p5: bool, p6: string[]): Promise<CryptoKey>;
 }
 interface __static_SubtleCrypto {
@@ -15046,7 +15048,7 @@ interface GPUBuffer {
     readonly usage: GPUFlagsConstant;
     readonly mapState: string;
     mapAsync(p0: GPUMapModeFlags, p1?: GPUSize64, p2?: GPUSize64): Promise<JsAny>;
-    getMappedRange(p0?: GPUSize64, p1?: GPUSize64): JsAny;
+    getMappedRange(p0?: GPUSize64, p1?: GPUSize64): ArrayBuffer;
     unmap(): void;
     destroy(): void;
     label: string;
@@ -15186,7 +15188,7 @@ interface GPUComputePassEncoder {
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
     setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
-    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: JsAny, p3: GPUSize64, p4: GPUSize32): void;
+    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: Uint32Array, p3: GPUSize64, p4: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
 }
 interface __static_GPUComputePassEncoder {
@@ -15206,7 +15208,7 @@ interface GPURenderPassEncoder {
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
     setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
-    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: JsAny, p3: GPUSize64, p4: GPUSize32): void;
+    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: Uint32Array, p3: GPUSize64, p4: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
     setPipeline(p0: GPURenderPipeline): void;
     setIndexBuffer(p0: GPUBuffer, p1: string, p2?: GPUSize64, p3?: GPUSize64): void;
@@ -15232,7 +15234,7 @@ interface GPURenderBundleEncoder {
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
     setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
-    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: JsAny, p3: GPUSize64, p4: GPUSize32): void;
+    setBindGroup$1(p0: GPUIndex32, p1: GPUBindGroup?, p2: Uint32Array, p3: GPUSize64, p4: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
     setPipeline(p0: GPURenderPipeline): void;
     setIndexBuffer(p0: GPUBuffer, p1: string, p2?: GPUSize64, p3?: GPUSize64): void;
@@ -15333,7 +15335,7 @@ interface HIDDevice extends EventTarget {
     forget(): Promise<JsAny>;
     sendReport(p0: int32, p1: BufferSource): Promise<JsAny>;
     sendFeatureReport(p0: int32, p1: BufferSource): Promise<JsAny>;
-    receiveFeatureReport(p0: int32): Promise<JsAny>;
+    receiveFeatureReport(p0: int32): Promise<DataView>;
 }
 interface __static_HIDDevice {
 
@@ -15347,7 +15349,7 @@ interface __static_HIDConnectionEvent {
 interface HIDInputReportEvent extends Event {
     readonly device: HIDDevice;
     readonly reportId: int32;
-    readonly data: JsAny;
+    readonly data: DataView;
 }
 interface __static_HIDInputReportEvent {
 
@@ -15448,7 +15450,7 @@ interface __static_MIDIOutput {
 
 }
 interface MIDIMessageEvent extends Event {
-    readonly data: JsAny;
+    readonly data: Uint8Array?;
 }
 interface __static_MIDIMessageEvent {
 
@@ -15470,7 +15472,7 @@ interface MLContext {
     dispatch(p0: MLGraph, p1: MLNamedTensors, p2: MLNamedTensors): void;
     createTensor(p0: MLTensorDescriptor): Promise<MLTensor>;
     createConstantTensor(p0: MLOperandDescriptor, p1: AllowSharedBufferSource): Promise<MLTensor>;
-    readTensor(p0: MLTensor): Promise<JsAny>;
+    readTensor(p0: MLTensor): Promise<ArrayBuffer>;
     readTensor$1(p0: MLTensor, p1: AllowSharedBufferSource): Promise<JsAny>;
     writeTensor(p0: MLTensor, p1: AllowSharedBufferSource): void;
     opSupportLimits(): MLOpSupportLimits;
@@ -15679,14 +15681,14 @@ interface __static_SFrameTransformErrorEvent {
 }
 interface RTCEncodedVideoFrame {
     readonly type: string;
-    data: JsAny;
+    data: ArrayBuffer;
     getMetadata(): RTCEncodedVideoFrameMetadata;
 }
 interface __static_RTCEncodedVideoFrame {
 
 }
 interface RTCEncodedAudioFrame {
-    data: JsAny;
+    data: ArrayBuffer;
     getMetadata(): RTCEncodedAudioFrameMetadata;
 }
 interface __static_RTCEncodedAudioFrame {
@@ -15849,7 +15851,7 @@ interface RTCDataChannel extends EventTarget {
     binaryType: string;
     send(p0: string): void;
     send$1(p0: Blob): void;
-    send$2(p0: JsAny): void;
+    send$2(p0: ArrayBuffer): void;
     send$3(p0: ArrayBufferView): void;
 }
 interface __static_RTCDataChannel {
@@ -15924,7 +15926,7 @@ interface __static_RTCRtpTransceiver {
 interface RTCDtlsTransport extends EventTarget {
     readonly iceTransport: RTCIceTransport;
     readonly state: string;
-    getRemoteCertificates(): JsAny[];
+    getRemoteCertificates(): ArrayBuffer[];
     onstatechange: EventHandler;
     onerror: EventHandler;
 }
@@ -16039,7 +16041,7 @@ interface __static_WebTransportDatagramDuplexStream {
 }
 interface WebTransport {
     getStats(): Promise<WebTransportConnectionStats>;
-    exportKeyingMaterial(p0: BufferSource, p1: BufferSource, p2: int32): Promise<JsAny>;
+    exportKeyingMaterial(p0: BufferSource, p1: BufferSource, p2: int32): Promise<Uint8Array>;
     readonly ready: Promise<JsAny>;
     readonly reliability: string;
     readonly congestionControl: string;
@@ -16118,7 +16120,7 @@ interface __static_USBConnectionEvent {
 
 }
 interface USBInTransferResult {
-    readonly data: JsAny;
+    readonly data: DataView?;
     readonly status: string;
 }
 interface __static_USBInTransferResult {
@@ -16132,14 +16134,14 @@ interface __static_USBOutTransferResult {
 
 }
 interface USBIsochronousInTransferPacket {
-    readonly data: JsAny;
+    readonly data: DataView?;
     readonly status: string;
 }
 interface __static_USBIsochronousInTransferPacket {
 
 }
 interface USBIsochronousInTransferResult {
-    readonly data: JsAny;
+    readonly data: DataView?;
     readonly packets: USBIsochronousInTransferPacket[];
 }
 interface __static_USBIsochronousInTransferResult {
@@ -16272,14 +16274,14 @@ interface XRDepthInformation {
     readonly height: int32;
     readonly normDepthBufferFromNormView: XRRigidTransform;
     readonly rawValueToMeters: float64;
-    readonly projectionMatrix: JsAny;
+    readonly projectionMatrix: Float32Array;
     readonly transform: XRRigidTransform;
 }
 interface __static_XRDepthInformation {
 
 }
 interface XRCPUDepthInformation extends XRDepthInformation {
-    readonly data: JsAny;
+    readonly data: ArrayBuffer;
     getDepthInMeters(p0: float64, p1: float64): float64;
 }
 interface __static_XRCPUDepthInformation {
@@ -16347,7 +16349,7 @@ interface __static_XRTransientInputHitTestResult {
 interface XRRay {
     readonly origin: DOMPointReadOnly;
     readonly direction: DOMPointReadOnly;
-    readonly matrix: JsAny;
+    readonly matrix: Float32Array;
 }
 interface __static_XRRay {
 
@@ -16360,7 +16362,7 @@ interface __static_XRLightProbe {
 
 }
 interface XRLightEstimate {
-    readonly sphericalHarmonicsCoefficients: JsAny;
+    readonly sphericalHarmonicsCoefficients: Float32Array;
     readonly primaryLightDirection: DOMPointReadOnly;
     readonly primaryLightIntensity: DOMPointReadOnly;
 }
@@ -16433,7 +16435,7 @@ interface __static_XRViewport {
 interface XRRigidTransform {
     readonly position: DOMPointReadOnly;
     readonly orientation: DOMPointReadOnly;
-    readonly matrix: JsAny;
+    readonly matrix: Float32Array;
     readonly inverse: XRRigidTransform;
 }
 interface __static_XRRigidTransform {
@@ -16511,8 +16513,8 @@ interface XRVisibilityMaskChangeEvent extends Event {
     readonly session: XRSession;
     readonly eye: string;
     readonly index: int32;
-    readonly vertices: JsAny;
-    readonly indices: JsAny;
+    readonly vertices: Float32Array;
+    readonly indices: Uint32Array;
 }
 interface __static_XRVisibilityMaskChangeEvent {
 
