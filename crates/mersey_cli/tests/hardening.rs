@@ -159,3 +159,33 @@ console.log("collected");
     assert!(ok, "{out}");
     assert!(out.contains("collected"), "{out}");
 }
+
+/// A monotonic clock needs a *fixed* origin. It measured `Instant::now()
+/// .elapsed()` — how long since the instant created on that very line — which is
+/// always about zero, so `time.monotonic()` measured nothing at all, and two
+/// readings could come out in the wrong order.
+#[test]
+fn the_monotonic_clock_actually_advances() {
+    let (ok, out, code) = run(
+        "monotonic",
+        r#"
+import { console } from "std:console";
+import { time } from "std:time";
+
+const a = time.monotonic();
+let x: int32 = 0;
+for (let i = 0; i < 3000000; i++) { x += i; }
+const b = time.monotonic();
+
+// It must move forward, and it must never go backwards.
+console.log(b > a, b - a > 0.0, x != 0);
+"#,
+    );
+    assert_no_abort(code, &out);
+    assert!(ok, "{out}");
+    assert_eq!(
+        out.trim(),
+        "true true true",
+        "the monotonic clock did not advance: {out}"
+    );
+}

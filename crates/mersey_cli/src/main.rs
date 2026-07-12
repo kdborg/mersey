@@ -268,15 +268,20 @@ impl interp::Host for CliHost {
         self.caps.retain(|c| c != cap);
     }
     fn time_ms(&mut self, epoch: bool) -> f64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
         if epoch {
-            SystemTime::now()
+            return SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs_f64() * 1000.0)
-                .unwrap_or(0.0)
-        } else {
-            std::time::Instant::now().elapsed().as_secs_f64() * 1000.0
+                .unwrap_or(0.0);
         }
+        // A monotonic clock needs a *fixed* origin. `Instant::now().elapsed()`
+        // asks how long since the instant created on that very line, which is
+        // always about zero — so `monotonic()` measured nothing at all, and two
+        // readings could even come out in the wrong order.
+        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let origin = ORIGIN.get_or_init(Instant::now);
+        origin.elapsed().as_secs_f64() * 1000.0
     }
 }
 
