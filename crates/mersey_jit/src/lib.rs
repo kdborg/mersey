@@ -47,13 +47,14 @@ use mersey_interp::{JitArg, JitFn, JitResult, Value};
 #[derive(Clone, Copy, PartialEq)]
 pub enum Kind {
     I32,
+    I64,
     F64,
 }
 
 /// The hook registered on the interpreter by native hosts.
 pub fn hook(chunk: &Chunk, params: &[String]) -> Option<JitFn> {
     // Try an int32 kernel, then a float64 one.
-    for kind in [Kind::I32, Kind::F64] {
+    for kind in [Kind::I32, Kind::I64, Kind::F64] {
         if let Some(slots) = plan_slots(chunk, params, kind) {
             let depths = analyze(chunk).ok()?;
             if let Some(f) = compile(chunk, params.len(), &slots, &depths, kind) {
@@ -125,6 +126,10 @@ fn plan_slots(chunk: &Chunk, params: &[String], kind: Kind) -> Option<HashMap<u1
             // Whole-op acceptance check happens here too.
             Op::Const(ci) => match (&chunk.consts[ci as usize], kind) {
                 (Value::I32(_) | Value::Bool(_), Kind::I32) => {}
+                // An int64 kernel's literals are still int32 in the bytecode
+                // (`let i = 0` is an int32 literal that widens), so both are
+                // fine — they are materialised at the kernel's width.
+                (Value::I64(_) | Value::I32(_) | Value::Bool(_), Kind::I64) => {}
                 // A float kernel may use int constants (loop counters are
                 // still int32 in the bytecode) — but only as float literals.
                 (Value::F64(_), Kind::F64) => {}
@@ -151,13 +156,14 @@ fn plan_slots(chunk: &Chunk, params: &[String], kind: Kind) -> Option<HashMap<u1
                     | BinOp::BitXor
                     | BinOp::Div
                     | BinOp::Rem,
-                    Kind::I32,
+                    Kind::I32 | Kind::I64,
                 ) => {}
                 (BinOp::Div, Kind::F64) => {} // IEEE: no trap
                 _ => return None,
             },
-            Op::Un(op) => match op {
-                UnaryOp::Neg | UnaryOp::BitNot | UnaryOp::Not => {}
+            Op::Un(op) => match (op, kind) {
+                (UnaryOp::Neg, _) => {}
+                (UnaryOp::BitNot | UnaryOp::Not, Kind::I32 | Kind::I64) => {}
                 _ => return None,
             },
             Op::Truthy
@@ -177,9 +183,14 @@ fn plan_slots(chunk: &Chunk, params: &[String], kind: Kind) -> Option<HashMap<u1
 }
 
 /// Result tags packed into the i64 return value.
-const TAG_INT: i64 = 0;
+/// A kernel returns only a *tag*; the value itself is written to an out-slot.
+///
+/// It used to pack `(tag << 32) | payload`, which works for an i32 payload and
+/// nothing else: an i64 result fills the word the tag needs, and an f64 result
+/// aliases the tags with its own bit patterns. Separating the two is what lets
+/// int64 kernels exist at all, and it removes the NaN caveat floats had.
+const TAG_VALUE: i64 = 0;
 const TAG_NULL: i64 = 1;
-const TAG_FLOAT: i64 = 2;
 /// The kernel hit a condition the spec says must throw (`x / 0`,
 /// `INT_MIN / -1`): the interpreter re-runs the call and raises it properly.
 const TAG_TRAP: i64 = 3;
@@ -197,14 +208,16 @@ fn compile(
 
     let mut ctx = module.make_context();
     let ptr_ty = module.target_config().pointer_type();
-    // extern "C" fn(args: *const u8, len: usize) -> i64
-    // Return value: (tag << 32) | payload for ints; for floats the payload is
-    // the f64 bit pattern in a second out-slot (see below).
+    // extern "C" fn(args: *const u8, len: usize, out: *mut u8) -> i64
+    // The i64 is a tag (value / null / trap); the value itself is written to
+    // `out`, so its width and type are the kernel's business, not the tag's.
+    ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.returns.push(AbiParam::new(types::I64));
     let val_ty = match kind {
         Kind::I32 => types::I32,
+        Kind::I64 => types::I64,
         Kind::F64 => types::F64,
     };
 
@@ -227,6 +240,7 @@ fn compile(
             b.declare_var(cranelift_frontend::Variable::from_u32(i as u32), val_ty);
         }
         let args_ptr = b.block_params(entry)[0];
+        let out_ptr = b.block_params(entry)[2];
         let width = if kind == Kind::I32 { 4 } else { 8 };
         for i in 0..n_params {
             let v = b
@@ -237,6 +251,7 @@ fn compile(
         for i in n_params..n_slots {
             let zero = match kind {
                 Kind::I32 => b.ins().iconst(types::I32, 0),
+                Kind::I64 => b.ins().iconst(types::I64, 0),
                 Kind::F64 => b.ins().f64const(0.0),
             };
             b.def_var(cranelift_frontend::Variable::from_u32(i as u32), zero);
@@ -286,6 +301,9 @@ fn compile(
                     let c = match (&chunk.consts[ci as usize], kind) {
                         (Value::I32(n), Kind::I32) => b.ins().iconst(types::I32, *n as i64),
                         (Value::Bool(t), Kind::I32) => b.ins().iconst(types::I32, *t as i64),
+                        (Value::I64(n), Kind::I64) => b.ins().iconst(types::I64, *n),
+                        (Value::I32(n), Kind::I64) => b.ins().iconst(types::I64, *n as i64),
+                        (Value::Bool(t), Kind::I64) => b.ins().iconst(types::I64, *t as i64),
                         (Value::F64(f), Kind::F64) => b.ins().f64const(*f),
                         _ => unreachable!("plan_slots"),
                     };
@@ -313,17 +331,24 @@ fn compile(
                     // Integer division can fault (spec §3.6): check the
                     // divisor and bail to the interpreter, which raises the
                     // RangeError with a proper stack trace.
-                    if kind == Kind::I32 && matches!(binop, BinOp::Div | BinOp::Rem) {
+                    if matches!(kind, Kind::I32 | Kind::I64)
+                        && matches!(binop, BinOp::Div | BinOp::Rem)
+                    {
                         let safe = b.create_block();
                         let trap = b.create_block();
                         // divisor == 0  ||  (l == INT_MIN && r == -1)
                         let zero =
                             b.ins()
                                 .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, r, 0);
+                        let int_min = if kind == Kind::I32 {
+                            i32::MIN as i64
+                        } else {
+                            i64::MIN
+                        };
                         let min = b.ins().icmp_imm(
                             cranelift_codegen::ir::condcodes::IntCC::Equal,
                             l,
-                            i32::MIN as i64,
+                            int_min,
                         );
                         let neg1 =
                             b.ins()
@@ -333,7 +358,7 @@ fn compile(
                         b.ins().brif(faulting, trap, &[], safe, &[]);
 
                         b.switch_to_block(trap);
-                        let tag = b.ins().iconst(types::I64, TAG_TRAP << 32);
+                        let tag = b.ins().iconst(types::I64, TAG_TRAP);
                         b.ins().return_(&[tag]);
 
                         b.switch_to_block(safe);
@@ -350,17 +375,22 @@ fn compile(
                 }
                 Op::Un(u) => {
                     let v = stack.pop()?;
+                    let int_ty = if kind == Kind::I64 {
+                        types::I64
+                    } else {
+                        types::I32
+                    };
                     let out = match (u, kind) {
-                        (UnaryOp::Neg, Kind::I32) => b.ins().ineg(v),
+                        (UnaryOp::Neg, Kind::I32 | Kind::I64) => b.ins().ineg(v),
                         (UnaryOp::Neg, Kind::F64) => b.ins().fneg(v),
-                        (UnaryOp::BitNot, Kind::I32) => b.ins().bnot(v),
-                        (UnaryOp::Not, Kind::I32) => {
+                        (UnaryOp::BitNot, Kind::I32 | Kind::I64) => b.ins().bnot(v),
+                        (UnaryOp::Not, Kind::I32 | Kind::I64) => {
                             let c = b.ins().icmp_imm(
                                 cranelift_codegen::ir::condcodes::IntCC::Equal,
                                 v,
                                 0,
                             );
-                            b.ins().uextend(types::I32, c)
+                            b.ins().uextend(int_ty, c)
                         }
                         _ => unreachable!("plan_slots"),
                     };
@@ -369,13 +399,18 @@ fn compile(
                 Op::Truthy => {
                     let v = stack.pop()?;
                     let out = match kind {
-                        Kind::I32 => {
+                        Kind::I32 | Kind::I64 => {
+                            let int_ty = if kind == Kind::I64 {
+                                types::I64
+                            } else {
+                                types::I32
+                            };
                             let c = b.ins().icmp_imm(
                                 cranelift_codegen::ir::condcodes::IntCC::NotEqual,
                                 v,
                                 0,
                             );
-                            b.ins().uextend(types::I32, c)
+                            b.ins().uextend(int_ty, c)
                         }
                         Kind::F64 => {
                             let z = b.ins().f64const(0.0);
@@ -398,7 +433,7 @@ fn compile(
                 Op::JumpIfFalse(t) | Op::JumpIfTrue(t) => {
                     let v = stack.pop()?;
                     let cond = match kind {
-                        Kind::I32 => v,
+                        Kind::I32 | Kind::I64 => v,
                         Kind::F64 => {
                             let z = b.ins().f64const(0.0);
                             let c = b.ins().fcmp(
@@ -421,23 +456,13 @@ fn compile(
                 }
                 Op::Return => {
                     let v = stack.pop()?;
-                    let packed = match kind {
-                        Kind::I32 => {
-                            let wide = b.ins().uextend(types::I64, v);
-                            // tag 0 in the high bits, value in the low 32
-                            b.ins().band_imm(wide, 0xFFFF_FFFF)
-                        }
-                        Kind::F64 => {
-                            // The payload is the f64 bit pattern; the tag
-                            // travels in a side channel (see the wrapper).
-                            b.ins().bitcast(types::I64, MemFlags::new(), v)
-                        }
-                    };
-                    b.ins().return_(&[packed]);
+                    b.ins().store(MemFlags::trusted(), v, out_ptr, 0);
+                    let tag = b.ins().iconst(types::I64, TAG_VALUE);
+                    b.ins().return_(&[tag]);
                     reachable = false;
                 }
                 Op::ReturnNull => {
-                    let null = b.ins().iconst(types::I64, TAG_NULL << 32);
+                    let null = b.ins().iconst(types::I64, TAG_NULL);
                     b.ins().return_(&[null]);
                     reachable = false;
                 }
@@ -445,7 +470,7 @@ fn compile(
             }
         }
         if reachable {
-            let null = b.ins().iconst(types::I64, TAG_NULL << 32);
+            let null = b.ins().iconst(types::I64, TAG_NULL);
             b.ins().return_(&[null]);
         }
         b.seal_all_blocks();
@@ -461,35 +486,31 @@ fn compile(
     let ptr = module.get_finalized_function(id);
     // The module owns the code pages; keep it alive for the process.
     Box::leak(Box::new(module));
-    let f: extern "C" fn(*const u8, usize) -> i64 = unsafe { std::mem::transmute(ptr) };
+    let f: extern "C" fn(*const u8, usize, *mut u8) -> i64 = unsafe { std::mem::transmute(ptr) };
     Some(Rc::new(move |args: &[JitArg]| {
         // Marshal the arguments into the kernel's flat frame.
         let mut buf: Vec<u8> = Vec::with_capacity(args.len() * 8);
         for a in args {
             match (a, kind) {
                 (JitArg::I32(v), Kind::I32) => buf.extend_from_slice(&v.to_ne_bytes()),
+                (JitArg::I64(v), Kind::I64) => buf.extend_from_slice(&v.to_ne_bytes()),
                 (JitArg::F64(v), Kind::F64) => buf.extend_from_slice(&v.to_ne_bytes()),
                 // The entry guard already checked the types.
                 _ => return JitResult::Bail,
             }
         }
-        let raw = f(buf.as_ptr(), args.len());
-        match kind {
-            Kind::I32 => match raw >> 32 {
-                TAG_NULL => JitResult::Null,
-                TAG_TRAP => JitResult::Bail, // interpreter re-runs and throws
-                _ => JitResult::I32(raw as i32),
-            },
-            Kind::F64 => {
-                // Null/trap are still tagged in the high bits; a real f64
-                // result is the bit pattern (NaN payloads collide with the
-                // tags only for signalling NaNs, which we never produce).
-                match raw >> 32 {
-                    TAG_NULL => JitResult::Null,
-                    TAG_TRAP => JitResult::Bail,
-                    _ => JitResult::F64(f64::from_bits(raw as u64)),
+        let mut out = [0u8; 8];
+        let tag = f(buf.as_ptr(), args.len(), out.as_mut_ptr());
+        match tag {
+            TAG_NULL => JitResult::Null,
+            TAG_TRAP => JitResult::Bail, // the interpreter re-runs and throws
+            _ => match kind {
+                Kind::I32 => {
+                    JitResult::I32(i32::from_ne_bytes(out[..4].try_into().expect("4 bytes")))
                 }
-            }
+                Kind::I64 => JitResult::I64(i64::from_ne_bytes(out)),
+                Kind::F64 => JitResult::F64(f64::from_ne_bytes(out)),
+            },
         }
     }))
 }
@@ -516,9 +537,16 @@ fn lower_bin(b: &mut FunctionBuilder, op: BinOp, l: ClValue, r: ClValue, kind: K
             _ => unreachable!("plan_slots filtered"),
         };
     }
-    let cmp = |b: &mut FunctionBuilder, cc: IntCC, l, r| {
+    // A comparison yields the kernel's own integer width, so it can flow into
+    // the same slots and block params as everything else.
+    let int_ty = if kind == Kind::I64 {
+        types::I64
+    } else {
+        types::I32
+    };
+    let cmp = move |b: &mut FunctionBuilder, cc: IntCC, l, r| {
         let c = b.ins().icmp(cc, l, r);
-        b.ins().uextend(types::I32, c)
+        b.ins().uextend(int_ty, c)
     };
     match op {
         BinOp::Add => b.ins().iadd(l, r),

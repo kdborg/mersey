@@ -574,6 +574,7 @@ pub struct Interp {
 #[derive(Clone, Copy)]
 pub enum JitArg {
     I32(i32),
+    I64(i64),
     F64(f64),
 }
 
@@ -584,6 +585,7 @@ pub enum JitArg {
 /// resumes.
 pub enum JitResult {
     I32(i32),
+    I64(i64),
     F64(f64),
     Null,
     Bail,
@@ -1982,12 +1984,14 @@ impl Interp {
         for n in &names {
             match env_get(scope, n) {
                 Some(Value::I32(v)) => args.push(JitArg::I32(v)),
+                Some(Value::I64(v)) => args.push(JitArg::I64(v)),
                 Some(Value::F64(v)) => args.push(JitArg::F64(v)),
                 _ => return Ok(None), // guard failed: interpret instead
             }
         }
         Ok(match f(&args) {
             JitResult::I32(v) => Some(Value::I32(v)),
+            JitResult::I64(v) => Some(Value::I64(v)),
             JitResult::F64(v) => Some(Value::F64(v)),
             JitResult::Null => Some(Value::Null),
             // The kernel hit a trapping condition: re-run interpreted so the

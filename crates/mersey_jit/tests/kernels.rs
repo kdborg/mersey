@@ -265,3 +265,92 @@ fn jit_codegen_is_hardened() {
         assert!(names.iter().any(|n| n.contains("forward-edge CFI")));
     }
 }
+
+/// int64 kernels. The language promises integers of several widths, but Tier 1
+/// only ever accepted int32 — an int64 loop ran on the interpreter forever.
+///
+/// The blocker was the ABI: the kernel packed `(tag << 32) | payload`, which
+/// works for an i32 payload and nothing else. An i64 result fills the word the
+/// tag needs. The value now travels in an out-slot and the return is just a tag,
+/// which is also what removed the NaN caveat floats had.
+const I64_KERNELS: &str = r#"
+import { console } from "std:console";
+
+function sumTo64(n: int64): int64 {
+    let acc: int64 = 0l;
+    let i: int64 = 1l;
+    while (i <= n) {
+        acc = acc + i;
+        i = i + 1l;
+    }
+    return acc;
+}
+
+function mix64(seed: int64, rounds: int64): int64 {
+    let x: int64 = seed;
+    let i: int64 = 0l;
+    while (i < rounds) {
+        x = x ^ (x << 13l);
+        x = x ^ (x >> 7l);
+        x = x * 2654435761l;
+        i = i + 1l;
+    }
+    return x;
+}
+
+// Beyond int32: this overflows an i32 and must still be exact.
+function big(n: int64): int64 {
+    return n * 1000000l + 7l;
+}
+
+let a: int64 = 0l;
+for (let round = 0; round < 200; round++) {
+    a = a + sumTo64(1000l) + mix64(9l, 3l) + big(3000000000l);
+}
+console.log(sumTo64(1000l), mix64(9l, 3l), big(3000000000l));
+"#;
+
+#[test]
+fn int64_kernels_compile_and_agree() {
+    // In the accepted subset (not silently falling back to the interpreter).
+    let src = source::decode("<i64>", I64_KERNELS.as_bytes()).expect("decode");
+    let parsed = parser::parse(&src);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "{:?}",
+        parsed.diagnostics.first().map(|d| d.to_string())
+    );
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    let mut compiled = 0;
+    for item in &module.items {
+        let mersey_front::ast::Item::Decl(mersey_front::ast::Decl::Function(f)) = item else {
+            continue;
+        };
+        let chunk = mersey_interp::vm::compile_fn_public(&f.body).expect("bytecode");
+        let params: Vec<String> = f
+            .params
+            .iter()
+            .map(|p| match &p.target {
+                mersey_front::ast::Pattern::Name(n) => n.text.clone(),
+                _ => panic!("simple params only"),
+            })
+            .collect();
+        assert!(
+            mersey_jit::hook(&chunk, &params).is_some(),
+            "int64 kernel `{}` fell out of the JIT subset",
+            f.name.text
+        );
+        compiled += 1;
+    }
+    assert_eq!(compiled, 3, "expected three int64 kernels");
+
+    // And Tier 1 must agree with Tier 0 and the tree-walker, exactly.
+    let jit = run(I64_KERNELS, true, true);
+    let vm = run(I64_KERNELS, true, false);
+    let tree = run(I64_KERNELS, false, false);
+    assert_eq!(jit, vm, "JIT and VM disagree on int64");
+    assert_eq!(vm, tree, "VM and tree-walker disagree on int64");
+    // 1+…+1000, and a value that does not fit an int32.
+    assert!(jit.starts_with("500500 "), "{jit}");
+    assert!(jit.contains("3000000000000007"), "{jit}"); // 3e9 * 1e6 + 7, far past int32
+}
