@@ -22,17 +22,154 @@ pub struct CheckOutput {
 }
 
 pub fn check(module: &Module) -> CheckOutput {
+    let mut out = check_graph(&[("<main>".to_string(), module)]);
+    out.pop().map(|(_, o)| o).unwrap_or(CheckOutput { diagnostics: Vec::new() })
+}
+
+/// Check a whole module graph (dependency-first). One `Checker` spans the
+/// graph so a class declared in one module is the *same* type when imported
+/// into another; scopes and type namespaces are per-module.
+pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> {
     let mut c = Checker::new();
-    // Ambient web platform first (generated from WebIDL); its collection
+    // Ambient web platform (generated from WebIDL); its own collection
     // diagnostics are suppressed — the generator is validated separately.
     let n = c.diags.len();
     c.collect(crate::webapi::webapi().module);
     c.diags.truncate(n);
-    c.collect(module);
-    c.check_module(module);
-    let mut diagnostics = c.diags;
-    diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
-    CheckOutput { diagnostics }
+
+    let base_types = c.type_defs.clone();
+    let base_scope = c.scopes[0].clone();
+    let mut exports: HashMap<String, ModuleExports> = HashMap::new();
+    let mut results = Vec::new();
+
+    for (spec, module) in modules {
+        c.diags.clear();
+        c.type_defs = base_types.clone();
+        c.scopes = vec![base_scope.clone(), HashMap::new()];
+        c.module_spec = spec.clone();
+        c.imported.clear();
+
+        // Bind this module's relative imports from already-checked modules.
+        for item in &module.items {
+            let Item::Import(im) = item else { continue };
+            if !crate::graph::is_relative(&im.from) {
+                continue;
+            }
+            let target = crate::graph::resolve(spec, &im.from);
+            let Some(exp) = exports.get(&target) else {
+                continue; // missing module: the loader reports it
+            };
+            match &im.clause {
+                Some(ImportClause::Named(specs)) => {
+                    for s in specs {
+                        let local = s.alias.as_ref().unwrap_or(&s.name);
+                        let mut found = false;
+                        if let Some(v) = exp.values.get(&s.name.text) {
+                            c.define(&local.text, v.clone(), true);
+                            found = true;
+                        }
+                        if let Some(t) = exp.types.get(&s.name.text) {
+                            c.type_defs.insert(local.text.clone(), t.clone());
+                            c.imported.insert(local.text.clone());
+                            found = true;
+                        }
+                        if !found {
+                            let msg = format!("`{}` is not exported by `{}`", s.name.text, im.from);
+                            c.error(Code::UndefinedName, msg, s.name.pos);
+                        }
+                    }
+                }
+                Some(ImportClause::Namespace(n)) => {
+                    // Namespace imports type as `any` (v1).
+                    c.define(&n.text, Ty::Any, true);
+                }
+                None => {}
+            }
+        }
+
+        c.collect(module);
+        c.check_module(module);
+
+        // Publish this module's exports for its dependents.
+        let mut e = ModuleExports::default();
+        for item in &module.items {
+            let Item::Export(ex) = item else { continue };
+            let mut publish = |name: &str, c: &Checker| {
+                if let Some(v) = c.lookup_scope(name) {
+                    e.values.insert(name.to_string(), v.ty.clone());
+                }
+                if let Some(t) = c.type_defs.get(name) {
+                    e.types.insert(name.to_string(), t.clone());
+                }
+            };
+            match &ex.kind {
+                ExportKind::Decl(d) => {
+                    let name = match d {
+                        Decl::Function(f) => &f.name.text,
+                        Decl::Class(cl) => &cl.name.text,
+                        Decl::Interface(i) => &i.name.text,
+                        Decl::Enum(en) => &en.name.text,
+                        Decl::TypeAlias(t) => &t.name.text,
+                    };
+                    publish(name, &c);
+                }
+                ExportKind::Var(v) => {
+                    for b in &v.bindings {
+                        let mut names = Vec::new();
+                        pattern_names(&b.target, &mut names);
+                        for n in names {
+                            publish(n, &c);
+                        }
+                    }
+                }
+                ExportKind::Named { specs, .. } => {
+                    for s in specs {
+                        let exported = s.alias.as_ref().unwrap_or(&s.name);
+                        if let Some(v) = c.lookup_scope(&s.name.text) {
+                            e.values.insert(exported.text.clone(), v.ty.clone());
+                        }
+                        if let Some(t) = c.type_defs.get(&s.name.text) {
+                            e.types.insert(exported.text.clone(), t.clone());
+                        }
+                    }
+                }
+            }
+        }
+        exports.insert(spec.clone(), e);
+
+        let mut diagnostics = std::mem::take(&mut c.diags);
+        diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
+        results.push((spec.clone(), CheckOutput { diagnostics }));
+    }
+    results
+}
+
+#[derive(Default)]
+struct ModuleExports {
+    values: HashMap<String, Ty>,
+    types: HashMap<String, TypeDef>,
+}
+
+fn pattern_names<'a>(p: &'a Pattern, out: &mut Vec<&'a str>) {
+    match p {
+        Pattern::Name(n) => out.push(&n.text),
+        Pattern::Array { elems, rest } => {
+            for e in elems {
+                pattern_names(&e.target, out);
+            }
+            if let Some(r) = rest {
+                pattern_names(r, out);
+            }
+        }
+        Pattern::Record(fields) => {
+            for f in fields {
+                match &f.target {
+                    Some(t) => pattern_names(t, out),
+                    None => out.push(&f.name.text),
+                }
+            }
+        }
+    }
 }
 
 // ---- types ----------------------------------------------------------------
@@ -207,6 +344,7 @@ struct AliasInfo {
     target: Ty,
 }
 
+#[derive(Clone)]
 enum TypeDef {
     Class(ClassId),
     Iface(IfaceId),
@@ -247,6 +385,10 @@ struct Checker {
     element_id: ClassId,
     /// The generated `interface Promise<T>` (webapi), resolved lazily.
     promise_id: Option<IfaceId>,
+    /// The module being checked (diagnostics/context).
+    module_spec: String,
+    /// Type names pulled in from other modules (not declared here).
+    imported: std::collections::HashSet<String>,
 }
 
 const PREDEFINED: &[(&str, Ty)] = &[
@@ -296,6 +438,8 @@ impl Checker {
             error_id: 0,
             element_id: 0,
             promise_id: None,
+            module_spec: String::new(),
+            imported: std::collections::HashSet::new(),
         };
         c.install_builtins();
         c
@@ -744,6 +888,11 @@ impl Checker {
     }
 
     fn collect_import(&mut self, im: &ImportDecl) {
+        // Relative imports are bound precisely by `check_graph` from the
+        // exporting module — don't clobber those with `any` here.
+        if crate::graph::is_relative(&im.from) {
+            return;
+        }
         let Some(clause) = &im.clause else { return };
         match clause {
             ImportClause::Namespace(n) => {

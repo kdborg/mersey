@@ -214,6 +214,114 @@ pub extern "C" fn msy_alloc(len: usize) -> *mut u8 {
     ptr
 }
 
+/// Report a module's import specifiers as a JSON array, so the host can
+/// fetch the graph before running it (the engine never does I/O).
+#[no_mangle]
+pub extern "C" fn msy_scan_imports(ptr: *const u8, len: usize) -> u64 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let Ok(src) = source::decode("<scan>", bytes) else {
+        return pack("[]");
+    };
+    let parsed = parser::parse(&src);
+    let specs = mersey_front::graph::imports(&parsed.module);
+    let mut out = String::from("[");
+    for (i, s) in specs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
+        out.push('"');
+    }
+    out.push(']');
+    pack(&out)
+}
+
+/// Allocate a buffer the host reads back (ptr<<32 | len). Leaked, like all
+/// Stage A boundary buffers.
+fn pack(s: &str) -> u64 {
+    let bytes = s.as_bytes().to_vec();
+    let len = bytes.len();
+    let boxed = bytes.into_boxed_slice();
+    let ptr = Box::leak(boxed).as_ptr() as usize;
+    ((ptr as u64) << 32) | (len as u64)
+}
+
+/// Run a whole module graph. `payload` is JSON:
+/// `{"entry":"a.mersey","modules":[["a.mersey","source"],…]}` in
+/// dependency-first order.
+#[no_mangle]
+pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
+    std::panic::set_hook(Box::new(|info| {
+        send(host_error, &format!("engine panic: {info}"));
+    }));
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let Some(payload) = mersey_interp::webjson::parse(&text) else {
+        send(host_error, "bad module-graph payload");
+        return 1;
+    };
+    let Some(mersey_interp::webjson::Json::Arr(items)) = payload.get("modules") else {
+        send(host_error, "module-graph payload has no modules");
+        return 1;
+    };
+
+    let mut parsed_modules: Vec<(String, &'static mersey_front::ast::Module)> = Vec::new();
+    let mut failed = false;
+    for item in items {
+        let (Some(spec), Some(src_text)) = (
+            item.get("spec").and_then(|v| v.as_str()),
+            item.get("source").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let decoded = match source::decode(spec, src_text.as_bytes()) {
+            Ok(d) => d,
+            Err(d) => {
+                send(host_error, &d.to_string());
+                failed = true;
+                continue;
+            }
+        };
+        let parsed = parser::parse(&decoded);
+        for d in &parsed.diagnostics {
+            send(host_error, &format!("{spec}: {d}"));
+            failed = true;
+        }
+        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        for d in &bind::bind(module).diagnostics {
+            send(host_error, &format!("{spec}: {d}"));
+            failed = true;
+        }
+        parsed_modules.push((spec.to_string(), module));
+    }
+    if failed {
+        return 1;
+    }
+    let refs: Vec<(String, &mersey_front::ast::Module)> =
+        parsed_modules.iter().map(|(s, m)| (s.clone(), *m)).collect();
+    for (spec, out) in check::check_graph(&refs) {
+        for d in &out.diagnostics {
+            send(host_error, &format!("{spec}: {d}"));
+            failed = true;
+        }
+    }
+    if failed {
+        return 1;
+    }
+
+    ensure_interp();
+    with_interp(|interp| match interp.run_graph(parsed_modules) {
+        Ok(()) => 0,
+        Err(t) => {
+            let msg = interp.describe_thrown(&t);
+            send(host_error, &msg);
+            2
+        }
+    })
+    .unwrap_or(2)
+}
+
 #[no_mangle]
 pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
     std::panic::set_hook(Box::new(|info| {

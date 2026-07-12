@@ -1,0 +1,26 @@
+// A library module: exported types and values cross module boundaries with
+// full type information (the checker spans the whole graph).
+import { console } from "std:console";
+
+export class Point {
+    public readonly x: float64;
+    public readonly y: float64;
+    public constructor(x: float64, y: float64) {
+        this.x = x;
+        this.y = y;
+    }
+    public plus(other: Point): Point {
+        return new Point(this.x + other.x, this.y + other.y);
+    }
+    public toString(): string {
+        return `(${this.x}, ${this.y})`;
+    }
+}
+
+export const ORIGIN: Point = new Point(0.0, 0.0);
+
+export function area(width: float64, height: float64): float64 {
+    return width * height;
+}
+
+console.log("[geometry] module evaluated");

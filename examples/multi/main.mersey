@@ -1,0 +1,14 @@
+// Entry point: a three-module program.
+import { console } from "std:console";
+import { Point, ORIGIN } from "./geometry.mersey";
+import { Rect } from "./shapes.mersey";
+
+const r = new Rect(ORIGIN, 3.0, 4.0);
+console.log(r.describe());
+
+const moved = r.moved(new Point(1.5, 2.5));
+console.log(moved.describe());
+
+// Type identity holds across modules: Point from geometry IS Point in shapes.
+const p: Point = ORIGIN.plus(new Point(1.0, 1.0));
+console.log(`p = ${p.toString()}, instanceof Point = ${p instanceof Point}`);

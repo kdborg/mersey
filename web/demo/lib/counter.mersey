@@ -1,0 +1,7 @@
+// A reusable module, imported by the page script.
+export class Counter {
+    private count: int32 = 0;
+    public increment(): void { this.count += 1; }
+    public value(): int32 { return this.count; }
+}
+export const GREETING: string = "modules work in the browser";

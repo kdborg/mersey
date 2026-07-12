@@ -340,6 +340,8 @@ type SResult = Result<Sig, Thrown>;
 
 pub struct Interp {
     host: Box<dyn Host>,
+    /// Shared prelude (built-in classes); every module scope descends from it.
+    root: Env,
     globals: Env,
     callbacks: Vec<Value>,
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
@@ -355,6 +357,10 @@ pub struct Interp {
     all_cells: Vec<AllCell>,
     /// Member-name interning: a name crosses the ABI once, then it is an id.
     interned: HashMap<String, u32>,
+    /// Evaluated modules: specifier → its exported bindings.
+    modules: HashMap<String, HashMap<String, Value>>,
+    /// The module currently executing (for relative import resolution).
+    current_module: String,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
     jit_cache: HashMap<usize, Option<JitFn>>,
@@ -372,7 +378,8 @@ pub type JitHook = fn(&vm::Chunk, &[String]) -> Option<JitFn>;
 const JIT_THRESHOLD: u32 = 64;
 
 pub fn new_interp(host: Box<dyn Host>) -> Interp {
-    let globals = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: None }));
+    let root = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: None }));
+    let globals = child_env(&root);
     let mut error_classes = HashMap::new();
     let base = Rc::new(builtin_error_class("Error", None));
     for name in ["RangeError", "TypeError"] {
@@ -380,10 +387,11 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     }
     error_classes.insert("Error", base);
     for (name, cls) in &error_classes {
-        env_define(&globals, name, Value::Class(cls.clone()));
+        env_define(&root, name, Value::Class(cls.clone()));
     }
     Interp {
         host,
+        root,
         globals,
         callbacks: Vec::new(),
         error_classes,
@@ -392,6 +400,8 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
         interned: HashMap::new(),
+        modules: HashMap::new(),
+        current_module: String::new(),
         jit: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
@@ -449,7 +459,36 @@ impl Interp {
 
     // ---- module execution ------------------------------------------------------
 
+    /// Execute a module graph (dependency-first). Each module gets its own
+    /// scope; imports link to the exporting module's evaluated bindings.
+    pub fn run_graph(
+        &mut self,
+        modules: Vec<(String, &'static Module)>,
+    ) -> Result<(), Thrown> {
+        for (spec, module) in modules {
+            let env = child_env(&self.root);
+            let saved_globals = std::mem::replace(&mut self.globals, env.clone());
+            let saved_spec = std::mem::replace(&mut self.current_module, spec.clone());
+            let result = self.run_module_inner(module);
+            // Collect exports before restoring.
+            let exports = if result.is_ok() {
+                collect_exports(module, &env)
+            } else {
+                HashMap::new()
+            };
+            self.globals = saved_globals;
+            self.current_module = saved_spec;
+            result?;
+            self.modules.insert(spec, exports);
+        }
+        Ok(())
+    }
+
     pub fn run_module(&mut self, module: &'static Module) -> Result<(), Thrown> {
+        self.run_module_inner(module)
+    }
+
+    fn run_module_inner(&mut self, module: &'static Module) -> Result<(), Thrown> {
         let mut decls: Vec<&'static Decl> = Vec::new();
         for item in &module.items {
             match item {
@@ -642,9 +681,41 @@ impl Interp {
                 }
                 Ok(())
             }
+            other if crate::graph_is_relative(other) => {
+                let target = mersey_front::graph::resolve(&self.current_module, other);
+                let Some(exports) = self.modules.get(&target).cloned() else {
+                    return self
+                        .type_error(format!("module `{other}` was not loaded (resolved to `{target}`)"));
+                };
+                match &im.clause {
+                    Some(ImportClause::Named(specs)) => {
+                        for s in specs {
+                            let local = s.alias.as_ref().unwrap_or(&s.name);
+                            match exports.get(&s.name.text) {
+                                Some(v) => env_define(&self.globals, &local.text, v.clone()),
+                                None => {
+                                    return self.type_error(format!(
+                                        "`{}` is not exported by `{other}`",
+                                        s.name.text
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    Some(ImportClause::Namespace(n)) => {
+                        let ns = Value::Namespace(Rc::new(Namespace {
+                            name: n.text.clone(),
+                            entries: exports,
+                        }));
+                        env_define(&self.globals, &n.text, ns);
+                    }
+                    None => {}
+                }
+                Ok(())
+            }
             other => self.type_error(format!(
-                "module `{other}` is not available in the MVP (only `std:console` and \
-                 `browser:dom`)"
+                "module `{other}` is not available (built-ins: std:console, std:math, \
+                 std:format, std:fs, std:env, std:caps, std:async, browser:dom)"
             )),
         }
     }
@@ -2969,6 +3040,76 @@ impl Interp {
             _ => v, // class/interface cast: dynamic checks arrive with the checker
         })
     }
+}
+
+fn graph_is_relative(spec: &str) -> bool {
+    mersey_front::graph::is_relative(spec)
+}
+
+fn walk_pattern<'a>(p: &'a Pattern, out: &mut Vec<&'a str>) {
+    match p {
+        Pattern::Name(n) => out.push(&n.text),
+        Pattern::Array { elems, rest } => {
+            for e in elems {
+                walk_pattern(&e.target, out);
+            }
+            if let Some(r) = rest {
+                walk_pattern(r, out);
+            }
+        }
+        Pattern::Record(fields) => {
+            for f in fields {
+                match &f.target {
+                    Some(t) => walk_pattern(t, out),
+                    None => out.push(&f.name.text),
+                }
+            }
+        }
+    }
+}
+
+/// Values a module exports, read out of its scope after evaluation.
+fn collect_exports(module: &'static Module, env: &Env) -> HashMap<String, Value> {
+    let mut out = HashMap::new();
+    let mut take = |name: &str, exported: &str| {
+        if let Some(v) = env_get(env, name) {
+            out.insert(exported.to_string(), v);
+        }
+    };
+    for item in &module.items {
+        let Item::Export(ex) = item else { continue };
+        match &ex.kind {
+            ExportKind::Decl(d) => {
+                let name = match d {
+                    Decl::Function(f) => &f.name.text,
+                    Decl::Class(c) => &c.name.text,
+                    Decl::Enum(e) => &e.name.text,
+                    // Interfaces and aliases are types only: no runtime value.
+                    Decl::Interface(_) | Decl::TypeAlias(_) => continue,
+                };
+                take(name, name);
+            }
+            ExportKind::Var(v) => {
+                for b in &v.bindings {
+                    let mut names = Vec::new();
+                    walk_pattern(&b.target, &mut names);
+                    for n in names {
+                        take(n, n);
+                    }
+                }
+            }
+            ExportKind::Named { specs, from } => {
+                if from.is_some() {
+                    continue; // re-exports need the graph: v1 skips
+                }
+                for s in specs {
+                    let exported = s.alias.as_ref().unwrap_or(&s.name);
+                    take(&s.name.text, &exported.text);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// RAII-ish frame for tracking the class whose method is executing (for

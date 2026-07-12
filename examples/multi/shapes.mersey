@@ -1,0 +1,23 @@
+// Depends on geometry: imported classes keep their identity across modules.
+import { console } from "std:console";
+import { Point, area } from "./geometry.mersey";
+
+export class Rect {
+    private readonly corner: Point;
+    private readonly w: float64;
+    private readonly h: float64;
+    public constructor(corner: Point, w: float64, h: float64) {
+        this.corner = corner;
+        this.w = w;
+        this.h = h;
+    }
+    public size(): float64 { return area(this.w, this.h); }
+    public moved(by: Point): Rect {
+        return new Rect(this.corner.plus(by), this.w, this.h);
+    }
+    public describe(): string {
+        return `Rect at ${this.corner.toString()} of ${this.size()}`;
+    }
+}
+
+console.log("[shapes] module evaluated");

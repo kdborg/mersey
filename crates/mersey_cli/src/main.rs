@@ -5,7 +5,7 @@
 
 use std::process::ExitCode;
 
-use mersey_front::{astdump, bind, check as tycheck, fmt as mfmt, lexer, parser, source};
+use mersey_front::{astdump, bind, check as tycheck, fmt as mfmt, graph, lexer, parser, source};
 use mersey_interp as interp;
 
 const USAGE: &str = "\
@@ -111,20 +111,12 @@ fn check(path: &str, mode: Mode) -> ExitCode {
             ExitCode::SUCCESS
         }
         Mode::Check => {
-            let out = parser::parse(&src);
-            let mut diags = out.diagnostics;
-            // Each stage runs only when the previous one was clean, so a
-            // broken parse doesn't cascade into noise.
-            if diags.is_empty() {
-                diags = bind::bind(&out.module).diagnostics;
-            }
-            if diags.is_empty() {
-                diags = tycheck::check(&out.module).diagnostics;
-            }
-            for d in &diags {
-                eprintln!("{}: {d}", src.name);
-            }
-            if diags.is_empty() {
+            // Check the whole graph the entry module pulls in.
+            let modules = match load_graph(path) {
+                Ok(m) => m,
+                Err(code) => return code,
+            };
+            if check_graph_ok(&modules) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -227,34 +219,93 @@ impl interp::Host for CliHost {
     }
 }
 
-fn run(path: &str, caps: Vec<String>) -> ExitCode {
-    let bytes = match read(path) {
-        Ok(b) => b,
-        Err(code) => return code,
-    };
-    let src = match source::decode(path, &bytes) {
-        Ok(src) => src,
+/// Load the whole module graph from disk (spec §4.5: closed before
+/// execution). Returns modules in dependency-first order.
+fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Module)>, ExitCode> {
+    use std::collections::HashMap;
+    let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut queue = vec![entry.to_string()];
+    let mut failed = false;
+
+    while let Some(spec) = queue.pop() {
+        if sources.contains_key(&spec) {
+            continue;
+        }
+        let bytes = read(&spec)?;
+        let src = match source::decode(&spec, &bytes) {
+            Ok(s) => s,
+            Err(d) => {
+                eprintln!("{d}");
+                return Err(ExitCode::FAILURE);
+            }
+        };
+        let parsed = parser::parse(&src);
+        if !parsed.diagnostics.is_empty() {
+            for d in &parsed.diagnostics {
+                eprintln!("{spec}: {d}");
+            }
+            failed = true;
+        }
+        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        let mut edges = Vec::new();
+        for spec_import in graph::imports(module) {
+            if graph::is_relative(&spec_import) {
+                let target = graph::resolve(&spec, &spec_import);
+                edges.push(target.clone());
+                queue.push(target);
+            }
+        }
+        deps.insert(spec.clone(), edges);
+        sources.insert(spec, module);
+    }
+    if failed {
+        return Err(ExitCode::FAILURE);
+    }
+    let order = match graph::topo_order(entry, &deps) {
+        Ok(o) => o,
         Err(d) => {
             eprintln!("{d}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
-    let parsed = parser::parse(&src);
-    let mut diags = parsed.diagnostics;
-    if diags.is_empty() {
-        diags = bind::bind(&parsed.module).diagnostics;
-    }
-    if diags.is_empty() {
-        diags = tycheck::check(&parsed.module).diagnostics;
-    }
-    if !diags.is_empty() {
-        for d in &diags {
-            eprintln!("{}: {d}", src.name);
+    Ok(order.into_iter().map(|s| (s.clone(), sources[&s])).collect())
+}
+
+/// Bind + typecheck the whole graph; returns false if anything failed.
+fn check_graph_ok(modules: &[(String, &'static mersey_front::ast::Module)]) -> bool {
+    let mut ok = true;
+    for (spec, module) in modules {
+        let diags = bind::bind(module).diagnostics;
+        if !diags.is_empty() {
+            for d in &diags {
+                eprintln!("{spec}: {d}");
+            }
+            ok = false;
         }
+    }
+    if !ok {
+        return false;
+    }
+    let refs: Vec<(String, &mersey_front::ast::Module)> =
+        modules.iter().map(|(s, m)| (s.clone(), *m)).collect();
+    for (spec, out) in tycheck::check_graph(&refs) {
+        for d in &out.diagnostics {
+            eprintln!("{spec}: {d}");
+            ok = false;
+        }
+    }
+    ok
+}
+
+fn run(path: &str, caps: Vec<String>) -> ExitCode {
+    let modules = match load_graph(path) {
+        Ok(m) => m,
+        Err(code) => return code,
+    };
+    if !check_graph_ok(&modules) {
         return ExitCode::FAILURE;
     }
-    // The interpreter borrows the AST for the process lifetime.
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
     let host = CliHost { dom: std::collections::HashMap::new(), caps };
     let mut interp = interp::new_interp(Box::new(host));
     // Tier 1: register the Cranelift backend unless disabled (benchmarks
@@ -262,7 +313,7 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     if std::env::var("MERSEY_JIT").as_deref() != Ok("0") {
         interp.jit = Some(mersey_jit::hook);
     }
-    match interp.run_module(module) {
+    match interp.run_graph(modules) {
         Ok(()) => ExitCode::SUCCESS,
         Err(t) => {
             eprintln!("runtime error: {}", interp.describe_thrown(&t));

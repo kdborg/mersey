@@ -17,10 +17,14 @@ const engineUrl = (selfTag && selfTag.dataset.engine) || "mersey_wasm.wasm";
 async function boot() {
   const engine = await startEngine({ engineUrl, realm: globalThis });
   for (const tag of document.querySelectorAll('script[type="text/mersey"]')) {
-    const source = tag.src ? await (await fetch(tag.src)).text() : tag.textContent;
-    const status = engine.run(source);
+    const spec = tag.getAttribute("src");
+    const source = spec ? await (await fetch(spec)).text() : tag.textContent;
+    // A src'd script may import other .mersey modules: load the graph.
+    const status = spec
+      ? await engine.runGraph(spec, source)
+      : engine.run(source);
     if (status !== 0) {
-      console.error(`[mersey] ${tag.src || "<inline>"}: exited with status ${status}`);
+      console.error(`[mersey] ${spec || "<inline>"}: exited with status ${status}`);
     }
   }
 }

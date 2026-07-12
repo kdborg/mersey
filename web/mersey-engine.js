@@ -85,10 +85,80 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
   // builds the JS class and forwards the lifecycle callbacks into Mersey.
   realm.merseyDefineElement = (tag, handlers) => bridge.defineElement(tag, handlers);
 
+  const readPacked = (packedValue) => {
+    const ptr = Number(packedValue >> 32n);
+    const len = Number(packedValue & 0xffffffffn);
+    return readStr(ptr, len);
+  };
+
+  // Module graph (spec §4.5: closed before execution). The engine never does
+  // I/O — it reports the specifiers it needs and the host fetches them.
+  const isRelative = (s) => s.startsWith("./") || s.startsWith("../");
+  const resolve = (referrer, spec) => {
+    const parts = referrer.split("/").slice(0, -1);
+    for (const seg of spec.split("/")) {
+      if (seg === "." || seg === "") continue;
+      if (seg === "..") parts.pop();
+      else parts.push(seg);
+    }
+    return parts.join("/");
+  };
+  const scanImports = (source) => {
+    const [p, l] = writeStr(source);
+    return JSON.parse(readPacked(exports.msy_scan_imports(p, l)));
+  };
+
+  async function loadGraph(entrySpec, entrySource) {
+    const sources = new Map([[entrySpec, entrySource]]);
+    const deps = new Map();
+    const queue = [entrySpec];
+    while (queue.length) {
+      const spec = queue.pop();
+      const edges = [];
+      for (const imp of scanImports(sources.get(spec))) {
+        if (!isRelative(imp)) continue;
+        const target = resolve(spec, imp);
+        edges.push(target);
+        if (!sources.has(target)) {
+          const resp = await fetch(target);
+          if (!resp.ok) throw new Error(`cannot load module ${target} (${resp.status})`);
+          sources.set(target, await resp.text());
+          queue.push(target);
+        }
+      }
+      deps.set(spec, edges);
+    }
+    // Dependency-first order (cycles rejected).
+    const order = [];
+    const done = new Set();
+    const path = [];
+    const visit = (spec) => {
+      if (done.has(spec)) return;
+      if (path.includes(spec)) {
+        throw new Error(`import cycle: ${[...path, spec].join(" → ")}`);
+      }
+      path.push(spec);
+      for (const d of deps.get(spec) ?? []) visit(d);
+      path.pop();
+      done.add(spec);
+      order.push(spec);
+    };
+    visit(entrySpec);
+    return order.map((spec) => ({ spec, source: sources.get(spec) }));
+  }
+
   return {
+    /// Run one module (no relative imports).
     run(source) {
       const [ptr, len] = writeStr(source);
       return exports.msy_run(ptr, len);
+    },
+    /// Fetch and run a whole module graph rooted at `entrySpec`.
+    async runGraph(entrySpec, entrySource) {
+      const modules = await loadGraph(entrySpec, entrySource);
+      const payload = JSON.stringify({ entry: entrySpec, modules });
+      const [ptr, len] = writeStr(payload);
+      return exports.msy_run_graph(ptr, len);
     },
     invoke: (cb) => exports.msy_invoke(cb),
     exports: () => exports,

@@ -9,3 +9,4 @@ cargo build -p mersey_wasm --target wasm32-unknown-unknown --release
 cp target/wasm32-unknown-unknown/release/mersey_wasm.wasm web/mersey_wasm.wasm
 node web/test/harness.mjs
 node web/test/platform.mjs
+node web/test/modules.mjs

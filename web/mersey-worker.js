@@ -25,7 +25,7 @@ self.onmessage = (ev) => {
 
 const engine = await startEngine({ engineUrl, realm: self });
 const source = await (await fetch(src)).text();
-const status = engine.run(source);
+const status = await engine.runGraph(src, source);
 if (status !== 0) {
   console.error(`[mersey worker] ${src} exited with status ${status}`);
 }

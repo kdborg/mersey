@@ -1,0 +1,13 @@
+// Multi-module program in the browser: this imports a sibling .mersey file,
+// which the loader fetches and links before execution (spec §4.5).
+import { console } from "std:console";
+import { document } from "browser:dom";
+import { Counter, GREETING } from "./lib/counter.mersey";
+
+const out = document.getElementById("out") as Element;
+const c = new Counter();
+c.increment();
+c.increment();
+c.increment();
+out.textContent = `${GREETING}: counter = ${c.value()}`;
+console.log(`modular: ${GREETING}, count=${c.value()}`);
