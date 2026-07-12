@@ -149,7 +149,9 @@ pub enum Value {
     /// Insertion-ordered map; key equality is `values_equal` (O(n) MVP).
     MapV(Rc<RefCell<Vec<(Value, Value)>>>),
     SetV(Rc<RefCell<Vec<Value>>>),
-    Record(Rc<RefCell<HashMap<String, Value>>>),
+    /// Insertion-ordered fields: a record's field order is part of its
+    /// observable behaviour (it survives `JSON.stringify` across the bridge).
+    Record(Rc<RefCell<Vec<(String, Value)>>>),
     Closure(Rc<Closure>),
     Class(Rc<ClassDef>),
     Instance(Rc<RefCell<Instance>>),
@@ -1779,7 +1781,7 @@ impl Interp {
                 "size" => Some(Value::I32(m.borrow().len() as i32)),
                 _ => None,
             }),
-            Value::Record(r) => Ok(r.borrow().get(name).cloned()),
+            Value::Record(r) => Ok(rec_get(&r.borrow(), name)),
             Value::Namespace(ns) => Ok(ns.entries.get(name).cloned()),
             Value::Dom(id) => match name {
                 "textContent" => Ok(Some(Value::Str(Rc::new(
@@ -1857,7 +1859,7 @@ impl Interp {
                 self.web_set(h, name, value)
             }
             Value::Record(r) => {
-                r.borrow_mut().insert(name.to_string(), value);
+                rec_set(&mut r.borrow_mut(), name, value);
                 Ok(())
             }
             Value::Dom(id) => match name {
@@ -1978,7 +1980,7 @@ impl Interp {
                 Ok(Value::Array(Rc::new(RefCell::new(items))))
             }
             Expr::Record(fields) => {
-                let mut map = HashMap::new();
+                let mut out: Vec<(String, Value)> = Vec::new();
                 for f in fields {
                     match f {
                         RecordField::Named { name, value } => {
@@ -1988,14 +1990,14 @@ impl Interp {
                                     self.throw("TypeError", format!("`{}` is not defined", name.text))
                                 })?,
                             };
-                            map.insert(name.text.clone(), v);
+                            rec_set(&mut out, &name.text, v);
                         }
                         RecordField::Spread(e) => {
                             let v = self.eval(e, env)?;
                             match v {
                                 Value::Record(r) => {
                                     for (k, val) in r.borrow().iter() {
-                                        map.insert(k.clone(), val.clone());
+                                        rec_set(&mut out, k, val.clone());
                                     }
                                 }
                                 _ => return self.type_error("can only spread records"),
@@ -2003,7 +2005,7 @@ impl Interp {
                         }
                     }
                 }
-                Ok(Value::Record(Rc::new(RefCell::new(map))))
+                Ok(Value::Record(Rc::new(RefCell::new(out))))
             }
             Expr::Paren(e) => self.eval(e, env),
             Expr::Arrow { is_async, params, body, .. } => {
@@ -2780,8 +2782,8 @@ impl Interp {
                 Json::Arr(items.iter().map(|x| self.to_web(x)).collect())
             }
             Value::Record(r) => {
-                let entries: Vec<(String, Value)> =
-                    r.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // Field order is preserved across the bridge.
+                let entries: Vec<(String, Value)> = r.borrow().clone();
                 Json::Obj(entries.into_iter().map(|(k, v)| (k, self.to_web(&v))).collect())
             }
             Value::Closure(_)
@@ -2828,9 +2830,9 @@ impl Interp {
                 if let Some(Json::Num(h)) = j.get("__ref__") {
                     return Value::JsRef(*h as i64);
                 }
-                let map: HashMap<String, Value> =
+                let entries: Vec<(String, Value)> =
                     fields.iter().map(|(k, v)| (k.clone(), self.from_web(v))).collect();
-                Value::Record(Rc::new(RefCell::new(map)))
+                Value::Record(Rc::new(RefCell::new(entries)))
             }
         }
     }
@@ -3514,6 +3516,19 @@ fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
     find_in_chain(class, |c| c.fields.iter().any(|(n, _)| n == name).then_some(())).is_some()
 }
 
+/// Field lookup in an insertion-ordered record (records are small).
+pub(crate) fn rec_get(fields: &[(String, Value)], name: &str) -> Option<Value> {
+    fields.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+}
+
+/// Set a field, preserving its original position if it already exists.
+pub(crate) fn rec_set(fields: &mut Vec<(String, Value)>, name: &str, value: Value) {
+    match fields.iter_mut().find(|(k, _)| k == name) {
+        Some(slot) => slot.1 = value,
+        None => fields.push((name.to_string(), value)),
+    }
+}
+
 fn as_num(v: &Value) -> Option<f64> {
     Some(match v {
         Value::I32(n) => *n as f64,
@@ -3654,11 +3669,11 @@ pub fn to_display(v: &Value) -> String {
             format!("[{}]", items.join(", "))
         }
         Value::Record(r) => {
-            let b = r.borrow();
-            let mut ks: Vec<String> = b.keys().cloned().collect();
-            ks.sort();
-            let fields: Vec<String> =
-                ks.iter().map(|k| format!("{k}: {}", to_display(&b[k]))).collect();
+            let fields: Vec<String> = r
+                .borrow()
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", to_display(v)))
+                .collect();
             format!("{{{}}}", fields.join(", "))
         }
         Value::Closure(_) | Value::Native(_) => "<function>".to_string(),

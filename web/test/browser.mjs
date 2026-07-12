@@ -101,7 +101,8 @@ async function open(path) {
   check("REAL BROWSER · Web Crypto", has(/^crypto: 4 random bytes drawn$/), logs.join(" | "));
   check("REAL BROWSER · URL API",
         has(/^url: host=example\.com path=\/a\/b query=\?q=mersey$/), logs.join(" | "));
-  check("REAL BROWSER · JSON", has(/^json: \{.*"lang":"mersey".*\}$/), logs.join(" | "));
+  check("REAL BROWSER · JSON (record field order preserved across the bridge)",
+        has(/^json: \{"lang":"mersey","version":1\}$/), logs.join(" | "));
   check("REAL BROWSER · Canvas 2D", has(/^canvas: filled a 120x40 rect$/), logs.join(" | "));
   check("REAL BROWSER · Timers", has(/^timer: fired after 50ms$/), logs.join(" | "));
   check("REAL BROWSER · fetch + Promise", has(/^fetch: status 200$/), logs.join(" | "));

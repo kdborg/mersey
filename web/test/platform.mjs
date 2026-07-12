@@ -166,11 +166,9 @@ check("Web Crypto (getRandomValues on a real Uint8Array)",
       logged(/^crypto: 4 random bytes drawn$/), logs.join(" | "));
 check("URL API (real URL parsing)",
       logged(/^url: host=example\.com path=\/a\/b query=\?q=mersey$/), logs.join(" | "));
-// Record field order is not preserved across the bridge (Mersey records
-// are unordered maps) — assert on content, not key order.
-check("JSON (platform's own stringify)",
-      logged(/^json: \{.*"lang":"mersey".*\}$/) && logged(/^json: \{.*"version":1.*\}$/),
-      logs.join(" | "));
+// Record field order IS preserved across the bridge.
+check("JSON (platform's own stringify, fields in declaration order)",
+      logged(/^json: \{"lang":"mersey","version":1\}$/), logs.join(" | "));
 check("Canvas 2D (getContext + fillRect)", logged(/^canvas: filled/), logs.join(" | "));
 check("canvas op actually reached JS",
       canvasOps.some((o) => o.includes("fillRect(0,0,120,40)") && o.includes("#0af")),

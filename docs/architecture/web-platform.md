@@ -295,15 +295,15 @@ The initial integration is complete. Beyond §5:
 
 ## Known limits
 
-- **Record field order** is not preserved across the bridge (Mersey records
-  are unordered maps), so `JSON.stringify({a, b})` may emit keys in a
-  different order.
-- **Host handles are released manually** (`release(obj)`), not by GC — the
-  engine's refcounting heap doesn't yet trace into the host's handle table.
-- Record field order isn't preserved across the bridge (Mersey records are
-  unordered maps).
-- **`iterable<>` / `maplike` declarations** are not expanded, so
-  `for (const x of someWebIterable)` needs an explicit index loop.
-- Callbacks are retained for the page's lifetime (no handle release yet).
-- In Stage B the same generator targets Blink's own IDL and the bridge is
-  replaced by direct native bindings; the ABI is unchanged.
+- **Host handles and callbacks are released manually** (`release(obj)`), not
+  by GC — the engine's refcounting heap doesn't trace into the host's handle
+  table, and a closure handed to the host is retained for the page's lifetime.
+- **Overloads are merged, not selected**: the generator emits the widest
+  parameter list with everything past the narrowest overload's required count
+  marked optional, so a call the IDL would reject can still type-check.
+- **Performance** (Stage A only): no JIT in the browser — WASM cannot map code
+  pages — and ~2.5 µs per web API call. `std:bytes` is the escape hatch for
+  data-heavy loops (11× faster on pixel work). Both costs vanish in Stage B.
+
+In Stage B the same generator targets Blink's own IDL and the bridge is
+replaced by direct native bindings; the ABI is unchanged.

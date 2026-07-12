@@ -1565,13 +1565,11 @@ fn exec(
                     a.borrow_mut().extend(items);
                 }
             }
-            Op::MakeRecord => {
-                stack.push(Value::Record(Rc::new(RefCell::new(HashMap::new()))))
-            }
+            Op::MakeRecord => stack.push(Value::Record(Rc::new(RefCell::new(Vec::new())))),
             Op::RecordSetField(ni) => {
                 let v = stack.pop().expect("field");
                 if let Some(Value::Record(r)) = stack.last() {
-                    r.borrow_mut().insert(chunk.names[ni as usize].clone(), v);
+                    crate::rec_set(&mut r.borrow_mut(), &chunk.names[ni as usize], v);
                 }
             }
             Op::RecordSpread => {
@@ -1584,7 +1582,10 @@ fn exec(
                     }
                 };
                 if let Some(Value::Record(r)) = stack.last() {
-                    r.borrow_mut().extend(entries);
+                    let mut fields = r.borrow_mut();
+                    for (k, val) in entries {
+                        crate::rec_set(&mut fields, &k, val);
+                    }
                 }
             }
             Op::MakeClosure(pi) => {
