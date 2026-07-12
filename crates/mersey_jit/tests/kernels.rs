@@ -253,7 +253,10 @@ fn jit_codegen_is_hardened() {
     assert!(!hardening.is_empty(), "no ISA: cannot report hardening");
 
     for (name, on) in &hardening {
-        assert!(on, "hardening is off: {name}");
+        // A gap that nothing mentions is indistinguishable from a gap nobody
+        // noticed. Anything off must be one we have looked at and written down.
+        let known = mersey_jit::KNOWN_GAPS.iter().any(|(gap, _)| gap == name);
+        assert!(*on || known, "hardening is off and undocumented: {name}");
     }
 
     let names: Vec<&str> = hardening.iter().map(|(n, _)| *n).collect();

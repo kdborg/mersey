@@ -638,5 +638,20 @@ pub fn hardening() -> Vec<(&'static str, bool)> {
             on("use_bti"),
         ));
     }
+    if cfg!(target_arch = "x86_64") {
+        // Reported as a *row that is off*, not left out. A gap that nothing
+        // mentions is indistinguishable from a gap nobody noticed, and this one
+        // is real: Cranelift does not expose CET/`endbr64` as a setting (checked
+        // against 0.116 and 0.123), so forward-edge CFI is genuinely not in
+        // place on x86-64. See `KNOWN_GAPS` and SECURITY-REVIEW.md.
+        out.push(("forward-edge CFI (CET/endbr64)", false));
+    }
     out
 }
+
+/// Hardening that is knowingly absent, and why. A gap listed here is one we
+/// have looked at; anything else being off is a regression.
+pub const KNOWN_GAPS: &[(&str, &str)] = &[(
+    "forward-edge CFI (CET/endbr64)",
+    "Cranelift exposes no CET setting (checked 0.116, 0.123); x86-64 only",
+)];

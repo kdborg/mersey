@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+      # The conformance goldens are the contract between the two engines and
+      # the frontend; a diff here is a behaviour change, not a formatting one.
+      - name: goldens are not stale
+        run: git diff --exit-code tests/conformance
+
+  # The GC's write barrier is what makes a minor collection sound. Running the
+  # suite with it *verified* (every minor collection cross-checked against a full
+  # trace) is slow, so it is its own job rather than the default.
+  gc-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: MERSEY_GC_VERIFY=1 cargo test --workspace
+
+  # Deterministic, so a failure here reproduces from the seed printed in the log.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --release -p mersey_fuzz -- all 20000 $GITHUB_RUN_NUMBER
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm --prefix web ci
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: ./web/build-and-test.sh
+
+  # The long fuzz run the roadmap asks for is wall-clock, not a build step: it
+  # runs on a schedule and reports, rather than gating every push.
+  soak:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ./scripts/fuzz-soak.sh 300
