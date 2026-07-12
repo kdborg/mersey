@@ -30,3 +30,20 @@ console.log(grid.join(","));
 const s: string = "  héllo  ";
 console.log(`[${s.trimStart()}]`, `[${s.trimEnd()}]`);
 console.log("banana".lastIndexOf("an"), "héllo".at(-1), "abc".at(9));
+
+// `substring` clamps *and swaps* its bounds; `slice` only clamps, and yields ""
+// when they are the wrong way round. That difference is the reason both exist
+// rather than one being an alias of the other.
+console.log(s.substring(3, 5), s.substring(5, 3), s.slice(5, 3) == "");
+console.log("héllo".substring(-5, 99));
+
+console.log("a".concat("b", "c"));
+
+// `charAt` is the JS-shaped one: a one-code-point *string*, empty out of range.
+// `codePointAt` gives the number, and `null` out of range — there is no
+// `undefined` here to return instead (§3.2). `s[i]` and `s.at(i)` give a `char`,
+// which is usually what you actually want.
+const word: string = "héllo";
+console.log(`[${word.charAt(1)}]`, `[${word.charAt(99)}]`);
+console.log(word.codePointAt(1), word.codePointAt(99));
+console.log(word.length, word.charAt(1) == "é", word.codePointAt(1) == 233);

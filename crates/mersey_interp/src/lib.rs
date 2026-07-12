@@ -3501,6 +3501,41 @@ impl Interp {
                     }
                     "trimStart" => Ok(Value::Str(Rc::new(text.trim_start().chars().collect()))),
                     "trimEnd" => Ok(Value::Str(Rc::new(text.trim_end().chars().collect()))),
+                    "substring" => {
+                        let len = s.len() as i64;
+                        let norm = |v: i64| v.clamp(0, len) as usize;
+                        let a = norm(args.first().and_then(as_i64).unwrap_or(0));
+                        let b = norm(args.get(1).and_then(as_i64).unwrap_or(len));
+                        // Bounds the wrong way round are swapped, not empty —
+                        // this is what distinguishes it from `slice`.
+                        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                        Ok(Value::Str(Rc::new(s[start..end].to_vec())))
+                    }
+                    "concat" => {
+                        let mut out: Vec<char> = s.to_vec();
+                        for a in &args {
+                            match a {
+                                Value::Str(other) => out.extend(other.iter()),
+                                other => out.extend(to_display(other).chars()),
+                            }
+                        }
+                        Ok(Value::Str(Rc::new(out)))
+                    }
+                    "charAt" => {
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        let out: Vec<char> = resolve_at(i, s.len())
+                            .and_then(|i| s.get(i).copied())
+                            .into_iter()
+                            .collect();
+                        Ok(Value::Str(Rc::new(out)))
+                    }
+                    "codePointAt" => {
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(resolve_at(i, s.len())
+                            .and_then(|i| s.get(i).copied())
+                            .map(|c| Value::I32(c as i32))
+                            .unwrap_or(Value::Null))
+                    }
                     "at" => {
                         let i = args.first().and_then(as_i64).unwrap_or(0);
                         Ok(resolve_at(i, s.len())

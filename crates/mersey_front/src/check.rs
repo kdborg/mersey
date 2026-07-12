@@ -4620,6 +4620,39 @@ impl Checker {
                     "split" => f(vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
                     "toUpperCase" | "toLowerCase" | "trim" => f(vec![], Ty::Str),
                     "trimStart" | "trimEnd" => f(vec![], Ty::Str),
+                    // Like `slice`, but it *swaps* the bounds when they are the
+                    // wrong way round — that is the whole difference between the
+                    // two, and the reason both exist rather than one being an
+                    // alias of the other.
+                    "substring" => f(
+                        vec![
+                            p(Ty::Int(IntKind::I32)),
+                            ParamTy {
+                                ty: Ty::Int(IntKind::I32),
+                                optional: true,
+                                rest: false,
+                            },
+                        ],
+                        Ty::Str,
+                    ),
+                    "concat" => f(
+                        vec![ParamTy {
+                            ty: Ty::Str,
+                            optional: false,
+                            rest: true,
+                        }],
+                        Ty::Str,
+                    ),
+                    // `charAt` is the JS-shaped one: a *string* of one code
+                    // point, empty when the index is out of range. `s[i]` and
+                    // `s.at(i)` give a `char`, which is usually what you want.
+                    "charAt" => f(vec![p(Ty::Int(IntKind::I32))], Ty::Str),
+                    // The code point's numeric value. `null` out of range —
+                    // there is no `undefined` here to return instead (§3.2).
+                    "codePointAt" => f(
+                        vec![p(Ty::Int(IntKind::I32))],
+                        nullable(Ty::Int(IntKind::I32)),
+                    ),
                     "lastIndexOf" => f(vec![p(Ty::Str)], Ty::Int(IntKind::I32)),
                     // A string is a sequence of code points, so `s[i]` is a
                     // `char`; `at` is the form that admits it can miss, and
