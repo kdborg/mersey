@@ -25,6 +25,7 @@ use mersey_front::ast::*;
 
 pub mod bignum;
 pub mod gc;
+pub mod regex;
 pub mod vm;
 pub mod webjson;
 use webjson::Json;
@@ -171,6 +172,8 @@ pub enum Value {
     /// Packed byte buffer with O(1) element access — the engine-side home
     /// for pixel/audio/binary data (no per-element bridge hops).
     Bytes(Rc<RefCell<Vec<u8>>>),
+    /// A compiled regular expression.
+    RegexV(Rc<regex::Regex>),
     /// A Mersey promise (§ async/await).
     PromiseV(Rc<RefCell<PromiseState>>),
     /// A callable that settles a promise; handed to host `.then(…)` so JS
@@ -737,6 +740,27 @@ impl Interp {
                 }
                 Ok(())
             }
+            "std:regex" | "std:parse" => {
+                let (ns_name, natives): (&str, &[&str]) = if im.from == "std:regex" {
+                    ("regex", &["compile"])
+                } else {
+                    ("parse", &["int32", "int64", "float64", "bigint", "bigdec"])
+                };
+                let mut entries = HashMap::new();
+                for n in natives {
+                    let id: &'static str =
+                        Box::leak(format!("{ns_name}.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: ns_name.to_string(),
+                    entries,
+                }));
+                for n in names.iter().chain(namespace_alias.iter()) {
+                    env_define(&self.globals, &n.text, ns.clone());
+                }
+                Ok(())
+            }
             "std:gc" => {
                 let mut entries = HashMap::new();
                 for n in ["collect", "stats"] {
@@ -754,7 +778,7 @@ impl Interp {
             }
             "std:time" => {
                 let mut entries = HashMap::new();
-                for n in ["now", "monotonic"] {
+                for n in ["now", "monotonic", "parts", "fromParts"] {
                     let id: &'static str = Box::leak(format!("time.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(id));
                 }
@@ -873,8 +897,9 @@ impl Interp {
                 }
                 Ok(())
             }
-            other if crate::graph_is_relative(other) => {
-                let target = mersey_front::graph::resolve(&self.current_module, other);
+            other if crate::graph_is_module(other) => {
+                let target =
+                    mersey_front::graph::resolve_module(&self.current_module, other);
                 let Some(exports) = self.modules.get(&target).cloned() else {
                     return self
                         .type_error(format!("module `{other}` was not loaded (resolved to `{target}`)"));
@@ -1724,6 +1749,94 @@ impl Interp {
                     ("live".to_string(), Value::I32(stats.tracked as i32)),
                 ]))
             }
+            "regex.compile" => {
+                let pattern = self.want_string(args.first())?;
+                let flags = match args.get(1) {
+                    Some(Value::Str(s)) => s.iter().collect::<String>(),
+                    _ => String::new(),
+                };
+                match regex::Regex::new(&pattern, &flags) {
+                    Ok(re) => Ok(Value::RegexV(Rc::new(re))),
+                    Err(msg) => Err(self.throw("Error", format!("bad regex: {msg}"))),
+                }
+            }
+            "parse.int32" | "parse.int64" | "parse.float64" | "parse.bigint"
+            | "parse.bigdec" => {
+                let text = self.want_string(args.first())?;
+                let t = text.trim();
+                // Parsing returns null on failure — no exceptions for input
+                // you expected to be dubious (§1.3: no sentinel values).
+                Ok(match name {
+                    "parse.int32" => {
+                        let radix = args.get(1).and_then(as_i64).unwrap_or(10).clamp(2, 36) as u32;
+                        match i32::from_str_radix(t, radix) {
+                            Ok(v) => Value::I32(v),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    "parse.int64" => {
+                        let radix = args.get(1).and_then(as_i64).unwrap_or(10).clamp(2, 36) as u32;
+                        match i64::from_str_radix(t, radix) {
+                            Ok(v) => Value::I64(v),
+                            Err(_) => Value::Null,
+                        }
+                    }
+                    "parse.float64" => match t.parse::<f64>() {
+                        Ok(v) => Value::F64(v),
+                        Err(_) => Value::Null,
+                    },
+                    "parse.bigint" => {
+                        let (neg, digits) = match t.strip_prefix('-') {
+                            Some(rest) => (true, rest),
+                            None => (false, t.strip_prefix('+').unwrap_or(t)),
+                        };
+                        match BigInt::parse(digits, 10) {
+                            Some(b) if !digits.is_empty() => {
+                                Value::BigIntV(Rc::new(if neg { b.negate() } else { b }))
+                            }
+                            _ => Value::Null,
+                        }
+                    }
+                    _ => match BigDec::parse(t) {
+                        Some(d) => Value::BigDecV(Rc::new(d)),
+                        None => Value::Null,
+                    },
+                })
+            }
+            // Civil calendar from a millisecond timestamp (Howard Hinnant's
+            // days-from-civil algorithm, proleptic Gregorian).
+            "time.parts" => {
+                let ms = args.first().and_then(as_num).unwrap_or(0.0);
+                let secs = (ms / 1000.0).floor() as i64;
+                let ms_part = (ms - (secs as f64) * 1000.0).round() as i64;
+                let days = secs.div_euclid(86_400);
+                let tod = secs.rem_euclid(86_400);
+                let (y, m, d) = civil_from_days(days);
+                let weekday = (days + 4).rem_euclid(7); // 1970-01-01 was a Thursday
+                Ok(new_record(vec![
+                    ("year".into(), Value::I32(y as i32)),
+                    ("month".into(), Value::I32(m as i32)),
+                    ("day".into(), Value::I32(d as i32)),
+                    ("hour".into(), Value::I32((tod / 3600) as i32)),
+                    ("minute".into(), Value::I32(((tod % 3600) / 60) as i32)),
+                    ("second".into(), Value::I32((tod % 60) as i32)),
+                    ("millis".into(), Value::I32(ms_part as i32)),
+                    ("weekday".into(), Value::I32(weekday as i32)),
+                ]))
+            }
+            "time.fromParts" => {
+                let Some(Value::Record(r)) = args.first() else {
+                    return self.type_error("time.fromParts needs a record");
+                };
+                let f = r.borrow();
+                let get = |k: &str, dflt: i64| rec_get(&f, k).and_then(|v| as_i64(&v)).unwrap_or(dflt);
+                let days = days_from_civil(get("year", 1970), get("month", 1), get("day", 1));
+                let secs = days * 86_400
+                    + get("hour", 0) * 3600
+                    + get("minute", 0) * 60
+                    + get("second", 0);
+                Ok(Value::F64((secs as f64) * 1000.0 + get("millis", 0) as f64))
+            }
             "time.now" | "time.monotonic" => Ok(Value::F64(self.host.time_ms(name == "time.now"))),
             "bytes.alloc" => {
                 let n = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
@@ -2571,6 +2684,101 @@ impl Interp {
                     }
                     "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
                     _ => self.type_error(format!("no method `{name}` on Set")),
+                }
+            }
+            Value::RegexV(re) => {
+                let re = re.clone();
+                let Some(Value::Str(subject)) = args.first() else {
+                    return self.type_error(format!("regex `{name}` needs a string"));
+                };
+                let chars: Vec<char> = subject.as_ref().clone();
+                let slice = |a: usize, b: usize| -> Value {
+                    Value::Str(Rc::new(chars[a..b].to_vec()))
+                };
+                let make_match = |m: &regex::Match| -> Value {
+                    let groups: Vec<Value> = m
+                        .groups
+                        .iter()
+                        .map(|g| match g {
+                            Some((a, b)) => slice(*a, *b),
+                            None => Value::Null,
+                        })
+                        .collect();
+                    new_record(vec![
+                        ("text".into(), slice(m.start, m.end)),
+                        ("start".into(), Value::I32(m.start as i32)),
+                        ("end".into(), Value::I32(m.end as i32)),
+                        ("groups".into(), new_array(groups)),
+                    ])
+                };
+                match name {
+                    "test" => Ok(Value::Bool(re.is_match(&chars))),
+                    "find" => Ok(match re.find_at(&chars, 0) {
+                        Some(m) => make_match(&m),
+                        None => Value::Null,
+                    }),
+                    "findAll" => {
+                        let mut out = Vec::new();
+                        let mut at = 0;
+                        while at <= chars.len() {
+                            match re.find_at(&chars, at) {
+                                Some(m) => {
+                                    at = if m.end > m.start { m.end } else { m.start + 1 };
+                                    out.push(make_match(&m));
+                                }
+                                None => break,
+                            }
+                        }
+                        Ok(new_array(out))
+                    }
+                    "replaceAll" => {
+                        let with = match args.get(1) {
+                            Some(Value::Str(w)) => w.iter().collect::<String>(),
+                            Some(other) => to_display(other),
+                            None => String::new(),
+                        };
+                        let mut out: Vec<char> = Vec::new();
+                        let mut at = 0;
+                        while at <= chars.len() {
+                            match re.find_at(&chars, at) {
+                                Some(m) => {
+                                    out.extend_from_slice(&chars[at..m.start]);
+                                    out.extend(with.chars());
+                                    at = if m.end > m.start {
+                                        m.end
+                                    } else {
+                                        if m.start < chars.len() {
+                                            out.push(chars[m.start]);
+                                        }
+                                        m.start + 1
+                                    };
+                                }
+                                None => break,
+                            }
+                        }
+                        if at < chars.len() {
+                            out.extend_from_slice(&chars[at..]);
+                        }
+                        Ok(Value::Str(Rc::new(out)))
+                    }
+                    "split" => {
+                        let mut parts = Vec::new();
+                        let mut at = 0;
+                        let mut last = 0;
+                        while at <= chars.len() {
+                            match re.find_at(&chars, at) {
+                                Some(m) if m.end > m.start => {
+                                    parts.push(slice(last, m.start));
+                                    last = m.end;
+                                    at = m.end;
+                                }
+                                _ => break,
+                            }
+                        }
+                        parts.push(slice(last, chars.len()));
+                        Ok(new_array(parts))
+                    }
+                    _ => self.type_error(format!("no method `{name}` on Regex")),
                 }
             }
             Value::Str(s) => {
@@ -3814,8 +4022,8 @@ impl Interp {
     }
 }
 
-fn graph_is_relative(spec: &str) -> bool {
-    mersey_front::graph::is_relative(spec)
+fn graph_is_module(spec: &str) -> bool {
+    mersey_front::graph::is_module(spec)
 }
 
 fn walk_pattern<'a>(p: &'a Pattern, out: &mut Vec<&'a str>) {
@@ -3968,6 +4176,30 @@ pub(crate) fn rec_set(fields: &mut Vec<(String, Value)>, name: &str, value: Valu
     }
 }
 
+/// Howard Hinnant's civil-from-days / days-from-civil (proleptic Gregorian).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 fn as_num(v: &Value) -> Option<f64> {
     Some(match v {
         Value::I32(n) => *n as f64,
@@ -4071,6 +4303,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::Dom(_) => "dom element",
         Value::JsRef(_) => "web object",
         Value::Bytes(_) => "Bytes",
+        Value::RegexV(_) => "Regex",
         Value::PromiseV(_) => "Promise",
         Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "function",
         Value::Native(_) => "native function",
@@ -4122,6 +4355,7 @@ pub fn to_display(v: &Value) -> String {
         Value::Dom(id) => format!("<#{id}>"),
         Value::JsRef(h) => format!("<web:{h}>"),
         Value::Bytes(b) => format!("<Bytes[{}]>", b.borrow().len()),
+        Value::RegexV(_) => "<Regex>".to_string(),
         Value::PromiseV(_) => "<Promise>".to_string(),
         Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "<function>".to_string(),
     }

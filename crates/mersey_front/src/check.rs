@@ -52,10 +52,10 @@ pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> 
         // Bind this module's relative imports from already-checked modules.
         for item in &module.items {
             let Item::Import(im) = item else { continue };
-            if !crate::graph::is_relative(&im.from) {
+            if !crate::graph::is_module(&im.from) {
                 continue;
             }
-            let target = crate::graph::resolve(spec, &im.from);
+            let target = crate::graph::resolve_module(spec, &im.from);
             let Some(exp) = exports.get(&target) else {
                 continue; // missing module: the loader reports it
             };
@@ -274,6 +274,8 @@ pub enum Ns {
     Bytes,
     Time,
     Gc,
+    Regex,
+    Parse,
     Opaque,
 }
 
@@ -409,6 +411,7 @@ struct Checker {
     /// The generated `interface Promise<T>` (webapi), resolved lazily.
     promise_id: Option<IfaceId>,
     bytes_id: Option<ClassId>,
+    regex_id: Option<ClassId>,
     /// The module being checked (diagnostics/context).
     module_spec: String,
     /// Type names pulled in from other modules (not declared here).
@@ -464,6 +467,7 @@ impl Checker {
             element_id: 0,
             promise_id: None,
             bytes_id: None,
+            regex_id: None,
             module_spec: String::new(),
             imported: std::collections::HashSet::new(),
         };
@@ -608,6 +612,55 @@ impl Checker {
         }
         self.install_collections();
         self.install_bytes();
+        self.install_regex();
+    }
+
+    /// `Regex` (from `std:regex`) and the record a match produces.
+    fn install_regex(&mut self) {
+        let i32t = Ty::Int(IntKind::I32);
+        let match_ty = Ty::Record(Rc::new(vec![
+            RecField { name: "text".into(), ty: Ty::Str, optional: false },
+            RecField { name: "start".into(), ty: i32t.clone(), optional: false },
+            RecField { name: "end".into(), ty: i32t.clone(), optional: false },
+            RecField {
+                name: "groups".into(),
+                ty: Ty::Array(Rc::new(nullable(Ty::Str))),
+                optional: false,
+            },
+        ]));
+        let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+        let m = |name: &str, params: Vec<ParamTy>, ret: Ty| MethodInfo {
+            name: name.into(),
+            sig: FnTy { tparams: vec![], params, ret },
+            access: Access::Public,
+            is_static: false,
+            is_abstract: false,
+            is_final: false,
+            has_override: false,
+        };
+        let id = self.classes.len();
+        self.classes.push(ClassInfo {
+            name: "Regex".into(),
+            tparams: vec![],
+            parent: None,
+            host_parent: None,
+            ifaces: vec![],
+            fields: vec![],
+            methods: vec![
+                m("test", vec![p(Ty::Str)], Ty::Bool),
+                m("find", vec![p(Ty::Str)], nullable(match_ty.clone())),
+                m("findAll", vec![p(Ty::Str)], Ty::Array(Rc::new(match_ty))),
+                m("replaceAll", vec![p(Ty::Str), p(Ty::Str)], Ty::Str),
+                m("split", vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
+            ],
+            getters: vec![],
+            setters: vec![],
+            ctor: None,
+            is_abstract: false,
+            is_final: true,
+        });
+        self.type_defs.insert("Regex".into(), TypeDef::Class(id));
+        self.regex_id = Some(id);
     }
 
     /// `Bytes`: packed byte buffer with O(1) element access (spec §3.8-ish;
@@ -962,9 +1015,9 @@ impl Checker {
     }
 
     fn collect_import(&mut self, im: &ImportDecl) {
-        // Relative imports are bound precisely by `check_graph` from the
-        // exporting module — don't clobber those with `any` here.
-        if crate::graph::is_relative(&im.from) {
+        // Module imports (relative files, and `std:` modules written in
+        // Mersey) are bound precisely by `check_graph` — don't clobber those.
+        if crate::graph::is_module(&im.from) {
             return;
         }
         let Some(clause) = &im.clause else { return };
@@ -980,6 +1033,8 @@ impl Checker {
                         ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
                         ("std:time", _) => Ty::Namespace(Ns::Time),
                         ("std:gc", _) => Ty::Namespace(Ns::Gc),
+                        ("std:regex", _) => Ty::Namespace(Ns::Regex),
+                        ("std:parse", _) => Ty::Namespace(Ns::Parse),
                         ("browser:dom", global) => {
                             // An interface NAME imported as a value is the
                             // interface object: `x instanceof HTMLElement`.
@@ -2425,7 +2480,14 @@ impl Checker {
                     }
                 };
                 self.pop_scope();
-                let ret = declared_ret.or(want_ret).unwrap_or(actual_ret);
+                // If the context only offers an unresolved type variable
+                // (`map<U>(f: (T) => U)`), the body's own type is better —
+                // otherwise inference would bind `U` to itself.
+                let contextual = match &want_ret {
+                    Some(Ty::Var(_)) => None,
+                    other => other.clone(),
+                };
+                let ret = declared_ret.or(contextual).unwrap_or(actual_ret);
                 let ret = if *is_async_arrow && self.unwrap_promise(&ret).is_none() {
                     self.promise_of(ret)
                 } else {
@@ -3578,6 +3640,43 @@ impl Checker {
                     _ => self.no_member("bytes", name, pos),
                 }
             }
+            Ty::Namespace(Ns::Regex) => {
+                let regex_ty = match self.regex_id {
+                    Some(id) => Ty::Class(id, Rc::new(vec![])),
+                    None => Ty::Any,
+                };
+                match name {
+                    "compile" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![
+                            ParamTy { ty: Ty::Str, optional: false, rest: false },
+                            ParamTy { ty: Ty::Str, optional: true, rest: false },
+                        ],
+                        ret: regex_ty,
+                    })),
+                    _ => self.no_member("regex", name, pos),
+                }
+            }
+            Ty::Namespace(Ns::Parse) => {
+                // Parsing returns null on failure (§1.3: no sentinels).
+                let s = ParamTy { ty: Ty::Str, optional: false, rest: false };
+                let radix = ParamTy {
+                    ty: Ty::Int(IntKind::I32),
+                    optional: true,
+                    rest: false,
+                };
+                let f = |params: Vec<ParamTy>, ret: Ty| {
+                    Ty::Fn(Rc::new(FnTy { tparams: vec![], params, ret }))
+                };
+                match name {
+                    "int32" => f(vec![s, radix], nullable(Ty::Int(IntKind::I32))),
+                    "int64" => f(vec![s, radix], nullable(Ty::Int(IntKind::I64))),
+                    "float64" => f(vec![s], nullable(Ty::F64)),
+                    "bigint" => f(vec![s], nullable(Ty::BigInt)),
+                    "bigdec" => f(vec![s], nullable(Ty::BigDec)),
+                    _ => self.no_member("parse", name, pos),
+                }
+            }
             Ty::Namespace(Ns::Gc) => match name {
                 "collect" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
@@ -3595,14 +3694,37 @@ impl Checker {
                 })),
                 _ => self.no_member("gc", name, pos),
             },
-            Ty::Namespace(Ns::Time) => match name {
-                "now" | "monotonic" => Ty::Fn(Rc::new(FnTy {
-                    tparams: vec![],
-                    params: vec![],
-                    ret: Ty::F64,
-                })),
-                _ => self.no_member("time", name, pos),
-            },
+            Ty::Namespace(Ns::Time) => {
+                let i32t = Ty::Int(IntKind::I32);
+                let parts = Ty::Record(Rc::new(
+                    ["year", "month", "day", "hour", "minute", "second", "millis", "weekday"]
+                        .iter()
+                        .map(|n| RecField {
+                            name: (*n).into(),
+                            ty: i32t.clone(),
+                            optional: false,
+                        })
+                        .collect::<Vec<_>>(),
+                ));
+                match name {
+                    "now" | "monotonic" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret: Ty::F64,
+                    })),
+                    "parts" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy { ty: Ty::F64, optional: false, rest: false }],
+                        ret: parts,
+                    })),
+                    "fromParts" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy { ty: parts, optional: false, rest: false }],
+                        ret: Ty::F64,
+                    })),
+                    _ => self.no_member("time", name, pos),
+                }
+            }
             Ty::Namespace(Ns::Console) => match name {
                 "log" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
@@ -4043,6 +4165,9 @@ fn subst(t: &Ty, map: &HashMap<TvId, Ty>) -> Ty {
 /// One-pass inference: bind free `tparams` in `want` from `got`.
 fn unify_infer(want: &Ty, got: &Ty, tparams: &[TvId], out: &mut HashMap<TvId, Ty>) {
     match (want, got) {
+        // Never bind a parameter to itself (or to another still-free
+        // parameter): that would "infer" `U := U` and poison the call.
+        (Ty::Var(tv), Ty::Var(g)) if tparams.contains(tv) && tparams.contains(g) => {}
         (Ty::Var(tv), g) if tparams.contains(tv) => {
             out.entry(*tv).or_insert_with(|| g.clone());
         }

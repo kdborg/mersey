@@ -255,7 +255,11 @@ fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Mo
         if sources.contains_key(&spec) {
             continue;
         }
-        let bytes = read(&spec)?;
+        // `std:` modules written in Mersey are embedded, not read from disk.
+        let bytes = match mersey_front::stdlib::source(&spec) {
+            Some(text) => text.as_bytes().to_vec(),
+            None => read(&spec)?,
+        };
         let src = match source::decode(&spec, &bytes) {
             Ok(s) => s,
             Err(d) => {
@@ -273,8 +277,8 @@ fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Mo
         let module: &'static _ = Box::leak(Box::new(parsed.module));
         let mut edges = Vec::new();
         for spec_import in graph::imports(module) {
-            if graph::is_relative(&spec_import) {
-                let target = graph::resolve(&spec, &spec_import);
+            if graph::is_module(&spec_import) {
+                let target = graph::resolve_module(&spec, &spec_import);
                 edges.push(target.clone());
                 queue.push(target);
             }

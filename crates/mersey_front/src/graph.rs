@@ -24,6 +24,21 @@ pub fn is_relative(spec: &str) -> bool {
     spec.starts_with("./") || spec.starts_with("../")
 }
 
+/// Specifiers that are modules in the graph: relative files, plus the `std:`
+/// modules that are written in Mersey (`crate::stdlib`).
+pub fn is_module(spec: &str) -> bool {
+    is_relative(spec) || crate::stdlib::is_source_module(spec)
+}
+
+/// Resolve for the graph: `std:` modules resolve to themselves.
+pub fn resolve_module(referrer: &str, spec: &str) -> String {
+    if crate::stdlib::is_source_module(spec) {
+        spec.to_string()
+    } else {
+        resolve(referrer, spec)
+    }
+}
+
 /// Resolve `spec` against the directory of `referrer` (POSIX-style, as URLs
 /// and file paths both behave here).
 pub fn resolve(referrer: &str, spec: &str) -> String {
