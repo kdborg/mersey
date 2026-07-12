@@ -1160,6 +1160,20 @@ impl<'s> Parser<'s> {
         if self.depth > MAX_DEPTH {
             return self.err(Code::UnexpectedToken, "expression nesting too deep");
         }
+        // `yield` / `yield expr` (generators, §6.4).
+        if self.at_kw(Kw::Yield) {
+            let pos = self.pos();
+            self.advance();
+            let value = if matches!(
+                self.kind(),
+                TK::Punct(P::Semi | P::RParen | P::RBracket | P::RBrace | P::Comma)
+            ) {
+                None
+            } else {
+                Some(Box::new(self.parse_assignment()?))
+            };
+            return Ok(Expr::Yield { value, pos });
+        }
         // Arrow forms (§6.4): bare-ident, async bare-ident, (params) via
         // speculation, async (params) directly (async is reserved, so
         // `async (` can only start an arrow).

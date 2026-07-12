@@ -174,6 +174,8 @@ pub enum Value {
     Bytes(Rc<RefCell<Vec<u8>>>),
     /// A compiled regular expression.
     RegexV(Rc<regex::Regex>),
+    /// A generator: a coroutine that produces values (`Iter<T>`).
+    IterV(Rc<RefCell<GenState>>),
     /// A Mersey promise (§ async/await).
     PromiseV(Rc<RefCell<PromiseState>>),
     /// A callable that settles a promise; handed to host `.then(…)` so JS
@@ -231,6 +233,12 @@ impl PromiseState {
             reactions: Vec::new(),
         }))
     }
+}
+
+/// A suspended generator.
+pub struct GenState {
+    coro: Option<Coro>,
+    done: bool,
 }
 
 /// One entry of the diagnostic call stack.
@@ -1182,6 +1190,17 @@ impl Interp {
                         let h = *h;
                         self.web_iterate(h)?
                     }
+                    Value::IterV(g) => {
+                        let g = g.clone();
+                        let mut out = Vec::new();
+                        loop {
+                            match self.gen_next(g.clone())? {
+                                Value::Null => break,
+                                v => out.push(v),
+                            }
+                        }
+                        out
+                    }
                     _ => return self.type_error("`for of` needs an array, string, or host iterable"),
                 };
                 for item in items {
@@ -1364,6 +1383,38 @@ impl Interp {
         self.bind_params(c.data.params, args, &scope)?;
         if let Some(this) = &c.this {
             env_define(&scope, "this", this.clone());
+        }
+        // A generator (its body contains `yield`) returns an iterator: the
+        // body doesn't run until the first `next()`. Like async functions,
+        // generators must run on the VM — only it can suspend.
+        if !c.data.is_async {
+            let cached = c.data.chunk.borrow().clone();
+            let compiled = match cached {
+                Some(x) => x,
+                None => {
+                    let module = self.current_module.clone();
+                    let out = vm::compile_fn_in(&c.data.body, &module);
+                    *c.data.chunk.borrow_mut() = Some(out.clone());
+                    out
+                }
+            };
+            if let Some(chunk) = compiled {
+                if vm::chunk_yields(&chunk) {
+                    let coro = Coro {
+                        chunk,
+                        pc: 0,
+                        stack: Vec::new(),
+                        scopes: vec![scope],
+                        handlers: Vec::new(),
+                        cls: c.cls.clone(),
+                        result: PromiseState::pending(),
+                    };
+                    return Ok(Value::IterV(Rc::new(RefCell::new(GenState {
+                        coro: Some(coro),
+                        done: false,
+                    }))));
+                }
+            }
         }
         // Async functions always run on the bytecode VM: `await` suspends by
         // capturing VM state, which the AST walker cannot do. (Both tiers
@@ -2412,6 +2463,9 @@ impl Interp {
                 self.super_call(argv, env)
             }
             Expr::ImportCall(_) => self.type_error("dynamic import() is not in the MVP"),
+            // Generators run on the VM (only it can suspend); reaching here
+            // means the AST tier was asked to run one.
+            Expr::Yield { .. } => self.type_error("`yield` requires the bytecode VM"),
         }
     }
 
@@ -2433,6 +2487,20 @@ impl Interp {
 
     fn call_member(&mut self, recv: &Value, name: &str, args: Vec<Value>) -> VResult {
         match recv {
+            Value::IterV(g) => match name {
+                "next" => self.gen_next(g.clone()),
+                "toArray" => {
+                    let mut out = Vec::new();
+                    loop {
+                        match self.gen_next(g.clone())? {
+                            Value::Null => break,
+                            v => out.push(v),
+                        }
+                    }
+                    Ok(new_array(out))
+                }
+                _ => self.type_error(format!("no method `{name}` on Iter")),
+            },
             Value::PromiseV(p) => {
                 let p = p.clone();
                 let mut it = args.into_iter();
@@ -3286,6 +3354,12 @@ impl Interp {
                 self.settle(&result, v, false);
                 Ok(())
             }
+            Ok(vm::Flow::Yield(_)) => {
+                let result = coro.result.clone();
+                let t = self.throw("TypeError", "`yield` inside an async function");
+                self.settle(&result, t.0, true);
+                Ok(())
+            }
             Ok(vm::Flow::Await(awaited)) => {
                 let p = self.as_promise(awaited)?;
                 let status = p.borrow().status.clone();
@@ -3656,6 +3730,60 @@ impl Interp {
             // `new WebSocket(url)`, `new Uint8Array(n)`, …: any host
             // constructor reachable through the bridge.
             _ => self.web_new(bare, argv),
+        }
+    }
+
+    /// Drain a generator into a vector (used by `for … of` in the VM).
+    pub(crate) fn drain_iter(&mut self, v: &Value) -> Result<Vec<Value>, Thrown> {
+        let Value::IterV(g) = v else {
+            return self.type_error("not an iterator");
+        };
+        let g = g.clone();
+        let mut out = Vec::new();
+        loop {
+            match self.gen_next(g.clone())? {
+                Value::Null => break,
+                item => out.push(item),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Resume a generator to its next `yield` (or to completion).
+    fn gen_next(&mut self, g: Rc<RefCell<GenState>>) -> VResult {
+        if g.borrow().done {
+            return Ok(Value::Null);
+        }
+        let Some(mut coro) = g.borrow_mut().coro.take() else {
+            g.borrow_mut().done = true;
+            return Ok(Value::Null);
+        };
+        let pushed = coro.cls.clone();
+        if let Some(cls) = &pushed {
+            self.class_stack.push(cls.clone());
+        }
+        let outcome = vm::run_coro(self, &mut coro, None);
+        if pushed.is_some() {
+            self.class_stack.pop();
+        }
+        match outcome {
+            Ok(vm::Flow::Yield(v)) => {
+                // Suspended: keep the coroutine for the next call.
+                g.borrow_mut().coro = Some(coro);
+                Ok(v)
+            }
+            Ok(vm::Flow::Done(_)) => {
+                g.borrow_mut().done = true;
+                Ok(Value::Null) // exhausted
+            }
+            Ok(vm::Flow::Await(_)) => {
+                g.borrow_mut().done = true;
+                self.type_error("`await` inside a generator is not supported")
+            }
+            Err(t) => {
+                g.borrow_mut().done = true;
+                Err(t)
+            }
         }
     }
 
@@ -4304,6 +4432,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::JsRef(_) => "web object",
         Value::Bytes(_) => "Bytes",
         Value::RegexV(_) => "Regex",
+        Value::IterV(_) => "Iter",
         Value::PromiseV(_) => "Promise",
         Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "function",
         Value::Native(_) => "native function",
@@ -4356,6 +4485,7 @@ pub fn to_display(v: &Value) -> String {
         Value::JsRef(h) => format!("<web:{h}>"),
         Value::Bytes(b) => format!("<Bytes[{}]>", b.borrow().len()),
         Value::RegexV(_) => "<Regex>".to_string(),
+        Value::IterV(_) => "<Iter>".to_string(),
         Value::PromiseV(_) => "<Promise>".to_string(),
         Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "<function>".to_string(),
     }

@@ -293,6 +293,8 @@ pub enum Expr {
     SuperMember { name: String, pos: Pos },
     SuperCall { args: Vec<ArrayElem>, pos: Pos },
     ImportCall(Box<Expr>),
+    /// `yield expr` — suspends a generator, handing the value to the caller.
+    Yield { value: Option<Box<Expr>>, pos: Pos },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

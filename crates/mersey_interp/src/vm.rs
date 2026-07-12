@@ -107,14 +107,18 @@ pub enum Op {
     Throw,
     /// Suspend the coroutine on the awaited value (async functions only).
     Await,
+    /// Suspend a generator, handing the value to its consumer.
+    YieldOp,
     Return,
     ReturnNull,
 }
 
-/// How a chunk stopped: with a value, or suspended on an await.
+/// How a chunk stopped: with a value, or suspended.
 pub enum Flow {
     Done(Value),
     Await(Value),
+    /// A generator produced a value and is waiting to be resumed.
+    Yield(Value),
 }
 
 // ---- public entry points ------------------------------------------------------
@@ -140,6 +144,12 @@ pub(crate) fn compile_fn_in(body: &FnBody, module: &str) -> Option<Rc<Chunk>> {
         }
     }
     c.finish()
+}
+
+/// Does this compiled body contain a `yield`? (Generators must run on the
+/// VM: only it can suspend.)
+pub(crate) fn chunk_yields(chunk: &Chunk) -> bool {
+    chunk.code.iter().any(|op| matches!(op, Op::YieldOp))
 }
 
 /// Public wrapper for tests/tools: compile a function body from its AST
@@ -914,6 +924,15 @@ impl C {
                 None => self.bail(),
             },
             Expr::ImportCall(_) => self.bail(),
+            Expr::Yield { value, .. } => {
+                match value {
+                    Some(v) => self.expr(v),
+                    None => {
+                        self.emit(Op::Null);
+                    }
+                }
+                self.emit(Op::YieldOp);
+            }
         }
     }
 
@@ -1276,6 +1295,7 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
         Flow::Await(_) => {
             Err(i.throw_public("TypeError", "`await` outside an async function"))
         }
+        Flow::Yield(_) => Err(i.throw_public("TypeError", "`yield` outside a generator")),
     }
 }
 
@@ -1617,6 +1637,8 @@ fn exec(
                     Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
                     // Host iterables (NodeList, HTMLCollection, Set, …).
                     Value::JsRef(h) => throwing!(i.web_iterate(*h)),
+                    // A generator: drain it.
+                    Value::IterV(_) => throwing!(i.drain_iter(&v)),
                     _ => {
                         throwing!(i.type_error::<()>(
                             "`for of` needs an array, string, or host iterable"
@@ -1645,6 +1667,11 @@ fn exec(
                 let v = stack.pop().expect("await");
                 *pc_ref = pc; // resume after the Await
                 return Ok(Flow::Await(v));
+            }
+            Op::YieldOp => {
+                let v = stack.pop().expect("yield");
+                *pc_ref = pc;
+                return Ok(Flow::Yield(v));
             }
             Op::Return => {
                 *pc_ref = pc;
@@ -1816,6 +1843,7 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
             }
             Op::Throw => (1, 0),
             Op::Await => (1, 1),
+            Op::YieldOp => (1, 1),
             Op::Return => (1, 0),
             Op::ReturnNull => (0, 0),
         };

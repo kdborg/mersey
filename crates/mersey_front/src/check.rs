@@ -412,6 +412,9 @@ struct Checker {
     promise_id: Option<IfaceId>,
     bytes_id: Option<ClassId>,
     regex_id: Option<ClassId>,
+    iter_id: Option<ClassId>,
+    /// Element type of the generator currently being checked.
+    yield_ty: Option<Ty>,
     /// The module being checked (diagnostics/context).
     module_spec: String,
     /// Type names pulled in from other modules (not declared here).
@@ -468,6 +471,8 @@ impl Checker {
             promise_id: None,
             bytes_id: None,
             regex_id: None,
+            iter_id: None,
+            yield_ty: None,
             module_spec: String::new(),
             imported: std::collections::HashSet::new(),
         };
@@ -613,6 +618,69 @@ impl Checker {
         self.install_collections();
         self.install_bytes();
         self.install_regex();
+        self.install_iter();
+    }
+
+    /// `Iter<T>` — what a generator returns and what `for … of` consumes.
+    fn install_iter(&mut self) {
+        let t = self.fresh_tv("T");
+        let tv = Ty::Var(t);
+        let id = self.classes.len();
+        self.classes.push(ClassInfo {
+            name: "Iter".into(),
+            tparams: vec![t],
+            parent: None,
+            host_parent: None,
+            ifaces: vec![],
+            fields: vec![],
+            methods: vec![
+                MethodInfo {
+                    name: "next".into(),
+                    sig: FnTy { tparams: vec![], params: vec![], ret: nullable(tv.clone()) },
+                    access: Access::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_final: false,
+                    has_override: false,
+                },
+                MethodInfo {
+                    name: "toArray".into(),
+                    sig: FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret: Ty::Array(Rc::new(tv)),
+                    },
+                    access: Access::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_final: false,
+                    has_override: false,
+                },
+            ],
+            getters: vec![],
+            setters: vec![],
+            ctor: None,
+            is_abstract: false,
+            is_final: true,
+        });
+        self.type_defs.insert("Iter".into(), TypeDef::Class(id));
+        self.iter_id = Some(id);
+    }
+
+    /// `Iter<T>` for a given element type.
+    fn iter_of(&mut self, t: Ty) -> Ty {
+        match self.iter_id {
+            Some(id) => Ty::Class(id, Rc::new(vec![t])),
+            None => Ty::Any,
+        }
+    }
+
+    fn unwrap_iter(&self, t: &Ty) -> Option<Ty> {
+        let id = self.iter_id?;
+        match strip_null(t) {
+            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Any)),
+            _ => None,
+        }
     }
 
     /// `Regex` (from `std:regex`) and the record a match produces.
@@ -1114,6 +1182,10 @@ impl Checker {
                 // Promise<T> (an already-Promise<…> annotation is kept).
                 let ret = if f.is_async && self.unwrap_promise(&ret).is_none() {
                     self.promise_of(ret)
+                } else if body_yields(&f.body) && self.unwrap_iter(&ret).is_none() {
+                    // A generator: `function f(): int32` with `yield` in the
+                    // body hands callers an `Iter<int32>`.
+                    self.iter_of(ret)
                 } else {
                     ret
                 };
@@ -1562,6 +1634,20 @@ impl Checker {
                 let unwrapped =
                     FnTy { tparams: sig.tparams.clone(), params: sig.params.clone(), ret: inner };
                 return self.check_fn_body(tps, params, &unwrapped, body);
+            }
+        }
+        // A generator's body yields elements; its `return` (if any) is bare.
+        if body_yields(body) {
+            if let Some(elem) = self.unwrap_iter(&sig.ret) {
+                let saved = self.yield_ty.replace(elem);
+                let unwrapped = FnTy {
+                    tparams: sig.tparams.clone(),
+                    params: sig.params.clone(),
+                    ret: Ty::Void,
+                };
+                self.check_fn_body(tps, params, &unwrapped, body);
+                self.yield_ty = saved;
+                return;
             }
         }
         self.check_fn_body(tps, params, sig, body)
@@ -2047,6 +2133,10 @@ impl Checker {
                     // Host iterables (NodeList, HTMLCollection, …): the IDL
                     // element type isn't tracked, so annotate to refine.
                     Ty::Iface(..) => Ty::Any,
+                    // A generator / iterator.
+                    ref t if self.unwrap_iter(t).is_some() => {
+                        self.unwrap_iter(t).expect("checked")
+                    }
                     other => {
                         self.error(
                             Code::TypeMismatch,
@@ -2713,6 +2803,27 @@ impl Checker {
             Expr::ImportCall(inner) => {
                 self.check_expr(inner, Some(&Ty::Str));
                 Ty::Any
+            }
+            Expr::Yield { value, pos } => {
+                let want = self.yield_ty.clone();
+                match (value, &want) {
+                    (Some(v), Some(w)) => {
+                        let t = self.check_expr(v, Some(w));
+                        self.require_assignable(&t, w, pos_of(v), "yielded value");
+                    }
+                    (Some(v), None) => {
+                        self.check_expr(v, None);
+                    }
+                    (None, Some(w)) if !matches!(w, Ty::Void | Ty::Any | Ty::Err) => {
+                        self.error(
+                            Code::BadReturn,
+                            format!("expected a `{}` value to yield", self.show(w)),
+                            *pos,
+                        );
+                    }
+                    _ => {}
+                }
+                Ty::Void
             }
         }
     }
@@ -4085,6 +4196,74 @@ fn int_fits(v: i128, k: IntKind) -> bool {
     }
 }
 
+/// Does this body contain a `yield`? Nested arrows are separate functions,
+/// so a `yield` inside one belongs to *that* function.
+pub(crate) fn body_yields(body: &[Stmt]) -> bool {
+    fn in_expr(e: &Expr) -> bool {
+        match e {
+            Expr::Yield { .. } => true,
+            Expr::Arrow { .. } => false, // its own function
+            Expr::Paren(i) | Expr::Unary { expr: i, .. } | Expr::Update { expr: i, .. }
+            | Expr::Cast { expr: i, .. } | Expr::ImportCall(i) => in_expr(i),
+            Expr::Binary { l, r, .. } | Expr::Assign { target: l, value: r, .. } => {
+                in_expr(l) || in_expr(r)
+            }
+            Expr::Cond { cond, then, els } => in_expr(cond) || in_expr(then) || in_expr(els),
+            Expr::Call { callee, args, .. } => {
+                in_expr(callee) || args.iter().any(|a| in_expr(&a.expr))
+            }
+            Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+                args.iter().any(|a| in_expr(&a.expr))
+            }
+            Expr::Member { obj, .. } => in_expr(obj),
+            Expr::Index { obj, index, .. } => in_expr(obj) || in_expr(index),
+            Expr::Array(items) => items.iter().any(|a| in_expr(&a.expr)),
+            Expr::Record(fields) => fields.iter().any(|f| match f {
+                RecordField::Named { value: Some(v), .. } => in_expr(v),
+                RecordField::Spread(v) => in_expr(v),
+                _ => false,
+            }),
+            Expr::Template(parts) => parts.iter().any(|p| match p {
+                TplPart::Expr(e) => in_expr(e),
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
+    fn in_stmt(s: &Stmt) -> bool {
+        match s {
+            Stmt::Expr(e) | Stmt::Throw(e) => in_expr(e),
+            Stmt::Return { value: Some(e), .. } => in_expr(e),
+            Stmt::Var(v) => v.bindings.iter().any(|b| b.init.as_ref().is_some_and(in_expr)),
+            Stmt::Block(b) => b.iter().any(in_stmt),
+            Stmt::If { cond, then, els } => {
+                in_expr(cond) || in_stmt(then) || els.as_ref().is_some_and(|e| in_stmt(e))
+            }
+            Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
+                in_expr(cond) || in_stmt(body)
+            }
+            Stmt::For { init, cond, step, body } => {
+                cond.as_ref().is_some_and(in_expr)
+                    || step.iter().any(in_expr)
+                    || in_stmt(body)
+                    || matches!(init, Some(ForInit::Exprs(es)) if es.iter().any(in_expr))
+            }
+            Stmt::ForOf { iter, body, .. } => in_expr(iter) || in_stmt(body),
+            Stmt::Switch { scrutinee, clauses } => {
+                in_expr(scrutinee) || clauses.iter().any(|c| c.body.iter().any(in_stmt))
+            }
+            Stmt::Try { block, catches, finally } => {
+                block.iter().any(in_stmt)
+                    || catches.iter().any(|c| c.block.iter().any(in_stmt))
+                    || finally.as_ref().is_some_and(|f| f.iter().any(in_stmt))
+            }
+            Stmt::Labeled { body, .. } => in_stmt(body),
+            _ => false,
+        }
+    }
+    body.iter().any(in_stmt)
+}
+
 fn nullable(t: Ty) -> Ty {
     match t {
         Ty::Nullable(_) | Ty::Null | Ty::Any | Ty::Err => t,
@@ -4234,6 +4413,7 @@ fn pos_of(e: &Expr) -> Pos {
             .map(|p| pattern_pos(&p.target))
             .unwrap_or(Pos { line: 0, col: 0 }),
         Expr::Lit { pos, .. } => *pos,
+        Expr::Yield { pos, .. } => *pos,
     }
 }
 

@@ -448,6 +448,10 @@ fn expr(e: &Expr) -> String {
         Expr::SuperMember { name, .. } => format!("(. super {name})"),
         Expr::SuperCall { args, .. } => format!("(call super {})", elems_str(args)),
         Expr::ImportCall(e) => format!("(import-call {})", expr(e)),
+        Expr::Yield { value, .. } => match value {
+            Some(v) => format!("(yield {})", expr(v)),
+            None => "(yield)".to_string(),
+        },
     }
 }
 

@@ -1,0 +1,54 @@
+import { console } from "std:console";
+
+// A function containing `yield` is a generator: calling it returns an
+// Iter<T>, and the body runs lazily, one `next()` at a time.
+function counter(start: int32, to: int32): int32 {
+    let i = start;
+    while (i <= to) {
+        yield i;
+        i += 1;
+    }
+}
+
+const it = counter(1, 3);
+console.log(it.next(), it.next(), it.next(), it.next());   // last is null
+
+// `for … of` consumes a generator
+let total = 0;
+for (const n of counter(1, 10)) { total += n; }
+console.log("sum 1..10 =", total);
+
+// Laziness: an infinite generator is fine if you stop consuming
+function naturals(): int32 {
+    let n = 0;
+    while (true) {
+        yield n;
+        n += 1;
+    }
+}
+const nat = naturals();
+console.log(nat.next(), nat.next(), nat.next());
+
+// Generators can be built from other generators
+function evens(limit: int32): int32 {
+    for (const n of counter(0, limit)) {
+        if (n % 2 == 0) { yield n; }
+    }
+}
+console.log(evens(10).toArray());
+
+// State is per-instance
+const a = counter(1, 2);
+const b = counter(1, 2);
+console.log(a.next(), b.next(), a.next(), b.next(), a.next());
+
+// Generators over strings, with early exit
+function firstWords(text: string, n: int32): string {
+    let count = 0;
+    for (const word of text.split(" ")) {
+        if (count >= n) { return; }
+        yield word;
+        count += 1;
+    }
+}
+console.log(firstWords("the quick brown fox jumps", 3).toArray());

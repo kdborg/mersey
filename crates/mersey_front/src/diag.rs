@@ -94,6 +94,8 @@ pub enum Code {
     BadReturn,
     /// E0412: only `Error` subclasses may be thrown or caught (§4.6)
     BadThrow,
+    /// E0413: `yield` outside a function body
+    YieldOutsideFunction,
 }
 
 impl Code {
@@ -140,6 +142,7 @@ impl Code {
             Code::BadCast => "E0410",
             Code::BadReturn => "E0411",
             Code::BadThrow => "E0412",
+            Code::YieldOutsideFunction => "E0413",
         }
     }
 }

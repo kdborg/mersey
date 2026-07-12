@@ -27,7 +27,7 @@ pub struct BindOutput {
 
 /// Names every module sees without importing: the built-in error classes
 /// (spec §4.6 — only `Error` subclasses may be thrown).
-const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element", "Bytes", "Regex"];
+const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element", "Bytes", "Regex", "Iter"];
 
 pub fn bind(module: &Module) -> BindOutput {
     let mut prelude = Scope::default();
@@ -934,6 +934,18 @@ impl Binder {
                 }
             }
             Expr::ImportCall(e) => self.bind_expr(e),
+            Expr::Yield { value, pos } => {
+                if !self.ctx.in_function {
+                    self.error(
+                        Code::YieldOutsideFunction,
+                        "`yield` is only valid inside a function (which makes it a generator)",
+                        *pos,
+                    );
+                }
+                if let Some(v) = value {
+                    self.bind_expr(v);
+                }
+            }
         }
     }
 
