@@ -287,7 +287,67 @@ gate regressions.
   released manually, not by GC; Mersey classes cannot extend a host class
   (custom elements use the handler-record API)
 
+## Post-phase work (2026-07-12)
+
+Six areas that were honestly incomplete after Phase 7, worked in order.
+
+**1. Standard library.** Regex engine (backtracking, code-point based,
+lookaround/backrefs rejected, step-bounded); number parsing; dates;
+`Result<T, E>` written *in Mersey* and loaded through the module graph — the
+standard library is partly self-hosted.
+
+**2. Iterators and generators.** `yield` suspends over the same coroutine
+mechanism `await` uses (VM state is plain data, so capturing it *is* the
+suspension); `Iter<T>` with `next()`/`toArray()`; `for … of` over a generator.
+
+**3. Typed bytecode.** Sealed classes (§4.1) exist so a field access can be a
+constant offset — the engine was doing a hash lookup anyway. Field layout is now
+computed once per class, an instance is a flat slot vector, and each member
+access site carries a monomorphic inline cache keyed on a process-unique class
+id (not the `Rc` address, which a later class could reuse after a free and turn
+into a stale hit). Field-heavy loop 2.61s → 2.28s; allocation-heavy 1.66s →
+1.54s.
+
+**4. Generational GC.** Tracing the whole heap at every safe point made the
+pause grow with *retained* data: 16 ms per event with 20k retained objects — a
+dropped frame on every event, forever. A minor collection now traces only the
+young generation and never walks the old one. That is sound because every
+collectable container is a `GcCell` whose `borrow_mut` **is** the write barrier,
+so no future mutation site can forget to record an old→young store, and
+`GcCell::drop` keeps the old-generation index exact. Median pause with a 20x
+larger retained heap: 43x worse (always-full) → 1.8x (generational).
+`MERSEY_GC_VERIFY=1` cross-checks every minor collection against a full trace.
+Also fixed: the marker never traced `IterV`, so a suspended generator's saved
+operand stack was invisible to the collector.
+
+**5. Tooling.** LSP hover / go-to-definition / completion, all answered by the
+checker itself rather than a parallel model of the language (completion honours
+access control and knows the whole WebIDL surface). `mersey test` runs every
+`*.test.mersey`; `std:test` is written in Mersey and there is no privileged test
+mode. Package registry: dependencies are URLs, fetched by an explicit
+`mersey fetch`, pinned by hash in mersey.lock, and **never** fetched at run time
+— running code has no authority to reach the network (§5.4), so builds are
+reproducible and offline.
+
+Writing the language's own tests in Mersey immediately found two real bugs:
+`-2147483648` did not compile (the sign was not part of the literal, and the
+positive half does not fit an int32), and `for (let i = …)` shared one binding
+across iterations — the exact closure-capture bug `let` exists to prevent. Both
+fixed in both tiers.
+
+**6. §5.2 hardening.** Four ways ordinary Mersey code could *abort* the engine —
+runaway recursion, a 363 KB stack trace, dropping a long chain (`Rc` frees a
+linked structure by recursion), and marking a deep graph. All fixed; the depth
+guard measures stack **bytes**, not frames, because a debug frame and a browser
+worker's stack are nothing like a release frame and a native stack. JIT codegen
+now emits stack probes (guard pages) and, on aarch64, PAC + BTI (CFI), asserted
+by a test rather than claimed by a comment. Pointer compression is recorded as
+**not done, by construction**: it requires the engine to own its heap (unsafe),
+and the workspace forbids unsafe — see SECURITY-REVIEW.md for what that costs.
+
 ## Explicitly deferred (tracked, not forgotten)
 
 Threads/workers in-language, decimal float128, AOT native compilation,
-non-Chromium native integrations, package registry, upstreaming to Chromium.
+non-Chromium native integrations, upstreaming to Chromium. Pointer compression
+and a heap cage belong with the native-GC track (Stage B), where the engine owns
+its heap; x86-64 forward-edge CFI (CET/`endbr64`) awaits a Cranelift setting.
