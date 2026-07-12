@@ -1,0 +1,31 @@
+// Promises.
+//
+// `Promise` is the value side of async: `resolve`, `reject` and `all`. You rarely
+// need it — an `async` function already returns a promise, and `await` unwraps
+// one. `await` works at the top level of a module too: a module that awaits *is*
+// an async function, and the modules importing it wait for it.
+import { console } from "std:console";
+import { Promise } from "std:async";
+
+async function double(n: int32): int32 {
+    return n * 2;
+}
+
+// Top level await: no wrapper function, no `.then` chain.
+console.log(await double(21));
+
+// Several at once.
+const all = await Promise.all([double(1), double(2), double(3)]);
+console.log(all);
+
+console.log(await Promise.resolve(7));
+
+// A rejected promise throws where it is awaited, so ordinary `try`/`catch` works.
+async function fails(): int32 {
+    throw new Error("boom");
+}
+try {
+    console.log(await fails());
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

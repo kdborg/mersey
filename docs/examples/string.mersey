@@ -1,0 +1,27 @@
+// Text.
+//
+// A string is an immutable sequence of Unicode code points — not bytes, and not
+// UTF-16 code units. So `"héllo".length` is 5, `s[1]` is `é`, and every index
+// here counts characters. A `char` is always a whole character; a lone surrogate
+// cannot exist.
+//
+// `s[i]` gives a `char`. `s.at(i)` gives a `char?` — it admits it can miss, and
+// counts from the end for a negative index.
+import { console } from "std:console";
+
+const s: string = "héllo";
+console.log(s.length, s[1], s.at(-1), s.at(99));
+
+console.log(s.toUpperCase(), s.contains("éll"), s.indexOf("l"), s.lastIndexOf("l"));
+console.log(s.startsWith("hé"), s.endsWith("lo"), s.slice(1, 3));
+
+// `substring` clamps *and swaps* its bounds; `slice` only clamps, and gives ""
+// when they are the wrong way round. That is the whole difference between them.
+console.log(s.substring(3, 1), s.slice(3, 1) == "");
+
+console.log("  pad  ".trim(), "x".repeat(3), "7".padStart(3, "0"));
+console.log("a,b,,c".split(",").length, "a-b".replace("-", "+"));
+
+// `charAt` is the JS-shaped one: a one-code-point *string*, empty out of range.
+// `codePointAt` gives the number, and `null` out of range.
+console.log(`[${s.charAt(1)}]`, `[${s.charAt(99)}]`, s.codePointAt(1));

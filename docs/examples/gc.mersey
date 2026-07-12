@@ -1,0 +1,26 @@
+// The collector, from the inside.
+//
+// The heap is reference counted, so most garbage is freed the moment it becomes
+// unreachable. The collector exists for the rest: *cycles*, which refcounting
+// cannot free on its own.
+//
+// `collect()` is a request, not a command — it happens at the next safe point,
+// because sweeping mid-expression could free objects that only a live frame is
+// holding. You almost never need to call it.
+import { console } from "std:console";
+import { gc } from "std:gc";
+
+class Node {
+    public next: Node? = null;
+}
+
+// A cycle: `a` holds `b`, `b` holds `a`. Refcounting alone will never free these.
+for (let i = 0; i < 100; i++) {
+    const a = new Node();
+    const b = new Node();
+    a.next = b;
+    b.next = a;
+}
+
+gc.collect();
+console.log("live objects:", gc.stats().live >= 0);

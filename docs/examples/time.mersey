@@ -1,0 +1,27 @@
+// Clocks and calendars.
+//
+// `now()` is the wall clock in milliseconds since the Unix epoch — it can jump,
+// because the wall clock can be set. `monotonic()` never goes backwards and has
+// no meaningful origin: only *differences* between two readings mean anything,
+// which is what you want for measuring how long something took.
+//
+// Formatting is ISO-8601 in UTC and nothing else, because it round-trips, sorts
+// as text, and means one thing everywhere. `parse` returns null on anything else
+// — a date parser that guesses is how "01/02/03" becomes three different days.
+import { console } from "std:console";
+import { time } from "std:time";
+
+console.log(time.now() > 0.0, time.monotonic() >= 0.0);
+
+// A fixed instant, so this example prints the same thing every time.
+const stamp: float64 = 1752307200000.0;
+console.log(time.format(stamp));
+console.log(time.parse(time.format(stamp)) == stamp);
+
+// Broken down, and put back together.
+const p = time.parts(stamp);
+console.log(p.year, p.month, p.day, p.hour, p.weekday);
+console.log(time.fromParts(p) == stamp);
+
+// Anything that is not ISO-8601 UTC is null, rather than a guess.
+console.log(time.parse("12/07/2025"), time.parse("2025-07-12T08:00:00+02:00"));

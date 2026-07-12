@@ -90,6 +90,20 @@ pub fn build(outdir: &str) -> ExitCode {
             slug(&g.title),
             esc(&g.title)
         );
+        // The description and the example come from `docs/examples/<key>.mersey`
+        // — a real program, executed by the test suite, shown with the output it
+        // actually printed. A documentation example that is not run is a claim
+        // nobody checks; it rots the first time the API changes, and the only
+        // person who finds out is the reader.
+        let example = fs::read_to_string(root.join(format!("docs/examples/{}.mersey", g.key)));
+        let output = fs::read_to_string(root.join(format!("docs/examples/{}.expect", g.key)));
+        let (about, code) = match &example {
+            Ok(src) => split_doc_comment(src),
+            Err(_) => (String::new(), String::new()),
+        };
+        if !about.is_empty() {
+            let _ = write!(body, "<div class=\"about\">{}</div>\n", paragraphs(&about));
+        }
         if !g.import.is_empty() {
             let _ = write!(
                 body,
@@ -97,6 +111,21 @@ pub fn build(outdir: &str) -> ExitCode {
                 esc(&g.title),
                 esc(&g.import)
             );
+        }
+        if !code.is_empty() {
+            let _ = write!(
+                body,
+                "<details class=\"example\" open><summary>Example</summary>\n<pre><code>{}</code></pre>\n",
+                esc(code.trim_end())
+            );
+            if let Ok(out_text) = &output {
+                let _ = write!(
+                    body,
+                    "<p class=\"note\">Output:</p>\n<pre class=\"output\"><code>{}</code></pre>\n",
+                    esc(out_text.trim_end())
+                );
+            }
+            body.push_str("</details>\n");
         }
         if g.members.is_empty() {
             body.push_str("<p class=\"empty\">No members.</p>\n");
@@ -200,6 +229,46 @@ pub fn build(outdir: &str) -> ExitCode {
         arch_pages.len()
     );
     ExitCode::SUCCESS
+}
+
+/// Split an example into its leading `//` block (what the module *is*) and the
+/// program below it (what using it looks like).
+fn split_doc_comment(src: &str) -> (String, String) {
+    let mut about: Vec<String> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    let mut in_header = true;
+    for line in src.lines() {
+        if in_header && line.starts_with("//") {
+            let t = line.trim_start_matches('/').trim();
+            // `// caps:` is an instruction to the test runner, not prose.
+            if t.starts_with("caps:") {
+                continue;
+            }
+            about.push(t.to_string());
+            continue;
+        }
+        if in_header && line.trim().is_empty() && about.is_empty() {
+            continue;
+        }
+        in_header = false;
+        rest.push(line.to_string());
+    }
+    (
+        about.join("\n").trim().to_string(),
+        rest.join("\n").trim_start().to_string(),
+    )
+}
+
+/// Blank-line-separated paragraphs, with inline markup.
+fn paragraphs(text: &str) -> String {
+    let mut out = String::new();
+    for para in text.split("\n\n") {
+        let joined = para.split('\n').collect::<Vec<_>>().join(" ");
+        if !joined.trim().is_empty() {
+            let _ = write!(out, "<p>{}</p>", inline(joined.trim()));
+        }
+    }
+    out
 }
 
 fn read_sorted_ext(dir: &Path, ext: &str) -> Vec<std::path::PathBuf> {
@@ -448,6 +517,16 @@ fn inline(s: &str) -> String {
                 }
                 out.push_str("**");
                 i += 2;
+            }
+            '*' => {
+                if let Some(end) = find_seq(&chars, i + 1, "*") {
+                    let inner: String = chars[i + 1..end].iter().collect();
+                    let _ = write!(out, "<em>{}</em>", esc(&inner));
+                    i = end + 1;
+                    continue;
+                }
+                out.push('*');
+                i += 1;
             }
             '[' => {
                 if let (Some(close), Some(open)) = (

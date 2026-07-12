@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The examples on the library pages are programs. If one stops working, the
+      # docs are wrong — so it fails the build rather than the reader.
+      - run: cargo test -p mersey_cli --test doc_examples
       - run: cargo run --release -p mersey_cli -- doc site
       - uses: actions/upload-artifact@v4
         with:

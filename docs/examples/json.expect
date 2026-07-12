@@ -1,0 +1,4 @@
+{"name":"mersey","version":1,"tags":["fast","typed"]}
+a number: 43
+HELLO
+caught: cannot cast record to `int32`

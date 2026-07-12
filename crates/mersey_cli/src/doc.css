@@ -131,3 +131,21 @@ code.name.value { color: var(--accent); }
 
 pre.output { border-left: 3px solid var(--fn); background: transparent; }
 section { scroll-margin-top: 4rem; }
+
+.about p { color: var(--fg); }
+.about p:first-child { font-size: 1.05rem; }
+details.example {
+  margin: 1rem 0 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 0.6rem 0.9rem;
+  background: var(--code-bg);
+}
+details.example > summary {
+  cursor: pointer;
+  font: 600 0.75rem/1.6 ui-sans-serif, system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+details.example pre { background: var(--bg); }

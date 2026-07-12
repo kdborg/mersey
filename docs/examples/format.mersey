@@ -1,0 +1,12 @@
+// Turning values into strings for display.
+//
+// Two functions, both about *presentation* rather than parsing: `pad` for
+// aligning columns, `fixed` for a set number of decimal places.
+import { console } from "std:console";
+import { format } from "std:format";
+
+// `fixed` rounds to a number of decimals — it does not truncate.
+console.log(format.fixed(1.23456, 2), format.fixed(1.0, 3), format.fixed(2.999, 1));
+
+// `pad` takes anything and pads it to a width, for lining columns up.
+console.log(`[${format.pad("id", 6)}]`, `[${format.pad(42, 6)}]`);

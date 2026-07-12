@@ -1,0 +1,23 @@
+// caps: random
+//
+// Randomness — and it is a capability, not arithmetic.
+//
+// It seeds tokens and keys and it is an observable side channel, so a program
+// has to be *given* it: `mersey run --allow-random`, or `data-allow="random"` on
+// the script tag in a browser. Without it, every function here refuses. That is
+// also why it is not `math.random`, where it would be reached for without a
+// thought.
+//
+// It draws from the platform CSPRNG — `/dev/urandom` natively,
+// `crypto.getRandomValues` in a browser. There is no userspace PRNG to seed
+// wrong. `int` rejection-samples rather than taking a modulo, which would bias
+// the low values.
+import { console } from "std:console";
+import { random } from "std:random";
+
+const f = random.float();          // uniform in [0, 1)
+const d = random.int(1l, 6l);      // uniform in [1, 6] — inclusive, unbiased
+const key = random.bytes(16);      // 16 bytes of CSPRNG output
+
+// The values differ every run, so the example prints what is true of them.
+console.log(f >= 0.0 && f < 1.0, d >= 1l && d <= 6l, key.length);

@@ -1,0 +1,29 @@
+// JSON, in and out.
+//
+// `parse` returns `unknown`, deliberately: the shape of a document is not known
+// until it has been read, and any other return type would be a claim the checker
+// cannot back up. So you narrow it — with `is`, which asks, or `as`, which
+// insists and throws at the cast if it was wrong.
+import { console } from "std:console";
+import { json } from "std:json";
+
+const text = json.stringify({ name: "mersey", version: 1, tags: ["fast", "typed"] });
+console.log(text);
+
+// Narrow with `is` when you want to ask.
+const doc: unknown = json.parse("42");
+if (doc is int32) {
+    console.log("a number:", doc + 1);
+}
+
+// Narrow with `as` when you are sure. If you are wrong, it throws here — at the
+// cast — rather than letting the value travel on inside a type it does not hold.
+const name = json.parse("\"hello\"") as string;
+console.log(name.toUpperCase());
+
+try {
+    const wrong = json.parse("{}") as int32;
+    console.log("unreachable", wrong);
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

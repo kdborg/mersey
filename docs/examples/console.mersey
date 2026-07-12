@@ -1,0 +1,15 @@
+// Printing, with levels.
+//
+// `log` goes to standard output; `warn` and `error` go to standard error, so
+// they survive `mersey run app > out.txt` — which is the whole reason a level
+// exists. In a browser each level maps to the matching console method.
+//
+// Every one takes any number of arguments of any type: `unknown` is the top
+// type, and everything is assignable *to* it.
+import { console } from "std:console";
+
+console.log("plain", 1, true, [1, 2]);
+console.info("something worth noting");
+console.warn("something suspicious");
+console.error("something wrong");
+console.debug("detail you usually do not want");

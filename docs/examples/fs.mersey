@@ -1,0 +1,20 @@
+// Reading files — behind a capability.
+//
+// Denied by default (§5.3). Without `--allow-read` the call refuses; with it, the
+// host does the reading. This example is run *without* the capability, so what
+// you see below is what a program gets when it has not been granted one.
+//
+// `mersey audit <file>` reports which capabilities a program's imports require,
+// before you run it.
+import { console } from "std:console";
+import { fs } from "std:fs";
+import { caps } from "std:caps";
+
+console.log("granted:", caps.has("read"));
+
+try {
+    const text = fs.readText("notes.txt");
+    console.log("read", text.length, "characters");
+} catch (e: Error) {
+    console.log("refused:", e.message);
+}

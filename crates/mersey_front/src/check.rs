@@ -228,6 +228,8 @@ pub struct ApiGroup {
     pub title: String,
     /// The import that brings it into scope, if any.
     pub import: String,
+    /// Stable name for this group's example file (`docs/examples/<key>.mersey`).
+    pub key: String,
     pub members: Vec<ApiMember>,
 }
 
@@ -271,8 +273,10 @@ pub fn api_reference() -> Vec<ApiGroup> {
                 is_fn: m.kind == KIND_METHOD,
             })
             .collect();
+        let title = namespace_module(ns).trim_start_matches("std:").to_string();
         out.push(ApiGroup {
-            title: namespace_module(ns).trim_start_matches("std:").to_string(),
+            key: title.clone(),
+            title,
             import: namespace_module(ns).to_string(),
             members,
         });
@@ -283,6 +287,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
     let strings = c.members_of(&Type::Str);
     out.push(ApiGroup {
         title: "string".to_string(),
+        key: "string".to_string(),
         import: String::new(),
         members: strings.into_iter().map(to_api).collect(),
     });
@@ -304,6 +309,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
     array_members.sort_by(|a, b| a.name.cmp(&b.name));
     out.push(ApiGroup {
         title: "T[] (array)".to_string(),
+        key: "array".to_string(),
         import: String::new(),
         members: array_members,
     });
@@ -326,8 +332,15 @@ pub fn api_reference() -> Vec<ApiGroup> {
                     is_fn: m.kind == KIND_METHOD,
                 })
                 .collect();
+            // `std:regex` (the module) and `Regex` (the compiled pattern) are
+            // different things with the same name; their example files cannot be.
+            let mut key = name.to_lowercase();
+            if out.iter().any(|g| g.key == key) {
+                key.push_str("-class");
+            }
             out.push(ApiGroup {
                 title: name.to_string(),
+                key,
                 import: String::new(),
                 members,
             });

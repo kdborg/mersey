@@ -1,0 +1,35 @@
+// Lazy sequences.
+//
+// A function containing `yield` *is* a generator — there is no `function*`.
+// Calling it gives an `Iter<T>`, and nothing in the body runs until you ask for
+// an element.
+//
+// `map`, `filter` and `take` are lazy too: each returns a new iterator that pulls
+// from the one below it. So `naturals().take(3)` runs an *infinite* generator
+// exactly three times.
+import { console } from "std:console";
+
+function naturals(): int32 {
+    let i: int32 = 1;
+    while (true) {
+        yield i;
+        i += 1;
+    }
+}
+
+// An infinite generator, consumed three elements deep.
+console.log(naturals().map((n: int32) => n * 10).take(3).toArray());
+console.log(naturals().filter((n: int32) => n % 2 == 0).take(4).toArray());
+
+// `next()` by hand: `null` is the end of the sequence.
+function pair(): int32 {
+    yield 1;
+    yield 2;
+}
+const it = pair();
+console.log(it.next(), it.next(), it.next());
+
+// And `for … of` consumes one.
+for (const n of naturals().take(3)) {
+    console.log(n);
+}

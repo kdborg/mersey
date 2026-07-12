@@ -1,0 +1,30 @@
+// Lazy sequences that can wait.
+//
+// An `async` function containing `yield` is an *async generator*: it can `await`
+// between yields. No new syntax is needed — a function that yields is already a
+// generator, and one coroutine does both jobs.
+//
+// Its `next()` hands back a promise. `for await` is the loop form: it pulls a
+// promise, awaits it, and stops at `null`.
+import { console } from "std:console";
+
+async function fetchOne(n: int32): int32 {
+    return n * 10;
+}
+
+async function pages(count: int32): int32 {
+    let i: int32 = 1;
+    while (i <= count) {
+        const page = await fetchOne(i);   // await *inside* the generator
+        yield page;                       // then hand it out
+        i += 1;
+    }
+}
+
+for await (const p of pages(3)) {
+    console.log("page:", p);
+}
+
+// `next()` by hand: a promise each time, and `null` at the end.
+const it = pages(1);
+console.log(await it.next(), await it.next());

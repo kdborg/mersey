@@ -1,0 +1,15 @@
+// What this program is allowed to do.
+//
+// Capabilities are granted at launch (`--allow-read`, `--allow-env`,
+// `--allow-random`) and denied otherwise. A program can ask what it has, and can
+// *drop* one — irreversibly — which is how a program narrows its own authority
+// before handling something it does not trust.
+import { console } from "std:console";
+import { caps } from "std:caps";
+
+console.log("read:", caps.has("read"), " env:", caps.has("env"));
+console.log("granted:", caps.list().length);
+
+// Dropping is one-way: there is no way to ask for it back.
+caps.drop("read");
+console.log("read after drop:", caps.has("read"));

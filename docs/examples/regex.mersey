@@ -1,0 +1,23 @@
+// Compiling a regular expression.
+//
+// `compile` is the only member: it gives back a `Regex`, and everything else is
+// a method on that. The engine is a backtracking matcher over *code points*, so
+// `.` matches one character rather than one byte — and it rejects lookaround and
+// backreferences rather than pretending to support them.
+import { console } from "std:console";
+import { regex } from "std:regex";
+
+const re = regex.compile("a+b");
+console.log(re.test("aaab"), re.test("xyz"));
+
+// Flags, when you want them.
+const ci = regex.compile("hello", "i");
+console.log(ci.test("HELLO"));
+
+// A bad pattern is an error at compile time, not a silent mismatch later.
+try {
+    const bad = regex.compile("a(");
+    console.log("unreachable", bad.test("a"));
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

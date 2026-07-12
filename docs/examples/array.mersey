@@ -1,0 +1,34 @@
+// Arrays.
+//
+// Mutation is always explicit in the name, and mutating methods return `void`,
+// never `this` or a copy (§1.3). So there is no `sort` — there is `sortInPlace`
+// (which mutates) and `toSorted` (which does not), and you cannot confuse them.
+// `contains` is what other languages call `includes`.
+//
+// `xs[i]` is a `T`. `xs.at(i)` is a `T?` — it admits it can miss, and counts from
+// the end for a negative index.
+import { console } from "std:console";
+
+const xs: int32[] = [3, 1, 2];
+console.log(xs.length, xs[0], xs.at(-1), xs.at(99));
+
+// Non-mutating: the original is untouched.
+console.log(xs.toSorted((a: int32, b: int32) => a - b), xs.toReversed(), xs);
+
+// Mutating: the name says so, and it returns void.
+xs.sortInPlace((a: int32, b: int32) => a - b);
+console.log(xs);
+
+xs.push(4);
+xs.insertAt(0, 0);          // what JS calls `unshift`
+const first = xs.removeAt(0); // what JS calls `shift`
+console.log(first, xs);
+
+console.log(xs.map((n: int32) => n * 10).filter((n: int32) => n > 20));
+console.log(xs.reduce((acc: int32, n: int32) => acc + n, 0));
+console.log(xs.find((n: int32) => n > 2), xs.findIndex((n: int32) => n > 2));
+console.log(xs.contains(3), xs.indexOf(3), xs.some((n: int32) => n > 3), xs.every((n: int32) => n > 0));
+console.log(xs.slice(1, 3), xs.join("-"));
+
+const nested: int32[][] = [[1, 2], [3]];
+console.log(nested.flat());

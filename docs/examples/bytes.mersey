@@ -1,0 +1,27 @@
+// Packed binary data.
+//
+// A Mersey string is a sequence of Unicode code points (§2.1); bytes are what a
+// file, a socket or a canvas actually holds. `bytes` is the escape hatch for
+// data-heavy work: elements are `uint8`, indexed in O(1), with no per-element
+// hop across the host bridge.
+//
+// `decodeUtf8` returns `null` on invalid UTF-8 rather than U+FFFD — a decode that
+// quietly succeeds on garbage is how corrupt data travels.
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+const b = bytes.alloc(4);
+b[0] = 72;
+b[1] = 105;
+console.log(b.length, b[0], b[1]);
+
+bytes.fill(b, 255);
+console.log(b[0], b[3]);
+
+// Strings and bytes, both ways. "héllo" is 5 code points but 6 UTF-8 bytes.
+const utf8 = bytes.encodeUtf8("héllo");
+console.log(utf8.length, bytes.decodeUtf8(utf8));
+
+const invalid = bytes.alloc(1);
+invalid[0] = 255;
+console.log(bytes.decodeUtf8(invalid));
