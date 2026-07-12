@@ -191,6 +191,13 @@ impl PromiseState {
     }
 }
 
+/// One entry of the diagnostic call stack.
+pub struct Frame_ {
+    pub name: String,
+    pub module: String,
+    pub pos: mersey_front::diag::Pos,
+}
+
 /// A suspended async function: the VM's whole state is data, so `await`
 /// captures it and resumes later (no CPS transform, no threads).
 pub struct Coro {
@@ -347,6 +354,9 @@ pub struct Interp {
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
     /// Class whose method is currently executing (innermost last), for `super`.
     class_stack: Vec<Rc<ClassDef>>,
+    /// Call stack for diagnostics: (function name, module, position of the
+    /// instruction currently executing in that frame).
+    frames: Vec<Frame_>,
     /// Execute compiled bytecode where available (Tier 0); AST fallback
     /// otherwise. Off = pure tree-walking (differential-test oracle).
     pub use_vm: bool,
@@ -396,6 +406,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         callbacks: Vec::new(),
         error_classes,
         class_stack: Vec::new(),
+        frames: Vec::new(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
@@ -412,7 +423,7 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
     ClassDef {
         name: name.to_string(),
         parent,
-        fields: vec![("message".to_string(), None)],
+        fields: vec![("message".to_string(), None), ("stack".to_string(), None)],
         methods: HashMap::new(),
         getters: HashMap::new(),
         setters: HashMap::new(),
@@ -434,7 +445,43 @@ impl Interp {
         let cls = self.error_classes[class].clone();
         let mut fields = HashMap::new();
         fields.insert("message".to_string(), Value::Str(Rc::new(msg.into().chars().collect())));
+        // Attach where it happened and how we got there.
+        let stack = self.stack_trace();
+        fields.insert("stack".to_string(), Value::Str(Rc::new(stack.chars().collect())));
         Thrown(Value::Instance(Rc::new(RefCell::new(Instance { class: cls, fields }))))
+    }
+
+    /// `at fn (module:line:col)` per frame, innermost first.
+    pub fn stack_trace(&self) -> String {
+        let mut out = String::new();
+        for f in self.frames.iter().rev() {
+            let loc = if f.pos.line > 0 {
+                format!("{}:{}:{}", f.module, f.pos.line, f.pos.col)
+            } else {
+                f.module.clone()
+            };
+            out.push_str(&format!("\n    at {} ({loc})", f.name));
+        }
+        out
+    }
+
+    /// Update the position of the innermost frame (called by the VM loop).
+    pub(crate) fn set_site(&mut self, pos: mersey_front::diag::Pos) {
+        if let Some(f) = self.frames.last_mut() {
+            f.pos = pos;
+        }
+    }
+
+    pub(crate) fn push_frame(&mut self, name: &str, module: &str) {
+        self.frames.push(Frame_ {
+            name: name.to_string(),
+            module: module.to_string(),
+            pos: mersey_front::diag::Pos { line: 0, col: 0 },
+        });
+    }
+
+    pub(crate) fn pop_frame(&mut self) {
+        self.frames.pop();
     }
 
     fn type_error<T>(&self, msg: impl Into<String>) -> Result<T, Thrown> {
@@ -446,12 +493,13 @@ impl Interp {
         match &t.0 {
             Value::Instance(i) => {
                 let i = i.borrow();
-                let msg = i
+                let msg = i.fields.get("message").map(to_display).unwrap_or_default();
+                let stack = i
                     .fields
-                    .get("message")
-                    .map(|m| to_display(m))
+                    .get("stack")
+                    .map(to_display)
                     .unwrap_or_default();
-                format!("{}: {}", i.class.name, msg)
+                format!("{}: {}{}", i.class.name, msg, stack)
             }
             other => format!("uncaught: {}", to_display(other)),
         }
@@ -552,9 +600,13 @@ impl Interp {
         // Execute remaining top-level statements in order (including
         // exported variable statements) — compiled when possible.
         if self.use_vm {
-            if let Some(chunk) = vm::compile_module_stmts(module) {
+            let spec = self.current_module.clone();
+            if let Some(chunk) = vm::compile_module_stmts_in(module, &spec) {
                 let globals = self.globals.clone();
-                vm::run_chunk(self, &chunk, globals)?;
+                self.push_frame("<module>", &spec);
+                let out = vm::run_chunk(self, &chunk, globals);
+                self.pop_frame();
+                out?;
                 return self.drain_microtasks();
             }
         }
@@ -1138,7 +1190,8 @@ impl Interp {
             let compiled = match cached {
                 Some(x) => x,
                 None => {
-                    let out = vm::compile_fn(&c.data.body);
+                    let module = self.current_module.clone();
+                    let out = vm::compile_fn_in(&c.data.body, &module);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -1154,7 +1207,8 @@ impl Interp {
             let compiled = match cached {
                 Some(x) => x,
                 None => {
-                    let out = vm::compile_fn(&c.data.body);
+                    let module = self.current_module.clone();
+                    let out = vm::compile_fn_in(&c.data.body, &module);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -1168,8 +1222,13 @@ impl Interp {
                         }
                     }
                 }
-                let frame = Frame::enter(self, c);
-                return vm::run_chunk(frame.i, &chunk, scope);
+                self.push_frame(&c.data.name, &chunk.module);
+                let out = {
+                    let frame = Frame::enter(self, c);
+                    vm::run_chunk(frame.i, &chunk, scope)
+                };
+                self.pop_frame();
+                return out;
             }
         }
         match &c.data.body {

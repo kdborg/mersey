@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mersey_front::ast::*;
+use mersey_front::diag::Pos;
 
 use crate::{
     child_env, env_define, env_get, env_set, kind_of, parse_literal, to_display, Closure, Coro,
@@ -34,6 +35,17 @@ pub struct Chunk {
     pub patterns: Vec<&'static Pattern>,
     pub types: Vec<&'static Type>,
     pub(crate) protos: Vec<Rc<FnData>>,
+    /// Source position per instruction (parallel to `code`) — errors get a
+    /// file:line:col instead of a bare message.
+    pub positions: Vec<Pos>,
+    /// The module this chunk came from.
+    pub module: String,
+}
+
+impl Chunk {
+    pub fn pos_at(&self, pc: usize) -> Pos {
+        self.positions.get(pc).copied().unwrap_or(Pos { line: 0, col: 0 })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +121,12 @@ pub enum Flow {
 
 /// Compile a function body; `None` = unsupported construct, use the AST.
 pub(crate) fn compile_fn(body: &FnBody) -> Option<Rc<Chunk>> {
+    compile_fn_in(body, "")
+}
+
+pub(crate) fn compile_fn_in(body: &FnBody, module: &str) -> Option<Rc<Chunk>> {
     let mut c = C::new();
+    c.module = module.to_string();
     match body {
         FnBody::Block(stmts) => {
             for s in *stmts {
@@ -133,7 +150,15 @@ pub fn compile_fn_public(stmts: &'static [mersey_front::ast::Stmt]) -> Option<Rc
 
 /// Compile a module's top-level statements (including exported vars).
 pub(crate) fn compile_module_stmts(module: &'static Module) -> Option<Rc<Chunk>> {
+    compile_module_stmts_in(module, "")
+}
+
+pub(crate) fn compile_module_stmts_in(
+    module: &'static Module,
+    spec: &str,
+) -> Option<Rc<Chunk>> {
     let mut c = C::new();
+    c.module = spec.to_string();
     for item in &module.items {
         match item {
             Item::Stmt(s) => c.stmt(s),
@@ -226,6 +251,8 @@ struct LoopCtx {
 
 struct C {
     code: Vec<Op>,
+    positions: Vec<Pos>,
+    cur_pos: Pos,
     consts: Vec<Value>,
     names: Vec<String>,
     patterns: Vec<&'static Pattern>,
@@ -235,6 +262,7 @@ struct C {
     scope_depth: usize,
     temp: u32,
     labeled_next: Option<String>,
+    module: String,
     ok: bool,
 }
 
@@ -242,6 +270,8 @@ impl C {
     fn new() -> C {
         C {
             code: vec![],
+            positions: vec![],
+            cur_pos: Pos { line: 0, col: 0 },
             consts: vec![],
             names: vec![],
             patterns: vec![],
@@ -251,6 +281,7 @@ impl C {
             scope_depth: 0,
             temp: 0,
             labeled_next: None,
+            module: String::new(),
             ok: true,
         }
     }
@@ -266,6 +297,8 @@ impl C {
             patterns: self.patterns,
             types: self.types,
             protos: self.protos,
+            positions: self.positions,
+            module: self.module,
         };
         debug_assert!(verify(&chunk).is_ok(), "verifier: {:?}", verify(&chunk));
         Some(Rc::new(chunk))
@@ -277,6 +310,7 @@ impl C {
 
     fn emit(&mut self, op: Op) -> usize {
         self.code.push(op);
+        self.positions.push(self.cur_pos);
         self.code.len() - 1
     }
 
@@ -319,6 +353,9 @@ impl C {
     fn stmt(&mut self, s: &'static Stmt) {
         if !self.ok {
             return;
+        }
+        if let Some(p) = stmt_pos(s) {
+            self.cur_pos = p;
         }
         match s {
             Stmt::Block(b) => {
@@ -667,6 +704,15 @@ impl C {
         if !self.ok {
             return;
         }
+        let saved = self.cur_pos;
+        if let Some(p) = expr_pos(e) {
+            self.cur_pos = p;
+        }
+        self.expr_inner(e);
+        self.cur_pos = saved;
+    }
+
+    fn expr_inner(&mut self, e: &'static Expr) {
         match e {
             Expr::Ident(n) => {
                 let i = self.name(&n.text);
@@ -1145,6 +1191,49 @@ impl C {
     }
 }
 
+pub(crate) fn stmt_pos(s: &Stmt) -> Option<Pos> {
+    match s {
+        Stmt::Return { pos, .. } | Stmt::Break { pos, .. } | Stmt::Continue { pos, .. } => {
+            Some(*pos)
+        }
+        Stmt::Expr(e) | Stmt::Throw(e) => expr_pos(e),
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => {
+            expr_pos(cond)
+        }
+        Stmt::ForOf { iter, .. } => expr_pos(iter),
+        Stmt::Switch { scrutinee, .. } => expr_pos(scrutinee),
+        Stmt::Var(v) => v.bindings.first().and_then(|b| match &b.target {
+            Pattern::Name(n) => Some(n.pos),
+            _ => b.init.as_ref().and_then(expr_pos),
+        }),
+        Stmt::Labeled { label, .. } => Some(label.pos),
+        _ => None,
+    }
+}
+
+pub(crate) fn expr_pos(e: &Expr) -> Option<Pos> {
+    match e {
+        Expr::Ident(n) => Some(n.pos),
+        Expr::This(p) => Some(*p),
+        Expr::Lit { pos, .. } => Some(*pos),
+        Expr::Unary { pos, .. } => Some(*pos),
+        Expr::SuperMember { pos, .. } | Expr::SuperCall { pos, .. } => Some(*pos),
+        Expr::Paren(inner) | Expr::Update { expr: inner, .. } | Expr::Cast { expr: inner, .. } => {
+            expr_pos(inner)
+        }
+        Expr::Binary { l, .. } | Expr::Assign { target: l, .. } | Expr::Cond { cond: l, .. } => {
+            expr_pos(l)
+        }
+        Expr::Call { callee, .. } => expr_pos(callee),
+        Expr::Member { obj, .. } | Expr::Index { obj, .. } => expr_pos(obj),
+        Expr::New { ty, .. } => match ty {
+            Type::Named { pos, .. } => Some(*pos),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Conservative: does this statement list contain `return`/`break`/
 /// `continue` (not crossing into nested arrows, which are separate
 /// functions)? Used to route try+finally with abrupt exits to the AST tier.
@@ -1270,6 +1359,7 @@ fn exec(
 
     loop {
         let op = chunk.code[pc];
+        i.set_site(chunk.pos_at(pc));
         pc += 1;
         match op {
             Op::Const(ci) => stack.push(chunk.consts[ci as usize].clone()),
