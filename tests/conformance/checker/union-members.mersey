@@ -1,0 +1,24 @@
+// A union has a member when *every* arm has it, at the same type: reading it is
+// safe whichever arm the value turns out to be. Otherwise it does not, and you
+// narrow first (`x is T`, `x instanceof T`, `x as T`).
+
+class A { public shared: int32 = 1; public onlyA: bool = true; }
+class B { public shared: int32 = 2; }
+class C { public shared: string = "s"; }
+
+function ok(x: A | B): int32 {
+    return x.shared;        // both arms: int32
+}
+
+function partial(x: A | B): bool {
+    return x.onlyA;         // only A has it
+}
+
+function clashing(x: A | C): int32 {
+    return x.shared;        // int32 on one arm, string on the other
+}
+
+function narrowed(x: A | C): int32 {
+    if (x is C) { return 0; }
+    return x.shared;        // guard clause: the rest of the block is the else
+}

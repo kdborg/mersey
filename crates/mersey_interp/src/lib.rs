@@ -3184,6 +3184,10 @@ impl Interp {
                 let v = self.eval(expr, env)?;
                 self.eval_cast(v, *wrapping, ty)
             }
+            Expr::Is { expr, ty } => {
+                let v = self.eval(expr, env)?;
+                Ok(Value::Bool(self.value_is(&v, ty)))
+            }
             Expr::Call {
                 callee,
                 args,
@@ -5271,7 +5275,57 @@ impl Interp {
         })
     }
 
-    fn eval_cast(&mut self, v: Value, wrapping: bool, ty: &TypeExpr) -> VResult {
+    /// `x is T` — does this value hold a `T`?
+    ///
+    /// The same question the checked cast asks, answered instead of thrown. It
+    /// is a *value* test, not type reflection: nothing here hands a type back to
+    /// the program to compute with (§1.2).
+    pub(crate) fn value_is(&self, v: &Value, ty: &TypeExpr) -> bool {
+        let TypeExpr::ArrayOf(inner) = ty else {
+            let TypeExpr::Named { name, .. } = ty else {
+                return false;
+            };
+            return self.value_is_named(v, name);
+        };
+        // `xs is int32[]`: every element has to hold, or the answer is a lie the
+        // first time someone reads one.
+        match v {
+            Value::Array(a) => a.borrow().iter().all(|e| self.value_is(e, inner)),
+            _ => false,
+        }
+    }
+
+    fn value_is_named(&self, v: &Value, name: &str) -> bool {
+        match (name, v) {
+            ("string", Value::Str(_))
+            | ("bool", Value::Bool(_))
+            | ("char", Value::Char(_))
+            | ("bigint", Value::BigIntV(_))
+            | ("bigdec", Value::BigDecV(_))
+            | ("float64", Value::F64(_))
+            | ("float32", Value::F32(_)) => true,
+            // The width is the value's own: an int64 does not hold an int32,
+            // even when the number would fit. `is` reports what a value *is*.
+            ("int32" | "int", Value::I32(_)) => true,
+            ("int64", Value::I64(_)) => true,
+            ("uint32" | "uint", Value::U32(_)) => true,
+            ("uint64", Value::U64(_)) => true,
+            // A class, or any of its bases.
+            (_, Value::Instance(inst)) => {
+                let mut cls = Some(inst.borrow().class.clone());
+                while let Some(c) = cls {
+                    if c.name() == name {
+                        return true;
+                    }
+                    cls = c.parent.clone();
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn eval_cast(&mut self, v: Value, wrapping: bool, ty: &TypeExpr) -> VResult {
         let TypeExpr::Named { name, .. } = ty else {
             return Ok(v); // casts to complex types: checker's concern
         };

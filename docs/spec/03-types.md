@@ -151,3 +151,46 @@ what you think it is before you use it.
 
 Functions that keep the width of a number they were given (`math.abs`) are
 **generic with a bound**, not untyped: `abs<T: Numeric>(x: T): T`.
+
+
+## 3.10 `is` — testing a value's type
+
+`x is T` asks whether a value holds a `T`. It is a `bool`, and it **narrows**:
+
+    function describe(v: unknown): string {
+        if (v is int32) { return `${v + 1}`; }        // v is an int32 here
+        if (v is string) { return v.toUpperCase(); }  // v is a string here
+        return "something else";
+    }
+
+It is the same question the checked cast `x as T` asks — *answered*, rather than
+thrown. That is what makes `unknown` usable without turning ordinary branching
+into exception handling.
+
+It is **not** `typeof`. §1.2 has no runtime type reflection: nothing hands a type
+back to the program as a value to compute with. `is` tests a value.
+
+- The width is the value's own: an `int64` does not hold an `int32`, even when
+  the number would fit.
+- `xs is int32[]` tests the elements, not just the container — an answer that
+  only checked the container would be a lie the first time someone read one.
+- The right-hand side must be a type a value can be tested against: a primitive,
+  a class, an interface, or an array of those. Record types are structural — two
+  declarations with the same fields are the same type — so there is nothing at
+  run time to distinguish them, and `is` will not pretend otherwise.
+
+### Guard clauses narrow the rest of the block
+
+A guard whose body always leaves — returns, throws, breaks, continues — makes the
+rest of the block its else-branch:
+
+    function label(id: int32 | string): string {
+        if (id is int32) { return `#${id}`; }
+        return id.toUpperCase();   // narrowed to string: the only arm left
+    }
+
+## 3.11 Members of a union
+
+A union has a member when **every** arm has it, at the same type: then reading it
+is safe whichever arm the value turns out to be. If one arm lacks it, or the arms
+disagree about its type, it is an error — narrow first.

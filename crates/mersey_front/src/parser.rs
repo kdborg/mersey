@@ -133,6 +133,12 @@ impl<'s> Parser<'s> {
         self.kind() == TK::Punct(p)
     }
 
+    /// A *contextual* keyword: an identifier that acts as an operator here, and
+    /// is still an ordinary name everywhere else.
+    fn at_contextual(&self, word: &str) -> bool {
+        self.kind() == TK::Ident && self.text_of(0) == word
+    }
+
     fn at_kw(&self, k: Kw) -> bool {
         self.kind() == TK::Keyword(k)
     }
@@ -1627,7 +1633,22 @@ impl<'s> Parser<'s> {
 
     fn parse_cast(&mut self) -> PResult<Expr> {
         let mut e = self.parse_unary()?;
-        while self.eat_kw(Kw::As) {
+        loop {
+            // `is` is *contextual*: it is an operator here, and still an
+            // ordinary identifier everywhere else — WebIDL has a member called
+            // `is`, and reserving the word would break it.
+            if self.at_contextual("is") {
+                self.advance();
+                let ty = self.parse_type()?;
+                e = Expr::Is {
+                    expr: Box::new(e),
+                    ty,
+                };
+                continue;
+            }
+            if !self.eat_kw(Kw::As) {
+                break;
+            }
             let wrapping = self.eat_kw(Kw::Wrapping);
             let ty = self.parse_type()?;
             e = Expr::Cast {

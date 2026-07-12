@@ -383,6 +383,16 @@ pub enum Expr {
         wrapping: bool,
         ty: TypeExpr,
     },
+    /// `x is T` — does this value hold a `T`? A `bool`, and it narrows.
+    ///
+    /// Not `typeof` (§1.2 has no runtime type reflection: there is nothing here
+    /// that hands you a type as a value to compute with). It is a *value* test —
+    /// the same question the checked cast `x as T` already asks — except it
+    /// answers instead of throwing.
+    Is {
+        expr: Box<Expr>,
+        ty: TypeExpr,
+    },
     Call {
         callee: Box<Expr>,
         type_args: Vec<TypeExpr>,
@@ -769,6 +779,7 @@ fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
         | Expr::Unary { expr: i, .. }
         | Expr::Update { expr: i, .. }
         | Expr::Cast { expr: i, .. }
+        | Expr::Is { expr: i, .. }
         | Expr::ImportCall(i) => walk_expr(i, f),
         Expr::Arrow { params, body, .. } => {
             for p in params {

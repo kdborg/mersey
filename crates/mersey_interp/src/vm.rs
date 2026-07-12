@@ -119,6 +119,8 @@ pub enum Op {
     MakeClosure(u16),
     InstanceOf,
     CastOp(u16, bool),
+    /// `x is T`: pops a value, pushes a bool.
+    IsOp(u16),
     /// Snapshot an iterable (array clone / string chars) for `for of`.
     IterArray,
     PushHandler(usize),
@@ -1171,6 +1173,12 @@ impl C {
                 self.types.push(ty);
                 self.emit(Op::CastOp(i, *wrapping));
             }
+            Expr::Is { expr, ty } => {
+                self.expr(expr);
+                let i = self.types.len() as u16;
+                self.types.push(ty);
+                self.emit(Op::IsOp(i));
+            }
             Expr::Call {
                 callee,
                 args,
@@ -2023,6 +2031,11 @@ fn exec(
                 let out = throwing!(i.eval_cast(v, wrapping, chunk.types[ti as usize]));
                 stack.push(out);
             }
+            Op::IsOp(ti) => {
+                let v = stack.pop().expect("is");
+                let out = i.value_is(&v, chunk.types[ti as usize]);
+                stack.push(Value::Bool(out));
+            }
             Op::IterArray => {
                 let v = stack.pop().expect("iter");
                 let items: Vec<Value> = match &v {
@@ -2234,6 +2247,10 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
             }
             Op::InstanceOf => (2, 1),
             Op::CastOp(i, _) => {
+                bounds(i, chunk.types.len(), "type")?;
+                (1, 1)
+            }
+            Op::IsOp(i) => {
                 bounds(i, chunk.types.len(), "type")?;
                 (1, 1)
             }

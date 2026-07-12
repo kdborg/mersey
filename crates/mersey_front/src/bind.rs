@@ -150,8 +150,8 @@ struct Binder {
 }
 
 const PREDEFINED_TYPES: &[&str] = &[
-    "bool", "char", "string", "bigint", "bigdec", "void", "int", "int8", "int16", "int32", "int64",
-    "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
+    "unknown", "bool", "char", "string", "bigint", "bigdec", "void", "int", "int8", "int16",
+    "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
 ];
 
 impl Binder {
@@ -994,7 +994,7 @@ impl Binder {
                 self.bind_expr(then);
                 self.bind_expr(els);
             }
-            Expr::Cast { expr, ty, .. } => {
+            Expr::Cast { expr, ty, .. } | Expr::Is { expr, ty } => {
                 self.bind_expr(expr);
                 self.bind_type(ty);
             }

@@ -508,6 +508,7 @@ fn expr(e: &Expr) -> String {
             let kw = if *wrapping { "as-wrapping" } else { "as" };
             format!("({kw} {} {})", expr(e), ty(t))
         }
+        Expr::Is { expr: e, ty: t } => format!("(is {} {})", expr(e), ty(t)),
         Expr::Call {
             callee,
             type_args,

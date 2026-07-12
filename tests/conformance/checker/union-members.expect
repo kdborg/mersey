@@ -1,0 +1,2 @@
+error[E0403] @ 14:12: `B` has no member `onlyA`, so the union does not either: narrow it first
+error[E0403] @ 18:12: `shared` is `int32` on one arm of the union and `string` on another: narrow it first

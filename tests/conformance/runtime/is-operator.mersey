@@ -1,0 +1,55 @@
+import { console } from "std:console";
+import { json } from "std:json";
+
+// `x is T` asks whether a value holds a `T`. It is the same question the checked
+// cast `x as T` asks — answered, instead of thrown. That is what makes `unknown`
+// usable without turning ordinary branching into exception handling.
+//
+// It is not `typeof` (§1.2): nothing here hands a type back to the program as a
+// value to compute with. It is a test on a value.
+
+function describe(v: unknown): string {
+    if (v is int32) {
+        return `int32 ${v + 1}`;          // narrowed: arithmetic works here
+    }
+    if (v is string) {
+        return `string ${v.toUpperCase()}`; // narrowed: string methods work here
+    }
+    if (v is bool) {
+        return v ? "yes" : "no";
+    }
+    return "something else";
+}
+
+console.log(describe(json.parse("42")));
+console.log(describe(json.parse("\"hi\"")));
+console.log(describe(json.parse("true")));
+console.log(describe(json.parse("{}")));
+
+// The width is the value's own: an int64 does not hold an int32, even when the
+// number would fit. `is` reports what a value *is*.
+const small: int32 = 5;
+const big: int64 = 5l;
+console.log(small is int32, small is int64, big is int64, big is int32);
+
+// A union loses the arm in the else-branch.
+type Id = int32 | string;
+function label(id: Id): string {
+    if (id is int32) {
+        return `#${id + 0}`;
+    }
+    return id.toUpperCase();   // narrowed to string: the only arm left
+}
+console.log(label(7), label("abc"));
+
+// Arrays test their elements — an answer that only checked the container would
+// be a lie the first time someone read one.
+const nums: unknown = [1, 2, 3];
+const strs: unknown = ["a"];
+console.log(nums is int32[], strs is int32[]);
+
+// Classes, and their bases.
+class Animal { public legs: int32 = 4; }
+class Dog extends Animal {}
+const d: unknown = new Dog();
+console.log(d is Dog, d is Animal, d is int32);

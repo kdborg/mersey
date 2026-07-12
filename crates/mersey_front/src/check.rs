@@ -801,6 +801,9 @@ struct Checker {
 }
 
 const PREDEFINED: &[(&str, Type)] = &[
+    // The top type is writable: a function that means to accept anything says
+    // so (`f(v: unknown)`), rather than being handed one only at a boundary.
+    ("unknown", Type::Unknown),
     ("bool", Type::Bool),
     ("char", Type::Char),
     ("string", Type::Str),
@@ -2317,6 +2320,64 @@ impl Checker {
     }
 
     /// `<T extends Comparable<T>>` — a type argument must satisfy its bound.
+    /// Can a *value* be tested against this type at run time?
+    ///
+    /// Primitives and nominal types, yes: the value either holds an int32 or it
+    /// does not, and an object either descends from a class or it does not.
+    /// Structural types (records) and function types, no — a record type is its
+    /// shape, and two different declarations with the same fields are the same
+    /// type, so there is nothing at run time that distinguishes them.
+    fn testable(&self, t: &Type) -> bool {
+        matches!(
+            t,
+            Type::Bool
+                | Type::Char
+                | Type::Str
+                | Type::BigInt
+                | Type::BigDec
+                | Type::Int(_)
+                | Type::F32
+                | Type::F64
+                | Type::Null
+                | Type::Class(..)
+                | Type::Iface(..)
+                | Type::Enum(_)
+                | Type::Array(_)
+                | Type::Err
+        )
+    }
+
+    /// Check a statement list, carrying a guard clause's narrowing forward.
+    ///
+    /// `if (x is int32) { return …; }` tells you something about the code
+    /// *after* it too: whatever else `x` is, it is not an int32. A guard whose
+    /// body always leaves — returns, throws, breaks, continues — makes the rest
+    /// of the block its else-branch, which is what lets a program be written as
+    /// a series of guards rather than a staircase of nested `else`s.
+    fn check_stmts_flowing(&mut self, stmts: &[Stmt]) {
+        let mut pushed = 0usize;
+        for s in stmts {
+            self.check_stmt(s);
+            if let Stmt::If {
+                cond,
+                then,
+                els: None,
+            } = s
+            {
+                if always_diverges(then) {
+                    let (_, els) = self.narrow_from(cond);
+                    if !els.is_empty() {
+                        self.narrows.push(els);
+                        pushed += 1;
+                    }
+                }
+            }
+        }
+        for _ in 0..pushed {
+            self.narrows.pop();
+        }
+    }
+
     fn check_bounds(&mut self, tvs: &[TvId], args: &[Type], what: &str, pos: Pos) {
         let map: HashMap<TvId, Type> = tvs.iter().copied().zip(args.iter().cloned()).collect();
         for (tv, arg) in tvs.iter().zip(args) {
@@ -2469,9 +2530,7 @@ impl Checker {
             }
         }
         let saved_ret = self.ret_ty.replace(sig.ret.clone());
-        for s in body {
-            self.check_stmt(s);
-        }
+        self.check_stmts_flowing(body);
         self.ret_ty = saved_ret;
         self.pop_scope();
         self.tp_scopes.pop();
@@ -3042,9 +3101,7 @@ impl Checker {
         match s {
             Stmt::Block(b) => {
                 self.push_scope();
-                for s in b {
-                    self.check_stmt(s);
-                }
+                self.check_stmts_flowing(b);
                 self.pop_scope();
             }
             Stmt::Var(v) => self.check_var(v),
@@ -3358,6 +3415,32 @@ impl Checker {
             } else {
                 els.extend(le);
                 els.extend(re);
+            }
+            return (then, els);
+        }
+        // `if (x is int32)` narrows x to int32 in the then-branch. This is what
+        // makes `unknown` usable without exceptions: you can *ask* whether a
+        // value is what you hope, instead of casting and catching when it is not.
+        if let Expr::Is { expr, ty } = cond {
+            if let Expr::Ident(n) = expr.as_ref() {
+                let t = self.resolve_type(ty);
+                if self.testable(&t) {
+                    then.insert(n.text.clone(), t.clone());
+                    // And in the else-branch, a union loses that arm.
+                    let from = self.check_expr_quiet(expr);
+                    if let Type::Union(arms) = strip_null(&from) {
+                        let rest: Vec<Type> = arms
+                            .iter()
+                            .filter(|a| !self.ty_eq(a, &t))
+                            .cloned()
+                            .collect();
+                        if rest.len() == 1 {
+                            els.insert(n.text.clone(), rest[0].clone());
+                        } else if rest.len() > 1 {
+                            els.insert(n.text.clone(), Type::Union(Rc::new(rest)));
+                        }
+                    }
+                }
             }
             return (then, els);
         }
@@ -3786,6 +3869,26 @@ impl Checker {
                 let to = self.resolve_type(ty);
                 self.check_cast(&from, &to, *wrapping, pos_of(expr));
                 to
+            }
+            Expr::Is { expr, ty } => {
+                self.check_expr(expr, None);
+                let to = self.resolve_type(ty);
+                // The test happens on a *value*, so only types a value can be
+                // checked against are allowed. A record type is structural — two
+                // records with the same fields are the same type — so there is
+                // nothing at run time to test it against, and pretending
+                // otherwise would make `is` lie.
+                if !self.testable(&to) {
+                    self.error(
+                        Code::BadOperand,
+                        format!(
+                            "`is` needs a type a value can be tested against (a primitive, a class, or an interface), not `{}`",
+                            self.show(&to)
+                        ),
+                        pos_of(expr),
+                    );
+                }
+                Type::Bool
             }
             Expr::Call {
                 callee,
@@ -4713,6 +4816,24 @@ impl Checker {
                         })
                     })
             }
+            // Host interfaces too — otherwise a union of two host types could
+            // never share a member, which is most of what the IDL's unions are.
+            Type::Iface(id, args) => {
+                let imap: HashMap<TvId, Type> = self.ifaces[*id]
+                    .tparams
+                    .iter()
+                    .copied()
+                    .zip(args.iter().cloned())
+                    .collect();
+                self.iface_member(*id, name).map(|(t, optional)| {
+                    let t = subst(&t, &imap);
+                    if optional {
+                        nullable(t)
+                    } else {
+                        t
+                    }
+                })
+            }
             Type::Err => Some(Type::Err),
             _ => None,
         }
@@ -4721,6 +4842,46 @@ impl Checker {
     fn member_access(&mut self, ot: &Type, name: &str, optional: bool, pos: Pos) -> Type {
         let base = if optional { strip_null(ot) } else { ot.clone() };
         let out = match &base {
+            // A union has a member when *every* arm has it, at the same type:
+            // then reading it is safe whichever arm the value turns out to be.
+            // Otherwise it does not, and you narrow first (`x is T`,
+            // `x instanceof T`, `x as T`).
+            Type::Union(arms) => {
+                let arms = arms.clone();
+                let mut found: Option<Type> = None;
+                for arm in arms.iter() {
+                    let Some(t) = self.member_type_quiet(arm, name) else {
+                        self.error(
+                            Code::UnknownMember,
+                            format!(
+                                "`{}` has no member `{name}`, so the union does not either: narrow it first",
+                                self.show(arm)
+                            ),
+                            pos,
+                        );
+                        return Type::Err;
+                    };
+                    match &found {
+                        None => found = Some(t),
+                        Some(prev) if self.ty_eq(prev, &t) => {}
+                        Some(prev) => {
+                            // Same name, different types: reading it would give
+                            // you one of two things and you would not know which.
+                            self.error(
+                                Code::UnknownMember,
+                                format!(
+                                    "`{name}` is `{}` on one arm of the union and `{}` on another: narrow it first",
+                                    self.show(prev),
+                                    self.show(&t)
+                                ),
+                                pos,
+                            );
+                            return Type::Err;
+                        }
+                    }
+                }
+                found.unwrap_or(Type::Err)
+            }
             // The whole point of `unknown`: you cannot read a member of a value
             // whose type nobody knows. Narrow it first. (`any` allowed this, and
             // then every member it produced was `any` too — which is how one
@@ -5939,6 +6100,7 @@ pub fn expr_makes_closure(e: &Expr) -> bool {
         | Expr::Unary { expr: i, .. }
         | Expr::Update { expr: i, .. }
         | Expr::Cast { expr: i, .. }
+        | Expr::Is { expr: i, .. }
         | Expr::ImportCall(i) => expr_makes_closure(i),
         Expr::Binary { l, r, .. }
         | Expr::Assign {
@@ -6034,6 +6196,7 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
             | Expr::Unary { expr: i, .. }
             | Expr::Update { expr: i, .. }
             | Expr::Cast { expr: i, .. }
+            | Expr::Is { expr: i, .. }
             | Expr::ImportCall(i) => in_expr(i),
             Expr::Binary { l, r, .. }
             | Expr::Assign {
@@ -6235,6 +6398,23 @@ fn unify_infer(want: &Type, got: &Type, tparams: &[TvId], out: &mut HashMap<TvId
     }
 }
 
+/// Does this statement always leave — return, throw, break, continue?
+///
+/// Only that makes a guard clause a guard: if the body might fall through, the
+/// code after it is reachable both ways and nothing can be concluded.
+fn always_diverges(s: &Stmt) -> bool {
+    match s {
+        Stmt::Return { .. } | Stmt::Throw(_) | Stmt::Break { .. } | Stmt::Continue { .. } => true,
+        // A block leaves if any statement in it does (the ones after are dead).
+        Stmt::Block(b) => b.iter().any(always_diverges),
+        // Both ways out, or it is not a certainty.
+        Stmt::If {
+            then, els: Some(e), ..
+        } => always_diverges(then) && always_diverges(e),
+        _ => false,
+    }
+}
+
 // ---- position helpers ------------------------------------------------------------
 
 pub(crate) fn pos_of(e: &Expr) -> Pos {
@@ -6243,7 +6423,9 @@ pub(crate) fn pos_of(e: &Expr) -> Pos {
         Expr::This(p) => *p,
         Expr::Unary { pos, .. } => *pos,
         Expr::SuperMember { pos, .. } | Expr::SuperCall { pos, .. } => *pos,
-        Expr::Paren(inner) | Expr::ImportCall(inner) => pos_of(inner),
+        Expr::Paren(inner) | Expr::ImportCall(inner) | Expr::Is { expr: inner, .. } => {
+            pos_of(inner)
+        }
         Expr::Update { expr, .. } | Expr::Cast { expr, .. } => pos_of(expr),
         Expr::Binary { l, .. } | Expr::Assign { target: l, .. } | Expr::Cond { cond: l, .. } => {
             pos_of(l)
