@@ -345,6 +345,56 @@ by a test rather than claimed by a comment. Pointer compression is recorded as
 **not done, by construction**: it requires the engine to own its heap (unsafe),
 and the workspace forbids unsafe — see SECURITY-REVIEW.md for what that costs.
 
+## Language completeness, engine debt, tooling (2026-07-12)
+
+**Two bugs found while auditing.** `mersey run /abs/path.mersey` could not find its
+own relative imports (the leading `/` was silently eaten, so it worked only if you
+were standing in the right directory). And hover on an imported symbol returned
+`<error>`, because the language server typechecked the open file *by itself* — an
+editor doing that is looking at a different program than the compiler is.
+
+**Language.** Top-level `await` (a module that awaits *is* an async function; its
+importers wait for it). Dynamic `import()` — as a *closed* graph: §4.5 closes the
+module graph before execution and §5.4 gives running code no authority to fetch
+more, so the specifier must be a literal, the module is loaded/checked/locked with
+everything else, and what is deferred is its *evaluation*. It is therefore precisely
+typed (a promise of *that module's* exports, not `any`), and `import(someVar)` does
+not compile. Async generators and `for await` — no new syntax needed, because a
+function that yields is already a generator, and the VM already reports all three
+outcomes a coroutine can have. Spread arguments, allowed exactly where they are
+checkable (a callee with a rest parameter) and refused with a reason where they are
+not.
+
+**Engine debt.** `return`/`break`/`continue` through a `finally` now compile
+(previously the whole function silently dropped to the AST tree-walker); likewise
+`super(...xs)`. A test asserts the compiler *accepts* these, because the runtime
+tests could not tell — a silent fallback still gives the right answer, just slowly.
+The host hook is `dom_add_listener(id, event, cb)`: the engine had a list of which
+events exist, which is not the engine's business. The JIT compiles int64 kernels
+(18.05s → 0.61s on a summation loop) — the blocker was an ABI that packed
+`(tag << 32) | payload`, which fits an i32 result and nothing else.
+
+**Hardening.** x86-64 forward-edge CFI is reported as a row that is *off* rather
+than omitted, with `KNOWN_GAPS` recording why (Cranelift exposes no CET setting in
+0.116 or 0.123): a gap that nothing mentions is indistinguishable from a gap nobody
+noticed. CI now gates on the fuzzer, the GC write-barrier verifier, the browser
+suite, and stale goldens.
+
+**Tooling.** Find-references, rename, signature help and document symbols — all from
+the checker's resolution, not a text search: renaming one `value` does not touch a
+different `value` in another scope. The LSP no longer leaks an AST per keystroke
+(183ms → 50ms for ten hovers on one buffer).
+
+### Not built, and why
+
+* **Bytecode cache.** Startup is 30ms *including* parsing the 18k-line ambient WebIDL
+  surface, so the cache would save single-digit milliseconds — and a chunk holds
+  `&'static` pointers into the AST (patterns, types, nested function bodies), so
+  caching one means first making bytecode self-contained. Wrong trade at this size.
+* **Debugger.** Stepping needs either a DAP adapter (standalone) or CDP (browser),
+  and the browser half is Stage B work. Errors already carry a Mersey code frame,
+  stack trace, and source map.
+
 ## Explicitly deferred (tracked, not forgotten)
 
 Threads/workers in-language, decimal float128, AOT native compilation,
