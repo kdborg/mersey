@@ -1,0 +1,31 @@
+import { console } from "std:console";
+import { json } from "std:json";
+import { math } from "std:math";
+
+// A value crossing in from outside the type system is `unknown`. To use it you
+// must narrow it — and the narrowing is *checked*, so a wrong claim fails at the
+// cast rather than travelling on inside a type it does not belong to.
+
+const n = json.parse("42") as int32;
+console.log(n + 1);
+
+const text = json.parse("\"hi\"") as string;
+console.log(text.toUpperCase());
+
+// The cast is where the claim is checked. A record is not an int32, and saying
+// so throws here — not two lines later when the arithmetic fails.
+try {
+    const lie = json.parse("{\"a\": 1}") as int32;
+    console.log("unreachable", lie);
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}
+
+// `math.abs` is generic in a Numeric T: it keeps the width it was given, which
+// is what it used `any` for. `math.abs("hi")` no longer compiles.
+const i: int32 = math.abs(-3);
+const f: float64 = math.abs(-3.5);
+console.log(i, f, math.max(1, 2, 3));
+
+// Anything may be *given* to `unknown` — that is what makes it the top type.
+console.log(json.stringify({ a: 1, b: "two" }));

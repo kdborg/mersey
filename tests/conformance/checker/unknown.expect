@@ -1,0 +1,7 @@
+error[E0401] @ 14:18: initializer: `unknown` is not assignable to `int32`
+error[E0401] @ 15:19: initializer: `unknown` is not assignable to `string`
+error[E0403] @ 16:16: cannot read `anything` on a value of type `unknown`: narrow it first (`x as SomeType`, or `x instanceof T`)
+error[E0402] @ 17:16: cannot call `call` on a value of type `unknown`: narrow it first (`x as SomeType`, or `x instanceof T`)
+error[E0405] @ 18:17: cannot index a value of type `unknown`: narrow it first (`x as SomeType[]`)
+error[E0401] @ 23:13: `string` does not satisfy the bound `Numeric` on this call
+error[E0401] @ 24:27: argument: `string` is not assignable to `int32`

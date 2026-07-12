@@ -45,7 +45,19 @@ pub fn webapi() -> &'static WebApi {
                 Item::Stmt(Stmt::Var(v)) => {
                     for b in &v.bindings {
                         if let (Pattern::Name(n), Some(ty)) = (&b.target, &b.ty) {
-                            globals.push((n.text.clone(), ty));
+                            // A few globals are declared twice by the IDL corpus
+                            // — `window` is both `JsAny` (from one partial
+                            // interface) and `Window` (from another). The precise
+                            // one is the true one, and the imprecise one must not
+                            // shadow it: `window` was silently untyped for as long
+                            // as `any` existed to hide it.
+                            let precise =
+                                !matches!(ty, Type::Named { name, .. } if name == "JsAny");
+                            match globals.iter().position(|(g, _)| *g == n.text) {
+                                Some(i) if precise => globals[i] = (n.text.clone(), ty),
+                                Some(_) => {}
+                                None => globals.push((n.text.clone(), ty)),
+                            }
                         }
                     }
                 }

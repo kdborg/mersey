@@ -129,3 +129,25 @@ Mersey adopts C's conversion *rules* but none of its undefined behavior:
 aliases of `Array<int32>` slices, `Map<K,V>`, `Set<T>`, tuple types
 `[int32, string]`, record/interface types, and function types
 `(a: int32) => string`. All are statically typed; arrays never hold holes.
+
+
+## 3.9 `unknown` — the top type
+
+A value that crosses into the program from outside the type system has type
+`unknown`: a parsed JSON document, a JavaScript host object, anything the
+compiler cannot have seen a declaration for.
+
+- Anything is **assignable to** `unknown`. That is what makes it the top type.
+- `unknown` is **assignable from** nothing. You cannot read its members, call
+  it, or index it.
+- To use one, **narrow it**: `x as T` (checked at run time — a wrong cast throws
+  at the cast) or `x instanceof T`.
+
+There is deliberately no `any`. A type that is assignable in *both* directions
+and permits *any* member is not a type; it is a hole in the checker, and it
+spreads: every value it touches becomes unchecked too. `unknown` draws the same
+boundary honestly — it says "nobody knows what this is yet", and makes you say
+what you think it is before you use it.
+
+Functions that keep the width of a number they were given (`math.abs`) are
+**generic with a bound**, not untyped: `abs<T: Numeric>(x: T): T`.

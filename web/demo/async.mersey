@@ -28,7 +28,10 @@ async function loadText(url: string): string {
 // Wrap a callback API as a promise: `new Promise(...)` constructs a REAL JS
 // promise through the bridge, and `await` adopts it.
 function delay(ms: int32): JsAny {
-    return new Promise<JsAny>((resolve: JsAny) => {
+    // The executor's parameter is a *function*, and now it has to say so:
+    // `unknown` is not callable. It used to be `JsAny`, which was `any`, which
+    // could be called with anything and returned anything.
+    return new Promise<JsAny>((resolve: (v: JsAny) => void) => {
         setTimeout(() => resolve(null), ms);
     });
 }

@@ -574,7 +574,17 @@ impl IntKind {
 
 #[derive(Clone)]
 pub enum Ty {
-    Any,
+    /// The sound top type: what a value has when it crosses into the program
+    /// from outside the type system — a JSON document, a JS host object.
+    ///
+    /// Anything is assignable *to* it; it is assignable *from* nothing. You
+    /// cannot read a member of it, call it, or index it. To use one you must
+    /// narrow it — `as T` (checked at runtime) or `instanceof`.
+    ///
+    /// It replaces `any`, which was assignable in *both* directions and
+    /// permitted *any* member: not a type, but a hole in the checker that
+    /// spread to everything it touched.
+    Unknown,
     /// Poison type: an error was already reported; stay quiet downstream.
     Err,
     Void,
@@ -775,6 +785,7 @@ struct Checker {
     bytes_id: Option<ClassId>,
     regex_id: Option<ClassId>,
     iter_id: Option<ClassId>,
+    numeric_id: Option<IfaceId>,
     async_iter_id: Option<ClassId>,
     /// Element type of the generator currently being checked.
     yield_ty: Option<Ty>,
@@ -842,6 +853,7 @@ impl Checker {
             bytes_id: None,
             regex_id: None,
             iter_id: None,
+            numeric_id: None,
             async_iter_id: None,
             yield_ty: None,
             module_spec: String::new(),
@@ -1015,11 +1027,43 @@ impl Checker {
         self.install_collections();
         self.install_bytes();
         self.install_regex();
+        self.install_numeric();
         self.install_iter();
         self.install_async_iter();
     }
 
     /// `Iter<T>` — what a generator returns and what `for … of` consumes.
+    /// `Numeric`: the bound that lets a width-preserving function be *generic*
+    /// instead of untyped.
+    ///
+    /// `math.abs` used to be `(any) => any` purely so that `abs(-3)` could give
+    /// back an `int32` and `abs(-3.5)` a `float64` — which meant `math.abs("hi")`
+    /// typechecked. It is properly `abs<T: Numeric>(x: T): T`: one signature,
+    /// every numeric width, and nothing else.
+    ///
+    /// It is a marker with no members: nothing is *called* through it, it only
+    /// says which types may stand in for `T`.
+    fn install_numeric(&mut self) {
+        let id = self.ifaces.len();
+        self.ifaces.push(IfaceInfo {
+            name: "Numeric".into(),
+            tparams: vec![],
+            extends: vec![],
+            members: vec![],
+        });
+        self.type_defs.insert("Numeric".into(), TypeDef::Iface(id));
+        self.numeric_id = Some(id);
+    }
+
+    /// A type parameter bounded by `Numeric`, ready to use in a signature.
+    fn numeric_tv(&mut self) -> TvId {
+        let tv = self.fresh_tv("T");
+        if let Some(id) = self.numeric_id {
+            self.tv_bounds.insert(tv, Ty::Iface(id, Rc::new(vec![])));
+        }
+        tv
+    }
+
     fn install_iter(&mut self) {
         let t = self.fresh_tv("T");
         let tv = Ty::Var(t);
@@ -1119,14 +1163,14 @@ impl Checker {
     fn iter_of(&mut self, t: Ty) -> Ty {
         match self.iter_id {
             Some(id) => Ty::Class(id, Rc::new(vec![t])),
-            None => Ty::Any,
+            None => Ty::Err,
         }
     }
 
     fn unwrap_iter(&self, t: &Ty) -> Option<Ty> {
         let id = self.iter_id?;
         match strip_null(t) {
-            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Any)),
+            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Err)),
             _ => None,
         }
     }
@@ -1175,14 +1219,14 @@ impl Checker {
     fn async_iter_of(&mut self, t: Ty) -> Ty {
         match self.async_iter_id {
             Some(id) => Ty::Class(id, Rc::new(vec![t])),
-            None => Ty::Any,
+            None => Ty::Err,
         }
     }
 
     fn unwrap_async_iter(&self, t: &Ty) -> Option<Ty> {
         let id = self.async_iter_id?;
         match strip_null(t) {
-            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Any)),
+            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Err)),
             _ => None,
         }
     }
@@ -1422,7 +1466,7 @@ impl Checker {
 
     fn show(&self, t: &Ty) -> String {
         match t {
-            Ty::Any => "any".into(),
+            Ty::Unknown => "unknown".into(),
             Ty::Err => "<error>".into(),
             Ty::Void => "void".into(),
             Ty::Null => "null".into(),
@@ -1631,7 +1675,7 @@ impl Checker {
                     let id = self.aliases.len();
                     self.aliases.push(AliasInfo {
                         tparams: vec![],
-                        target: Ty::Any,
+                        target: Ty::Err, // placeholder; the header pass fills it in
                     });
                     self.type_defs
                         .insert(t.name.text.clone(), TypeDef::Alias(id));
@@ -1741,7 +1785,7 @@ impl Checker {
                             } else {
                                 match crate::webapi::global_type(global) {
                                     Some(ast_ty) => self.resolve_type(ast_ty),
-                                    None => Ty::Any,
+                                    None => Ty::Unknown, // a host global with no IDL type
                                 }
                             }
                         }
@@ -1762,7 +1806,16 @@ impl Checker {
                         }
                     };
                     self.define_at(&local.text, ty, true, local.pos);
-                    self.type_defs.insert(local.text.clone(), TypeDef::Imported);
+                    // Importing a *value* must not shadow a *type* of the same
+                    // name. `import { Node } from "browser:dom"` brings in the
+                    // interface object (for `Node.ELEMENT_NODE` and `instanceof`)
+                    // — it does not make the type `Node` mean "imported, who
+                    // knows". That mistake was invisible while the fallback was
+                    // `any`; with `unknown` it turns every `x as Node` into a
+                    // value you cannot use.
+                    if !self.type_defs.contains_key(&local.text) {
+                        self.type_defs.insert(local.text.clone(), TypeDef::Imported);
+                    }
                 }
             }
         }
@@ -2072,7 +2125,7 @@ impl Checker {
                     .ty
                     .as_ref()
                     .map(|t| self.resolve_type(t))
-                    .unwrap_or(Ty::Any);
+                    .unwrap_or(Ty::Err);
                 self.classes[id].setters.push(AccessorInfo {
                     name: name.clone(),
                     ty: t,
@@ -2093,12 +2146,12 @@ impl Checker {
                 let mut ty =
                     p.ty.as_ref()
                         .map(|t| self.resolve_type(t))
-                        .unwrap_or(Ty::Any);
+                        .unwrap_or(Ty::Err);
                 if p.rest {
                     // `...xs: int32[]` — the per-argument type is the element.
                     ty = match ty {
                         Ty::Array(e) => e.as_ref().clone(),
-                        Ty::Any | Ty::Err => Ty::Any,
+                        Ty::Err => Ty::Err,
                         other => {
                             self.error(
                                 Code::TypeMismatch,
@@ -2176,15 +2229,16 @@ impl Checker {
                 return Ty::Var(*tv);
             }
         }
-        // Generated marker for IDL `any`/`object`.
+        // IDL `any`/`object`: a value from JavaScript, where there are no static
+        // types to import. The honest type for it is `unknown`.
         if name == "JsAny" {
-            return Ty::Any;
+            return Ty::Unknown;
         }
         if let Some(t) = predefined(name) {
             return t;
         }
         if name.contains('.') {
-            return Ty::Any; // namespace-qualified: module graph later
+            return Ty::Unknown; // namespace-qualified: module graph later
         }
         match self.type_defs.get(name) {
             Some(TypeDef::Class(id)) => {
@@ -2211,7 +2265,7 @@ impl Checker {
                 let map: HashMap<TvId, Ty> = tvs.into_iter().zip(rargs).collect();
                 subst(&target, &map)
             }
-            Some(TypeDef::Imported) => Ty::Any,
+            Some(TypeDef::Imported) => Ty::Unknown,
             None => Ty::Err, // binder already reported E0308
         }
     }
@@ -2225,7 +2279,7 @@ impl Checker {
                     self.promise_id = Some(*id);
                     *id
                 }
-                _ => return Ty::Any,
+                _ => return Ty::Err,
             },
         };
         Ty::Iface(id, Rc::new(vec![t]))
@@ -2238,7 +2292,7 @@ impl Checker {
             _ => None,
         })?;
         match strip_null(t) {
-            Ty::Iface(id, args) if id == pid => Some(args.first().cloned().unwrap_or(Ty::Any)),
+            Ty::Iface(id, args) if id == pid => Some(args.first().cloned().unwrap_or(Ty::Err)),
             _ => None,
         }
     }
@@ -2323,7 +2377,7 @@ impl Checker {
                 for (_, init) in &e.members {
                     if let Some(init) = init {
                         let t = self.check_expr(init, None);
-                        if !matches!(t, Ty::Int(_) | Ty::Err | Ty::Any) {
+                        if !matches!(t, Ty::Int(_) | Ty::Err) {
                             self.error(
                                 Code::TypeMismatch,
                                 "enum member values must be integers",
@@ -2929,7 +2983,7 @@ impl Checker {
                 let elem = match strip_null(ty) {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
-                    Ty::Tuple(_) | Ty::Any | Ty::Err => Ty::Any, // tuples positional below
+                    Ty::Tuple(_) | Ty::Err => Ty::Err, // tuples positional below
                     other => {
                         self.error(
                             Code::TypeMismatch,
@@ -2960,7 +3014,7 @@ impl Checker {
                 for f in fields {
                     let ft = self
                         .member_type_quiet(&strip_null(ty), &f.name.text)
-                        .unwrap_or(Ty::Any);
+                        .unwrap_or(Ty::Err);
                     let ft = if f.default.is_some() {
                         strip_null(&ft)
                     } else {
@@ -3054,7 +3108,7 @@ impl Checker {
                     let elem = match self.unwrap_async_iter(&it) {
                         Some(e) => e,
                         None => match strip_null(&it) {
-                            Ty::Any | Ty::Err => Ty::Any,
+                            Ty::Err => Ty::Err,
                             other => {
                                 self.error(
                                     Code::BadOperand,
@@ -3079,10 +3133,11 @@ impl Checker {
                 let elem = match strip_null(&it) {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
-                    Ty::Any | Ty::Err => Ty::Any,
+                    Ty::Err => Ty::Err,
                     // Host iterables (NodeList, HTMLCollection, …): the IDL
-                    // element type isn't tracked, so annotate to refine.
-                    Ty::Iface(..) => Ty::Any,
+                    // element type isn't tracked, so the element is `unknown`
+                    // until it is narrowed (`as Element`).
+                    Ty::Iface(..) => Ty::Unknown,
                     // A generator / iterator.
                     ref t if self.unwrap_iter(t).is_some() => self.unwrap_iter(t).expect("checked"),
                     other => {
@@ -3150,7 +3205,7 @@ impl Checker {
                         }
                     }
                     None => {
-                        if !matches!(want, Ty::Void | Ty::Err | Ty::Any) {
+                        if !matches!(want, Ty::Void | Ty::Err) {
                             self.error(
                                 Code::BadReturn,
                                 format!("expected a `{}` return value", self.show(&want)),
@@ -3226,7 +3281,7 @@ impl Checker {
                 }
                 false
             }
-            Ty::Any | Ty::Err => true,
+            Ty::Err => true,
             _ => false,
         }
     }
@@ -3234,7 +3289,7 @@ impl Checker {
     fn check_condition(&mut self, e: &Expr) {
         let t = self.check_expr(e, None);
         match strip_narrow_helpers(&t) {
-            Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Any | Ty::Err => {}
+            Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Err => {}
             other => self.error(
                 Code::BadCondition,
                 format!(
@@ -3307,13 +3362,19 @@ impl Checker {
             if let Expr::Ident(n) = l.as_ref() {
                 let narrowed = match self.check_expr(r, None) {
                     Ty::ClassMeta(id) => {
-                        let args: Vec<Ty> =
-                            self.classes[id].tparams.iter().map(|_| Ty::Any).collect();
+                        let args: Vec<Ty> = self.classes[id]
+                            .tparams
+                            .iter()
+                            .map(|_| Ty::Unknown)
+                            .collect();
                         Some(Ty::Class(id, Rc::new(args)))
                     }
                     Ty::IfaceMeta(id) => {
-                        let args: Vec<Ty> =
-                            self.ifaces[id].tparams.iter().map(|_| Ty::Any).collect();
+                        let args: Vec<Ty> = self.ifaces[id]
+                            .tparams
+                            .iter()
+                            .map(|_| Ty::Unknown)
+                            .collect();
                         Some(Ty::Iface(id, Rc::new(args)))
                     }
                     _ => None,
@@ -3481,7 +3542,7 @@ impl Checker {
                     let t = if el.spread {
                         match strip_null(&t) {
                             Ty::Array(e) => e.as_ref().clone(),
-                            Ty::Any | Ty::Err => Ty::Any,
+                            Ty::Err => Ty::Err,
                             other => {
                                 self.error(
                                     Code::TypeMismatch,
@@ -3499,7 +3560,7 @@ impl Checker {
                         Some(u) => self.unify_pair(u, t),
                     });
                 }
-                Ty::Array(Rc::new(unified.unwrap_or(Ty::Any)))
+                Ty::Array(Rc::new(unified.unwrap_or(Ty::Err)))
             }
             Expr::Record(fields) => {
                 let mut fs = Vec::new();
@@ -3553,7 +3614,7 @@ impl Checker {
                             .as_ref()
                             .and_then(|f| f.params.get(i))
                             .map(|pt| pt.ty.clone())
-                            .unwrap_or(Ty::Any),
+                            .unwrap_or(Ty::Err),
                     };
                     let bind_ty = if p.rest {
                         Ty::Array(Rc::new(ty.clone()))
@@ -3574,7 +3635,7 @@ impl Checker {
                 let actual_ret = match body {
                     ArrowBody::Expr(e) => self.check_expr(e, want_ret.as_ref()),
                     ArrowBody::Block(stmts) => {
-                        let saved = self.ret_ty.replace(want_ret.clone().unwrap_or(Ty::Any));
+                        let saved = self.ret_ty.replace(want_ret.clone().unwrap_or(Ty::Err));
                         for s in stmts {
                             self.check_stmt(s);
                         }
@@ -3607,7 +3668,7 @@ impl Checker {
                 match op {
                     UnaryOp::Not => {
                         match strip_narrow_helpers(&t) {
-                            Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Any | Ty::Err => {}
+                            Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Err => {}
                             other => self.error(
                                 Code::BadOperand,
                                 format!("`!` needs bool or numeric, got `{}`", self.show(&other)),
@@ -3618,7 +3679,7 @@ impl Checker {
                     }
                     UnaryOp::Plus | UnaryOp::Neg => match strip_narrow_helpers(&t) {
                         n @ (Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::BigInt | Ty::BigDec) => n,
-                        Ty::Any | Ty::Err => Ty::Err,
+                        Ty::Err => Ty::Err,
                         other => {
                             self.error(
                                 Code::BadOperand,
@@ -3630,7 +3691,7 @@ impl Checker {
                     },
                     UnaryOp::BitNot => match strip_narrow_helpers(&t) {
                         n @ Ty::Int(_) => n,
-                        Ty::Any | Ty::Err => Ty::Err,
+                        Ty::Err => Ty::Err,
                         other => {
                             self.error(
                                 Code::BadOperand,
@@ -3645,7 +3706,7 @@ impl Checker {
                         None => match strip_narrow_helpers(&t) {
                             // A host object may be a JS thenable; a plain
                             // value awaits to itself (as in JS).
-                            Ty::Any | Ty::Err | Ty::Iface(..) => Ty::Any,
+                            Ty::Err => Ty::Err,
                             other => other,
                         },
                     },
@@ -3656,7 +3717,7 @@ impl Checker {
                 self.check_assignable_target(expr);
                 match strip_narrow_helpers(&t) {
                     n @ (Ty::Int(_) | Ty::F32 | Ty::F64) => n,
-                    Ty::Any | Ty::Err => Ty::Err,
+                    Ty::Err => Ty::Err,
                     other => {
                         self.error(
                             Code::BadOperand,
@@ -3679,7 +3740,7 @@ impl Checker {
                 let vt = self.check_expr(value, Some(&tt));
                 if *op == "=" {
                     self.require_assignable(&vt, &tt, pos_of(value), "assignment");
-                } else if !matches!(tt, Ty::Any | Ty::Err) {
+                } else if !matches!(tt, Ty::Err) {
                     // Compound assignment: the operation must be valid; the
                     // result converts back to the target type with wrapping,
                     // as in C (`a += 1` on an int16 stays int16).
@@ -3758,7 +3819,7 @@ impl Checker {
                     ot.clone()
                 };
                 let host_obj = matches!(base, Ty::Iface(..));
-                if !matches!(strip_narrow_helpers(&it), Ty::Int(_) | Ty::Any | Ty::Err)
+                if !matches!(strip_narrow_helpers(&it), Ty::Int(_) | Ty::Err)
                     && !(host_obj && matches!(strip_narrow_helpers(&it), Ty::Str))
                 {
                     self.error(
@@ -3770,10 +3831,18 @@ impl Checker {
                 let out = match &base {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
-                    Ty::Any | Ty::Err => Ty::Any,
+                    Ty::Err => Ty::Err,
+                    Ty::Unknown => {
+                        self.error(
+                            Code::BadOperand,
+                            "cannot index a value of type `unknown`: narrow it first (`x as SomeType[]`)",
+                            pos_of(obj),
+                        );
+                        Ty::Err
+                    }
                     // Host objects are indexable (`nodeList[0]`, `obj[key]`);
                     // the element type is not knowable from IDL.
-                    Ty::Iface(..) => Ty::Any,
+                    Ty::Iface(..) => Ty::Unknown,
                     // Bytes: uint8 elements, promoted to int32 (§3.3).
                     Ty::Class(id, _) if Some(*id) == self.bytes_id => Ty::Int(IntKind::I32),
                     Ty::Nullable(_) => {
@@ -3902,7 +3971,7 @@ impl Checker {
                     (Some(v), None) => {
                         self.check_expr(v, None);
                     }
-                    (None, Some(w)) if !matches!(w, Ty::Void | Ty::Any | Ty::Err) => {
+                    (None, Some(w)) if !matches!(w, Ty::Void | Ty::Err) => {
                         self.error(
                             Code::BadReturn,
                             format!("expected a `{}` value to yield", self.show(w)),
@@ -3996,7 +4065,7 @@ impl Checker {
                 match &lt {
                     Ty::Nullable(inner) => self.unify_pair(inner.as_ref().clone(), rt),
                     Ty::Null => rt,
-                    Ty::Any | Ty::Err => Ty::Err,
+                    Ty::Err => Ty::Err,
                     _ => {
                         self.error(
                             Code::BadOperand,
@@ -4010,7 +4079,7 @@ impl Checker {
             BinOp::Instanceof => {
                 self.check_expr(l, None);
                 let rt = self.check_expr(r, None);
-                if !matches!(rt, Ty::ClassMeta(_) | Ty::IfaceMeta(_) | Ty::Any | Ty::Err) {
+                if !matches!(rt, Ty::ClassMeta(_) | Ty::IfaceMeta(_) | Ty::Err) {
                     self.error(
                         Code::BadOperand,
                         "right side of `instanceof` must be a class or a host interface",
@@ -4047,7 +4116,7 @@ impl Checker {
         use BinOp::*;
         let l = strip_narrow_helpers(lt);
         let r = strip_narrow_helpers(rt);
-        if matches!(l, Ty::Any | Ty::Err) || matches!(r, Ty::Any | Ty::Err) {
+        if matches!(l, Ty::Err) || matches!(r, Ty::Err) {
             return Ty::Err;
         }
         // string / char comparisons and concatenation
@@ -4122,7 +4191,7 @@ impl Checker {
 
     fn comparable(&self, a: &Ty, b: &Ty) -> bool {
         let (a, b) = (strip_narrow_helpers(a), strip_narrow_helpers(b));
-        if matches!(a, Ty::Any | Ty::Err) || matches!(b, Ty::Any | Ty::Err) {
+        if matches!(a, Ty::Err) || matches!(b, Ty::Err) {
             return true;
         }
         // Host objects compare by identity.
@@ -4165,11 +4234,24 @@ impl Checker {
                     }
                     return Ty::Class(self.element_id, Rc::new(vec![]));
                 }
-                (Ty::Namespace(Ns::Opaque), _) | (Ty::Any, _) => {
+                (Ty::Namespace(Ns::Opaque), _) => {
                     for a in args {
                         self.check_expr(&a.expr, None);
                     }
-                    return Ty::Any;
+                    return Ty::Unknown;
+                }
+                (Ty::Unknown, _) => {
+                    for a in args {
+                        self.check_expr(&a.expr, None);
+                    }
+                    self.error(
+                        Code::BadCall,
+                        format!(
+                            "cannot call `{name}` on a value of type `unknown`: narrow it first (`x as SomeType`, or `x instanceof T`)"
+                        ),
+                        pos_of(obj),
+                    );
+                    return Ty::Err;
                 }
                 _ => {
                     // WebIDL overloads are emitted as `name`, `name$1`, … —
@@ -4258,7 +4340,7 @@ impl Checker {
                     ret
                 }
             }
-            Ty::Any | Ty::Err => {
+            Ty::Err => {
                 for a in args {
                     self.check_expr(&a.expr, None);
                 }
@@ -4337,7 +4419,7 @@ impl Checker {
                 );
                 return f.ret.clone();
             }
-            let rest_elem = rest.as_ref().map(|p| p.ty.clone()).unwrap_or(Ty::Any);
+            let rest_elem = rest.as_ref().map(|p| p.ty.clone()).unwrap_or(Ty::Err);
             for a in args {
                 let t = self.check_expr(&a.expr, None);
                 if a.spread {
@@ -4376,7 +4458,7 @@ impl Checker {
                 .get(i)
                 .map(|p| p.ty.clone())
                 .or_else(|| rest.as_ref().map(|r| r.ty.clone()))
-                .unwrap_or(Ty::Any);
+                .unwrap_or(Ty::Err);
             let want_spread = if a.spread {
                 Ty::Array(Rc::new(want_raw.clone()))
             } else {
@@ -4395,9 +4477,10 @@ impl Checker {
             let at = subst(&at, &map);
             self.require_assignable(&at, &want, pos_of(&a.expr), "argument");
         }
-        // Any unfixed type params default to Any (checker v1).
+        // A type parameter nobody managed to infer: `Err`, so the failure stays
+        // quiet rather than becoming a value that can be used as anything.
         for tv in &f.tparams {
-            map.entry(*tv).or_insert(Ty::Any);
+            map.entry(*tv).or_insert(Ty::Err);
         }
         // Every inferred/explicit type argument must satisfy its bound.
         if !f.tparams.is_empty() {
@@ -4420,7 +4503,7 @@ impl Checker {
                 }
                 return t;
             }
-            Ty::Any | Ty::Err => {
+            Ty::Err => {
                 for a in args {
                     self.check_expr(&a.expr, None);
                 }
@@ -4617,7 +4700,7 @@ impl Checker {
                         })
                     })
             }
-            Ty::Any | Ty::Err => Some(Ty::Any),
+            Ty::Err => Some(Ty::Err),
             _ => None,
         }
     }
@@ -4625,6 +4708,20 @@ impl Checker {
     fn member_access(&mut self, ot: &Ty, name: &str, optional: bool, pos: Pos) -> Ty {
         let base = if optional { strip_null(ot) } else { ot.clone() };
         let out = match &base {
+            // The whole point of `unknown`: you cannot read a member of a value
+            // whose type nobody knows. Narrow it first. (`any` allowed this, and
+            // then every member it produced was `any` too — which is how one
+            // untyped value at a boundary made a whole program untyped.)
+            Ty::Unknown => {
+                self.error(
+                    Code::UnknownMember,
+                    format!(
+                        "cannot read `{name}` on a value of type `unknown`: narrow it first (`x as SomeType`, or `x instanceof T`)"
+                    ),
+                    pos,
+                );
+                Ty::Err
+            }
             Ty::Nullable(_) => {
                 self.error(
                     Code::NullableMisuse,
@@ -4637,7 +4734,7 @@ impl Checker {
                 self.error(Code::NullableMisuse, "value is null here", pos);
                 Ty::Err
             }
-            Ty::Any | Ty::Err => Ty::Any,
+            Ty::Err => Ty::Err,
             Ty::Str => {
                 let p = |ty: Ty| ParamTy {
                     ty,
@@ -5001,7 +5098,7 @@ impl Checker {
             Ty::Namespace(Ns::Bytes) => {
                 let bytes_ty = match self.bytes_id {
                     Some(id) => Ty::Class(id, Rc::new(vec![])),
-                    None => Ty::Any,
+                    None => Ty::Err,
                 };
                 let p = |ty: Ty| ParamTy {
                     ty,
@@ -5016,13 +5113,13 @@ impl Checker {
                     })),
                     "fromHost" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
-                        params: vec![p(Ty::Any)],
+                        params: vec![p(Ty::Unknown)],
                         ret: bytes_ty,
                     })),
                     "toHost" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
                         params: vec![p(bytes_ty)],
-                        ret: Ty::Any,
+                        ret: Ty::Unknown,
                     })),
                     "fill" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
@@ -5050,7 +5147,7 @@ impl Checker {
             Ty::Namespace(Ns::Regex) => {
                 let regex_ty = match self.regex_id {
                     Some(id) => Ty::Class(id, Rc::new(vec![])),
-                    None => Ty::Any,
+                    None => Ty::Err,
                 };
                 match name {
                     "compile" => Ty::Fn(Rc::new(FnTy {
@@ -5199,24 +5296,38 @@ impl Checker {
                     }))
                 };
                 match name {
-                    // `abs` keeps the width it was given (§3.3), so it is the
-                    // one member here that is not simply float64 in, float64 out.
-                    "abs" => f(vec![p(Ty::Any)], Ty::Any),
+                    // `abs` keeps the width it was given (§3.3): `abs(-3)` is an
+                    // int32, `abs(-3.5)` a float64. That is a *generic* function
+                    // with a bound, not an untyped one — `math.abs("hi")` is an
+                    // error now, and used to compile.
+                    "abs" => {
+                        let t = self.numeric_tv();
+                        Ty::Fn(Rc::new(FnTy {
+                            tparams: vec![t],
+                            params: vec![p(Ty::Var(t))],
+                            ret: Ty::Var(t),
+                        }))
+                    }
                     "floor" | "ceil" | "sqrt" | "round" | "trunc" | "sign" | "cbrt" | "exp"
                     | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos"
                     | "atan" => f(vec![p(num.clone())], num),
                     "pow" | "atan2" | "hypot" => f(vec![p(num.clone()), p(num.clone())], num),
                     "clamp" => f(vec![p(num.clone()), p(num.clone()), p(num.clone())], num),
                     "isNaN" | "isFinite" => f(vec![p(num.clone())], Ty::Bool),
-                    "min" | "max" => Ty::Fn(Rc::new(FnTy {
-                        tparams: vec![],
-                        params: vec![ParamTy {
-                            ty: Ty::Any,
-                            optional: false,
-                            rest: true,
-                        }],
-                        ret: Ty::Any,
-                    })),
+                    // Same width in, same width out — and every argument the
+                    // same type, which `any` could never say.
+                    "min" | "max" => {
+                        let t = self.numeric_tv();
+                        Ty::Fn(Rc::new(FnTy {
+                            tparams: vec![t],
+                            params: vec![ParamTy {
+                                ty: Ty::Var(t),
+                                optional: false,
+                                rest: true,
+                            }],
+                            ret: Ty::Var(t),
+                        }))
+                    }
                     "PI" | "E" => num,
                     _ => self.no_member("math", name, pos),
                 }
@@ -5231,7 +5342,7 @@ impl Checker {
                 match name {
                     "pad" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
-                        params: vec![p(Ty::Any), p(i32t)],
+                        params: vec![p(Ty::Unknown), p(i32t)],
                         ret: Ty::Str,
                     })),
                     "fixed" => Ty::Fn(Rc::new(FnTy {
@@ -5300,7 +5411,7 @@ impl Checker {
             Ty::Namespace(Ns::Random) => {
                 let bytes_ty = match self.bytes_id {
                     Some(id) => Ty::Class(id, Rc::new(vec![])),
-                    None => Ty::Any,
+                    None => Ty::Err,
                 };
                 let i32t = Ty::Int(IntKind::I32);
                 let p = |ty: Ty| ParamTy {
@@ -5333,7 +5444,7 @@ impl Checker {
                 "stringify" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
                     params: vec![ParamTy {
-                        ty: Ty::Any,
+                        ty: Ty::Unknown,
                         optional: false,
                         rest: false,
                     }],
@@ -5349,7 +5460,7 @@ impl Checker {
                         optional: false,
                         rest: false,
                     }],
-                    ret: Ty::Any,
+                    ret: Ty::Unknown,
                 })),
                 _ => self.no_member("JSON", name, pos),
             },
@@ -5369,22 +5480,22 @@ impl Checker {
                     "reject" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
                         params: vec![ParamTy {
-                            ty: Ty::Any,
+                            ty: Ty::Unknown,
                             optional: false,
                             rest: false,
                         }],
-                        ret: self.promise_of(Ty::Any),
+                        ret: self.promise_of(Ty::Unknown),
                     })),
                     // `Promise.all([…])` — the element type is not tracked
                     // through the array of promises yet.
                     "all" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
                         params: vec![ParamTy {
-                            ty: Ty::Array(Rc::new(Ty::Any)),
+                            ty: Ty::Array(Rc::new(Ty::Unknown)),
                             optional: false,
                             rest: false,
                         }],
-                        ret: self.promise_of(Ty::Array(Rc::new(Ty::Any))),
+                        ret: self.promise_of(Ty::Array(Rc::new(Ty::Unknown))),
                     })),
                     _ => self.no_member("Promise", name, pos),
                 }
@@ -5393,7 +5504,9 @@ impl Checker {
                 "log" | "warn" | "error" | "info" | "debug" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
                     params: vec![ParamTy {
-                        ty: Ty::Any,
+                        // Anything is assignable *to* `unknown`, which is exactly
+                        // what "prints whatever you give it" means.
+                        ty: Ty::Unknown,
                         optional: false,
                         rest: true,
                     }],
@@ -5413,7 +5526,7 @@ impl Checker {
                 })),
                 _ => self.no_member("document", name, pos),
             },
-            Ty::Namespace(Ns::Opaque) => Ty::Any,
+            Ty::Namespace(Ns::Opaque) => Ty::Unknown,
             // A bounded type parameter exposes its bound's members:
             // `<T extends Comparable<T>>` makes `t.compareTo(u)` legal.
             Ty::Var(tv) => match self.tv_bounds.get(tv).cloned() {
@@ -5512,7 +5625,7 @@ impl Checker {
                             );
                         }
                     }
-                    Ty::Record(_) | Ty::Any | Ty::Err | Ty::ClassMeta(_) => {}
+                    Ty::Record(_) | Ty::Err | Ty::ClassMeta(_) => {}
                     _ => {}
                 }
             }
@@ -5531,7 +5644,7 @@ impl Checker {
         };
         let t = strip_narrow_helpers(to);
         let numeric = |x: &Ty| matches!(x, Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Char);
-        if matches!(f, Ty::Any | Ty::Err) || matches!(t, Ty::Any | Ty::Err) {
+        if matches!(f, Ty::Err) || matches!(t, Ty::Err) {
             return;
         }
         if wrapping {
@@ -5577,7 +5690,19 @@ impl Checker {
     fn assignable(&self, from: &Ty, to: &Ty) -> bool {
         use Ty::*;
         match (from, to) {
-            (Err | Any, _) | (_, Err | Any) => true,
+            // `Err` is poison: an error was already reported, so stay quiet.
+            (Err, _) | (_, Err) => true,
+            // Anything may be *given* to `unknown` — that is what makes it the
+            // top type. Nothing comes back out without narrowing, which is the
+            // difference between a top type and a hole.
+            (_, Unknown) => true,
+            (Unknown, _) => false,
+            // Every number satisfies the `Numeric` bound, and nothing else does.
+            (Int(_) | F32 | F64 | BigInt | BigDec, Iface(id, _))
+                if Some(*id) == self.numeric_id =>
+            {
+                true
+            }
             (Void, Void) => true,
             (Null, Null | Nullable(_)) => true,
             (Nullable(a), Nullable(b)) => self.assignable(a, b),
@@ -5593,7 +5718,7 @@ impl Checker {
             }
             (Int(_), F32 | F64) => true,
             (F32, F32) | (F64, F64) | (F32, F64) => true,
-            (Array(a), Array(b)) => self.ty_eq(a, b) || matches!(b.as_ref(), Ty::Any),
+            (Array(a), Array(b)) => self.ty_eq(a, b) || matches!(b.as_ref(), Ty::Unknown),
             (Tuple(a), Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| self.assignable(x, y))
             }
@@ -5969,7 +6094,7 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
 
 fn nullable(t: Ty) -> Ty {
     match t {
-        Ty::Nullable(_) | Ty::Null | Ty::Any | Ty::Err => t,
+        Ty::Nullable(_) | Ty::Null | Ty::Err => t,
         other => Ty::Nullable(Rc::new(other)),
     }
 }

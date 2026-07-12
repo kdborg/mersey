@@ -32,8 +32,10 @@ function network(): void {
         console.log(resp.status, resp.ok, resp.url);
         resp.text().then(body => console.log(body.length));
     });
-    const ws = window.WebSocket;
-    console.log(ws);
+    // An interface *object* is imported, not reached through `window`: it is a
+    // global constructor, not a member of the Window interface. (This used to
+    // "work" only because `window` was silently `any`.)
+    console.log(window.location.href);
 }
 
 function timing(): void {

@@ -1,0 +1,24 @@
+// `unknown` is the sound top type. It replaced `any`, which was assignable in
+// *both* directions and permitted *any* member — not a type, but a hole in the
+// checker that spread to everything it touched.
+//
+// A value gets type `unknown` when it crosses into the program from outside the
+// type system: a JSON document, a JS host object. Anything is assignable *to*
+// it; nothing comes back out without narrowing.
+import { json } from "std:json";
+import { math } from "std:math";
+
+const doc = json.parse("{\"a\": 1}");
+
+// None of this compiles, and all of it used to.
+const n: int32 = doc;
+const s: string = doc;
+const member = doc.anything;
+const called = doc.call(1);
+const indexed = doc[0];
+
+// `math.abs` is generic in a Numeric T, not `(any) => any`. It kept the width
+// it was given, which is why it used to be untyped — and why `abs("hi")` used
+// to compile.
+const bad = math.abs("hi");
+const worse = math.max(1, "two");

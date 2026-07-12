@@ -707,6 +707,10 @@ fn fresh_class_id() -> u64 {
 }
 
 impl ClassDef {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The constant offset of `name` in this class's instances, if it is a
     /// declared field.
     pub(crate) fn slot_of(&self, name: &str) -> Option<u32> {
@@ -5277,9 +5281,57 @@ impl Interp {
                 format!("value does not fit `{name}` (use `as wrapping`)"),
             )
         };
+
+        // A cast is how a value of type `unknown` — a JSON document, a host
+        // object — becomes something the checker will let you use. So the cast
+        // is the one place where the claim can still be checked, and it *is*
+        // checked: a cast that is wrong throws here, at the cast, rather than
+        // letting a record travel inside an `int32` and fail somewhere else
+        // (§: no undefined behaviour).
+        match (name.as_str(), &v) {
+            ("string", Value::Str(_))
+            | ("bool", Value::Bool(_))
+            | ("char", Value::Char(_))
+            | ("bigint", Value::BigIntV(_))
+            | ("bigdec", Value::BigDecV(_)) => return Ok(v),
+            ("string" | "bool" | "char" | "bigint" | "bigdec", other) => {
+                return Err(self.throw(
+                    "TypeError",
+                    format!("cannot cast {} to `{name}`", kind_of(other)),
+                ))
+            }
+            _ => {}
+        }
+
         let as_f = match as_num(&v) {
             Some(f) => f,
-            None => return Ok(v), // non-numeric cast: reference cast, pass through
+            None => {
+                // A numeric cast of something that is not a number is a lie the
+                // checker could not catch; the runtime can, and does.
+                if is_numeric_type_name(name) {
+                    return Err(self.throw(
+                        "TypeError",
+                        format!("cannot cast {} to `{name}`", kind_of(&v)),
+                    ));
+                }
+                // A reference cast (`x as Element`, `x as MyClass`): check what
+                // can be checked, and pass a host object through — the host owns
+                // its own types.
+                if let Value::Instance(inst) = &v {
+                    let mut cls = Some(inst.borrow().class.clone());
+                    while let Some(c) = cls {
+                        if c.name() == name {
+                            return Ok(v);
+                        }
+                        cls = c.parent.clone();
+                    }
+                    return Err(self.throw(
+                        "TypeError",
+                        format!("cannot cast a `{}` to `{name}`", inst.borrow().class.name()),
+                    ));
+                }
+                return Ok(v);
+            }
         };
         let as_i = as_i64(&v);
         macro_rules! to_int {
@@ -5606,6 +5658,25 @@ fn parse_iso8601(t: &str) -> Option<f64> {
     let days = days_from_civil(y, mo, d);
     let secs = days * 86_400 + h * 3600 + mi * 60 + sec;
     Some(secs as f64 * 1000.0 + millis as f64)
+}
+
+/// Names of the numeric types a cast can produce.
+fn is_numeric_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "int8"
+            | "int16"
+            | "int32"
+            | "int"
+            | "int64"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint"
+            | "uint64"
+            | "float32"
+            | "float64"
+    )
 }
 
 fn as_num(v: &Value) -> Option<f64> {
