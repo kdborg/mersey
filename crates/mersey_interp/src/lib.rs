@@ -394,6 +394,10 @@ type SResult = Result<Sig, Thrown>;
 
 pub struct Interp {
     host: Box<dyn Host>,
+    /// Callback slots the host still holds (a JS listener, a promise
+    /// reaction). Cleared slots are reused, so a page that churns through
+    /// listeners doesn't grow the table forever.
+    free_callbacks: Vec<u32>,
     /// Shared prelude (built-in classes); every module scope descends from it.
     root: Env,
     globals: Env,
@@ -471,6 +475,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     }
     Interp {
         host,
+        free_callbacks: Vec::new(),
         root,
         globals,
         callbacks: Vec::new(),
@@ -3136,8 +3141,7 @@ impl Interp {
             | Value::Resolver(..)
             | Value::AllSlot(..)
             | Value::PromiseExec(..) => {
-                let id = self.callbacks.len() as u32;
-                self.callbacks.push(v.clone());
+                let id = self.alloc_callback(v.clone());
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
             }
             // A Mersey promise crosses as a real host promise: construct one
@@ -3193,6 +3197,31 @@ impl Interp {
         match j.get("ok") {
             Some(v) => Ok(self.from_web(v)),
             None => Ok(Value::Null),
+        }
+    }
+
+    /// Take a callback slot, reusing a freed one when possible.
+    fn alloc_callback(&mut self, v: Value) -> u32 {
+        match self.free_callbacks.pop() {
+            Some(id) => {
+                self.callbacks[id as usize] = v;
+                id
+            }
+            None => {
+                self.callbacks.push(v);
+                (self.callbacks.len() - 1) as u32
+            }
+        }
+    }
+
+    /// Release a callback the host will never invoke again (a removed
+    /// listener, a settled promise reaction).
+    pub fn release_callback(&mut self, id: u32) {
+        if let Some(slot) = self.callbacks.get_mut(id as usize) {
+            if !matches!(slot, Value::Null) {
+                *slot = Value::Null;
+                self.free_callbacks.push(id);
+            }
         }
     }
 

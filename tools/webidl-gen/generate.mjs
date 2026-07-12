@@ -338,34 +338,29 @@ for (const [name, rec] of interfaces) {
       if (m.special === "static") continue;
       seen.add(m.name);
 
-      // Overloads: merge them. Take the widest parameter list, and mark
-      // every parameter beyond the *narrowest* overload's required count as
-      // optional — so `worker.postMessage(x)` is legal even though another
-      // overload takes a transfer list.
+      // Overloads: emit each one. Mersey has no overloading in the source
+      // language (§1.3: a name does one thing), so they are emitted as
+      // `name`, `name$1`, `name$2` … and the checker SELECTS the first that
+      // accepts the call — rather than merging them into one loose signature
+      // that would accept calls the IDL rejects.
       const overloads = allMembers(name).filter(
         (o) => o.type === "operation" && o.name === m.name && o.special !== "static",
       );
-      const required = Math.min(
-        ...overloads.map(
-          (o) => (o.arguments ?? []).filter((a) => !a.optional && !a.variadic).length,
-        ),
-      );
-      const widest = overloads.reduce(
-        (best, o) => ((o.arguments ?? []).length > (best.arguments ?? []).length ? o : best),
-        m,
-      );
-      const args = (widest.arguments ?? []).map((a, i) =>
-        i >= required ? { ...a, optional: !a.variadic } : a,
-      );
+      overloads.forEach((o, idx) => {
+        const suffix = idx === 0 ? "" : `$${idx}`;
+        const ret = mapType(o.idlType);
+        lines.push(`    ${o.name}${suffix}(${mapArgs(o.arguments ?? [])}): ${ret};`);
+        if (idx > 0) counts.members++;
+      });
+      const args = m.arguments ?? [];
       const ret = mapType(m.idlType);
-      lines.push(`    ${m.name}(${mapArgs(args)}): ${ret};`);
-      const variadic = args.some((a) => a.variadic);
-      bindCalls.push([
-        `${name}.${m.name}`,
-        variadic ? `(t,a)=>t.${m.name}(...a)` : `(t,a)=>t.${m.name}(...a)`,
-      ]);
+      const _ = args;
+      const _r = ret;
+      // One thunk per name: JS dispatches the overload itself.
+      bindCalls.push([`${name}.${m.name}`, `(t,a)=>t.${m.name}(...a)`]);
       counts.members++;
       counts.bindings = (counts.bindings ?? 0) + 1;
+      counts.overloads = (counts.overloads ?? 0) + Math.max(0, overloads.length - 1);
     }
   }
   // CSS properties (from the CSS specs, not the IDL).

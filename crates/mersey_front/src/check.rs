@@ -2911,6 +2911,14 @@ impl Checker {
                     return Ty::Any;
                 }
                 _ => {
+                    // WebIDL overloads are emitted as `name`, `name$1`, … —
+                    // select the first that accepts this call rather than
+                    // merging them into one loose signature.
+                    if let Some(sel) =
+                        self.select_overload(&ot, name, args, pos_of(callee), optional)
+                    {
+                        return sel;
+                    }
                     let fty = self.member_access(&ot, name, optional, pos_of(obj));
                     return self.invoke(&fty, type_args, args, pos_of(callee), optional);
                 }
@@ -2918,6 +2926,48 @@ impl Checker {
         }
         let fty = self.check_expr(callee, None);
         self.invoke(&fty, type_args, args, pos_of(callee), optional)
+    }
+
+    /// If `name` has WebIDL overloads (`name$1`, `name$2`, …), pick the first
+    /// signature that accepts the call. Returns None when there are none, so
+    /// the caller falls back to the ordinary path (and its diagnostics).
+    fn select_overload(
+        &mut self,
+        recv: &Ty,
+        name: &str,
+        args: &[ArrayElem],
+        pos: Pos,
+        optional: bool,
+    ) -> Option<Ty> {
+        // Collect the alternatives, quietly.
+        let mut candidates: Vec<Ty> = Vec::new();
+        let n = self.diags.len();
+        for i in 0.. {
+            let probe = if i == 0 { name.to_string() } else { format!("{name}${i}") };
+            let ty = self.member_access(recv, &probe, optional, pos);
+            if matches!(ty, Ty::Err) {
+                break;
+            }
+            candidates.push(ty);
+            if i > 8 {
+                break; // no IDL member has this many overloads
+            }
+        }
+        self.diags.truncate(n);
+        if candidates.len() <= 1 {
+            return None; // not overloaded: the normal path reports properly
+        }
+        // First signature that type-checks wins (IDL overload resolution
+        // order); if none does, report against the first.
+        for cand in &candidates {
+            let before = self.diags.len();
+            let ret = self.invoke(cand, &[], args, pos, optional);
+            if self.diags.len() == before {
+                return Some(ret);
+            }
+            self.diags.truncate(before);
+        }
+        Some(self.invoke(&candidates[0], &[], args, pos, optional))
     }
 
     fn invoke(

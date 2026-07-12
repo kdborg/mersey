@@ -82,7 +82,9 @@ export function makeBridge(globalObject, invokeCallback) {
       const id = v.__cb__;
       // A Mersey closure: JS calls it with real arguments (event objects,
       // resolved promise values, …), which cross back as handles.
-      return (...args) => invokeCallback(id, JSON.stringify(args.map(encode)));
+      const fn = (...args) => invokeCallback(id, JSON.stringify(args.map(encode)));
+      fn.__merseyCallback = id; // so the host can release it later
+      return fn;
     }
     const out = {};
     for (const [k, val] of Object.entries(v)) out[k] = decode(val);

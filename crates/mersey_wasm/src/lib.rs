@@ -410,6 +410,13 @@ pub extern "C" fn msy_invoke_args(cb: u32, ptr: *const u8, len: usize) -> u32 {
     })
 }
 
+/// The host is done with a callback (a listener was removed, a promise
+/// settled): release its slot so the table doesn't grow forever.
+#[no_mangle]
+pub extern "C" fn msy_release_callback(cb: u32) {
+    with_interp(|interp| interp.release_callback(cb));
+}
+
 #[no_mangle]
 pub extern "C" fn msy_invoke(cb: u32) -> u32 {
     with_interp(|interp| match interp.invoke_callback(cb) {

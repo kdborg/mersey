@@ -293,17 +293,26 @@ The initial integration is complete. Beyond §5:
   `slice`, `split`, `toUpperCase`/`toLowerCase`, `trim` — code-point
   indexed, per §3.4.
 
+## Overload selection
+
+WebIDL overloads are emitted individually (`drawImage`, `drawImage$1`,
+`drawImage$2`) and the checker **selects** the first signature that accepts a
+call, in IDL order. Mersey itself has no overloading (§1.3: a name does one
+thing) — this is purely how the generated host surface is modelled. All three
+`drawImage` arities type-check; a two-argument call does not.
+
 ## Known limits
 
-- **Host handles and callbacks are released manually** (`release(obj)`), not
-  by GC — the engine's refcounting heap doesn't trace into the host's handle
-  table, and a closure handed to the host is retained for the page's lifetime.
-- **Overloads are merged, not selected**: the generator emits the widest
-  parameter list with everything past the narrowest overload's required count
-  marked optional, so a call the IDL would reject can still type-check.
+- **Host handles are released manually** (`release(obj)`): the engine's
+  collector traces Mersey objects, but the host's handle table is the host's.
+  Callback *slots* are recycled (`msy_release_callback`), so listener churn
+  no longer grows the table forever.
 - **Performance** (Stage A only): no JIT in the browser — WASM cannot map code
   pages — and ~2.5 µs per web API call. `std:bytes` is the escape hatch for
   data-heavy loops (11× faster on pixel work). Both costs vanish in Stage B.
+- **Debugging**: errors show a Mersey code frame (file, line, caret) and
+  `mersey lsp` gives editor diagnostics, but DevTools cannot *step* through
+  Mersey bytecode — that needs the native CDP integration (Stage B).
 
 In Stage B the same generator targets Blink's own IDL and the bridge is
 replaced by direct native bindings; the ABI is unchanged.
