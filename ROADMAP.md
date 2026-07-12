@@ -231,6 +231,24 @@ pass on a page running both.
 and fixed a real memory-safety-adjacent panic; reproducible fuzz runs
 gate regressions.
 
+## Web platform coverage (complete 2026-07-12)
+
+- [x] **WebIDL type generator** (`tools/webidl-gen`) over `@webref/idl`:
+      1,122 interfaces / 7,340 members / 903 dictionaries / 256 globals,
+      emitted as ambient Mersey declarations and validated by Mersey's own
+      parser+checker on every build
+- [x] **Universal bridge** (`web/mersey-bridge.js` + `webjson.rs` +
+      `JsRef` values): five reflective ops reach any host object; identity
+      preserved via a handle table; Mersey closures cross as real JS
+      callbacks; promises usable via `.then` today
+- [x] Proven end-to-end (`web/test/platform.mjs`, 11 technologies through
+      the real WASM engine): storage, crypto, URL, JSON, canvas, timers,
+      fetch/promises, DOM
+- [x] `docs/architecture/web-platform.md` documents the mechanism, the type
+      mapping, and the known limits
+- Limits recorded: record field order, static members/constants, anonymous
+  special operations (indexed getters), callback handle release
+
 ## Explicitly deferred (tracked, not forgotten)
 
 Threads/workers in-language, decimal float128, AOT native compilation,

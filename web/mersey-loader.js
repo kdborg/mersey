@@ -9,12 +9,14 @@
  *   <script src="mersey-loader.js" data-engine="mersey_wasm.wasm" defer></script>
  *   <script type="text/mersey" src="app.mersey"></script>
  */
+import { makeBridge } from "./mersey-bridge.js";
+
 (() => {
   "use strict";
 
-  const engineUrl =
-    (document.currentScript && document.currentScript.dataset.engine) ||
-    "mersey_wasm.wasm";
+  // `document.currentScript` is null in module scripts; find our own tag.
+  const self_ = document.querySelector('script[src$="mersey-loader.js"]');
+  const engineUrl = (self_ && self_.dataset.engine) || "mersey_wasm.wasm";
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -78,6 +80,26 @@
   let nextId = 1;
   const created = new Map();
   const elementById = (id) => created.get(id) ?? document.getElementById(id);
+
+  // Universal bridge: every web technology, reflectively (no per-API glue).
+  const bridge = makeBridge(globalThis, (cb, argsJson) => {
+    const [p, l] = writeStr(argsJson);
+    exports.msy_invoke_args(cb, p, l);
+  });
+  const reply = (s) => {
+    const [ptr, len] = writeStr(s);
+    return (BigInt(ptr) << 32n) | BigInt(len);
+  };
+  Object.assign(imports.env, {
+    host_web_global: (np, nl) => BigInt(bridge.global(readStr(np, nl))),
+    host_web_get: (t, pp, pl) => reply(bridge.get(Number(t), readStr(pp, pl))),
+    host_web_set: (t, pp, pl, vp, vl) =>
+      reply(bridge.set(Number(t), readStr(pp, pl), readStr(vp, vl))),
+    host_web_call: (t, mp, ml, ap, al) =>
+      reply(bridge.call(Number(t), readStr(mp, ml), readStr(ap, al))),
+    host_web_new: (cp, cl, ap, al) =>
+      reply(bridge.construct(readStr(cp, cl), readStr(ap, al))),
+  });
 
   async function boot() {
     const response = fetch(engineUrl);

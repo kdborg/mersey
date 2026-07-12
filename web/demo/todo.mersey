@@ -42,11 +42,11 @@ class TodoList {
 }
 
 const list = new TodoList(
-    document.getElementById("list"),
-    document.getElementById("count"),
+    document.getElementById("list") as Element,
+    document.getElementById("count") as Element,
 );
-const input = document.getElementById("new-todo");
-const add = document.getElementById("add");
+const input = document.getElementById("new-todo") as HTMLInputElement;
+const add = document.getElementById("add") as Element;
 
 add.addEventListener("click", () => {
     list.addItem(input.value);

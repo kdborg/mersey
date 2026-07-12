@@ -37,6 +37,26 @@ extern "C" {
     fn host_dom_remove(id_ptr: *const u8, id_len: usize);
     fn host_dom_get_value(id_ptr: *const u8, id_len: usize) -> u64;
     fn host_dom_set_value(id_ptr: *const u8, id_len: usize, v_ptr: *const u8, v_len: usize);
+
+    // Universal web bridge: JSON in, JSON out (all returns are packed
+    // (ptr<<32|len) buffers allocated with msy_alloc by the host).
+    fn host_web_global(n_ptr: *const u8, n_len: usize) -> i64;
+    fn host_web_get(target: i64, p_ptr: *const u8, p_len: usize) -> u64;
+    fn host_web_set(
+        target: i64,
+        p_ptr: *const u8,
+        p_len: usize,
+        v_ptr: *const u8,
+        v_len: usize,
+    ) -> u64;
+    fn host_web_call(
+        target: i64,
+        m_ptr: *const u8,
+        m_len: usize,
+        a_ptr: *const u8,
+        a_len: usize,
+    ) -> u64;
+    fn host_web_new(c_ptr: *const u8, c_len: usize, a_ptr: *const u8, a_len: usize) -> u64;
 }
 
 fn read_packed(packed: u64) -> String {
@@ -89,6 +109,40 @@ impl Host for WasmHost {
     }
     fn dom_set_value(&mut self, id: &str, value: &str) {
         unsafe { host_dom_set_value(id.as_ptr(), id.len(), value.as_ptr(), value.len()) }
+    }
+
+    fn web_global(&mut self, name: &str) -> i64 {
+        unsafe { host_web_global(name.as_ptr(), name.len()) }
+    }
+    fn web_get(&mut self, target: i64, prop: &str) -> String {
+        read_packed(unsafe { host_web_get(target, prop.as_ptr(), prop.len()) })
+    }
+    fn web_set(&mut self, target: i64, prop: &str, value_json: &str) -> String {
+        read_packed(unsafe {
+            host_web_set(
+                target,
+                prop.as_ptr(),
+                prop.len(),
+                value_json.as_ptr(),
+                value_json.len(),
+            )
+        })
+    }
+    fn web_call(&mut self, target: i64, method: &str, args_json: &str) -> String {
+        read_packed(unsafe {
+            host_web_call(
+                target,
+                method.as_ptr(),
+                method.len(),
+                args_json.as_ptr(),
+                args_json.len(),
+            )
+        })
+    }
+    fn web_new(&mut self, ctor: &str, args_json: &str) -> String {
+        read_packed(unsafe {
+            host_web_new(ctor.as_ptr(), ctor.len(), args_json.as_ptr(), args_json.len())
+        })
     }
 }
 
@@ -143,6 +197,28 @@ pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
         }
         let interp = slot.as_mut().expect("interp");
         match interp.run_module(module) {
+            Ok(()) => 0,
+            Err(t) => {
+                let msg = interp.describe_thrown(&t);
+                send(host_error, &msg);
+                2
+            }
+        }
+    })
+}
+
+/// Fire a callback with JSON arguments (event objects, promise values).
+#[no_mangle]
+pub extern "C" fn msy_invoke_args(cb: u32, ptr: *const u8, len: usize) -> u32 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let args = String::from_utf8_lossy(bytes).into_owned();
+    INTERP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(interp) = slot.as_mut() else {
+            send(host_error, "no script loaded");
+            return 2;
+        };
+        match interp.invoke_callback_json(cb, &args) {
             Ok(()) => 0,
             Err(t) => {
                 let msg = interp.describe_thrown(&t);

@@ -1,0 +1,53 @@
+// Breadth check: the generated web-platform surface types real usage
+// across many technologies (types only; no execution).
+import { console } from "std:console";
+import {
+    document, localStorage, history, location, navigator, fetch,
+    setTimeout, clearTimeout, requestAnimationFrame, matchMedia,
+    caches, indexedDB, crypto, performance, window,
+} from "browser:dom";
+
+function ui(): void {
+    const el = document.getElementById("app");
+    if (el != null) {
+        el.textContent = "hello";
+        const canvas = document.createElement("canvas");
+        el.appendChild(canvas);
+        el.addEventListener("click", ev => console.log(ev.type, ev.timeStamp));
+    }
+    const q = document.querySelector("#app .item");
+    console.log(document.title, q);
+}
+
+function storage(): void {
+    localStorage.setItem("k", "v");
+    const v: string? = localStorage.getItem("k");
+    console.log(v ?? "missing", localStorage.length);
+    history.pushState(null, "", "/next");
+    console.log(location.href, navigator.userAgent, navigator.onLine);
+}
+
+function network(): void {
+    fetch("/api/data").then(resp => {
+        console.log(resp.status, resp.ok, resp.url);
+        resp.text().then(body => console.log(body.length));
+    });
+    const ws = window.WebSocket;
+    console.log(ws);
+}
+
+function timing(): void {
+    const t = setTimeout(() => console.log("tick"), 100);
+    clearTimeout(t);
+    requestAnimationFrame(ts => console.log(ts));
+    console.log(performance.now());
+    console.log(matchMedia("(max-width: 600px)").matches);
+}
+
+function misc(): void {
+    crypto.getRandomValues(new Uint8Array(8));
+    caches.has("v1").then(hit => console.log(hit));
+    console.log(indexedDB);
+}
+
+console.log(ui, storage, network, timing, misc);

@@ -36,6 +36,14 @@ pub fn bind(module: &Module) -> BindOutput {
         prelude.values.insert(name.to_string(), VSym { kind: VKind::Class, tdz: false, pos });
         prelude.types.insert(name.to_string(), TSym { kind: TKind::Class, pos });
     }
+    // Ambient web-platform TYPE names (spec §5.4: types are ambient,
+    // values require an import).
+    for name in &crate::webapi::webapi().type_names {
+        prelude
+            .types
+            .entry(name.clone())
+            .or_insert(TSym { kind: TKind::Class, pos: Pos { line: 0, col: 0 } });
+    }
     let mut b = Binder {
         scopes: vec![prelude, Scope::default()],
         diags: Vec::new(),

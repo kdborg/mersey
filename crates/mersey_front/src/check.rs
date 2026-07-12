@@ -23,6 +23,11 @@ pub struct CheckOutput {
 
 pub fn check(module: &Module) -> CheckOutput {
     let mut c = Checker::new();
+    // Ambient web platform first (generated from WebIDL); its collection
+    // diagnostics are suppressed — the generator is validated separately.
+    let n = c.diags.len();
+    c.collect(crate::webapi::webapi().module);
+    c.diags.truncate(n);
     c.collect(module);
     c.check_module(module);
     let mut diagnostics = c.diags;
@@ -746,7 +751,12 @@ impl Checker {
                     let local = s.alias.as_ref().unwrap_or(&s.name);
                     let ty = match (im.from.as_str(), s.name.text.as_str()) {
                         ("std:console", "console") => Ty::Namespace(Ns::Console),
-                        ("browser:dom", "document") => Ty::Namespace(Ns::Document),
+                        ("browser:dom", global) => {
+                            match crate::webapi::global_type(global) {
+                                Some(ast_ty) => self.resolve_type(ast_ty),
+                                None => Ty::Any,
+                            }
+                        }
                         _ => Ty::Any,
                     };
                     self.define(&local.text, ty, true);
@@ -1051,6 +1061,10 @@ impl Checker {
             if let Some(tv) = scope.get(name) {
                 return Ty::Var(*tv);
             }
+        }
+        // Generated marker for IDL `any`/`object`.
+        if name == "JsAny" {
+            return Ty::Any;
         }
         if let Some(t) = predefined(name) {
             return t;
@@ -2469,6 +2483,14 @@ impl Checker {
         let t = self.resolve_type(ty);
         let (id, targs) = match &t {
             Ty::Class(id, args) => (*id, args.as_ref().clone()),
+            // `new WebSocket(url)`, `new Uint8Array(4)`: web-platform
+            // constructors are interfaces, built through the bridge.
+            Ty::Iface(..) => {
+                for a in args {
+                    self.check_expr(&a.expr, None);
+                }
+                return t;
+            }
             Ty::Any | Ty::Err => {
                 for a in args {
                     self.check_expr(&a.expr, None);
@@ -2695,6 +2717,11 @@ impl Checker {
                     params: vec![],
                     ret: Ty::Array(Rc::new(Ty::Int(IntKind::I32))),
                 })),
+                "join" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![ParamTy { ty: Ty::Str, optional: true, rest: false }],
+                    ret: Ty::Str,
+                })),
                 "toString" => to_string_fn(),
                 _ => self.no_member("array", name, pos),
             },
@@ -2886,7 +2913,12 @@ impl Checker {
     // ---- casts ---------------------------------------------------------------------
 
     fn check_cast(&mut self, from: &Ty, to: &Ty, wrapping: bool, pos: Pos) {
-        let f = strip_narrow_helpers(from);
+        // A cast to a non-nullable type is also the null assertion
+        // (`document.body as Element`); nullability is checked at runtime.
+        let f = match (strip_narrow_helpers(from), to) {
+            (Ty::Nullable(inner), t) if !matches!(t, Ty::Nullable(_)) => inner.as_ref().clone(),
+            (f, _) => f,
+        };
         let t = strip_narrow_helpers(to);
         let numeric =
             |x: &Ty| matches!(x, Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Char);
@@ -2971,12 +3003,15 @@ impl Checker {
                 })
             }
             (Fn(a), Fn(b)) => {
-                a.params.len() == b.params.len()
+                // The source may accept FEWER parameters (extra call-site
+                // arguments are ignored) — the callback convention.
+                a.params.len() <= b.params.len()
                     && a.params
                         .iter()
                         .zip(b.params.iter())
                         .all(|(x, y)| self.assignable(&y.ty, &x.ty))
-                    && (matches!(a.ret, Void) && matches!(b.ret, Void)
+                    && (matches!(b.ret, Void)
+                        || matches!(a.ret, Void) && matches!(b.ret, Void)
                         || self.assignable(&a.ret, &b.ret))
             }
             (Class(a, aargs), Class(b, bargs)) => {

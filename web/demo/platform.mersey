@@ -1,0 +1,50 @@
+// Every web technology, reachable: this program touches storage, network,
+// timers, canvas/2D graphics, crypto, structured data, URLs and the DOM —
+// none of it hand-wired into the engine. Each call goes through the
+// universal bridge, typed by the generated WebIDL declarations.
+import { console } from "std:console";
+import { document, localStorage, fetch, setTimeout, crypto, JSON, URL } from "browser:dom";
+
+const out: Element = document.getElementById("out") as Element;
+let lines: string[] = [];
+
+function show(line: string): void {
+    lines.push(line);
+    out.textContent = lines.join("\n");
+    console.log(line);
+}
+
+// --- Web Storage
+localStorage.setItem("mersey.visits", "1");
+show(`storage: visits=${localStorage.getItem("mersey.visits")}`);
+
+// --- Web Crypto
+const bytes = new Uint8Array(4);
+crypto.getRandomValues(bytes);
+show(`crypto: ${bytes.length} random bytes drawn`);
+
+// --- URL parsing
+const u = new URL("https://example.com/a/b?q=mersey#frag");
+show(`url: host=${u.host} path=${u.pathname} query=${u.search}`);
+
+// --- JSON (the platform's, not ours)
+const encoded = JSON.stringify({ lang: "mersey", version: 1 });
+show(`json: ${encoded}`);
+
+// --- Canvas / 2D graphics
+const canvas = document.createElement("canvas") as HTMLCanvasElement;
+canvas.width = 120;
+canvas.height = 40;
+const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+ctx.fillStyle = "#0af";
+ctx.fillRect(0.0, 0.0, 120.0, 40.0);
+(document.body as Element).appendChild(canvas);
+show("canvas: filled a 120x40 rect");
+
+// --- Timers
+setTimeout(() => show("timer: fired after 50ms"), 50);
+
+// --- Network (promises work today via .then; async/await is on the roadmap)
+fetch("https://example.com/").then(resp => {
+    show(`fetch: status ${resp.status}`);
+});

@@ -25,6 +25,8 @@ use mersey_front::ast::*;
 
 pub mod bignum;
 pub mod vm;
+pub mod webjson;
+use webjson::Json;
 use bignum::{BigDec, BigInt};
 
 // ---- host interface ---------------------------------------------------------
@@ -62,6 +64,27 @@ pub trait Host {
         Vec::new()
     }
     fn drop_cap(&mut self, _cap: &str) {}
+
+    // ---- universal web bridge (spec §5.4: import-gated) ---------------
+    /// Resolve an ambient global to a handle; -1 = unavailable.
+    fn web_global(&mut self, _name: &str) -> i64 {
+        -1
+    }
+    /// Read `target[prop]`; returns a tagged-JSON WebValue, or an
+    /// `{"err":"…"}` object. Default: not available.
+    fn web_get(&mut self, _target: i64, _prop: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    fn web_set(&mut self, _target: i64, _prop: &str, _value_json: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    /// Call `target[method](args)`; method "" calls the target itself.
+    fn web_call(&mut self, _target: i64, _method: &str, _args_json: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    fn web_new(&mut self, _ctor: &str, _args_json: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
 }
 
 // ---- values -------------------------------------------------------------------
@@ -94,6 +117,9 @@ pub enum Value {
     Namespace(Rc<Namespace>),
     /// A DOM element handle (Stage A: identified by element id).
     Dom(Rc<String>),
+    /// Opaque handle to a host (JS) object, reached via the universal
+    /// bridge. Handle 0 is the global object (window).
+    JsRef(i64),
     Native(&'static str),
 }
 
@@ -465,15 +491,31 @@ impl Interp {
                 Ok(())
             }
             "browser:dom" => {
-                let mut entries = HashMap::new();
-                entries.insert("getElementById".to_string(), Value::Native("dom.getElementById"));
-                entries.insert("createElement".to_string(), Value::Native("dom.createElement"));
-                let document = Value::Namespace(Rc::new(Namespace {
-                    name: "document".to_string(),
-                    entries,
-                }));
                 for n in names {
-                    env_define(&self.globals, &n.text, document.clone());
+                    // Fast path: the hand-written DOM surface (kept because
+                    // the Stage A demos and goldens pin it).
+                    if n.text == "document" && self.host.web_global("document") < 0 {
+                        let mut entries = HashMap::new();
+                        entries
+                            .insert("getElementById".to_string(), Value::Native("dom.getElementById"));
+                        entries
+                            .insert("createElement".to_string(), Value::Native("dom.createElement"));
+                        let document = Value::Namespace(Rc::new(Namespace {
+                            name: "document".to_string(),
+                            entries,
+                        }));
+                        env_define(&self.globals, &n.text, document);
+                        continue;
+                    }
+                    // General path: any ambient web global, via the bridge.
+                    let handle = self.host.web_global(&n.text);
+                    if handle < 0 {
+                        return self.type_error(format!(
+                            "`{}` is not available in this host (no web bridge)",
+                            n.text
+                        ));
+                    }
+                    env_define(&self.globals, &n.text, Value::JsRef(handle));
                 }
                 Ok(())
             }
@@ -1018,6 +1060,11 @@ impl Interp {
         match callee {
             Value::Closure(c) => self.call_closure(c, args),
             Value::Native(name) => self.call_native(name, None, args),
+            // A handle to a JS function (e.g. imported `fetch`): call it.
+            Value::JsRef(h) => {
+                let h = *h;
+                self.web_call(h, "", args)
+            }
             _ => self.type_error("value is not callable"),
         }
     }
@@ -1224,6 +1271,10 @@ impl Interp {
                 "length" => Some(Value::I32(a.borrow().len() as i32)),
                 _ => None,
             }),
+            Value::JsRef(h) => {
+                let h = *h;
+                self.web_get(h, name).map(Some)
+            }
             Value::MapV(m) => Ok(match name {
                 "size" => Some(Value::I32(m.borrow().len() as i32)),
                 _ => None,
@@ -1300,6 +1351,10 @@ impl Interp {
 
     fn set_member(&mut self, obj: &Value, name: &str, value: Value) -> Result<(), Thrown> {
         match obj {
+            Value::JsRef(h) => {
+                let h = *h;
+                self.web_set(h, name, value)
+            }
             Value::Record(r) => {
                 r.borrow_mut().insert(name.to_string(), value);
                 Ok(())
@@ -1654,6 +1709,10 @@ impl Interp {
 
     fn call_member(&mut self, recv: &Value, name: &str, args: Vec<Value>) -> VResult {
         match recv {
+            Value::JsRef(h) => {
+                let h = *h;
+                self.web_call(h, name, args)
+            }
             Value::Array(a) => match name {
                 "push" => {
                     for v in args {
@@ -1667,6 +1726,14 @@ impl Interp {
                     Ok(Value::Array(Rc::new(RefCell::new(
                         (0..n).map(|i| Value::I32(i as i32)).collect(),
                     ))))
+                }
+                "join" => {
+                    let sep = match args.first() {
+                        Some(Value::Str(s)) => s.iter().collect::<String>(),
+                        _ => String::new(),
+                    };
+                    let parts: Vec<String> = a.borrow().iter().map(to_display).collect();
+                    Ok(Value::Str(Rc::new(parts.join(&sep).chars().collect())))
                 }
                 "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
                 _ => self.type_error(format!("arrays have no method `{name}` in the MVP")),
@@ -1853,6 +1920,130 @@ impl Interp {
         Ok(Value::Bool(ok))
     }
 
+    // ---- universal web bridge -------------------------------------------
+
+    /// Mersey value → tagged JSON. Objects become `{"__ref__":n}`,
+    /// closures are registered and become `{"__cb__":id}`.
+    fn to_web(&mut self, v: &Value) -> Json {
+        match v {
+            Value::Null => Json::Null,
+            Value::Bool(b) => Json::Bool(*b),
+            Value::I32(n) => Json::Num(*n as f64),
+            Value::I64(n) => Json::Num(*n as f64),
+            Value::U32(n) => Json::Num(*n as f64),
+            Value::U64(n) => Json::Num(*n as f64),
+            Value::F32(f) => Json::Num(*f as f64),
+            Value::F64(f) => Json::Num(*f),
+            Value::Char(c) => Json::Str(c.to_string()),
+            Value::Str(s) => Json::Str(s.iter().collect()),
+            Value::BigIntV(b) => Json::Str(b.to_decimal()),
+            Value::BigDecV(d) => Json::Str(d.to_decimal()),
+            Value::JsRef(h) => Json::Obj(vec![("__ref__".into(), Json::Num(*h as f64))]),
+            Value::Dom(id) => Json::Obj(vec![("__dom__".into(), Json::Str(id.to_string()))]),
+            Value::Array(a) => {
+                let items: Vec<Value> = a.borrow().clone();
+                Json::Arr(items.iter().map(|x| self.to_web(x)).collect())
+            }
+            Value::Record(r) => {
+                let entries: Vec<(String, Value)> =
+                    r.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                Json::Obj(entries.into_iter().map(|(k, v)| (k, self.to_web(&v))).collect())
+            }
+            Value::Closure(_) | Value::Native(_) => {
+                let id = self.callbacks.len() as u32;
+                self.callbacks.push(v.clone());
+                Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
+            }
+            other => Json::Str(to_display(other)),
+        }
+    }
+
+    /// Tagged JSON → Mersey value.
+    fn from_web(&self, j: &Json) -> Value {
+        match j {
+            Json::Null => Value::Null,
+            Json::Bool(b) => Value::Bool(*b),
+            Json::Num(n) => {
+                if n.fract() == 0.0 && n.abs() <= i32::MAX as f64 {
+                    Value::I32(*n as i32)
+                } else {
+                    Value::F64(*n)
+                }
+            }
+            Json::Str(s) => Value::Str(Rc::new(s.chars().collect())),
+            Json::Arr(items) => Value::Array(Rc::new(RefCell::new(
+                items.iter().map(|i| self.from_web(i)).collect(),
+            ))),
+            Json::Obj(fields) => {
+                if let Some(Json::Num(h)) = j.get("__ref__") {
+                    return Value::JsRef(*h as i64);
+                }
+                let map: HashMap<String, Value> =
+                    fields.iter().map(|(k, v)| (k.clone(), self.from_web(v))).collect();
+                Value::Record(Rc::new(RefCell::new(map)))
+            }
+        }
+    }
+
+    /// Decode a bridge reply (`{"ok":…}` / `{"err":"…"}`).
+    fn web_reply(&self, reply: &str) -> VResult {
+        let Some(j) = webjson::parse(reply) else {
+            return Err(self.throw("Error", format!("bad bridge reply: {reply}")));
+        };
+        if let Some(Json::Str(msg)) = j.get("err") {
+            return Err(self.throw("Error", msg.clone()));
+        }
+        match j.get("ok") {
+            Some(v) => Ok(self.from_web(v)),
+            None => Ok(Value::Null),
+        }
+    }
+
+    fn args_json(&mut self, args: &[Value]) -> String {
+        let arr = Json::Arr(args.iter().map(|a| self.to_web(a)).collect());
+        let mut s = String::new();
+        webjson::write(&mut s, &arr);
+        s
+    }
+
+    fn web_get(&mut self, target: i64, prop: &str) -> VResult {
+        let reply = self.host.web_get(target, prop);
+        self.web_reply(&reply)
+    }
+
+    fn web_set(&mut self, target: i64, prop: &str, v: Value) -> Result<(), Thrown> {
+        let j = self.to_web(&v);
+        let mut s = String::new();
+        webjson::write(&mut s, &j);
+        let reply = self.host.web_set(target, prop, &s);
+        self.web_reply(&reply).map(|_| ())
+    }
+
+    fn web_call(&mut self, target: i64, method: &str, args: Vec<Value>) -> VResult {
+        let a = self.args_json(&args);
+        let reply = self.host.web_call(target, method, &a);
+        self.web_reply(&reply)
+    }
+
+    fn web_new(&mut self, ctor: &str, args: Vec<Value>) -> VResult {
+        let a = self.args_json(&args);
+        let reply = self.host.web_new(ctor, &a);
+        self.web_reply(&reply)
+    }
+
+    /// Fire a callback with host-supplied arguments (event objects etc.).
+    pub fn invoke_callback_json(&mut self, id: u32, args_json: &str) -> Result<(), Thrown> {
+        let args = match webjson::parse(args_json) {
+            Some(Json::Arr(items)) => items.iter().map(|i| self.from_web(i)).collect(),
+            _ => Vec::new(),
+        };
+        let cb = match self.callbacks.get(id as usize) {
+            Some(v) => v.clone(),
+            None => return self.type_error(format!("unknown callback #{id}")),
+        };
+        self.call_value(&cb, args).map(|_| ())
+    }
+
     fn map_find(
         &self,
         m: &Rc<RefCell<Vec<(Value, Value)>>>,
@@ -1917,12 +2108,12 @@ impl Interp {
         if head == "Set" && env_get(env, "Set").is_none() {
             return Ok(Value::SetV(Rc::new(RefCell::new(Vec::new()))));
         }
-        let v = env_get(env, head)
-            .ok_or_else(|| self.throw("TypeError", format!("`{head}` is not defined")))?;
-        let Value::Class(cls) = v else {
-            return self.type_error(format!("`{head}` is not a class"));
-        };
-        self.instantiate(&cls, argv)
+        match env_get(env, head) {
+            Some(Value::Class(cls)) => self.instantiate(&cls, argv),
+            // `new WebSocket(url)`, `new Uint8Array(n)`, …: any host
+            // constructor reachable through the bridge.
+            _ => self.web_new(head, argv),
+        }
     }
 
     fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
@@ -2432,6 +2623,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::Instance(_) => "object",
         Value::Namespace(_) => "namespace",
         Value::Dom(_) => "dom element",
+        Value::JsRef(_) => "web object",
         Value::Native(_) => "native function",
     }
 }
@@ -2479,6 +2671,7 @@ pub fn to_display(v: &Value) -> String {
         Value::Instance(i) => format!("<{}>", i.borrow().class.name),
         Value::Namespace(ns) => format!("<{}>", ns.name),
         Value::Dom(id) => format!("<#{id}>"),
+        Value::JsRef(h) => format!("<web:{h}>"),
     }
 }
 

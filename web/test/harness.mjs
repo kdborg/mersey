@@ -6,6 +6,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { makeBridge } from "../mersey-bridge.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const wasmBytes = await readFile(
@@ -77,8 +78,21 @@ async function engine() {
       host_dom_set_value: (ip, il, vp, vl) => {
         element(readStr(ip, il)).value = readStr(vp, vl);
       },
+      // Universal bridge (empty realm: these suites use the DOM fast path).
+      host_web_global: (np, nl) => BigInt(bridge.global(readStr(np, nl))),
+      host_web_get: (t, pp, pl) => packed(bridge.get(Number(t), readStr(pp, pl))),
+      host_web_set: (t, pp, pl, vp, vl) =>
+        packed(bridge.set(Number(t), readStr(pp, pl), readStr(vp, vl))),
+      host_web_call: (t, mp, ml, ap, al) =>
+        packed(bridge.call(Number(t), readStr(mp, ml), readStr(ap, al))),
+      host_web_new: (cp, cl, ap, al) =>
+        packed(bridge.construct(readStr(cp, cl), readStr(ap, al))),
     },
   };
+  const bridge = makeBridge({}, (cb, argsJson) => {
+    const [p, l] = writeStr(argsJson);
+    exports.msy_invoke_args(cb, p, l);
+  });
   ({ instance: { exports } } = await WebAssembly.instantiate(wasmBytes, imports));
   return {
     run: (source) => {

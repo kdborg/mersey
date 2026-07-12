@@ -21,8 +21,8 @@ class Counter {
 }
 
 const counter = new Counter("Clicks");
-const out = document.getElementById("out");
-const btn = document.getElementById("btn");
+const out = document.getElementById("out") as Element;
+const btn = document.getElementById("btn") as Element;
 
 out.textContent = counter.render();
 btn.addEventListener("click", () => {
