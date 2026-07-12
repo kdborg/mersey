@@ -285,6 +285,28 @@ impl GenState {
     }
 }
 
+/// How a module's top level finished.
+enum ModuleFlow {
+    Done,
+    /// The module's top-level `await` is still waiting on something only the
+    /// host can settle. Everything that imports it waits too.
+    Awaiting(Rc<GcCell<PromiseState>>),
+}
+
+/// A module graph paused on a top-level `await`.
+struct PendingGraph {
+    /// The suspended module's completion promise.
+    promise: Rc<GcCell<PromiseState>>,
+    spec: String,
+    module: &'static Module,
+    /// The suspended module's own scope, so its exports can be collected once
+    /// it finishes.
+    env: Env,
+    /// Modules that have not run yet — the ones that import it, and their
+    /// importers.
+    rest: Vec<(String, &'static Module)>,
+}
+
 /// One entry of the diagnostic call stack.
 pub struct Frame_ {
     pub name: String,
@@ -492,6 +514,13 @@ pub struct Interp {
     frames: Vec<Frame_>,
     /// Mersey call depth. See `MAX_CALL_DEPTH`.
     depth: usize,
+    /// A graph paused on a module's top-level `await`.
+    pending_graph: Option<PendingGraph>,
+    /// Modules that are in the graph but have not been run: the targets of a
+    /// dynamic `import(…)`. They were loaded, checked and locked with the rest
+    /// (§4.5 — the graph is closed); they simply do not execute until someone
+    /// imports them.
+    lazy_modules: HashMap<String, &'static Module>,
     /// Stack address at the last host boundary — the base the budget measures
     /// growth from. See `STACK_BUDGET`.
     stack_base: usize,
@@ -573,6 +602,8 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         class_stack: Vec::new(),
         frames: Vec::new(),
         depth: 0,
+        pending_graph: None,
+        lazy_modules: HashMap::new(),
         stack_base: stack_here(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
@@ -734,33 +765,141 @@ impl Interp {
     pub fn run_graph(&mut self, modules: Vec<(String, &'static Module)>) -> Result<(), Thrown> {
         // The host may call in at any stack depth: measure growth from here.
         self.stack_base = stack_here();
-        for (spec, module) in modules {
+        self.run_modules(modules)?;
+        self.maybe_collect();
+        Ok(())
+    }
+
+    /// Run modules in dependency order, stopping if one suspends on a
+    /// top-level `await` — its importers cannot run until it has finished.
+    fn run_modules(&mut self, modules: Vec<(String, &'static Module)>) -> Result<(), Thrown> {
+        let mut queue = modules.into_iter();
+        while let Some((spec, module)) = queue.next() {
             let env = child_env(&self.root);
             let saved_globals = std::mem::replace(&mut self.globals, env.clone());
             let saved_spec = std::mem::replace(&mut self.current_module, spec.clone());
             let result = self.run_module_inner(module);
-            // Collect exports before restoring.
-            let exports = if result.is_ok() {
-                collect_exports(module, &env)
-            } else {
-                HashMap::new()
+            let exports = match &result {
+                Ok(ModuleFlow::Done) => collect_exports(module, &env),
+                _ => HashMap::new(),
             };
             self.globals = saved_globals;
             self.current_module = saved_spec;
-            result?;
-            self.modules.insert(spec, exports);
+            match result? {
+                ModuleFlow::Done => {
+                    self.modules.insert(spec, exports);
+                }
+                ModuleFlow::Awaiting(promise) => {
+                    self.pending_graph = Some(PendingGraph {
+                        promise,
+                        spec,
+                        module,
+                        env,
+                        rest: queue.collect(),
+                    });
+                    return Ok(());
+                }
+            }
         }
-        self.maybe_collect();
         Ok(())
+    }
+
+    /// Is a paused graph now able to continue?
+    fn graph_can_resume(&self) -> bool {
+        self.pending_graph
+            .as_ref()
+            .is_some_and(|p| p.promise.borrow().status != PromiseStatus::Pending)
+    }
+
+    /// The awaited thing settled: finish that module and run the ones waiting
+    /// on it.
+    fn resume_graph(&mut self) -> Result<(), Thrown> {
+        let Some(p) = self.pending_graph.take() else {
+            return Ok(());
+        };
+        let (status, value) = {
+            let st = p.promise.borrow();
+            (st.status.clone(), st.value.clone())
+        };
+        if status == PromiseStatus::Rejected {
+            // A module that throws takes its importers with it.
+            return Err(Thrown(value));
+        }
+        let saved_spec = std::mem::replace(&mut self.current_module, p.spec.clone());
+        let exports = collect_exports(p.module, &p.env);
+        self.current_module = saved_spec;
+        self.modules.insert(p.spec, exports);
+        self.run_modules(p.rest)
+    }
+
+    /// Did the graph stop on a top-level `await` that nothing has settled?
+    pub fn graph_is_waiting(&self) -> bool {
+        self.pending_graph.is_some()
+    }
+
+    /// Register a module that is in the graph but does not run at startup —
+    /// the target of a dynamic `import(…)`.
+    pub fn register_lazy(&mut self, spec: String, module: &'static Module) {
+        self.lazy_modules.insert(spec, module);
+    }
+
+    /// `import("./x.mersey")` — a promise of that module's exports.
+    ///
+    /// The module was already loaded, checked and locked with the rest of the
+    /// graph, so this defers *evaluation*, not loading: running code has no
+    /// authority to reach for code that was not named up front (§5.4). The
+    /// first import runs the module; later ones get the same exports.
+    pub(crate) fn dynamic_import(&mut self, spec: &str) -> VResult {
+        let target = mersey_front::graph::resolve_module(&self.current_module, spec);
+        if !self.modules.contains_key(&target) {
+            let Some(module) = self.lazy_modules.get(&target).copied() else {
+                return Err(self.throw("Error", format!("`{spec}` is not in the module graph")));
+            };
+            let env = child_env(&self.root);
+            let saved_globals = std::mem::replace(&mut self.globals, env.clone());
+            let saved_spec = std::mem::replace(&mut self.current_module, target.clone());
+            let result = self.run_module_inner(module);
+            let exports = match &result {
+                Ok(ModuleFlow::Done) => collect_exports(module, &env),
+                _ => HashMap::new(),
+            };
+            self.globals = saved_globals;
+            self.current_module = saved_spec;
+            match result? {
+                ModuleFlow::Done => {
+                    self.modules.insert(target.clone(), exports);
+                }
+                ModuleFlow::Awaiting(_) => {
+                    // The imported module's own top level is awaiting. Nothing
+                    // here can wait for it without blocking the whole engine.
+                    return Err(self.throw(
+                        "Error",
+                        format!(
+                            "`{spec}` suspends on a top-level `await`; import it statically \
+                             so the graph can wait for it"
+                        ),
+                    ));
+                }
+            }
+        }
+        let exports = self.modules.get(&target).cloned().unwrap_or_default();
+        let mut fields: Vec<(String, Value)> = exports.into_iter().collect();
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        let rec = Rc::new(GcCell::new(fields));
+        gc::track_record(&rec);
+        let promise = PromiseState::pending();
+        self.settle(&promise, Value::Record(rec), false);
+        Ok(Value::PromiseV(promise))
     }
 
     pub fn run_module(&mut self, module: &'static Module) -> Result<(), Thrown> {
         // The host may call in at any stack depth: measure growth from here.
         self.stack_base = stack_here();
-        self.run_module_inner(module)
+        self.run_module_inner(module)?;
+        Ok(())
     }
 
-    fn run_module_inner(&mut self, module: &'static Module) -> Result<(), Thrown> {
+    fn run_module_inner(&mut self, module: &'static Module) -> Result<ModuleFlow, Thrown> {
         let mut decls: Vec<&'static Decl> = Vec::new();
         for item in &module.items {
             match item {
@@ -831,15 +970,57 @@ impl Interp {
 
         // Execute remaining top-level statements in order (including
         // exported variable statements) — compiled when possible.
+        let spec = self.current_module.clone();
+        let compiled = vm::compile_module_stmts_in(module, &spec);
+        {
+            if let Some(chunk) = compiled.clone() {
+                let globals = self.globals.clone();
+                // Top-level `await`: the module *is* the async function. It runs
+                // as a coroutine, and the modules that import it wait for it to
+                // settle (§4.5) — exactly what a caller of an async function
+                // does.
+                //
+                // This happens on the bytecode VM whether or not the tree-walker
+                // is selected, for the same reason an async *function* does:
+                // `await` suspends by capturing VM state, which the AST walker
+                // has none of. The two tiers therefore agree on async semantics
+                // by construction rather than by keeping two implementations in
+                // step.
+                if vm::chunk_awaits(&chunk) {
+                    let result = PromiseState::pending();
+                    let coro = Coro {
+                        chunk,
+                        pc: 0,
+                        stack: Vec::new(),
+                        scopes: vec![globals],
+                        handlers: Vec::new(),
+                        cls: None,
+                        result: result.clone(),
+                    };
+                    self.push_frame("<module>", &spec);
+                    let out = self.drive(coro, None);
+                    self.pop_frame();
+                    out?;
+                    self.drain_tasks()?;
+                    return match result.borrow().status {
+                        PromiseStatus::Fulfilled => Ok(ModuleFlow::Done),
+                        PromiseStatus::Rejected => Err(Thrown(result.borrow().value.clone())),
+                        // Still waiting on something only the host can settle
+                        // (a fetch, a timer). The graph continues when it does.
+                        PromiseStatus::Pending => Ok(ModuleFlow::Awaiting(result.clone())),
+                    };
+                }
+            }
+        }
         if self.use_vm {
-            let spec = self.current_module.clone();
-            if let Some(chunk) = vm::compile_module_stmts_in(module, &spec) {
+            if let Some(chunk) = compiled {
                 let globals = self.globals.clone();
                 self.push_frame("<module>", &spec);
                 let out = vm::run_chunk(self, &chunk, globals);
                 self.pop_frame();
                 out?;
-                return self.drain_microtasks();
+                self.drain_tasks()?;
+                return Ok(ModuleFlow::Done);
             }
         }
         for item in &module.items {
@@ -856,7 +1037,8 @@ impl Interp {
                 _ => {}
             }
         }
-        self.drain_microtasks()
+        self.drain_tasks()?;
+        Ok(ModuleFlow::Done)
     }
 
     fn bind_import(&mut self, im: &'static ImportDecl) -> Result<(), Thrown> {
@@ -2760,7 +2942,18 @@ impl Interp {
                 let argv = self.eval_args(args, env)?;
                 self.super_call(argv, env)
             }
-            Expr::ImportCall(_) => self.type_error("dynamic import() is not in the MVP"),
+            Expr::ImportCall(inner) => {
+                let spec = match &**inner {
+                    Expr::Lit {
+                        kind: LitKind::Str,
+                        text,
+                        ..
+                    } => mersey_front::ast::string_value(text),
+                    // The checker rejects a non-literal specifier (§4.5).
+                    _ => return self.type_error("`import(…)` needs a literal specifier"),
+                };
+                self.dynamic_import(&spec)
+            }
             // Generators run on the VM (only it can suspend); reaching here
             // means the AST tier was asked to run one.
             Expr::Yield { .. } => self.type_error("`yield` requires the bytecode VM"),
@@ -3601,6 +3794,12 @@ impl Interp {
             roots.coros.push(cell.out.clone());
             roots.values.extend(cell.results.borrow().iter().cloned());
         }
+        // A graph paused on a top-level `await` is live: its module's scope
+        // holds everything the module has built so far.
+        if let Some(p) = &self.pending_graph {
+            roots.coros.push(p.promise.clone());
+            roots.envs.push(p.env.clone());
+        }
         roots
     }
 
@@ -3634,6 +3833,20 @@ impl Interp {
     /// Run microtasks to completion. Called before control returns to the
     /// host, so a turn always leaves the queue empty.
     pub fn drain_microtasks(&mut self) -> Result<(), Thrown> {
+        loop {
+            self.drain_tasks()?;
+            // A module that suspended on a top-level `await` may now be able to
+            // finish — and everything importing it is still waiting. Running
+            // those modules can queue more microtasks, so this loops.
+            if !self.graph_can_resume() {
+                return Ok(());
+            }
+            self.resume_graph()?;
+        }
+    }
+
+    /// The microtask queue itself.
+    fn drain_tasks(&mut self) -> Result<(), Thrown> {
         // Bounded to catch runaway promise loops in hostile input.
         const MAX: u32 = 1_000_000;
         let mut n = 0;

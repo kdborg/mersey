@@ -132,7 +132,7 @@ fn check(path: &str, mode: Mode) -> ExitCode {
         Mode::Check => {
             // Check the whole graph the entry module pulls in.
             let modules = match load_graph(path) {
-                Ok(m) => m,
+                Ok(g) => g.all,
                 Err(code) => return code,
             };
             if check_graph_ok(&modules) {
@@ -254,10 +254,11 @@ impl interp::Host for CliHost {
 
 /// Load the whole module graph from disk (spec §4.5: closed before
 /// execution). Returns modules in dependency-first order.
-fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Module)>, ExitCode> {
+fn load_graph(entry: &str) -> Result<Graph, ExitCode> {
     use std::collections::HashMap;
     let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut dyn_deps: HashMap<String, Vec<String>> = HashMap::new();
     let mut queue = vec![entry.to_string()];
     let mut failed = false;
 
@@ -305,23 +306,94 @@ fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Mo
                 queue.push(target);
             }
         }
+        // A dynamic `import("./x")` is part of the graph too — loaded, checked
+        // and locked with everything else (§4.5) — it just does not *run* until
+        // someone imports it.
+        //
+        // So it *is* an ordering edge for checking (the importer's `import(…)`
+        // is typed as a promise of that module's exports, which have to be known
+        // first) but *not* for execution (nothing waits for it to run).
+        let mut dyn_edges = Vec::new();
+        for spec_import in graph::dynamic_imports(module) {
+            if graph::is_module(&spec_import) {
+                let target = graph::resolve_module(&spec, &spec_import);
+                dyn_edges.push(target.clone());
+                queue.push(target);
+            }
+        }
         deps.insert(spec.clone(), edges);
+        dyn_deps.insert(spec.clone(), dyn_edges);
         sources.insert(spec, module);
     }
     if failed {
         return Err(ExitCode::FAILURE);
     }
-    let order = match graph::topo_order(entry, &deps) {
+    // Checking order: dependency-first over *both* kinds of edge, so a module's
+    // exports are known before anything that imports it — statically or not.
+    let mut all_deps = deps.clone();
+    for (spec, dyns) in &dyn_deps {
+        all_deps
+            .entry(spec.clone())
+            .or_default()
+            .extend(dyns.iter().cloned());
+    }
+    let check_order = match graph::topo_order(entry, &all_deps) {
         Ok(o) => o,
         Err(d) => {
             eprintln!("{d}");
             return Err(ExitCode::FAILURE);
         }
     };
-    Ok(order
-        .into_iter()
-        .map(|s| (s.clone(), sources[&s]))
-        .collect())
+    // Execution order: static edges only. Everything else is lazy.
+    let exec_order = match graph::topo_order(entry, &deps) {
+        Ok(o) => o,
+        Err(d) => {
+            eprintln!("{d}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    Ok(Graph {
+        all: check_order
+            .iter()
+            .map(|s| (s.clone(), sources[s]))
+            .collect(),
+        eager: exec_order,
+    })
+}
+
+/// A loaded module graph.
+struct Graph {
+    /// Every module, dependency-first — the order to *check* in.
+    all: Vec<(String, &'static mersey_front::ast::Module)>,
+    /// The specs that run at startup, in execution order. Anything in `all` but
+    /// not here is the target of a dynamic import: loaded and checked, but not
+    /// run until someone imports it.
+    eager: Vec<String>,
+}
+
+impl Graph {
+    /// (modules to run now, modules to register as lazy).
+    #[allow(clippy::type_complexity)]
+    fn split(
+        &self,
+    ) -> (
+        Vec<(String, &'static mersey_front::ast::Module)>,
+        Vec<(String, &'static mersey_front::ast::Module)>,
+    ) {
+        let eager: Vec<_> = self
+            .eager
+            .iter()
+            .filter_map(|s| self.all.iter().find(|(spec, _)| spec == s).cloned())
+            .collect();
+        let lazy: Vec<_> = self
+            .all
+            .iter()
+            .filter(|(spec, _)| !self.eager.contains(spec))
+            .cloned()
+            .collect();
+        (eager, lazy)
+    }
 }
 
 /// Bind + typecheck the whole graph; returns false if anything failed.
@@ -351,11 +423,11 @@ fn check_graph_ok(modules: &[(String, &'static mersey_front::ast::Module)]) -> b
 }
 
 fn run(path: &str, caps: Vec<String>) -> ExitCode {
-    let modules = match load_graph(path) {
-        Ok(m) => m,
+    let graph_modules = match load_graph(path) {
+        Ok(g) => g,
         Err(code) => return code,
     };
-    if !check_graph_ok(&modules) {
+    if !check_graph_ok(&graph_modules.all) {
         return ExitCode::FAILURE;
     }
     let host = CliHost {
@@ -368,7 +440,24 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     if std::env::var("MERSEY_JIT").as_deref() != Ok("0") {
         interp.jit = Some(mersey_jit::hook);
     }
-    match interp.run_graph(modules) {
+    // A dynamic-import target is in the graph, but does not run until someone
+    // imports it.
+    let (eager, lazy) = graph_modules.split();
+    for (spec, module) in lazy {
+        interp.register_lazy(spec, module);
+    }
+    match interp.run_graph(eager) {
+        Ok(()) if interp.graph_is_waiting() => {
+            // A module's top-level `await` never settled. In a browser the page
+            // would simply carry on waiting for the network; here there is no
+            // event loop left to settle anything, so saying nothing would just
+            // look like the program silently did half its work.
+            eprintln!(
+                "mersey: a module is still waiting on a top-level `await`, and nothing \
+                 in this host can settle it"
+            );
+            ExitCode::FAILURE
+        }
         Ok(()) => ExitCode::SUCCESS,
         Err(t) => {
             eprintln!("runtime error: {}", interp.describe_thrown(&t));
@@ -508,7 +597,7 @@ fn sourcemap_cmd(path: &str) -> ExitCode {
 /// the program can load is hashed; `verify` fails if any of them changed.
 fn lock_cmd(entry: &str, verify: bool) -> ExitCode {
     let modules = match load_graph(entry) {
-        Ok(m) => m,
+        Ok(g) => g.all,
         Err(code) => return code,
     };
     let mut lines = vec![format!("# mersey.lock — entry: {entry}")];
@@ -678,16 +767,17 @@ fn test_cmd(path: &str) -> ExitCode {
     for file in &files {
         let name = file.display().to_string();
         let modules = match load_graph(&name) {
-            Ok(m) => m,
+            Ok(g) => g,
             Err(_) => {
                 broken.push(format!("{name}: does not load"));
                 continue;
             }
         };
-        if !check_graph_ok(&modules) {
+        if !check_graph_ok(&modules.all) {
             broken.push(format!("{name}: does not typecheck"));
             continue;
         }
+        let (eager, lazy) = modules.split();
 
         let lines = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut interp = interp::new_interp(Box::new(TapHost {
@@ -696,7 +786,10 @@ fn test_cmd(path: &str) -> ExitCode {
         if std::env::var("MERSEY_JIT").as_deref() != Ok("0") {
             interp.jit = Some(mersey_jit::hook);
         }
-        let outcome = interp.run_graph(modules);
+        for (spec, module) in lazy {
+            interp.register_lazy(spec, module);
+        }
+        let outcome = interp.run_graph(eager);
 
         // The host kept what the module printed.
         let lines = lines.borrow().clone();

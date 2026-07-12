@@ -100,6 +100,8 @@ pub enum Op {
     SuperCall(u8),
     SuperMember(u16),
     CallSuperMethod(u16, u8),
+    /// Dynamic `import(spec)`: pushes a promise of the module's exports.
+    ImportCall(u16),
     GetMember(u16, u16),
     SetMember(u16, u16),
     IndexGet,
@@ -175,6 +177,12 @@ pub(crate) fn loop_captures(cond: &Option<Expr>, step: &[Expr], body: &Stmt) -> 
 
 pub(crate) fn chunk_yields(chunk: &Chunk) -> bool {
     chunk.code.iter().any(|op| matches!(op, Op::YieldOp))
+}
+
+/// Does this chunk suspend on an `await`? A module whose top level does is
+/// itself asynchronous, and has to run as a coroutine.
+pub(crate) fn chunk_awaits(chunk: &Chunk) -> bool {
+    chunk.code.iter().any(|op| matches!(op, Op::Await))
 }
 
 /// Public wrapper for tests/tools: compile a function body from its AST
@@ -1107,7 +1115,22 @@ impl C {
                 }
                 None => self.bail(),
             },
-            Expr::ImportCall(_) => self.bail(),
+            Expr::ImportCall(inner) => {
+                // The specifier is a literal (the checker enforces it, §4.5), so
+                // it is a constant here.
+                match &**inner {
+                    Expr::Lit {
+                        kind: LitKind::Str,
+                        text,
+                        ..
+                    } => {
+                        let spec = mersey_front::ast::string_value(text);
+                        let n = self.name(&spec);
+                        self.emit(Op::ImportCall(n));
+                    }
+                    _ => self.bail(),
+                }
+            }
             Expr::Yield { value, .. } => {
                 match value {
                     Some(v) => self.expr(v),
@@ -1742,6 +1765,11 @@ fn exec(
                 let v = throwing!(i.call_super_method(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
             }
+            Op::ImportCall(ni) => {
+                let spec = chunk.names[ni as usize].clone();
+                let v = throwing!(i.dynamic_import(&spec));
+                stack.push(v);
+            }
             Op::GetMember(ni, ci) => {
                 let o = stack.pop().expect("obj");
                 // Fast path: a hit is a constant-offset load out of the
@@ -2063,6 +2091,10 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
             Op::CallSuperMethod(i, a) => {
                 bounds(i, chunk.names.len(), "name")?;
                 (a as i32, 1)
+            }
+            Op::ImportCall(i) => {
+                bounds(i, chunk.names.len(), "name")?;
+                (0, 1)
             }
             Op::GetMember(i, c) => {
                 bounds(i, chunk.names.len(), "name")?;

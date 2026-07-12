@@ -18,6 +18,29 @@ pub fn imports(module: &Module) -> Vec<String> {
         .collect()
 }
 
+/// Specifiers named by a dynamic `import("./x.mersey")`, in source order.
+///
+/// These are part of the graph like any other import: §4.5 closes the graph
+/// before execution, so a dynamic import defers *evaluation*, not loading. The
+/// module is fetched, checked and locked with everything else — it simply does
+/// not run until someone imports it.
+pub fn dynamic_imports(module: &Module) -> Vec<String> {
+    let mut out = Vec::new();
+    crate::ast::for_each_expr(module, &mut |e| {
+        if let crate::ast::Expr::ImportCall(inner) = e {
+            if let crate::ast::Expr::Lit {
+                kind: crate::ast::LitKind::Str,
+                text,
+                ..
+            } = &**inner
+            {
+                out.push(crate::ast::string_value(text));
+            }
+        }
+    });
+    out
+}
+
 /// Relative specifiers only (`./x.mersey`, `../y.mersey`); `std:`/`browser:`
 /// are built in and never fetched.
 pub fn is_relative(spec: &str) -> bool {

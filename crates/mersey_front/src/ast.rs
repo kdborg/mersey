@@ -562,3 +562,251 @@ pub struct FnTypeParam {
     pub optional: bool,
     pub ty: Type,
 }
+
+/// The *value* of a string literal, whose `text` is the raw source — quotes and
+/// all. Used wherever a literal has to become a real string before the engine
+/// runs (an `import(…)` specifier, most importantly).
+pub fn string_value(text: &str) -> String {
+    let inner = text
+        .strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .or_else(|| text.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')))
+        .unwrap_or(text);
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
+}
+
+// ---- walking ------------------------------------------------------------------
+
+/// Visit every expression in a module, including inside function bodies,
+/// class members and arrow bodies.
+///
+/// One walker, so a pass that needs to find something in the tree (a dynamic
+/// `import`, a closure, a `yield`) does not each grow its own copy that can
+/// fall behind the AST when a node is added.
+pub fn for_each_expr(module: &Module, f: &mut impl FnMut(&Expr)) {
+    for item in &module.items {
+        match item {
+            Item::Import(_) => {}
+            Item::Stmt(s) => walk_stmt(s, f),
+            Item::Decl(d) => walk_decl(d, f),
+            Item::Export(e) => match &e.kind {
+                ExportKind::Decl(d) => walk_decl(d, f),
+                ExportKind::Var(v) => walk_var(v, f),
+                ExportKind::Named { .. } => {}
+            },
+        }
+    }
+}
+
+fn walk_decl(d: &Decl, f: &mut impl FnMut(&Expr)) {
+    match d {
+        Decl::Function(fd) => {
+            for p in &fd.params {
+                if let Some(dflt) = &p.default {
+                    walk_expr(dflt, f);
+                }
+            }
+            for s in &fd.body {
+                walk_stmt(s, f);
+            }
+        }
+        Decl::Class(c) => {
+            for m in &c.members {
+                match m {
+                    ClassMember::Field { init: Some(e), .. } => walk_expr(e, f),
+                    ClassMember::Field { .. } => {}
+                    ClassMember::Method { params, body, .. } => {
+                        for p in params {
+                            if let Some(dflt) = &p.default {
+                                walk_expr(dflt, f);
+                            }
+                        }
+                        for s in body.iter().flatten() {
+                            walk_stmt(s, f);
+                        }
+                    }
+                    ClassMember::Ctor { params, body, .. } => {
+                        for p in params {
+                            if let Some(dflt) = &p.default {
+                                walk_expr(dflt, f);
+                            }
+                        }
+                        for s in body {
+                            walk_stmt(s, f);
+                        }
+                    }
+                    ClassMember::Getter { body, .. } | ClassMember::Setter { body, .. } => {
+                        for s in body {
+                            walk_stmt(s, f);
+                        }
+                    }
+                }
+            }
+        }
+        Decl::Interface(_) | Decl::Enum(_) | Decl::TypeAlias(_) => {}
+    }
+}
+
+fn walk_var(v: &VarStmt, f: &mut impl FnMut(&Expr)) {
+    for b in &v.bindings {
+        if let Some(e) = &b.init {
+            walk_expr(e, f);
+        }
+    }
+}
+
+fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
+    match s {
+        Stmt::Block(b) => b.iter().for_each(|s| walk_stmt(s, f)),
+        Stmt::Var(v) => walk_var(v, f),
+        Stmt::Expr(e) | Stmt::Throw(e) => walk_expr(e, f),
+        Stmt::Empty | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Return { value, .. } => {
+            if let Some(e) = value {
+                walk_expr(e, f);
+            }
+        }
+        Stmt::If { cond, then, els } => {
+            walk_expr(cond, f);
+            walk_stmt(then, f);
+            if let Some(e) = els {
+                walk_stmt(e, f);
+            }
+        }
+        Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
+            walk_expr(cond, f);
+            walk_stmt(body, f);
+        }
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            match init {
+                Some(ForInit::Var(v)) => walk_var(v, f),
+                Some(ForInit::Exprs(es)) => es.iter().for_each(|e| walk_expr(e, f)),
+                None => {}
+            }
+            if let Some(c) = cond {
+                walk_expr(c, f);
+            }
+            step.iter().for_each(|e| walk_expr(e, f));
+            walk_stmt(body, f);
+        }
+        Stmt::ForOf { iter, body, .. } => {
+            walk_expr(iter, f);
+            walk_stmt(body, f);
+        }
+        Stmt::Switch { scrutinee, clauses } => {
+            walk_expr(scrutinee, f);
+            for c in clauses {
+                if let Some(t) = &c.test {
+                    walk_expr(t, f);
+                }
+                c.body.iter().for_each(|s| walk_stmt(s, f));
+            }
+        }
+        Stmt::Try {
+            block,
+            catches,
+            finally,
+        } => {
+            block.iter().for_each(|s| walk_stmt(s, f));
+            for c in catches {
+                c.block.iter().for_each(|s| walk_stmt(s, f));
+            }
+            if let Some(fin) = finally {
+                fin.iter().for_each(|s| walk_stmt(s, f));
+            }
+        }
+        Stmt::Labeled { body, .. } => walk_stmt(body, f),
+    }
+}
+
+fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(e);
+    match e {
+        Expr::Ident(_) | Expr::This(_) | Expr::Lit { .. } => {}
+        Expr::Template(parts) => {
+            for p in parts {
+                if let TplPart::Expr(e) = p {
+                    walk_expr(e, f);
+                }
+            }
+        }
+        Expr::Array(items) => items.iter().for_each(|a| walk_expr(&a.expr, f)),
+        Expr::Record(fields) => {
+            for field in fields {
+                match field {
+                    RecordField::Named { value: Some(v), .. } => walk_expr(v, f),
+                    RecordField::Spread(v) => walk_expr(v, f),
+                    RecordField::Named { .. } => {}
+                }
+            }
+        }
+        Expr::Paren(i)
+        | Expr::Unary { expr: i, .. }
+        | Expr::Update { expr: i, .. }
+        | Expr::Cast { expr: i, .. }
+        | Expr::ImportCall(i) => walk_expr(i, f),
+        Expr::Arrow { params, body, .. } => {
+            for p in params {
+                if let Some(d) = &p.default {
+                    walk_expr(d, f);
+                }
+            }
+            match body {
+                ArrowBody::Expr(e) => walk_expr(e, f),
+                ArrowBody::Block(stmts) => stmts.iter().for_each(|s| walk_stmt(s, f)),
+            }
+        }
+        Expr::Binary { l, r, .. }
+        | Expr::Assign {
+            target: l,
+            value: r,
+            ..
+        } => {
+            walk_expr(l, f);
+            walk_expr(r, f);
+        }
+        Expr::Cond { cond, then, els } => {
+            walk_expr(cond, f);
+            walk_expr(then, f);
+            walk_expr(els, f);
+        }
+        Expr::Call { callee, args, .. } => {
+            walk_expr(callee, f);
+            args.iter().for_each(|a| walk_expr(&a.expr, f));
+        }
+        Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+            args.iter().for_each(|a| walk_expr(&a.expr, f))
+        }
+        Expr::Member { obj, .. } => walk_expr(obj, f),
+        Expr::Index { obj, index, .. } => {
+            walk_expr(obj, f);
+            walk_expr(index, f);
+        }
+        Expr::Yield { value, .. } => {
+            if let Some(v) = value {
+                walk_expr(v, f);
+            }
+        }
+        _ => {}
+    }
+}

@@ -1,0 +1,18 @@
+import { console } from "std:console";
+
+// `import(…)` defers *evaluation*, not loading. §4.5 closes the module graph
+// before execution and §5.4 gives running code no authority to fetch more, so
+// the specifier must be a literal: the module is loaded, typechecked and
+// hash-locked with everything else. What it produces is therefore known
+// exactly — a promise of that module's exports, not `any`.
+//
+// (`import(someVariable)` does not compile: E0402.)
+
+console.log("main: starting");
+
+const m = await import("./dynamic-import-mod.mersey");
+console.log("main: got", m.label, m.work(14));
+
+// The second import gets the same module: it is evaluated once.
+const again = await import("./dynamic-import-mod.mersey");
+console.log("evaluated once:", again.work(1) == 3);

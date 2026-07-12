@@ -954,7 +954,11 @@ impl Binder {
                 }
             }
             Expr::Unary { op, pos, expr } => {
-                if *op == UnaryOp::Await && !self.ctx.in_async {
+                // `await` is allowed in an async function and at the top level
+                // of a module (§4.5: a module that awaits is itself async, and
+                // its importers wait for it). Only a *synchronous function*
+                // body has nowhere to suspend to.
+                if *op == UnaryOp::Await && self.ctx.in_function && !self.ctx.in_async {
                     self.error(
                         Code::AwaitOutsideAsync,
                         "`await` outside an `async` function",

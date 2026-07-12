@@ -1,0 +1,10 @@
+import { console } from "std:console";
+
+// This module is only reached through a dynamic import, so it does not run at
+// startup — this line proves it, by not printing until it is imported.
+console.log("lazy module: evaluated");
+
+export function work(n: int32): int32 {
+    return n * 3;
+}
+export const label: string = "lazy";

@@ -2,7 +2,6 @@ error[E0309] @ 1:1: `return` outside a function
 error[E0310] @ 2:1: `break` outside a loop or `switch`
 error[E0310] @ 3:1: `continue` outside a loop
 error[E0307] @ 4:1: `this` outside a class
-error[E0306] @ 5:9: `await` outside an `async` function
 error[E0307] @ 9:13: `this` outside a class
 error[E0307] @ 10:5: `super` requires a class with an `extends` clause
 error[E0306] @ 11:17: `await` outside an `async` function

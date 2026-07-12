@@ -1,0 +1,28 @@
+import { console } from "std:console";
+import { Promise } from "std:async";
+
+// A module whose top level awaits *is* an async function: it suspends, and
+// everything that imports it waits for it to finish (§4.5). No wrapper
+// function, no `.then` chain, no "initialize me first" convention.
+
+async function compute(n: int32): int32 {
+    return n * 2;
+}
+
+const value = await compute(21);
+console.log("awaited:", value);
+
+const all = await Promise.all([compute(1), compute(2), compute(3)]);
+console.log("all:", all);
+
+// It composes with the rest of the language: a `try` around an await at the
+// top level catches what the awaited thing threw.
+async function fails(): int32 {
+    throw new Error("boom");
+}
+try {
+    const never = await fails();
+    console.log("unreachable", never);
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

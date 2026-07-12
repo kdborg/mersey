@@ -1,0 +1,3 @@
+awaited: 42
+all: [2, 4, 6]
+caught: boom

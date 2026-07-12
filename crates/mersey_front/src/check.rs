@@ -393,7 +393,8 @@ fn check_graph_indexed_with(
                 }
             }
         }
-        exports.insert(spec.clone(), e);
+        exports.insert(spec.clone(), e.clone());
+        c.module_exports.insert(spec.clone(), e);
 
         let mut diagnostics = std::mem::take(&mut c.diags);
         diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
@@ -405,10 +406,23 @@ fn check_graph_indexed_with(
     (results, c, index)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ModuleExports {
     values: HashMap<String, Ty>,
     types: HashMap<String, TypeDef>,
+}
+
+/// The value of a string literal, if `e` is one.
+fn string_literal(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Paren(inner) => string_literal(inner),
+        Expr::Lit {
+            kind: LitKind::Str,
+            text,
+            ..
+        } => Some(crate::ast::string_value(text)),
+        _ => None,
+    }
 }
 
 fn pattern_names<'a>(p: &'a Pattern, out: &mut Vec<&'a str>) {
@@ -646,6 +660,9 @@ struct Checker {
     /// Completion: capture the receiver type of `x.MERSEY__COMPLETE`.
     want_marker: bool,
     marker_recv: Option<Ty>,
+    /// Exports of the modules checked so far, so a dynamic `import("./x")` can
+    /// be given the precise type of what it will produce.
+    module_exports: HashMap<String, ModuleExports>,
     /// Declared bound for each type parameter (`<T extends Comparable<T>>`).
     tv_bounds: HashMap<TvId, Ty>,
     classes: Vec<ClassInfo>,
@@ -717,6 +734,7 @@ impl Checker {
             index: None,
             want_marker: false,
             marker_recv: None,
+            module_exports: HashMap::new(),
             tv_bounds: HashMap::new(),
             classes: Vec::new(),
             ifaces: Vec::new(),
@@ -3565,8 +3583,50 @@ impl Checker {
                 Ty::Void
             }
             Expr::ImportCall(inner) => {
-                self.check_expr(inner, Some(&Ty::Str));
-                Ty::Any
+                // The module graph is closed before execution (§4.5), and
+                // running code has no authority to fetch more (§5.4). So a
+                // dynamic import defers *evaluation*, not loading: the
+                // specifier must be a literal, the module is already in the
+                // graph, and what the import produces is therefore known
+                // exactly — a promise of that module's exports, not `any`.
+                let Some(spec) = string_literal(inner) else {
+                    self.check_expr(inner, Some(&Ty::Str));
+                    self.error(
+                        Code::BadCall,
+                        "`import(…)` needs a literal specifier: the module graph is closed \
+                         before execution (§4.5), so a module that is not named here could \
+                         not be loaded, checked, or locked",
+                        pos_of(inner),
+                    );
+                    return Ty::Err;
+                };
+                let target = crate::graph::resolve_module(&self.module_spec, &spec);
+                let Some(exp) = self.module_exports.get(&target) else {
+                    self.error(
+                        Code::UndefinedName,
+                        format!("`{spec}` is not in the module graph"),
+                        pos_of(inner),
+                    );
+                    return Ty::Err;
+                };
+                let mut fields: Vec<RecField> = exp
+                    .values
+                    .iter()
+                    .map(|(name, ty)| RecField {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        optional: false,
+                    })
+                    .collect();
+                fields.sort_by(|a, b| a.name.cmp(&b.name));
+                let exports = Ty::Record(Rc::new(fields));
+                match self.promise_id.or(match self.type_defs.get("Promise") {
+                    Some(TypeDef::Iface(id)) => Some(*id),
+                    _ => None,
+                }) {
+                    Some(pid) => Ty::Iface(pid, Rc::new(vec![exports])),
+                    None => exports,
+                }
             }
             Expr::Yield { value, pos } => {
                 let want = self.yield_ty.clone();
