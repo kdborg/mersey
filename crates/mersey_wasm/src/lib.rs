@@ -64,6 +64,8 @@ extern "C" {
     fn host_web_set_str(target: i64, name_id: u32, v_ptr: *const u8, v_len: usize) -> u64;
     fn host_web_set_num(target: i64, name_id: u32, value: f64) -> u64;
     fn host_web_call_str(target: i64, name_id: u32, a_ptr: *const u8, a_len: usize) -> u64;
+    fn host_web_iterate(target: i64) -> u64;
+    fn host_web_release(target: i64);
 }
 
 fn read_packed(packed: u64) -> String {
@@ -168,6 +170,12 @@ impl Host for WasmHost {
     }
     fn web_call_str(&mut self, target: i64, name_id: u32, arg: &str) -> String {
         read_packed(unsafe { host_web_call_str(target, name_id, arg.as_ptr(), arg.len()) })
+    }
+    fn web_iterate(&mut self, target: i64) -> String {
+        read_packed(unsafe { host_web_iterate(target) })
+    }
+    fn web_release(&mut self, target: i64) {
+        unsafe { host_web_release(target) }
     }
 }
 

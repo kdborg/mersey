@@ -1,0 +1,18 @@
+// Runs on a Web Worker thread. The engine is instantiated inside the worker
+// with the bridge pointed at the worker's own global scope, so the same
+// ambient globals work — same language, same engine, different thread.
+import { console } from "std:console";
+import { postMessage, addEventListener } from "browser:dom";
+
+function fib(n: int32): int32 {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+addEventListener("message", (ev: JsAny) => {
+    const n = (ev as MessageEvent).data as int32;
+    const answer = fib(n);
+    console.log(`[worker] fib(${n}) = ${answer}`);
+    postMessage(answer);
+});
+
+postMessage(-1); // "ready"

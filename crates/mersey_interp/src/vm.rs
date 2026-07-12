@@ -1523,8 +1523,12 @@ fn exec(
                 let items: Vec<Value> = match &v {
                     Value::Array(a) => a.borrow().clone(),
                     Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
+                    // Host iterables (NodeList, HTMLCollection, Set, …).
+                    Value::JsRef(h) => throwing!(i.web_iterate(*h)),
                     _ => {
-                        throwing!(i.type_error::<()>("`for of` needs an array or string"));
+                        throwing!(i.type_error::<()>(
+                            "`for of` needs an array, string, or host iterable"
+                        ));
                         continue;
                     }
                 };

@@ -32,6 +32,21 @@ interface __Math {
     abs(p0: float64): float64;
 }
 let Math: __Math;
+// Custom Elements: Mersey classes cannot extend a host class, so the loader
+// builds the JS class and forwards the lifecycle into these handlers.
+type CustomElementHandlers = {
+    connected?: (el: Element) => void,
+    disconnected?: (el: Element) => void,
+    attributeChanged?: (el: Element, name: string, oldValue: string, newValue: string) => void,
+    observed?: string[]
+};
+let merseyDefineElement: (tag: string, handlers: CustomElementHandlers) => void;
+// postMessage differs between Window (message, targetOrigin) and a worker
+// scope (message): declare the permissive form so one program runs on both.
+let postMessage: (message: JsAny, p1?: JsAny) => void;
+// Engine helper (not IDL): hand a host object back, so long-lived pages that
+// churn through DOM objects do not retain handles forever.
+let release: (obj: JsAny) => void;
 type GLuint64EXT = float64;
 type BlobPart = (BufferSource | Blob | string);
 type AutofillValueEntry = JsAny[];
@@ -2243,10 +2258,10 @@ interface Document extends Node {
     readonly scripts: HTMLCollection;
     getElementsByName(p0: string): NodeList;
     readonly currentScript: HTMLOrSVGScriptElement?;
-    open(p0?: string, p1?: string): Document;
+    open(p0?: string, p1?: string, p2?: string): Document;
     close(): void;
-    write(...p0: ((TrustedHTML | string))[]): void;
-    writeln(...p0: ((TrustedHTML | string))[]): void;
+    write(p0: (TrustedHTML | string)): void;
+    writeln(p0: (TrustedHTML | string)): void;
     readonly defaultView: JsAny;
     hasFocus(): bool;
     designMode: string;
@@ -2309,9 +2324,9 @@ interface Document extends Node {
     readonly firstElementChild: Element?;
     readonly lastElementChild: Element?;
     readonly childElementCount: int32;
-    prepend(...p0: ((Node | string))[]): void;
-    append(...p0: ((Node | string))[]): void;
-    replaceChildren(...p0: ((Node | string))[]): void;
+    prepend(p0: (Node | string)): void;
+    append(p0: (Node | string)): void;
+    replaceChildren(p0: (Node | string)): void;
     moveBefore(p0: Node, p1: Node?): void;
     querySelector(p0: string): Element?;
     querySelectorAll(p0: string): NodeList;
@@ -3126,9 +3141,9 @@ interface Window extends EventTarget {
     readonly pageXOffset: float64;
     readonly scrollY: float64;
     readonly pageYOffset: float64;
-    scroll(p0?: ScrollToOptions): Promise<JsAny>;
-    scrollTo(p0?: ScrollToOptions): Promise<JsAny>;
-    scrollBy(p0?: ScrollToOptions): Promise<JsAny>;
+    scroll(p0?: float64, p1?: float64): Promise<JsAny>;
+    scrollTo(p0?: float64, p1?: float64): Promise<JsAny>;
+    scrollBy(p0?: float64, p1?: float64): Promise<JsAny>;
     readonly screenX: int32;
     readonly screenLeft: int32;
     readonly screenY: int32;
@@ -3175,11 +3190,11 @@ interface Window extends EventTarget {
     readonly navigator: Navigator;
     readonly clientInformation: Navigator;
     readonly originAgentCluster: bool;
-    alert(): void;
+    alert(p0?: string): void;
     confirm(p0?: string): bool;
     prompt(p0?: string, p1?: string): string?;
     print(): void;
-    postMessage(p0: JsAny, p1: string, p2?: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: string, p2?: JsAny[]): void;
     captureEvents(): void;
     releaseEvents(): void;
     readonly external: External;
@@ -3335,12 +3350,12 @@ interface Window extends EventTarget {
     reportError(p0: JsAny): void;
     btoa(p0: string): string;
     atob(p0: string): string;
-    setTimeout(p0: TimerHandler, p1?: int32, ...p2: JsAny[]): int32;
+    setTimeout(p0: TimerHandler, p1?: int32, p2: JsAny): int32;
     clearTimeout(p0?: int32): void;
-    setInterval(p0: TimerHandler, p1?: int32, ...p2: JsAny[]): int32;
+    setInterval(p0: TimerHandler, p1?: int32, p2: JsAny): int32;
     clearInterval(p0?: int32): void;
     queueMicrotask(p0: VoidFunction): void;
-    createImageBitmap(p0: ImageBitmapSource, p1?: ImageBitmapOptions): Promise<ImageBitmap>;
+    createImageBitmap(p0: ImageBitmapSource, p1?: int32, p2?: int32, p3?: int32, p4?: int32, p5?: ImageBitmapOptions): Promise<ImageBitmap>;
     structuredClone(p0: JsAny, p1?: StructuredSerializeOptions): JsAny;
     readonly scheduler: Scheduler;
     readonly caches: CacheStorage;
@@ -3775,9 +3790,9 @@ interface Element extends Node {
     getBoundingClientRect(): DOMRect;
     checkVisibility(p0?: CheckVisibilityOptions): bool;
     scrollIntoView(p0?: (bool | ScrollIntoViewOptions)): Promise<JsAny>;
-    scroll(p0?: ScrollToOptions): Promise<JsAny>;
-    scrollTo(p0?: ScrollToOptions): Promise<JsAny>;
-    scrollBy(p0?: ScrollToOptions): Promise<JsAny>;
+    scroll(p0?: float64, p1?: float64): Promise<JsAny>;
+    scrollTo(p0?: float64, p1?: float64): Promise<JsAny>;
+    scrollBy(p0?: float64, p1?: float64): Promise<JsAny>;
     scrollTop: float64;
     scrollLeft: float64;
     readonly scrollWidth: int32;
@@ -3847,17 +3862,17 @@ interface Element extends Node {
     readonly firstElementChild: Element?;
     readonly lastElementChild: Element?;
     readonly childElementCount: int32;
-    prepend(...p0: ((Node | string))[]): void;
-    append(...p0: ((Node | string))[]): void;
-    replaceChildren(...p0: ((Node | string))[]): void;
+    prepend(p0: (Node | string)): void;
+    append(p0: (Node | string)): void;
+    replaceChildren(p0: (Node | string)): void;
     moveBefore(p0: Node, p1: Node?): void;
     querySelector(p0: string): Element?;
     querySelectorAll(p0: string): NodeList;
     readonly previousElementSibling: Element?;
     readonly nextElementSibling: Element?;
-    before(...p0: ((Node | string))[]): void;
-    after(...p0: ((Node | string))[]): void;
-    replaceWith(...p0: ((Node | string))[]): void;
+    before(p0: (Node | string)): void;
+    after(p0: (Node | string)): void;
+    replaceWith(p0: (Node | string)): void;
     remove(): void;
     readonly assignedSlot: HTMLSlotElement?;
     role: string?;
@@ -3925,9 +3940,9 @@ interface ContentIndexEvent extends ExtendableEvent {
     readonly id: string;
 }
 interface CookieStore extends EventTarget {
-    get(p0: string): Promise<CookieListItem?>;
-    getAll(p0: string): Promise<CookieList>;
-    set(p0: string, p1: string): Promise<JsAny>;
+    get(p0?: string): Promise<CookieListItem?>;
+    getAll(p0?: string): Promise<CookieList>;
+    set(p0: string, p1?: string): Promise<JsAny>;
     delete(p0: string): Promise<JsAny>;
     onchange: EventHandler;
 }
@@ -4348,7 +4363,7 @@ interface PaintRenderingContext2D {
     translate(p0: float64, p1: float64): void;
     transform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
     getTransform(): DOMMatrix;
-    setTransform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
+    setTransform(p0?: float64, p1?: float64, p2?: float64, p3?: float64, p4?: float64, p5?: float64): void;
     resetTransform(): void;
     globalAlpha: float64;
     globalCompositeOperation: string;
@@ -4368,12 +4383,12 @@ interface PaintRenderingContext2D {
     fillRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     strokeRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     beginPath(): void;
-    fill(p0?: string): void;
-    stroke(): void;
-    clip(p0?: string): void;
-    isPointInPath(p0: float64, p1: float64, p2?: string): bool;
-    isPointInStroke(p0: float64, p1: float64): bool;
-    drawImage(p0: CanvasImageSource, p1: float64, p2: float64): void;
+    fill(p0?: Path2D, p1?: string): void;
+    stroke(p0?: Path2D): void;
+    clip(p0?: Path2D, p1?: string): void;
+    isPointInPath(p0: Path2D, p1: float64, p2?: float64, p3?: string): bool;
+    isPointInStroke(p0: Path2D, p1: float64, p2?: float64): bool;
+    drawImage(p0: CanvasImageSource, p1: float64, p2: float64, p3?: float64, p4?: float64, p5?: float64, p6?: float64, p7?: float64, p8?: float64): void;
     lineWidth: float64;
     lineCap: string;
     lineJoin: string;
@@ -4481,8 +4496,8 @@ interface StylePropertyMapReadOnly {
     readonly size: int32;
 }
 interface StylePropertyMap extends StylePropertyMapReadOnly {
-    set(p0: string, ...p1: ((CSSStyleValue | string))[]): void;
-    append(p0: string, ...p1: ((CSSStyleValue | string))[]): void;
+    set(p0: string, p1: (CSSStyleValue | string)): void;
+    append(p0: string, p1: (CSSStyleValue | string)): void;
     delete(p0: string): void;
     clear(): void;
 }
@@ -4503,15 +4518,15 @@ interface CSSKeywordValue extends CSSStyleValue {
     value: string;
 }
 interface CSSNumericValue extends CSSStyleValue {
-    add(...p0: CSSNumberish[]): CSSNumericValue;
-    sub(...p0: CSSNumberish[]): CSSNumericValue;
-    mul(...p0: CSSNumberish[]): CSSNumericValue;
-    div(...p0: CSSNumberish[]): CSSNumericValue;
-    min(...p0: CSSNumberish[]): CSSNumericValue;
-    max(...p0: CSSNumberish[]): CSSNumericValue;
-    equals(...p0: CSSNumberish[]): bool;
+    add(p0: CSSNumberish): CSSNumericValue;
+    sub(p0: CSSNumberish): CSSNumericValue;
+    mul(p0: CSSNumberish): CSSNumericValue;
+    div(p0: CSSNumberish): CSSNumericValue;
+    min(p0: CSSNumberish): CSSNumericValue;
+    max(p0: CSSNumberish): CSSNumericValue;
+    equals(p0: CSSNumberish): bool;
     to(p0: string): CSSUnitValue;
-    toSum(...p0: string[]): CSSMathSum;
+    toSum(p0: string): CSSMathSum;
     type(): CSSNumericType;
 }
 interface __static_CSSNumericValue {
@@ -5949,9 +5964,9 @@ interface DocumentType extends Node {
     readonly name: string;
     readonly publicId: string;
     readonly systemId: string;
-    before(...p0: ((Node | string))[]): void;
-    after(...p0: ((Node | string))[]): void;
-    replaceWith(...p0: ((Node | string))[]): void;
+    before(p0: (Node | string)): void;
+    after(p0: (Node | string)): void;
+    replaceWith(p0: (Node | string)): void;
     remove(): void;
 }
 interface DocumentFragment extends Node {
@@ -5960,9 +5975,9 @@ interface DocumentFragment extends Node {
     readonly firstElementChild: Element?;
     readonly lastElementChild: Element?;
     readonly childElementCount: int32;
-    prepend(...p0: ((Node | string))[]): void;
-    append(...p0: ((Node | string))[]): void;
-    replaceChildren(...p0: ((Node | string))[]): void;
+    prepend(p0: (Node | string)): void;
+    append(p0: (Node | string)): void;
+    replaceChildren(p0: (Node | string)): void;
     moveBefore(p0: Node, p1: Node?): void;
     querySelector(p0: string): Element?;
     querySelectorAll(p0: string): NodeList;
@@ -6017,9 +6032,9 @@ interface CharacterData extends Node {
     replaceData(p0: int32, p1: int32, p2: string): void;
     readonly previousElementSibling: Element?;
     readonly nextElementSibling: Element?;
-    before(...p0: ((Node | string))[]): void;
-    after(...p0: ((Node | string))[]): void;
-    replaceWith(...p0: ((Node | string))[]): void;
+    before(p0: (Node | string)): void;
+    after(p0: (Node | string)): void;
+    replaceWith(p0: (Node | string)): void;
     remove(): void;
 }
 interface Text extends CharacterData {
@@ -6085,8 +6100,8 @@ interface DOMTokenList {
     readonly length: int32;
     item(p0: int32): string?;
     contains(p0: string): bool;
-    add(...p0: string[]): void;
-    remove(...p0: string[]): void;
+    add(p0: string): void;
+    remove(p0: string): void;
     toggle(p0: string, p1?: bool): bool;
     replace(p0: string, p1: string): bool;
     supports(p0: string): bool;
@@ -6310,7 +6325,7 @@ interface HTMLInputElement extends HTMLElement {
     selectionStart: int32?;
     selectionEnd: int32?;
     selectionDirection: string?;
-    setRangeText(p0: string): void;
+    setRangeText(p0: string, p1?: int32, p2?: int32, p3?: string): void;
     setSelectionRange(p0: int32, p1: int32, p2?: string): void;
     showPicker(): void;
     align: string;
@@ -7623,7 +7638,7 @@ interface HTMLSelectElement extends HTMLElement {
     item(p0: int32): HTMLOptionElement?;
     namedItem(p0: string): HTMLOptionElement?;
     add(p0: (HTMLOptionElement | HTMLOptGroupElement), p1?: (HTMLElement | int32)?): void;
-    remove(): void;
+    remove(p0?: int32): void;
     readonly selectedOptions: HTMLCollection;
     selectedIndex: int32;
     value: string;
@@ -7682,7 +7697,7 @@ interface HTMLTextAreaElement extends HTMLElement {
     selectionStart: int32;
     selectionEnd: int32;
     selectionDirection: string;
-    setRangeText(p0: string): void;
+    setRangeText(p0: string, p1?: int32, p2?: int32, p3?: string): void;
     setSelectionRange(p0: int32, p1: int32, p2?: string): void;
 }
 interface HTMLOutputElement extends HTMLElement {
@@ -7799,7 +7814,7 @@ interface HTMLSlotElement extends HTMLElement {
     name: string;
     assignedNodes(p0?: AssignedNodesOptions): Node[];
     assignedElements(p0?: AssignedNodesOptions): Element[];
-    assign(...p0: ((Element | Text))[]): void;
+    assign(p0: (Element | Text)): void;
 }
 interface HTMLCanvasElement extends HTMLElement {
     width: int32;
@@ -7822,7 +7837,7 @@ interface CanvasRenderingContext2D {
     translate(p0: float64, p1: float64): void;
     transform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
     getTransform(): DOMMatrix;
-    setTransform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
+    setTransform(p0?: float64, p1?: float64, p2?: float64, p3?: float64, p4?: float64, p5?: float64): void;
     resetTransform(): void;
     globalAlpha: float64;
     globalCompositeOperation: string;
@@ -7843,19 +7858,19 @@ interface CanvasRenderingContext2D {
     fillRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     strokeRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     beginPath(): void;
-    fill(p0?: string): void;
-    stroke(): void;
-    clip(p0?: string): void;
-    isPointInPath(p0: float64, p1: float64, p2?: string): bool;
-    isPointInStroke(p0: float64, p1: float64): bool;
-    drawFocusIfNeeded(p0: Element): void;
+    fill(p0?: Path2D, p1?: string): void;
+    stroke(p0?: Path2D): void;
+    clip(p0?: Path2D, p1?: string): void;
+    isPointInPath(p0: Path2D, p1: float64, p2?: float64, p3?: string): bool;
+    isPointInStroke(p0: Path2D, p1: float64, p2?: float64): bool;
+    drawFocusIfNeeded(p0: Path2D, p1?: Element): void;
     fillText(p0: string, p1: float64, p2: float64, p3?: float64): void;
     strokeText(p0: string, p1: float64, p2: float64, p3?: float64): void;
     measureText(p0: string): TextMetrics;
-    drawImage(p0: CanvasImageSource, p1: float64, p2: float64): void;
-    createImageData(p0: int32, p1: int32, p2?: ImageDataSettings): ImageData;
+    drawImage(p0: CanvasImageSource, p1: float64, p2: float64, p3?: float64, p4?: float64, p5?: float64, p6?: float64, p7?: float64, p8?: float64): void;
+    createImageData(p0: int32, p1?: int32, p2?: ImageDataSettings): ImageData;
     getImageData(p0: int32, p1: int32, p2: int32, p3: int32, p4?: ImageDataSettings): ImageData;
-    putImageData(p0: ImageData, p1: int32, p2: int32): void;
+    putImageData(p0: ImageData, p1: int32, p2: int32, p3?: int32, p4?: int32, p5?: int32, p6?: int32): void;
     lineWidth: float64;
     lineCap: string;
     lineJoin: string;
@@ -7943,7 +7958,7 @@ interface OffscreenCanvasRenderingContext2D {
     translate(p0: float64, p1: float64): void;
     transform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
     getTransform(): DOMMatrix;
-    setTransform(p0: float64, p1: float64, p2: float64, p3: float64, p4: float64, p5: float64): void;
+    setTransform(p0?: float64, p1?: float64, p2?: float64, p3?: float64, p4?: float64, p5?: float64): void;
     resetTransform(): void;
     globalAlpha: float64;
     globalCompositeOperation: string;
@@ -7964,18 +7979,18 @@ interface OffscreenCanvasRenderingContext2D {
     fillRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     strokeRect(p0: float64, p1: float64, p2: float64, p3: float64): void;
     beginPath(): void;
-    fill(p0?: string): void;
-    stroke(): void;
-    clip(p0?: string): void;
-    isPointInPath(p0: float64, p1: float64, p2?: string): bool;
-    isPointInStroke(p0: float64, p1: float64): bool;
+    fill(p0?: Path2D, p1?: string): void;
+    stroke(p0?: Path2D): void;
+    clip(p0?: Path2D, p1?: string): void;
+    isPointInPath(p0: Path2D, p1: float64, p2?: float64, p3?: string): bool;
+    isPointInStroke(p0: Path2D, p1: float64, p2?: float64): bool;
     fillText(p0: string, p1: float64, p2: float64, p3?: float64): void;
     strokeText(p0: string, p1: float64, p2: float64, p3?: float64): void;
     measureText(p0: string): TextMetrics;
-    drawImage(p0: CanvasImageSource, p1: float64, p2: float64): void;
-    createImageData(p0: int32, p1: int32, p2?: ImageDataSettings): ImageData;
+    drawImage(p0: CanvasImageSource, p1: float64, p2: float64, p3?: float64, p4?: float64, p5?: float64, p6?: float64, p7?: float64, p8?: float64): void;
+    createImageData(p0: int32, p1?: int32, p2?: ImageDataSettings): ImageData;
     getImageData(p0: int32, p1: int32, p2: int32, p3: int32, p4?: ImageDataSettings): ImageData;
-    putImageData(p0: ImageData, p1: int32, p2: int32): void;
+    putImageData(p0: ImageData, p1: int32, p2: int32, p3?: int32, p4?: int32, p5?: int32, p6?: int32): void;
     lineWidth: float64;
     lineCap: string;
     lineJoin: string;
@@ -8120,7 +8135,7 @@ interface DataTransfer {
 }
 interface DataTransferItemList {
     readonly length: int32;
-    add(p0: string, p1: string): DataTransferItem?;
+    add(p0: string, p1?: string): DataTransferItem?;
     remove(p0: int32): void;
     clear(): void;
     item(p0: int32): DataTransferItem;
@@ -8362,7 +8377,7 @@ interface MessageChannel {
     readonly port2: MessagePort;
 }
 interface MessagePort extends EventTarget {
-    postMessage(p0: JsAny, p1: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: JsAny[]): void;
     start(): void;
     close(): void;
     onclose: EventHandler;
@@ -8380,7 +8395,7 @@ interface WorkerGlobalScope extends EventTarget {
     readonly self: WorkerGlobalScope;
     readonly location: WorkerLocation;
     readonly navigator: WorkerNavigator;
-    importScripts(...p0: ((TrustedScriptURL | string))[]): void;
+    importScripts(p0: (TrustedScriptURL | string)): void;
     onerror: OnErrorEventHandler;
     onlanguagechange: EventHandler;
     onoffline: EventHandler;
@@ -8397,12 +8412,12 @@ interface WorkerGlobalScope extends EventTarget {
     reportError(p0: JsAny): void;
     btoa(p0: string): string;
     atob(p0: string): string;
-    setTimeout(p0: TimerHandler, p1?: int32, ...p2: JsAny[]): int32;
+    setTimeout(p0: TimerHandler, p1?: int32, p2: JsAny): int32;
     clearTimeout(p0?: int32): void;
-    setInterval(p0: TimerHandler, p1?: int32, ...p2: JsAny[]): int32;
+    setInterval(p0: TimerHandler, p1?: int32, p2: JsAny): int32;
     clearInterval(p0?: int32): void;
     queueMicrotask(p0: VoidFunction): void;
-    createImageBitmap(p0: ImageBitmapSource, p1?: ImageBitmapOptions): Promise<ImageBitmap>;
+    createImageBitmap(p0: ImageBitmapSource, p1?: int32, p2?: int32, p3?: int32, p4?: int32, p5?: ImageBitmapOptions): Promise<ImageBitmap>;
     structuredClone(p0: JsAny, p1?: StructuredSerializeOptions): JsAny;
     readonly scheduler: Scheduler;
     readonly caches: CacheStorage;
@@ -8411,7 +8426,7 @@ interface WorkerGlobalScope extends EventTarget {
 }
 interface DedicatedWorkerGlobalScope extends WorkerGlobalScope {
     readonly name: string;
-    postMessage(p0: JsAny, p1: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: JsAny[]): void;
     close(): void;
     onrtctransform: EventHandler;
     requestAnimationFrame(p0: FrameRequestCallback): int32;
@@ -8426,7 +8441,7 @@ interface SharedWorkerGlobalScope extends WorkerGlobalScope {
 }
 interface Worker extends EventTarget {
     terminate(): void;
-    postMessage(p0: JsAny, p1: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: JsAny[]): void;
     onerror: EventHandler;
     onmessage: EventHandler;
     onmessageerror: EventHandler;
@@ -9260,7 +9275,7 @@ interface Client {
     readonly frameType: string;
     readonly id: string;
     readonly type: string;
-    postMessage(p0: JsAny, p1: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: JsAny[]): void;
 }
 interface PerformancePaintTiming extends PerformanceEntry {
     toJSON(): JsAny;
@@ -9735,7 +9750,7 @@ interface PerformanceServerTiming {
 interface ServiceWorker extends EventTarget {
     readonly scriptURL: string;
     readonly state: string;
-    postMessage(p0: JsAny, p1: JsAny[]): void;
+    postMessage(p0: JsAny, p1?: JsAny[]): void;
     onstatechange: EventHandler;
     onerror: EventHandler;
 }
@@ -9825,7 +9840,7 @@ interface SpeechRecognition extends EventTarget {
     maxAlternatives: int32;
     processLocally: bool;
     phrases: SpeechRecognitionPhrase[];
-    start(): void;
+    start(p0?: MediaStreamTrack): void;
     stop(): void;
     abort(): void;
     onaudiostart: EventHandler;
@@ -10129,7 +10144,7 @@ interface XMLHttpRequest extends XMLHttpRequestEventTarget {
     setPrivateToken(p0: PrivateToken): void;
     onreadystatechange: EventHandler;
     readonly readyState: int32;
-    open(p0: string, p1: string): void;
+    open(p0: string, p1: string, p2?: bool, p3?: string?, p4?: string?): void;
     setRequestHeader(p0: string, p1: string): void;
     timeout: int32;
     withCredentials: bool;
@@ -10176,9 +10191,9 @@ interface TrustedTypePolicyFactory {
 }
 interface TrustedTypePolicy {
     readonly name: string;
-    createHTML(p0: string, ...p1: JsAny[]): TrustedHTML;
-    createScript(p0: string, ...p1: JsAny[]): TrustedScript;
-    createScriptURL(p0: string, ...p1: JsAny[]): TrustedScriptURL;
+    createHTML(p0: string, p1: JsAny): TrustedHTML;
+    createScript(p0: string, p1: JsAny): TrustedScript;
+    createScriptURL(p0: string, p1: JsAny): TrustedScriptURL;
 }
 interface NavigatorUAData {
     readonly brands: NavigatorUABrandVersion[];
@@ -10325,9 +10340,9 @@ interface AnimationEffect {
     readonly parent: GroupEffect?;
     readonly previousSibling: AnimationEffect?;
     readonly nextSibling: AnimationEffect?;
-    before(...p0: AnimationEffect[]): void;
-    after(...p0: AnimationEffect[]): void;
-    replace(...p0: AnimationEffect[]): void;
+    before(p0: AnimationEffect): void;
+    after(p0: AnimationEffect): void;
+    replace(p0: AnimationEffect): void;
     remove(): void;
     getTiming(): EffectTiming;
     getComputedTiming(): ComputedEffectTiming;
@@ -10338,8 +10353,8 @@ interface GroupEffect {
     readonly firstChild: AnimationEffect?;
     readonly lastChild: AnimationEffect?;
     clone(): GroupEffect;
-    prepend(...p0: AnimationEffect[]): void;
-    append(...p0: AnimationEffect[]): void;
+    prepend(p0: AnimationEffect): void;
+    append(p0: AnimationEffect): void;
 }
 interface AnimationNodeList {
     readonly length: int32;
@@ -10541,7 +10556,7 @@ interface __static_BluetoothUUID {
     canonicalUUID(p0: int32): UUID;
 }
 interface LockManager {
-    request(p0: string, p1: LockGrantedCallback): Promise<JsAny>;
+    request(p0: string, p1: LockOptions, p2?: LockGrantedCallback): Promise<JsAny>;
     query(): Promise<LockManagerSnapshot>;
 }
 interface Lock {
@@ -10644,7 +10659,7 @@ interface AudioBuffer {
 }
 interface AudioNode extends EventTarget {
     connect(p0: AudioNode, p1?: int32, p2?: int32): AudioNode;
-    disconnect(): void;
+    disconnect(p0?: AudioNode, p1?: int32, p2?: int32): void;
     readonly context: BaseAudioContext;
     readonly numberOfInputs: int32;
     readonly numberOfOutputs: int32;
@@ -11192,8 +11207,8 @@ interface WebGLRenderingContext {
     compressedTexImage2D(p0: GLenum, p1: GLint, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLint, p6: ArrayBufferView): void;
     compressedTexSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7: ArrayBufferView): void;
     readPixels(p0: GLint, p1: GLint, p2: GLsizei, p3: GLsizei, p4: GLenum, p5: GLenum, p6: ArrayBufferView?): void;
-    texImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLint, p6: GLenum, p7: GLenum, p8: ArrayBufferView?): void;
-    texSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7: GLenum, p8: ArrayBufferView?): void;
+    texImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLint, p6?: GLenum, p7?: GLenum, p8?: ArrayBufferView?): void;
+    texSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7?: GLenum, p8?: ArrayBufferView?): void;
     uniform1fv(p0: WebGLUniformLocation?, p1: Float32List): void;
     uniform2fv(p0: WebGLUniformLocation?, p1: Float32List): void;
     uniform3fv(p0: WebGLUniformLocation?, p1: Float32List): void;
@@ -11661,11 +11676,11 @@ interface WebGL2RenderingContext {
     renderbufferStorageMultisample(p0: GLenum, p1: GLsizei, p2: GLenum, p3: GLsizei, p4: GLsizei): void;
     texStorage2D(p0: GLenum, p1: GLsizei, p2: GLenum, p3: GLsizei, p4: GLsizei): void;
     texStorage3D(p0: GLenum, p1: GLsizei, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLsizei): void;
-    texImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLsizei, p6: GLint, p7: GLenum, p8: GLenum, p9: GLintptr): void;
-    texSubImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLint, p5: GLsizei, p6: GLsizei, p7: GLsizei, p8: GLenum, p9: GLenum, p10: GLintptr): void;
+    texImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLsizei, p6: GLint, p7: GLenum, p8: GLenum, p9: ArrayBufferView, p10?: float64): void;
+    texSubImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLint, p5: GLsizei, p6: GLsizei, p7: GLsizei, p8: GLenum, p9: GLenum, p10: ArrayBufferView?, p11?: float64): void;
     copyTexSubImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLint, p5: GLint, p6: GLint, p7: GLsizei, p8: GLsizei): void;
-    compressedTexImage3D(p0: GLenum, p1: GLint, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLsizei, p6: GLint, p7: GLsizei, p8: GLintptr): void;
-    compressedTexSubImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLint, p5: GLsizei, p6: GLsizei, p7: GLsizei, p8: GLenum, p9: GLsizei, p10: GLintptr): void;
+    compressedTexImage3D(p0: GLenum, p1: GLint, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLsizei, p6: GLint, p7: ArrayBufferView, p8?: float64, p9?: GLuint): void;
+    compressedTexSubImage3D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLint, p5: GLsizei, p6: GLsizei, p7: GLsizei, p8: GLenum, p9: ArrayBufferView, p10?: float64, p11?: GLuint): void;
     getFragDataLocation(p0: WebGLProgram, p1: string): GLint;
     uniform1ui(p0: WebGLUniformLocation?, p1: GLuint): void;
     uniform2ui(p0: WebGLUniformLocation?, p1: GLuint, p2: GLuint): void;
@@ -11738,12 +11753,12 @@ interface WebGL2RenderingContext {
     deleteVertexArray(p0: WebGLVertexArrayObject?): void;
     isVertexArray(p0: WebGLVertexArrayObject?): GLboolean;
     bindVertexArray(p0: WebGLVertexArrayObject?): void;
-    bufferData(p0: GLenum, p1: GLsizeiptr, p2: GLenum): void;
-    bufferSubData(p0: GLenum, p1: GLintptr, p2: AllowSharedBufferSource): void;
-    texImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLint, p6: GLenum, p7: GLenum, p8: ArrayBufferView?): void;
-    texSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7: GLenum, p8: ArrayBufferView?): void;
-    compressedTexImage2D(p0: GLenum, p1: GLint, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLint, p6: GLsizei, p7: GLintptr): void;
-    compressedTexSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7: GLsizei, p8: GLintptr): void;
+    bufferData(p0: GLenum, p1: ArrayBufferView, p2: GLenum, p3?: float64, p4?: GLuint): void;
+    bufferSubData(p0: GLenum, p1: GLintptr, p2: ArrayBufferView, p3?: float64, p4?: GLuint): void;
+    texImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLsizei, p4: GLsizei, p5: GLint, p6?: GLenum, p7?: GLenum, p8?: ArrayBufferView, p9?: float64): void;
+    texSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7?: GLenum, p8?: ArrayBufferView, p9?: float64): void;
+    compressedTexImage2D(p0: GLenum, p1: GLint, p2: GLenum, p3: GLsizei, p4: GLsizei, p5: GLint, p6: ArrayBufferView, p7?: float64, p8?: GLuint): void;
+    compressedTexSubImage2D(p0: GLenum, p1: GLint, p2: GLint, p3: GLint, p4: GLsizei, p5: GLsizei, p6: GLenum, p7: ArrayBufferView, p8?: float64, p9?: GLuint): void;
     uniform1fv(p0: WebGLUniformLocation?, p1: Float32List, p2?: float64, p3?: GLuint): void;
     uniform2fv(p0: WebGLUniformLocation?, p1: Float32List, p2?: float64, p3?: GLuint): void;
     uniform3fv(p0: WebGLUniformLocation?, p1: Float32List, p2?: float64, p3?: GLuint): void;
@@ -11755,7 +11770,7 @@ interface WebGL2RenderingContext {
     uniformMatrix2fv(p0: WebGLUniformLocation?, p1: GLboolean, p2: Float32List, p3?: float64, p4?: GLuint): void;
     uniformMatrix3fv(p0: WebGLUniformLocation?, p1: GLboolean, p2: Float32List, p3?: float64, p4?: GLuint): void;
     uniformMatrix4fv(p0: WebGLUniformLocation?, p1: GLboolean, p2: Float32List, p3?: float64, p4?: GLuint): void;
-    readPixels(p0: GLint, p1: GLint, p2: GLsizei, p3: GLsizei, p4: GLenum, p5: GLenum, p6: ArrayBufferView?): void;
+    readPixels(p0: GLint, p1: GLint, p2: GLsizei, p3: GLsizei, p4: GLenum, p5: GLenum, p6: ArrayBufferView, p7?: float64): void;
 }
 interface __static_WebGL2RenderingContext {
     readonly DEPTH_BUFFER_BIT: GLenum;
@@ -12483,7 +12498,7 @@ interface GPUCommandBuffer {
 interface GPUCommandEncoder {
     beginRenderPass(p0: GPURenderPassDescriptor): GPURenderPassEncoder;
     beginComputePass(p0?: GPUComputePassDescriptor): GPUComputePassEncoder;
-    copyBufferToBuffer(p0: GPUBuffer, p1: GPUBuffer, p2?: GPUSize64): void;
+    copyBufferToBuffer(p0: GPUBuffer, p1: GPUSize64, p2?: GPUBuffer, p3?: GPUSize64, p4?: GPUSize64): void;
     copyBufferToTexture(p0: GPUTexelCopyBufferInfo, p1: GPUTexelCopyTextureInfo, p2: GPUExtent3D): void;
     copyTextureToBuffer(p0: GPUTexelCopyTextureInfo, p1: GPUTexelCopyBufferInfo, p2: GPUExtent3D): void;
     copyTextureToTexture(p0: GPUTexelCopyTextureInfo, p1: GPUTexelCopyTextureInfo, p2: GPUExtent3D): void;
@@ -12504,7 +12519,7 @@ interface GPUComputePassEncoder {
     pushDebugGroup(p0: string): void;
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
-    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
+    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: JsAny, p3?: GPUSize64, p4?: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
 }
 interface GPURenderPassEncoder {
@@ -12520,7 +12535,7 @@ interface GPURenderPassEncoder {
     pushDebugGroup(p0: string): void;
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
-    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
+    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: JsAny, p3?: GPUSize64, p4?: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
     setPipeline(p0: GPURenderPipeline): void;
     setIndexBuffer(p0: GPUBuffer, p1: string, p2?: GPUSize64, p3?: GPUSize64): void;
@@ -12539,7 +12554,7 @@ interface GPURenderBundleEncoder {
     pushDebugGroup(p0: string): void;
     popDebugGroup(): void;
     insertDebugMarker(p0: string): void;
-    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: GPUBufferDynamicOffset[]): void;
+    setBindGroup(p0: GPUIndex32, p1: GPUBindGroup?, p2?: JsAny, p3?: GPUSize64, p4?: GPUSize32): void;
     setImmediates(p0: GPUSize32, p1: AllowSharedBufferSource, p2?: GPUSize64, p3?: GPUSize64): void;
     setPipeline(p0: GPURenderPipeline): void;
     setIndexBuffer(p0: GPUBuffer, p1: string, p2?: GPUSize64, p3?: GPUSize64): void;
@@ -12701,7 +12716,7 @@ interface MLContext {
     dispatch(p0: MLGraph, p1: MLNamedTensors, p2: MLNamedTensors): void;
     createTensor(p0: MLTensorDescriptor): Promise<MLTensor>;
     createConstantTensor(p0: MLOperandDescriptor, p1: AllowSharedBufferSource): Promise<MLTensor>;
-    readTensor(p0: MLTensor): Promise<JsAny>;
+    readTensor(p0: MLTensor, p1?: AllowSharedBufferSource): Promise<JsAny>;
     writeTensor(p0: MLTensor, p1: AllowSharedBufferSource): void;
     opSupportLimits(): MLOpSupportLimits;
     destroy(): void;
@@ -12725,7 +12740,7 @@ interface MLTensor {
 }
 interface MLGraphBuilder {
     input(p0: string, p1: MLOperandDescriptor): MLOperand;
-    constant(p0: MLOperandDescriptor, p1: AllowSharedBufferSource): MLOperand;
+    constant(p0: MLOperandDescriptor, p1?: AllowSharedBufferSource): MLOperand;
     build(p0: MLNamedOperands): Promise<MLGraph>;
     argMin(p0: MLOperand, p1: int32, p2?: MLArgMinMaxOptions): MLOperand;
     argMax(p0: MLOperand, p1: int32, p2?: MLArgMinMaxOptions): MLOperand;
@@ -12830,7 +12845,7 @@ interface RTCRtpSender {
     setParameters(p0: RTCRtpSendParameters, p1?: RTCSetParameterOptions): Promise<JsAny>;
     getParameters(): RTCRtpSendParameters;
     replaceTrack(p0: MediaStreamTrack?): Promise<JsAny>;
-    setStreams(...p0: MediaStream[]): void;
+    setStreams(p0: MediaStream): void;
     getStats(): Promise<RTCStatsReport>;
     readonly dtmf: RTCDTMFSender?;
 }
@@ -12933,17 +12948,17 @@ interface RTCPeerConnection extends EventTarget {
     readonly peerIdentity: Promise<RTCIdentityAssertion>;
     readonly idpLoginUrl: string?;
     readonly idpErrorInfo: string?;
-    createOffer(p0?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
-    createAnswer(p0?: RTCAnswerOptions): Promise<RTCSessionDescriptionInit>;
-    setLocalDescription(p0?: RTCLocalSessionDescriptionInit): Promise<JsAny>;
+    createOffer(p0?: RTCSessionDescriptionCallback, p1?: RTCPeerConnectionErrorCallback, p2?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
+    createAnswer(p0?: RTCSessionDescriptionCallback, p1?: RTCPeerConnectionErrorCallback): Promise<RTCSessionDescriptionInit>;
+    setLocalDescription(p0?: RTCLocalSessionDescriptionInit, p1?: VoidFunction, p2?: RTCPeerConnectionErrorCallback): Promise<JsAny>;
     readonly localDescription: RTCSessionDescription?;
     readonly currentLocalDescription: RTCSessionDescription?;
     readonly pendingLocalDescription: RTCSessionDescription?;
-    setRemoteDescription(p0: RTCSessionDescriptionInit): Promise<JsAny>;
+    setRemoteDescription(p0: RTCSessionDescriptionInit, p1?: VoidFunction, p2?: RTCPeerConnectionErrorCallback): Promise<JsAny>;
     readonly remoteDescription: RTCSessionDescription?;
     readonly currentRemoteDescription: RTCSessionDescription?;
     readonly pendingRemoteDescription: RTCSessionDescription?;
-    addIceCandidate(p0?: RTCIceCandidateInit): Promise<JsAny>;
+    addIceCandidate(p0?: RTCIceCandidateInit, p1?: VoidFunction, p2?: RTCPeerConnectionErrorCallback): Promise<JsAny>;
     readonly signalingState: string;
     readonly iceGatheringState: string;
     readonly iceConnectionState: string;
@@ -12963,7 +12978,7 @@ interface RTCPeerConnection extends EventTarget {
     getSenders(): RTCRtpSender[];
     getReceivers(): RTCRtpReceiver[];
     getTransceivers(): RTCRtpTransceiver[];
-    addTrack(p0: MediaStreamTrack, ...p1: MediaStream[]): RTCRtpSender;
+    addTrack(p0: MediaStreamTrack, p1: MediaStream): RTCRtpSender;
     removeTrack(p0: RTCRtpSender): void;
     addTransceiver(p0: (MediaStreamTrack | string), p1?: RTCRtpTransceiverInit): RTCRtpTransceiver;
     ontrack: EventHandler;
@@ -13625,12 +13640,12 @@ interface XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
 
 }
 interface FormData {
-    append(p0: string, p1: string): void;
+    append(p0: string, p1: Blob, p2?: string): void;
     delete(p0: string): void;
     get(p0: string): FormDataEntryValue?;
     getAll(p0: string): FormDataEntryValue[];
     has(p0: string): bool;
-    set(p0: string, p1: string): void;
+    set(p0: string, p1: Blob, p2?: string): void;
 }
 interface ProgressEvent extends Event {
     readonly lengthComputable: bool;
@@ -13973,7 +13988,6 @@ let alert: () => void;
 let confirm: (p0?: string) => bool;
 let prompt: (p0?: string, p1?: string) => string?;
 let print: () => void;
-let postMessage: (p0: JsAny, p1: string, p2?: JsAny[]) => void;
 let captureEvents: () => void;
 let releaseEvents: () => void;
 let external: External;
@@ -14145,4 +14159,11 @@ let cancelAnimationFrame: (p0: int32) => void;
 let sessionStorage: Storage;
 let localStorage: Storage;
 let pushManager: PushManager;
+let addEventListener: (p0: string, p1: EventListener?, p2?: (AddEventListenerOptions | bool)) => void;
+let removeEventListener: (p0: string, p1: EventListener?, p2?: (EventListenerOptions | bool)) => void;
+let dispatchEvent: (p0: Event) => bool;
+let when: (p0: string, p1?: ObservableEventListenerOptions) => Observable;
+let onrtctransform: EventHandler;
+let importScripts: (...p0: ((TrustedScriptURL | string))[]) => void;
+let fonts: FontFaceSet;
 let window: Window;

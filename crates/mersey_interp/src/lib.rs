@@ -104,6 +104,13 @@ pub trait Host {
     fn web_call_str(&mut self, _target: i64, _name_id: u32, _arg: &str) -> String {
         "{\"err\":\"no web bridge\"}".into()
     }
+    /// Snapshot a host iterable (NodeList, HTMLCollection, Set, …) as an
+    /// array, so `for (const n of nodeList)` works.
+    fn web_iterate(&mut self, _target: i64) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    /// Drop a host handle (and any callbacks it retained).
+    fn web_release(&mut self, _target: i64) {}
 }
 
 // ---- values -------------------------------------------------------------------
@@ -602,6 +609,12 @@ impl Interp {
             }
             "browser:dom" => {
                 for n in names {
+                    // Engine-provided helpers (not IDL): explicit handle
+                    // release for long-lived pages.
+                    if n.text == "release" {
+                        env_define(&self.globals, "release", Value::Native("web.release"));
+                        continue;
+                    }
                     // Fast path: the hand-written DOM surface (kept because
                     // the Stage A demos and goldens pin it).
                     if n.text == "document" && self.host.web_global("document") < 0 {
@@ -859,7 +872,11 @@ impl Interp {
                 let items: Vec<Value> = match &iterable {
                     Value::Array(a) => a.borrow().clone(),
                     Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
-                    _ => return self.type_error("`for of` needs an array or string"),
+                    Value::JsRef(h) => {
+                        let h = *h;
+                        self.web_iterate(h)?
+                    }
+                    _ => return self.type_error("`for of` needs an array, string, or host iterable"),
                 };
                 for item in items {
                     let scope = child_env(env);
@@ -1390,6 +1407,12 @@ impl Interp {
                     self.promise_then(&p, Some(on_ok), Some(on_err));
                 }
                 Ok(Value::PromiseV(out))
+            }
+            "web.release" => {
+                if let Some(v) = args.first() {
+                    self.web_release_value(v);
+                }
+                Ok(Value::Null)
             }
             "caps.drop" => {
                 let cap = self.want_string(args.first())?;
@@ -2472,6 +2495,29 @@ impl Interp {
         let a = self.args_json(&args);
         let reply = self.host.web_call(target, method, &a);
         self.web_reply(&reply)
+    }
+
+    /// Release a host handle explicitly (`release(el)`): long-lived pages
+    /// that churn through DOM objects can hand them back. Handles are not
+    /// GC-tracked yet — this is the documented escape hatch.
+    pub(crate) fn web_release_value(&mut self, v: &Value) {
+        if let Value::JsRef(h) = v {
+            if *h != 0 {
+                self.host.web_release(*h);
+            }
+        }
+    }
+
+    /// Elements of a host iterable, as Mersey values.
+    pub(crate) fn web_iterate(&mut self, target: i64) -> Result<Vec<Value>, Thrown> {
+        let reply = self.host.web_iterate(target);
+        match self.web_reply(&reply)? {
+            Value::Array(a) => Ok(a.borrow().clone()),
+            other => Err(self.throw(
+                "TypeError",
+                format!("`{}` is not iterable", kind_of(&other)),
+            )),
+        }
     }
 
     fn web_new(&mut self, ctor: &str, args: Vec<Value>) -> VResult {

@@ -92,6 +92,8 @@ async function engine() {
       host_web_set_str: (t, id, vp, vl) => packed(bridge.setScalar(Number(t), id, readStr(vp, vl))),
       host_web_set_num: (t, id, v) => packed(bridge.setScalar(Number(t), id, v)),
       host_web_call_str: (t, id, ap, al) => packed(bridge.callStr(Number(t), id, readStr(ap, al))),
+      host_web_iterate: (t) => packed(bridge.iterate(Number(t))),
+      host_web_release: (t) => bridge.release(Number(t)),
     },
   };
   const bridge = makeBridge({}, (cb, argsJson) => {

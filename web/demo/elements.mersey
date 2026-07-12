@@ -1,0 +1,73 @@
+// Elements, nodes, custom elements and workers — the last of the initial
+// browser integration.
+import { console } from "std:console";
+import { document, Node, merseyDefineElement } from "browser:dom";
+
+const out = document.getElementById("out") as Element;
+let lines: string[] = [];
+function show(line: string): void {
+    lines.push(line);
+    out.textContent = lines.join("\n");
+    console.log(line);
+}
+
+// --- Node/element iteration: `for … of` over a live NodeList
+const items = document.querySelectorAll(".item");
+let names = "";
+for (const node of items) {
+    const el = node as Element;
+    names = names + (el.textContent ?? "?") + " ";
+}
+show(`iterated ${(items as NodeList).length} nodes: ${names}`);
+
+// Walk the node tree (childNodes is a NodeList too)
+const list = document.getElementById("list") as Element;
+let kids = 0;
+for (const child of (list as Node).childNodes) {
+    if (((child as Node).nodeType) == Node.ELEMENT_NODE) { kids += 1; }
+}
+show(`childNodes: ${kids} element children (of ${((list as Node).childNodes as NodeList).length} nodes)`);
+
+// Build and attach real nodes
+const li = document.createElement("li");
+li.textContent = "added by Mersey";
+li.className = "item";
+list.appendChild(li);
+show(`after append: ${(document.querySelectorAll(".item") as NodeList).length} items`);
+
+// --- Custom Elements: the lifecycle calls back into Mersey
+let connections = 0;
+merseyDefineElement("mersey-badge", {
+    connected: (el: Element) => {
+        connections += 1;
+        el.textContent = `🌊 badge #${connections}`;
+        show(`custom element connected: ${el.textContent}`);
+    },
+    attributeChanged: (el: Element, name: string, oldValue: string, newValue: string) => {
+        show(`custom element attr ${name}: "${oldValue}" → "${newValue}"`);
+    },
+    observed: ["label"],
+});
+const badge = document.createElement("mersey-badge");
+(document.body as Element).appendChild(badge);
+badge.setAttribute("label", "hello");
+
+// --- Web Worker: Mersey on another thread
+// The bootstrap is an ES module (it imports the engine), so the worker must
+// be a module worker.
+const worker = new Worker("mersey-worker.js?src=demo/worker.mersey", { type: "module" });
+worker.onmessage = (ev: JsAny) => {
+    const value = (ev as MessageEvent).data as int32;
+    if (value < 0) {
+        show("worker: ready, sending fib(25)");
+        worker.postMessage(25);
+    } else {
+        show(`worker computed fib(25) = ${value} on another thread`);
+    }
+};
+
+// --- Handle release: hand host objects back on long-lived pages
+import { release } from "browser:dom";
+const temp = document.createElement("div");
+release(temp);
+show("released a host handle (no leak on long-lived pages)");

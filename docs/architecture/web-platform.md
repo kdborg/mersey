@@ -149,14 +149,58 @@ input. Nothing is stubbed. It asserts from the browser side that:
 Run: `./web/build-and-test.sh && node web/test/browser.mjs`
 (headless-only harness against a stub realm: `node web/test/platform.mjs`).
 
+## 5. Elements, nodes, custom elements, workers
+
+The last pieces of the initial integration, all verified in real Chromium
+(`web/elements.html`, `web/demo/elements.mersey`):
+
+- **Node & element iteration.** `for (const n of nodeList)` works — the
+  bridge snapshots any host iterable (NodeList, HTMLCollection, Set, …) via
+  the iterator protocol, with an array-like fallback. Tree walking
+  (`childNodes`, `nodeType`, `Node.ELEMENT_NODE`) and node construction /
+  attachment behave as expected.
+- **Custom Elements.** A Mersey class cannot extend a host class, so the
+  loader builds the JS class and forwards the lifecycle into Mersey
+  closures:
+
+  ```mersey
+  merseyDefineElement("mersey-badge", {
+      connected: (el: Element) => { el.textContent = "🌊"; },
+      attributeChanged: (el: Element, name: string, old: string, now: string) => { … },
+      observed: ["label"],
+  });
+  ```
+
+  The element is registered with the real `customElements` registry, so the
+  browser upgrades it and drives `connectedCallback` /
+  `attributeChangedCallback` into Mersey.
+- **Web Workers.** `web/mersey-worker.js` boots a second engine instance on
+  the worker thread with the bridge pointed at the worker's own global
+  scope, so the worker script uses the *same* ambient globals
+  (`postMessage`, `addEventListener`, `fetch`):
+
+  ```mersey
+  const worker = new Worker("mersey-worker.js?src=demo/worker.mersey",
+                            { type: "module" });
+  worker.onmessage = (ev: JsAny) => { … };
+  worker.postMessage(25);
+  ```
+
+  Verified: the worker computes `fib(25) = 75025` on another thread and
+  posts it back.
+- **Handle release.** `release(obj)` (from `browser:dom`) hands a host object
+  back, so long-lived pages that churn through DOM objects don't retain
+  handles forever.
+
 ## Known limits
 
 - **Record field order** is not preserved across the bridge (Mersey records
   are unordered maps), so `JSON.stringify({a, b})` may emit keys in a
   different order.
-- **Custom Elements** need `class X extends HTMLElement` — Mersey classes
-  cannot yet extend a host interface.
-- **Workers** are not bootstrapped by the loader.
+- **Host handles are released manually** (`release(obj)`), not by GC — the
+  engine's refcounting heap doesn't yet trace into the host's handle table.
+- **Mersey classes still cannot extend a host class**; custom elements go
+  through the handler-record API above rather than `extends HTMLElement`.
 - **`iterable<>` / `maplike` declarations** are not expanded, so
   `for (const x of someWebIterable)` needs an explicit index loop.
 - Callbacks are retained for the page's lifetime (no handle release yet).

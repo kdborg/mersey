@@ -156,6 +156,43 @@ async function open(path) {
   await page.close();
 }
 
+// ---- 5. elements, nodes, custom elements, workers ------------------------------
+{
+  const { page, logs, errors } = await open("/elements.html");
+  await page.waitForTimeout(800); // worker boot + fib
+  const has = (re) => logs.some((l) => re.test(l));
+  check("elements: no page errors", errors.length === 0, errors.join("; "));
+  check("REAL BROWSER · for-of over a live NodeList",
+        has(/^iterated 2 nodes: alpha beta $/), logs.join(" | "));
+  check("REAL BROWSER · node tree walk (childNodes + nodeType)",
+        has(/^childNodes: 2 element children/), logs.join(" | "));
+  check("REAL BROWSER · created node appended to the tree",
+        has(/^after append: 3 items$/), logs.join(" | "));
+  const liveItems = await page.locator("#list li").count();
+  check("REAL BROWSER · the <li> really exists in the DOM", liveItems === 3, `${liveItems}`);
+
+  check("REAL BROWSER · Custom Element connectedCallback → Mersey",
+        has(/^custom element connected: 🌊 badge #1$/), logs.join(" | "));
+  check("REAL BROWSER · Custom Element attributeChangedCallback → Mersey",
+        has(/^custom element attr label: "" → "hello"$/), logs.join(" | "));
+  const badgeText = await page.locator("mersey-badge").textContent();
+  check("REAL BROWSER · custom element rendered by Mersey",
+        badgeText === "🌊 badge #1", badgeText);
+  const upgraded = await page.evaluate(
+    () => customElements.get("mersey-badge") !== undefined);
+  check("REAL BROWSER · element really registered with customElements", upgraded === true);
+
+  check("REAL BROWSER · Worker booted Mersey on another thread",
+        has(/^worker: ready, sending fib\(25\)$/), logs.join(" | "));
+  check("REAL BROWSER · Worker computed and posted back",
+        has(/^worker computed fib\(25\) = 75025 on another thread$/), logs.join(" | "));
+  check("REAL BROWSER · worker thread ran Mersey code (its own console)",
+        has(/^\[worker\] fib\(25\) = 75025$/), logs.join(" | "));
+  check("REAL BROWSER · host handle release",
+        has(/^released a host handle/), logs.join(" | "));
+  await page.close();
+}
+
 await browser.close();
 server.close();
 

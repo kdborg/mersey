@@ -260,8 +260,21 @@ gate regressions.
       honestly: the generated bindings themselves did *not* add speed in
       Stage A (V8's inline caches already match a thunk) — they buy
       completeness and are the Stage B artifact
-- Limits recorded: record field order, custom elements (needs host-class
-  subclassing), workers, callback handle release
+- [x] **Elements & nodes** (2026-07-12): `for … of` over host iterables
+      (NodeList/HTMLCollection/Set), tree walking, node construction
+- [x] **Custom Elements**: `merseyDefineElement(tag, handlers)` registers a
+      real custom element whose lifecycle callbacks run Mersey closures
+- [x] **Web Workers**: `mersey-worker.js` boots a second engine on the
+      worker thread with the bridge on the worker's global scope — the same
+      language and ambient globals on either thread (verified: fib(25) on a
+      worker, posted back)
+- [x] **Handle release** (`release(obj)`) for long-lived pages
+- [x] Generator: IDL **overload merging** (widest params, narrowest required
+      count) and inherited/worker-scope globals — `addEventListener`,
+      `postMessage`, `onmessage` are now ambient
+- Limits recorded: record field order across the bridge; handles are
+  released manually, not by GC; Mersey classes cannot extend a host class
+  (custom elements use the handler-record API)
 
 ## Explicitly deferred (tracked, not forgotten)
 

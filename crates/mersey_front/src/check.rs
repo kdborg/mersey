@@ -1642,10 +1642,16 @@ impl Checker {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
                     Ty::Any | Ty::Err => Ty::Any,
+                    // Host iterables (NodeList, HTMLCollection, …): the IDL
+                    // element type isn't tracked, so annotate to refine.
+                    Ty::Iface(..) => Ty::Any,
                     other => {
                         self.error(
                             Code::TypeMismatch,
-                            format!("`for of` needs an array or string, got `{}`", self.show(&other)),
+                            format!(
+                                "`for of` needs an array, string, or host iterable, got `{}`",
+                                self.show(&other)
+                            ),
                             pos_of(iter),
                         );
                         Ty::Err
