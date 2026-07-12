@@ -54,7 +54,7 @@ impl Host for BufHost {
     fn dom_get_text(&mut self, _: &str) -> Option<String> {
         None
     }
-    fn dom_on_click(&mut self, _: &str, _: u32) {}
+    fn dom_add_listener(&mut self, _: &str, _: &str, _: u32) {}
 }
 
 // ---- pipeline under test ---------------------------------------------------------

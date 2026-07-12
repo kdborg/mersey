@@ -1,0 +1,10 @@
+// Reached only through a dynamic `import(…)`, so it does not run at startup —
+// the log line below proves it, by appearing after "starting".
+import { console } from "std:console";
+
+console.log("lazy: evaluated");
+
+export function triple(n: int32): int32 {
+    return n * 3;
+}
+export const label: string = "lazy";

@@ -68,9 +68,11 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
         const el = realm.document?.getElementById(readStr(ip, il));
         return el ? packed(el.textContent ?? "") : 0n;
       },
-      host_dom_on_click: (ip, il, cb) => {
+      host_dom_add_listener: (ip, il, ep, el_, cb) => {
         const el = realm.document?.getElementById(readStr(ip, il));
-        if (el) el.addEventListener("click", () => exports.msy_invoke(cb));
+        // Any event the DOM knows: the engine does not keep a list of them,
+        // because the host is what owns the event loop.
+        if (el) el.addEventListener(readStr(ep, el_), () => exports.msy_invoke(cb));
       },
       host_dom_create: () => 0n,
       host_dom_append: () => {},
@@ -148,12 +150,14 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
 
   async function loadGraph(entrySpec, entrySource, fetchModule) {
     sources.set(entrySpec, entrySource);
-    const deps = new Map();
+    const deps = new Map();      // static edges: execution order
+    const allDeps = new Map();   // static + dynamic: checking order
     const queue = [entrySpec];
     while (queue.length) {
       const spec = queue.pop();
       const edges = [];
-      for (const imp of scanImports(sources.get(spec))) {
+      const scanned = scanImports(sources.get(spec));
+      for (const imp of scanned.static) {
         if (!isRelative(imp)) continue;
         const target = resolve(spec, imp);
         edges.push(target);
@@ -162,25 +166,52 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
           queue.push(target);
         }
       }
+      // A dynamic `import("./x")` target is fetched and checked with the rest —
+      // the graph is closed before execution (§4.5) — but it is not an ordering
+      // edge: nothing waits for it to run.
+      const dynEdges = [];
+      for (const imp of scanned.dynamic) {
+        if (!isRelative(imp)) continue;
+        const target = resolve(spec, imp);
+        dynEdges.push(target);
+        if (!sources.has(target)) {
+          sources.set(target, await fetchModule(target));
+          queue.push(target);
+        }
+      }
       deps.set(spec, edges);
+      allDeps.set(spec, [...edges, ...dynEdges]);
     }
     // Dependency-first order (cycles rejected).
-    const order = [];
-    const done = new Set();
-    const path = [];
-    const visit = (spec) => {
-      if (done.has(spec)) return;
-      if (path.includes(spec)) {
-        throw new Error(`import cycle: ${[...path, spec].join(" → ")}`);
-      }
-      path.push(spec);
-      for (const d of deps.get(spec) ?? []) visit(d);
-      path.pop();
-      done.add(spec);
-      order.push(spec);
+    const topo = (edges) => {
+      const order = [];
+      const done = new Set();
+      const path = [];
+      const visit = (spec) => {
+        if (done.has(spec)) return;
+        if (path.includes(spec)) {
+          throw new Error(`import cycle: ${[...path, spec].join(" → ")}`);
+        }
+        path.push(spec);
+        for (const d of edges.get(spec) ?? []) visit(d);
+        path.pop();
+        done.add(spec);
+        order.push(spec);
+      };
+      visit(entrySpec);
+      return order;
     };
-    visit(entrySpec);
-    return order.map((spec) => ({ spec, source: sources.get(spec) }));
+    // Checking order follows both kinds of edge, so a dynamically imported
+    // module's exports are known before the module that imports it is typed.
+    // Execution order follows only the static ones: nothing waits for a lazy
+    // module to run.
+    const checkOrder = topo(allDeps);
+    const execOrder = topo(deps);
+    const lazy = checkOrder.filter((s) => !execOrder.includes(s));
+    return {
+      modules: checkOrder.map((spec) => ({ spec, source: sources.get(spec) })),
+      lazy,
+    };
   }
 
   return {
@@ -193,8 +224,8 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
     /// Fetch and run a whole module graph rooted at `entrySpec`.
     async runGraph(entrySpec, entrySource, fetchModule) {
       const load = fetchModule ?? (async (u) => (await fetch(u)).text());
-      const modules = await loadGraph(entrySpec, entrySource, load);
-      const payload = JSON.stringify({ entry: entrySpec, modules });
+      const { modules, lazy } = await loadGraph(entrySpec, entrySource, load);
+      const payload = JSON.stringify({ entry: entrySpec, modules, lazy });
       const [ptr, len] = writeStr(payload);
       return exports.msy_run_graph(ptr, len);
     },

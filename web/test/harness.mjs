@@ -59,8 +59,13 @@ async function engine() {
         element(readStr(ip, il)).textContent = readStr(tp, tl);
       },
       host_dom_get_text: (ip, il) => packed(element(readStr(ip, il)).textContent),
-      host_dom_on_click: (ip, il, cb) => {
-        element(readStr(ip, il)).listeners.push(() => exports.msy_invoke(cb));
+      host_dom_add_listener: (ip, il, ep, el_, cb) => {
+        const el = element(readStr(ip, il));
+        (el.listenersByEvent ??= {});
+        const ev = readStr(ep, el_);
+        (el.listenersByEvent[ev] ??= []).push(() => exports.msy_invoke(cb));
+        // The existing tests fire `listeners` directly, which means clicks.
+        if (ev === "click") el.listeners.push(() => exports.msy_invoke(cb));
       },
       host_dom_create: (tp, tl) => {
         const id = `--mersey-${nextId++}`;
@@ -167,6 +172,11 @@ async function engine() {
   const cases = (await readdir(dir)).filter((f) => f.endsWith(".mersey")).sort();
   for (const name of cases) {
     const source = await readFile(join(dir, name), "utf8");
+    // This runner executes one module at a time (`msy_run`), with no loader.
+    // Cases that reach for another file need the module graph, which is what
+    // modules.mjs exercises against the real loader — running them here would
+    // only prove that a single-module runner cannot load a second module.
+    if (/from\s+"\.\.?\//.test(source) || /import\("\.\.?\//.test(source)) continue;
     const golden = await readFile(join(dir, name.replace(/\.mersey$/, ".expect")), "utf8");
     const e = await engine();
     const status = e.run(source);

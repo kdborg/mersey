@@ -14,7 +14,7 @@
 //!     host_dom_set_text(id_ptr, id_len, txt_ptr, txt_len)
 //!     host_dom_get_text(id_ptr, id_len) -> u64   (ptr<<32 | len; 0 = absent;
 //!                                                 host writes via msy_alloc)
-//!     host_dom_on_click(id_ptr, id_len, cb)
+//!     host_dom_add_listener(id_ptr, id_len, ev_ptr, ev_len, cb)
 //!
 //! Memory notes (MVP): `msy_alloc` buffers and each `host_dom_get_text`
 //! reply are intentionally leaked — bounded by script size and DOM reads,
@@ -31,7 +31,13 @@ extern "C" {
     fn host_error(ptr: *const u8, len: usize);
     fn host_dom_set_text(id_ptr: *const u8, id_len: usize, txt_ptr: *const u8, txt_len: usize);
     fn host_dom_get_text(id_ptr: *const u8, id_len: usize) -> u64;
-    fn host_dom_on_click(id_ptr: *const u8, id_len: usize, cb: u32);
+    fn host_dom_add_listener(
+        id_ptr: *const u8,
+        id_len: usize,
+        ev_ptr: *const u8,
+        ev_len: usize,
+        cb: u32,
+    );
     fn host_dom_create(tag_ptr: *const u8, tag_len: usize) -> u64;
     fn host_dom_append(p_ptr: *const u8, p_len: usize, c_ptr: *const u8, c_len: usize);
     fn host_dom_remove(id_ptr: *const u8, id_len: usize);
@@ -109,8 +115,8 @@ impl Host for WasmHost {
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
-    fn dom_on_click(&mut self, id: &str, cb: u32) {
-        unsafe { host_dom_on_click(id.as_ptr(), id.len(), cb) }
+    fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
+        unsafe { host_dom_add_listener(id.as_ptr(), id.len(), event.as_ptr(), event.len(), cb) }
     }
     fn dom_create(&mut self, tag: &str) -> String {
         read_packed(unsafe { host_dom_create(tag.as_ptr(), tag.len()) })
@@ -252,18 +258,28 @@ pub extern "C" fn msy_scan_imports(ptr: *const u8, len: usize) -> u64 {
         return pack("[]");
     };
     let parsed = parser::parse(&src);
-    let specs = mersey_front::graph::imports(&parsed.module);
-    let mut out = String::from("[");
-    for (i, s) in specs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
+    let statics = mersey_front::graph::imports(&parsed.module);
+    // Dynamic `import(…)` targets are part of the graph too: the loader has to
+    // fetch and check them, they just do not *run* until someone imports them.
+    let dynamics = mersey_front::graph::dynamic_imports(&parsed.module);
+    let arr = |specs: &[String]| {
+        let mut out = String::from("[");
+        for (i, s) in specs.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
+            out.push('"');
         }
-        out.push('"');
-        out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
-        out.push('"');
-    }
-    out.push(']');
-    pack(&out)
+        out.push(']');
+        out
+    };
+    pack(&format!(
+        "{{\"static\":{},\"dynamic\":{}}}",
+        arr(&statics),
+        arr(&dynamics)
+    ))
 }
 
 /// Allocate a buffer the host reads back (ptr<<32 | len). Leaked, like all
@@ -341,13 +357,31 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
         return 1;
     }
 
+    // Modules the payload marks lazy are the targets of a dynamic `import(…)`:
+    // loaded and checked with the rest, but not run until someone imports them.
+    let lazy: Vec<String> = match payload.get("lazy") {
+        Some(mersey_interp::webjson::Json::Arr(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let (eager, deferred): (Vec<_>, Vec<_>) = parsed_modules
+        .into_iter()
+        .partition(|(spec, _)| !lazy.contains(spec));
+
     ensure_interp();
-    with_interp(|interp| match interp.run_graph(parsed_modules) {
-        Ok(()) => 0,
-        Err(t) => {
-            let msg = interp.describe_thrown(&t);
-            send(host_error, &msg);
-            2
+    with_interp(|interp| {
+        for (spec, module) in deferred {
+            interp.register_lazy(spec, module);
+        }
+        match interp.run_graph(eager) {
+            Ok(()) => 0,
+            Err(t) => {
+                let msg = interp.describe_thrown(&t);
+                send(host_error, &msg);
+                2
+            }
         }
     })
     .unwrap_or(2)

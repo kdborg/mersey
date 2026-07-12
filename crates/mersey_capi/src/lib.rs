@@ -19,7 +19,8 @@ pub struct MsyHostTable {
         Option<extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize)>,
     pub dom_get_text:
         Option<extern "C" fn(*mut c_void, *const c_char, usize, *mut usize) -> *const c_char>,
-    pub dom_on_click: Option<extern "C" fn(*mut c_void, *const c_char, usize, u32)>,
+    pub dom_add_listener:
+        Option<extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize, u32)>,
 }
 
 struct CHost {
@@ -55,10 +56,11 @@ impl Host for CHost {
         let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, out_len) };
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
-    fn dom_on_click(&mut self, id: &str, cb: u32) {
-        if let Some(f) = self.table.dom_on_click {
+    fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
+        if let Some(f) = self.table.dom_add_listener {
             let (ip, il) = as_parts(id);
-            f(self.table.data, ip, il, cb);
+            let (ep, el) = as_parts(event);
+            f(self.table.data, ip, il, ep, el, cb);
         }
     }
 }

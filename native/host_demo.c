@@ -66,7 +66,10 @@ static const char *host_get_text(void *data, const char *id, size_t il,
     return e->text;
 }
 
-static void host_on_click(void *data, const char *id, size_t il, uint32_t cb) {
+static void host_add_listener(void *data, const char *id, size_t il,
+                              const char *event, size_t el, uint32_t cb) {
+    (void)event;
+    (void)el; /* the demo shell fires whatever it registered */
     Elem *e = elem(data, id, il);
     e->cbs[e->n_cbs++] = cb;
 }
@@ -103,7 +106,7 @@ int main(void) {
         .error = host_error,
         .dom_set_text = host_set_text,
         .dom_get_text = host_get_text,
-        .dom_on_click = host_on_click,
+        .dom_add_listener = host_add_listener,
     };
     msy_context *ctx = msy_context_new(&table);
     assert(ctx);

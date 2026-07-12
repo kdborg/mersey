@@ -13,7 +13,7 @@ impl Host for Silent {
     fn dom_get_text(&mut self, _: &str) -> Option<String> {
         None
     }
-    fn dom_on_click(&mut self, _: &str, _: u32) {}
+    fn dom_add_listener(&mut self, _: &str, _: &str, _: u32) {}
 }
 
 /// `RETAINED` long-lived nodes, then a callback that allocates a little and

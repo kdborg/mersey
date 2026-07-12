@@ -35,8 +35,8 @@ impl Host for TestHost {
     fn dom_get_text(&mut self, id: &str) -> Option<String> {
         self.dom.get(id).cloned()
     }
-    fn dom_on_click(&mut self, id: &str, cb: u32) {
-        self.emit(format!("[dom #{id}] click handler #{cb} registered"));
+    fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
+        self.emit(format!("[dom #{id}] {event} handler #{cb} registered"));
     }
 }
 

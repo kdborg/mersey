@@ -1,0 +1,32 @@
+// Top-level await, dynamic import, and `for await` — in a real browser, through
+// the loader, on the WASM engine.
+import { console } from "std:console";
+import { document } from "browser:dom";
+
+console.log("lazy demo: starting");
+
+// The module graph is closed before execution (§4.5): this module was fetched
+// and typechecked with the rest. What is deferred is its *evaluation*.
+const m = await import("./lib/lazy.mersey");
+
+async function fetchOne(n: int32): int32 {
+    return n * 10;
+}
+
+// An async generator: an `async` function that yields, awaiting between yields.
+async function pages(count: int32): int32 {
+    let i: int32 = 1;
+    while (i <= count) {
+        yield await fetchOne(i);
+        i += 1;
+    }
+}
+
+let total: int32 = 0;
+for await (const p of pages(3)) {
+    total += p;
+}
+
+const out = document.getElementById("out") as Element;
+out.textContent = `${m.label}: triple(7)=${m.triple(7)}, for-await total=${total}`;
+console.log(`lazy demo: done total=${total}`);

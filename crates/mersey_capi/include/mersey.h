@@ -31,8 +31,11 @@ typedef struct {
      * Return NULL for "no such element". */
     const char *(*dom_get_text)(void *data, const char *id, size_t id_len,
                                 size_t *out_len);
-    void (*dom_on_click)(void *data, const char *id, size_t id_len,
-                         uint32_t cb);
+    /* Register `cb` as a listener for `event` on element `id`. The engine has
+     * no list of which events exist — the host owns the event loop, so the host
+     * is what knows. */
+    void (*dom_add_listener)(void *data, const char *id, size_t id_len,
+                             const char *event, size_t event_len, uint32_t cb);
 } msy_host_table;
 
 /* Create a context backed by `host` (table is copied). */
@@ -44,7 +47,7 @@ void msy_context_free(msy_context *ctx);
  * (details via host->error). */
 uint32_t msy_context_run(msy_context *ctx, const char *src_utf8, size_t len);
 
-/* Fire an event callback previously registered through dom_on_click. */
+/* Fire an event callback previously registered through dom_add_listener. */
 uint32_t msy_context_invoke(msy_context *ctx, uint32_t cb);
 
 #ifdef __cplusplus

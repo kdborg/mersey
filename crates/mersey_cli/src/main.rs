@@ -217,8 +217,8 @@ impl interp::Host for CliHost {
     fn dom_get_text(&mut self, id: &str) -> Option<String> {
         self.dom.get(id).cloned()
     }
-    fn dom_on_click(&mut self, id: &str, cb: u32) {
-        println!("[dom #{id}] click handler #{cb} registered");
+    fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
+        println!("[dom #{id}] {event} handler #{cb} registered");
     }
     fn read_text(&mut self, path: &str) -> Result<String, String> {
         if !self.caps.iter().any(|c| c == "read") {
@@ -859,7 +859,7 @@ impl interp::Host for TapHost {
     fn dom_get_text(&mut self, _: &str) -> Option<String> {
         None
     }
-    fn dom_on_click(&mut self, _: &str, _: u32) {}
+    fn dom_add_listener(&mut self, _: &str, _: &str, _: u32) {}
 }
 
 // ---- remote dependencies ------------------------------------------------------

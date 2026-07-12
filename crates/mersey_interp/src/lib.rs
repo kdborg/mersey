@@ -43,7 +43,9 @@ pub trait Host {
     fn dom_get_text(&mut self, id: &str) -> Option<String>;
     /// Register callback `cb` (an index the driver passes back to
     /// `Interp::invoke_callback`) for click events on element `id`.
-    fn dom_on_click(&mut self, id: &str, cb: u32);
+    /// Register `cb` as a listener for `event` on element `id`. The host owns
+    /// the event loop; the engine only ever hands it a callback id.
+    fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32);
 
     /// Create an element; returns its handle id.
     fn dom_create(&mut self, _tag: &str) -> String {
@@ -2119,13 +2121,13 @@ impl Interp {
                     return self.type_error("addEventListener needs an element");
                 };
                 let event = self.want_string(args.first())?;
-                if event != "click" {
-                    return self.type_error("MVP supports `click` events only");
-                }
                 let cb = args.get(1).cloned().unwrap_or(Value::Null);
                 let cb_id = self.callbacks.len() as u32;
                 self.callbacks.push(cb);
-                self.host.dom_on_click(id, cb_id);
+                // Any event: the engine does not have a list of which ones
+                // exist. The host owns the event loop, so it is the host that
+                // knows — and in a browser that is the DOM itself.
+                self.host.dom_add_listener(id, &event, cb_id);
                 Ok(Value::Null)
             }
             "math.abs" => Ok(match args.first() {

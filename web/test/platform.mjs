@@ -110,7 +110,7 @@ const imports = {
     host_error: (p, l) => errors.push(readStr(p, l)),
     host_dom_set_text: noop,
     host_dom_get_text: () => 0n,
-    host_dom_on_click: noop,
+    host_dom_add_listener: noop,
     host_dom_create: () => 0n,
     host_dom_append: noop,
     host_dom_remove: noop,
