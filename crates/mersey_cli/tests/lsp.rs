@@ -299,3 +299,101 @@ export function twice(n: int32): int32 { return n * 2; }
         assert!(!reply.contains("<error>"), "{reply}");
     }
 }
+
+const SCOPES: &str = r#"import { console } from "std:console";
+
+function scaled(factor: int32, offset: int32): int32 {
+    const value = factor * 2;
+    return value + offset;
+}
+
+function other(): int32 {
+    const value = 99;      // a *different* `value`: same spelling, other scope
+    return value;
+}
+
+const value = scaled(3, 1);
+console.log(value, other());
+"#;
+
+#[test]
+fn references_are_resolved_not_string_matched() {
+    let mut s = Server::start();
+    s.open(SCOPES);
+
+    // The `value` on line 5 (0-based 4) is the one declared on line 4.
+    let reply = s.request(20, "textDocument/references", 4, 11);
+    // Its declaration and its single use — and *not* the `value` in `other()`
+    // or the one at module level.
+    let count = reply.matches("\"uri\"").count();
+    assert_eq!(count, 2, "expected declaration + 1 use, got {reply}");
+    assert!(
+        reply.contains(r#""line":3"#),
+        "declaration missing: {reply}"
+    );
+    assert!(reply.contains(r#""line":4"#), "use missing: {reply}");
+    assert!(
+        !reply.contains(r#""line":8"#),
+        "matched a different scope's `value`: {reply}"
+    );
+    assert!(
+        !reply.contains(r#""line":12"#),
+        "matched the module-level `value`: {reply}"
+    );
+}
+
+#[test]
+fn rename_only_touches_the_binding_it_resolved() {
+    let mut s = Server::start();
+    s.open(SCOPES);
+
+    s.send(
+        r#"{"jsonrpc":"2.0","id":21,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///t.mersey"},"position":{"line":3,"character":10},"newName":"scaledValue"}}"#,
+    );
+    let reply = s.response(21);
+
+    // Two edits: the declaration and the one use. A text substitution would
+    // have found four `value`s and silently changed what the program means.
+    let edits = reply.matches("newText").count();
+    assert_eq!(edits, 2, "expected 2 edits, got {reply}");
+    assert!(reply.contains(r#""newText":"scaledValue""#), "{reply}");
+    // The range covers exactly the old name (5 characters).
+    assert!(reply.contains(r#""character":10}"#), "{reply}");
+    assert!(
+        reply.contains(r#""character":15}"#),
+        "range should cover `value`: {reply}"
+    );
+}
+
+#[test]
+fn signature_help_comes_from_the_checker() {
+    let mut s = Server::start();
+    // Cursor inside the call to `scaled`, on the second argument.
+    let text = SCOPES.replace("const value = scaled(3, 1);", "const value = scaled(3, );");
+    s.open(&text);
+
+    let reply = s.request(22, "textDocument/signatureHelp", 12, 24);
+    assert!(
+        reply.contains("int32"),
+        "expected the real signature: {reply}"
+    );
+    assert!(
+        reply.contains(r#""activeParameter":1"#),
+        "should be on the 2nd arg: {reply}"
+    );
+}
+
+#[test]
+fn document_symbols_list_what_the_file_declares() {
+    let mut s = Server::start();
+    s.open(SRC);
+    s.send(
+        r#"{"jsonrpc":"2.0","id":30,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///t.mersey"}}}"#,
+    );
+    let reply = s.response(30);
+    assert!(reply.contains(r#""name":"Point""#), "{reply}");
+    assert!(reply.contains(r#""name":"origin""#), "{reply}");
+    assert!(reply.contains(r#""name":"label""#), "{reply}");
+    // Not compiler temporaries or `this`.
+    assert!(!reply.contains(r#""name":"this""#), "{reply}");
+}

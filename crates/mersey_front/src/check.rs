@@ -32,7 +32,9 @@ pub struct IndexData {
     /// is the outermost — the one worth hovering.
     types: Vec<(Pos, String)>,
     /// Use → declaration.
-    uses: Vec<(Pos, Pos)>,
+    /// (use, declaration, name). The name is kept so a rename knows how many
+    /// characters each occurrence covers.
+    uses: Vec<(Pos, Pos, String)>,
     /// Everything declared, for scope completion.
     syms: Vec<Sym>,
 }
@@ -101,8 +103,81 @@ impl Analysis {
         self.index
             .uses
             .iter()
-            .find(|(u, _)| u.line == pos.line && u.col == pos.col)
-            .map(|(_, d)| *d)
+            .find(|(u, _, _)| u.line == pos.line && u.col == pos.col)
+            .map(|(_, d, _)| *d)
+    }
+
+    /// Every occurrence of the name at `pos` — its declaration and all its
+    /// uses.
+    ///
+    /// This is the checker's own resolution, not a text search: two variables
+    /// with the same name in different scopes are different names, and a rename
+    /// that treated them as one would silently change what the program means.
+    pub fn references(&self, pos: Pos) -> Option<Vec<(Pos, String)>> {
+        // The cursor may be on a use or on the declaration itself.
+        let def = self.definition(pos).or_else(|| {
+            self.index
+                .syms
+                .iter()
+                .find(|s| s.pos.line == pos.line && s.pos.col == pos.col)
+                .map(|s| s.pos)
+        })?;
+        let name = self
+            .index
+            .syms
+            .iter()
+            .find(|s| s.pos == def)
+            .map(|s| s.name.clone())
+            .or_else(|| {
+                self.index
+                    .uses
+                    .iter()
+                    .find(|(_, d, _)| *d == def)
+                    .map(|(_, _, n)| n.clone())
+            })?;
+
+        let mut out = vec![(def, name.clone())];
+        for (u, d, n) in &self.index.uses {
+            if *d == def && !out.iter().any(|(p, _)| p == u) {
+                out.push((*u, n.clone()));
+            }
+        }
+        out.sort_by_key(|(p, _)| (p.line, p.col));
+        Some(out)
+    }
+
+    /// Everything this file declares, for an editor's outline.
+    pub fn symbols(&self) -> Vec<(String, String, Pos)> {
+        let mut out: Vec<(String, String, Pos)> = Vec::new();
+        for sym in &self.index.syms {
+            // `this` and compiler temporaries are not part of anyone's outline.
+            if sym.name == "this" || sym.name.starts_with('#') {
+                continue;
+            }
+            if out.iter().any(|(n, _, p)| n == &sym.name && *p == sym.pos) {
+                continue;
+            }
+            out.push((sym.name.clone(), sym.detail.clone(), sym.pos));
+        }
+        out.sort_by_key(|(_, _, p)| (p.line, p.col));
+        out
+    }
+
+    /// The signature of the function named at `pos`, for signature help.
+    ///
+    /// Not `hover`: a call expression starts at its callee, so the *last* type
+    /// recorded there is the call's result (`int32`), not the function
+    /// (`(int32, int32) => int32`). The one we want is the innermost — the
+    /// callee itself — which is the first function type recorded at that
+    /// position.
+    pub fn signature(&self, pos: Pos) -> Option<String> {
+        self.index
+            .types
+            .iter()
+            .filter(|(p, _)| p.line == pos.line && p.col == pos.col)
+            .map(|(_, t)| t)
+            .find(|t| t.starts_with('(') && t.contains("=>"))
+            .cloned()
     }
 
     /// Names in scope at `pos`: everything declared at the top level, plus
@@ -3243,7 +3318,7 @@ impl Checker {
             if let Expr::Ident(n) = e {
                 if let Some(def) = self.lookup(&n.text).and_then(|v| v.def) {
                     if let Some(ix) = &mut self.index {
-                        ix.uses.push((n.pos, def));
+                        ix.uses.push((n.pos, def, n.text.clone()));
                     }
                 }
             }

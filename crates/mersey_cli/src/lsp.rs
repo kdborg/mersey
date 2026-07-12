@@ -154,7 +154,7 @@ fn handle(msg: &str) -> Option<String> {
         "initialize" => {
             let id = field(msg, "id").unwrap_or("1");
             Some(format!(
-                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"completionProvider":{{"triggerCharacters":["."]}}}},"serverInfo":{{"name":"mersey-lsp","version":"0.1.0"}}}}}}"#
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{{"triggerCharacters":["(",","]}},"completionProvider":{{"triggerCharacters":["."]}}}},"serverInfo":{{"name":"mersey-lsp","version":"0.1.0"}}}}}}"#
             ))
         }
         "textDocument/didOpen" | "textDocument/didChange" => {
@@ -196,6 +196,87 @@ fn handle(msg: &str) -> Option<String> {
                         escape(uri)
                     )
                 })
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#
+            ))
+        }
+        "textDocument/references" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let locs: Vec<String> = get_doc(uri)
+                .and_then(|text| references(uri, &text, pos))
+                .unwrap_or_default()
+                .iter()
+                .map(|(p, name)| {
+                    format!(
+                        r#"{{"uri":"{}","range":{}}}"#,
+                        escape(uri),
+                        lsp_range(*p, name)
+                    )
+                })
+                .collect();
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":[{}]}}"#,
+                locs.join(",")
+            ))
+        }
+        "textDocument/rename" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let new_name = field(msg, "newName").map(unescape).unwrap_or_default();
+            let edits: Vec<String> = get_doc(uri)
+                .and_then(|text| references(uri, &text, pos))
+                .unwrap_or_default()
+                .iter()
+                .map(|(p, name)| {
+                    format!(
+                        r#"{{"range":{},"newText":"{}"}}"#,
+                        lsp_range(*p, name),
+                        escape(&new_name)
+                    )
+                })
+                .collect();
+            if edits.is_empty() {
+                // Renaming something the checker did not resolve would be a
+                // text substitution pretending to be a refactor.
+                return Some(format!(r#"{{"jsonrpc":"2.0","id":{id},"result":null}}"#));
+            }
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"changes":{{"{}":[{}]}}}}}}"#,
+                escape(uri),
+                edits.join(",")
+            ))
+        }
+        "textDocument/documentSymbol" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let syms: Vec<String> = get_doc(uri)
+                .and_then(|text| analyze(uri, &text).map(|a| a.symbols()))
+                .unwrap_or_default()
+                .iter()
+                .map(|(name, detail, pos)| {
+                    let range = lsp_range(*pos, name);
+                    format!(
+                        r#"{{"name":"{}","detail":"{}","kind":13,"range":{range},"selectionRange":{range}}}"#,
+                        escape(name),
+                        escape(detail)
+                    )
+                })
+                .collect();
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":[{}]}}"#,
+                syms.join(",")
+            ))
+        }
+        "textDocument/signatureHelp" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let result = get_doc(uri)
+                .and_then(|text| signature_help(uri, &text, pos))
                 .unwrap_or_else(|| "null".to_string());
             Some(format!(
                 r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#
@@ -481,4 +562,199 @@ fn token_start(text: &str, pos: Pos) -> Option<Pos> {
         line: pos.line,
         col: i as u32 + 1,
     })
+}
+
+/// LSP range covering `name` starting at our 1-based `pos`.
+fn lsp_range(pos: Pos, name: &str) -> String {
+    let line = pos.line.saturating_sub(1);
+    let col = pos.col.saturating_sub(1);
+    let end = col + name.chars().count() as u32;
+    format!(
+        r#"{{"start":{{"line":{line},"character":{col}}},"end":{{"line":{line},"character":{end}}}}}"#
+    )
+}
+
+/// Every occurrence of the name under the cursor.
+///
+/// The checker resolves them, rather than a text search matching the same
+/// spelling: two variables with the same name in different scopes are different
+/// names, and a rename that treated them as one would quietly change what the
+/// program means.
+fn references(uri: &str, text: &str, pos: Pos) -> Option<Vec<(Pos, String)>> {
+    let a = analyze(uri, text)?;
+    let start = token_start(text, pos)?;
+    a.references(start)
+}
+
+/// The signature of the call the cursor is inside, and which argument it is on.
+fn signature_help(uri: &str, text: &str, pos: Pos) -> Option<String> {
+    let (callee, active) = call_context(text, pos)?;
+    // Signature help is asked for *while* the call is being typed — `f(` or
+    // `f(1, ` — which does not parse. The callee's name is already complete
+    // though, and that is all the type comes from, so the half-written argument
+    // list is repaired away before checking.
+    let repaired = repair_call_args(text, pos).unwrap_or_else(|| text.to_string());
+    let a = analyze(uri, &repaired)?;
+    let sig = a.signature(callee)?;
+
+    // `(int32, string) => bool` — split out the parameters so an editor can
+    // highlight the one being typed.
+    let params: Vec<String> = sig
+        .strip_prefix('(')
+        .and_then(|s| s.split_once(')'))
+        .map(|(inside, _)| inside.to_string())
+        .filter(|s| !s.trim().is_empty())
+        .map(|inside| split_top_level(&inside))
+        .unwrap_or_default()
+        .iter()
+        .map(|p| format!(r#"{{"label":"{}"}}"#, escape(p.trim())))
+        .collect();
+
+    Some(format!(
+        r#"{{"signatures":[{{"label":"{}","parameters":[{}]}}],"activeSignature":0,"activeParameter":{}}}"#,
+        escape(&sig),
+        params.join(","),
+        active
+    ))
+}
+
+/// Rewrite the call the cursor is inside so the buffer parses: drop the empty
+/// argument slots the user has not filled in yet, and close the call if they
+/// have not typed the `)`.
+///
+/// The callee's name sits *before* the `(`, so its position is unaffected —
+/// which is what lets the checker be asked about a call that is not finished.
+fn repair_call_args(text: &str, pos: Pos) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_idx = pos.line.checked_sub(1)? as usize;
+    let chars: Vec<char> = lines.get(line_idx)?.chars().collect();
+    let cursor = (pos.col.checked_sub(1)? as usize).min(chars.len());
+
+    // The `(` of the call the cursor is in (same scan as call_context).
+    let mut depth = 0i32;
+    let mut i = cursor;
+    let open = loop {
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+        match chars[i] {
+            ')' => depth += 1,
+            '(' if depth == 0 => break i,
+            '(' => depth -= 1,
+            _ => {}
+        }
+    };
+
+    // Its `)`, if it has one on this line.
+    let mut depth = 0i32;
+    let mut close = None;
+    for (j, c) in chars.iter().enumerate().skip(open + 1) {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => {
+                close = Some(j);
+                break;
+            }
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    let end = close.unwrap_or(chars.len());
+
+    let inside: String = chars[open + 1..end].iter().collect();
+    let args: Vec<String> = split_top_level(&inside)
+        .into_iter()
+        .filter(|a| !a.trim().is_empty())
+        .collect();
+
+    let mut repaired: String = chars[..=open].iter().collect();
+    repaired.push_str(&args.join(","));
+    repaired.push(')');
+    if close.is_some() {
+        repaired.extend(&chars[end + 1..]);
+    } else {
+        repaired.push(';');
+    }
+
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out[line_idx] = repaired;
+    Some(out.join("\n"))
+}
+
+/// Split a parameter list on commas that are not nested inside brackets, so
+/// `(int32, (string) => bool)` is two parameters and not three.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '<' | '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' | ']' | '>' | '}' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Walk back from the cursor to the call it is inside: the position of the
+/// callee's name, and which argument the cursor is on.
+fn call_context(text: &str, pos: Pos) -> Option<(Pos, usize)> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_idx = pos.line.checked_sub(1)? as usize;
+    let line = *lines.get(line_idx)?;
+    let chars: Vec<char> = line.chars().collect();
+    let cursor = (pos.col.checked_sub(1)? as usize).min(chars.len());
+
+    // Find the `(` that opens the call the cursor is in, counting commas at
+    // that level on the way (they are the argument the cursor is on).
+    let mut depth = 0i32;
+    let mut commas = 0usize;
+    let mut i = cursor;
+    let open = loop {
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+        match chars[i] {
+            ')' => depth += 1,
+            '(' if depth == 0 => break i,
+            '(' => depth -= 1,
+            ',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+    };
+
+    // The identifier immediately before it is the callee.
+    let mut end = open;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some((
+        Pos {
+            line: pos.line,
+            col: start as u32 + 1,
+        },
+        commas,
+    ))
 }
