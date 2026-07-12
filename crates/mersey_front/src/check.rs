@@ -261,6 +261,7 @@ pub enum Ns {
     Console,
     Document,
     Bytes,
+    Time,
     Opaque,
 }
 
@@ -652,6 +653,7 @@ impl Checker {
                 vec![],
                 Ty::Array(Rc::new(Ty::Tuple(Rc::new(vec![k.clone(), v.clone()])))),
             ),
+            ("clear", vec![], Ty::Void),
         ] {
             let mut mi = m(vec![], params, ret);
             mi.name = name.to_string();
@@ -690,6 +692,7 @@ impl Checker {
             ("has", vec![p(tv.clone())], Ty::Bool),
             ("remove", vec![p(tv.clone())], Ty::Bool),
             ("values", vec![], Ty::Array(Rc::new(tv.clone()))),
+            ("clear", vec![], Ty::Void),
         ] {
             let mut mi = m(vec![], params, ret);
             mi.name = name.to_string();
@@ -959,6 +962,7 @@ impl Checker {
                     let ty = match (im.from.as_str(), s.name.text.as_str()) {
                         ("std:console", "console") => Ty::Namespace(Ns::Console),
                         ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
+                        ("std:time", _) => Ty::Namespace(Ns::Time),
                         ("browser:dom", global) => {
                             // An interface NAME imported as a value is the
                             // interface object: `x instanceof HTMLElement`.
@@ -2827,6 +2831,10 @@ impl Checker {
                 unify_infer(&want_spread, &at, &f.tparams, &mut map);
             }
             let want = subst(&want_spread, &map);
+            // The argument's own type may still mention type variables that
+            // this same argument just fixed (a callback whose return type is
+            // `U`, inferred from its parameters) — substitute it too.
+            let at = subst(&at, &map);
             self.require_assignable(&at, &want, pos_of(&a.expr), "argument");
         }
         // Any unfixed type params default to Any (checker v1).
@@ -3063,43 +3071,115 @@ impl Checker {
                     ),
                     "split" => f(vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
                     "toUpperCase" | "toLowerCase" | "trim" => f(vec![], Ty::Str),
+                    "replace" | "replaceAll" => f(vec![p(Ty::Str), p(Ty::Str)], Ty::Str),
+                    "repeat" => f(vec![p(Ty::Int(IntKind::I32))], Ty::Str),
+                    "padStart" | "padEnd" => f(
+                        vec![
+                            p(Ty::Int(IntKind::I32)),
+                            ParamTy { ty: Ty::Str, optional: true, rest: false },
+                        ],
+                        Ty::Str,
+                    ),
                     _ => self.no_member("string", name, pos),
                 }
             }
+            Ty::BigDec if name == "divide" => Ty::Fn(Rc::new(FnTy {
+                tparams: vec![],
+                params: vec![
+                    ParamTy { ty: Ty::BigDec, optional: false, rest: false },
+                    ParamTy {
+                        ty: Ty::Record(Rc::new(vec![
+                            RecField {
+                                name: "scale".into(),
+                                ty: Ty::Int(IntKind::I32),
+                                optional: false,
+                            },
+                            RecField { name: "mode".into(), ty: Ty::Str, optional: true },
+                        ])),
+                        optional: false,
+                        rest: false,
+                    },
+                ],
+                ret: Ty::BigDec,
+            })),
             Ty::Char | Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::BigInt | Ty::BigDec
             | Ty::Enum(_) => match name {
                 "toString" => to_string_fn(),
                 _ => self.no_member(&self.show(&base), name, pos),
             },
-            Ty::Array(elem) => match name {
-                "length" => Ty::Int(IntKind::I32),
-                "push" => Ty::Fn(Rc::new(FnTy {
+            Ty::Array(elem) => {
+                let e = elem.as_ref().clone();
+                let arr = Ty::Array(Rc::new(e.clone()));
+                let i32t = Ty::Int(IntKind::I32);
+                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+                let opt = |ty: Ty| ParamTy { ty, optional: true, rest: false };
+                let f = |tparams: Vec<TvId>, params: Vec<ParamTy>, ret: Ty| {
+                    Ty::Fn(Rc::new(FnTy { tparams, params, ret }))
+                };
+                // Callback shapes.
+                let pred = Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
-                    params: vec![ParamTy {
-                        ty: elem.as_ref().clone(),
-                        optional: false,
-                        rest: true,
-                    }],
+                    params: vec![p(e.clone())],
+                    ret: Ty::Bool,
+                }));
+                let each = Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![p(e.clone())],
                     ret: Ty::Void,
-                })),
-                "pop" => Ty::Fn(Rc::new(FnTy {
+                }));
+                let cmp = Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
-                    params: vec![],
-                    ret: nullable(elem.as_ref().clone()),
-                })),
-                "keys" => Ty::Fn(Rc::new(FnTy {
-                    tparams: vec![],
-                    params: vec![],
-                    ret: Ty::Array(Rc::new(Ty::Int(IntKind::I32))),
-                })),
-                "join" => Ty::Fn(Rc::new(FnTy {
-                    tparams: vec![],
-                    params: vec![ParamTy { ty: Ty::Str, optional: true, rest: false }],
-                    ret: Ty::Str,
-                })),
-                "toString" => to_string_fn(),
-                _ => self.no_member("array", name, pos),
-            },
+                    params: vec![p(e.clone()), p(e.clone())],
+                    ret: i32t.clone(),
+                }));
+                match name {
+                    "length" => i32t,
+                    // §1.3: mutation is explicit in the name; mutators return void.
+                    "push" => f(
+                        vec![],
+                        vec![ParamTy { ty: e.clone(), optional: false, rest: true }],
+                        Ty::Void,
+                    ),
+                    "pop" => f(vec![], vec![], nullable(e.clone())),
+                    "clear" => f(vec![], vec![], Ty::Void),
+                    "sortInPlace" => f(vec![], vec![p(cmp.clone())], Ty::Void),
+                    "reverseInPlace" => f(vec![], vec![], Ty::Void),
+                    "toSorted" => f(vec![], vec![p(cmp)], arr.clone()),
+                    "toReversed" => f(vec![], vec![], arr.clone()),
+                    // Views and transforms.
+                    "map" => {
+                        let u = self.fresh_tv("U");
+                        let mapper = Ty::Fn(Rc::new(FnTy {
+                            tparams: vec![],
+                            params: vec![p(e.clone())],
+                            ret: Ty::Var(u),
+                        }));
+                        f(vec![u], vec![p(mapper)], Ty::Array(Rc::new(Ty::Var(u))))
+                    }
+                    "reduce" => {
+                        let u = self.fresh_tv("U");
+                        let folder = Ty::Fn(Rc::new(FnTy {
+                            tparams: vec![],
+                            params: vec![p(Ty::Var(u)), p(e.clone())],
+                            ret: Ty::Var(u),
+                        }));
+                        f(vec![u], vec![p(folder), p(Ty::Var(u))], Ty::Var(u))
+                    }
+                    "filter" => f(vec![], vec![p(pred.clone())], arr.clone()),
+                    "find" => f(vec![], vec![p(pred.clone())], nullable(e.clone())),
+                    "findIndex" => f(vec![], vec![p(pred.clone())], i32t.clone()),
+                    "some" | "every" => f(vec![], vec![p(pred)], Ty::Bool),
+                    "forEach" => f(vec![], vec![p(each)], Ty::Void),
+                    "indexOf" => f(vec![], vec![p(e.clone())], i32t.clone()),
+                    "contains" => f(vec![], vec![p(e.clone())], Ty::Bool),
+                    "slice" => f(vec![], vec![p(i32t.clone()), opt(i32t)], arr.clone()),
+                    "concat" => f(vec![], vec![p(arr.clone())], arr),
+                    "keys" => f(vec![], vec![], Ty::Array(Rc::new(Ty::Int(IntKind::I32)))),
+                    "join" => f(vec![], vec![opt(Ty::Str)], Ty::Str),
+                    "toString" => to_string_fn(),
+                    _ => self.no_member("array", name, pos),
+                }
+            }
             Ty::Record(fs) => match fs.iter().find(|f| f.name == name) {
                 Some(f) => {
                     if f.optional {
@@ -3241,6 +3321,14 @@ impl Checker {
                     _ => self.no_member("bytes", name, pos),
                 }
             }
+            Ty::Namespace(Ns::Time) => match name {
+                "now" | "monotonic" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: Ty::F64,
+                })),
+                _ => self.no_member("time", name, pos),
+            },
             Ty::Namespace(Ns::Console) => match name {
                 "log" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],

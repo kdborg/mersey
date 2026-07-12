@@ -27,7 +27,7 @@ pub mod bignum;
 pub mod vm;
 pub mod webjson;
 use webjson::Json;
-use bignum::{BigDec, BigInt};
+use bignum::{BigDec, BigInt, RoundingMode};
 
 // ---- host interface ---------------------------------------------------------
 
@@ -124,6 +124,11 @@ pub trait Host {
     /// `object instanceof constructor` on the host side.
     fn web_instanceof(&mut self, _target: i64, _ctor: i64) -> bool {
         false
+    }
+    /// Wall-clock (`epoch = true`) or monotonic milliseconds. Time is not
+    /// capability-gated: it leaks no data the program didn't already have.
+    fn time_ms(&mut self, _epoch: bool) -> f64 {
+        0.0
     }
 }
 
@@ -685,6 +690,21 @@ impl Interp {
                 }));
                 for n in names {
                     env_define(&self.globals, &n.text, console.clone());
+                }
+                Ok(())
+            }
+            "std:time" => {
+                let mut entries = HashMap::new();
+                for n in ["now", "monotonic"] {
+                    let id: &'static str = Box::leak(format!("time.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: "time".to_string(),
+                    entries,
+                }));
+                for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())
             }
@@ -1624,6 +1644,7 @@ impl Interp {
                 }
                 Ok(Value::PromiseV(out))
             }
+            "time.now" | "time.monotonic" => Ok(Value::F64(self.host.time_ms(name == "time.now"))),
             "bytes.alloc" => {
                 let n = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
                 Ok(Value::Bytes(Rc::new(RefCell::new(vec![0u8; n]))))
@@ -2237,31 +2258,148 @@ impl Interp {
                 let h = *h;
                 self.web_call(h, name, args)
             }
-            Value::Array(a) => match name {
-                "push" => {
-                    for v in args {
-                        a.borrow_mut().push(v);
+            Value::Array(a) => {
+                let a = a.clone();
+                let items = || a.borrow().clone();
+                match name {
+                    "push" => {
+                        for v in args {
+                            a.borrow_mut().push(v);
+                        }
+                        Ok(Value::Null)
                     }
-                    Ok(Value::Null)
+                    "pop" => Ok(a.borrow_mut().pop().unwrap_or(Value::Null)),
+                    "clear" => {
+                        a.borrow_mut().clear();
+                        Ok(Value::Null)
+                    }
+                    "keys" => {
+                        let n = a.borrow().len();
+                        Ok(Value::Array(Rc::new(RefCell::new(
+                            (0..n).map(|i| Value::I32(i as i32)).collect(),
+                        ))))
+                    }
+                    "join" => {
+                        let sep = match args.first() {
+                            Some(Value::Str(s)) => s.iter().collect::<String>(),
+                            _ => String::new(),
+                        };
+                        let parts: Vec<String> = a.borrow().iter().map(to_display).collect();
+                        Ok(Value::Str(Rc::new(parts.join(&sep).chars().collect())))
+                    }
+                    "map" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        let mut out = Vec::new();
+                        for item in items() {
+                            out.push(self.call_value(&f, vec![item])?);
+                        }
+                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                    }
+                    "filter" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        let mut out = Vec::new();
+                        for item in items() {
+                            let keep = self.call_value(&f, vec![item.clone()])?;
+                            if self.value_truthy(&keep)? {
+                                out.push(item);
+                            }
+                        }
+                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                    }
+                    "reduce" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        let mut acc = args.get(1).cloned().unwrap_or(Value::Null);
+                        for item in items() {
+                            acc = self.call_value(&f, vec![acc, item])?;
+                        }
+                        Ok(acc)
+                    }
+                    "forEach" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        for item in items() {
+                            self.call_value(&f, vec![item])?;
+                        }
+                        Ok(Value::Null)
+                    }
+                    "find" | "findIndex" | "some" | "every" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        let want_all = name == "every";
+                        for (i, item) in items().into_iter().enumerate() {
+                            let hit = self.call_value(&f, vec![item.clone()])?;
+                            let hit = self.value_truthy(&hit)?;
+                            if hit && !want_all {
+                                return Ok(match name {
+                                    "find" => item,
+                                    "findIndex" => Value::I32(i as i32),
+                                    _ => Value::Bool(true),
+                                });
+                            }
+                            if !hit && want_all {
+                                return Ok(Value::Bool(false));
+                            }
+                        }
+                        Ok(match name {
+                            "find" => Value::Null,
+                            "findIndex" => Value::I32(-1),
+                            "some" => Value::Bool(false),
+                            _ => Value::Bool(true),
+                        })
+                    }
+                    "indexOf" | "contains" => {
+                        let want = args.first().cloned().unwrap_or(Value::Null);
+                        for (i, item) in items().into_iter().enumerate() {
+                            if self.values_equal(&item, &want)? {
+                                return Ok(if name == "contains" {
+                                    Value::Bool(true)
+                                } else {
+                                    Value::I32(i as i32)
+                                });
+                            }
+                        }
+                        Ok(if name == "contains" { Value::Bool(false) } else { Value::I32(-1) })
+                    }
+                    "slice" => {
+                        let src = items();
+                        let len = src.len() as i64;
+                        let norm = |v: i64| v.clamp(0, len) as usize;
+                        let start = norm(args.first().and_then(as_i64).unwrap_or(0));
+                        let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
+                        let out = if start < end { src[start..end].to_vec() } else { Vec::new() };
+                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                    }
+                    "concat" => {
+                        let mut out = items();
+                        if let Some(Value::Array(b)) = args.first() {
+                            out.extend(b.borrow().iter().cloned());
+                        }
+                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                    }
+                    "reverseInPlace" => {
+                        a.borrow_mut().reverse();
+                        Ok(Value::Null)
+                    }
+                    "toReversed" => {
+                        let mut out = items();
+                        out.reverse();
+                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                    }
+                    // Comparator-driven sort: merge sort so the comparator is
+                    // called a predictable number of times and the sort is
+                    // stable (a comparator can throw, so it must be fallible).
+                    "sortInPlace" | "toSorted" => {
+                        let f = args.first().cloned().unwrap_or(Value::Null);
+                        let sorted = self.merge_sort(items(), &f)?;
+                        if name == "sortInPlace" {
+                            *a.borrow_mut() = sorted;
+                            Ok(Value::Null)
+                        } else {
+                            Ok(Value::Array(Rc::new(RefCell::new(sorted))))
+                        }
+                    }
+                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    _ => self.type_error(format!("arrays have no method `{name}`")),
                 }
-                "pop" => Ok(a.borrow_mut().pop().unwrap_or(Value::Null)),
-                "keys" => {
-                    let n = a.borrow().len();
-                    Ok(Value::Array(Rc::new(RefCell::new(
-                        (0..n).map(|i| Value::I32(i as i32)).collect(),
-                    ))))
-                }
-                "join" => {
-                    let sep = match args.first() {
-                        Some(Value::Str(s)) => s.iter().collect::<String>(),
-                        _ => String::new(),
-                    };
-                    let parts: Vec<String> = a.borrow().iter().map(to_display).collect();
-                    Ok(Value::Str(Rc::new(parts.join(&sep).chars().collect())))
-                }
-                "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
-                _ => self.type_error(format!("arrays have no method `{name}` in the MVP")),
-            },
+            }
             Value::MapV(m) => {
                 let m = m.clone();
                 match name {
@@ -2312,6 +2450,10 @@ impl Interp {
                             })
                             .collect(),
                     )))),
+                    "clear" => {
+                        m.borrow_mut().clear();
+                        Ok(Value::Null)
+                    }
                     "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
                     _ => self.type_error(format!("no method `{name}` on Map")),
                 }
@@ -2341,6 +2483,10 @@ impl Interp {
                         })
                     }
                     "values" => Ok(Value::Array(Rc::new(RefCell::new(m.borrow().clone())))),
+                    "clear" => {
+                        m.borrow_mut().clear();
+                        Ok(Value::Null)
+                    }
                     "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
                     _ => self.type_error(format!("no method `{name}` on Set")),
                 }
@@ -2382,6 +2528,44 @@ impl Interp {
                         };
                         Ok(Value::Str(Rc::new(out)))
                     }
+                    "replace" | "replaceAll" => {
+                        let needle = arg0();
+                        let with = match args.get(1) {
+                            Some(Value::Str(a)) => a.iter().collect::<String>(),
+                            Some(other) => to_display(other),
+                            None => String::new(),
+                        };
+                        let out = if name == "replace" {
+                            text.replacen(&needle as &str, &with, 1)
+                        } else {
+                            text.replace(&needle as &str, &with)
+                        };
+                        Ok(Value::Str(Rc::new(out.chars().collect())))
+                    }
+                    "repeat" => {
+                        let n = args.first().and_then(as_i64).unwrap_or(0).clamp(0, 1_000_000);
+                        Ok(Value::Str(Rc::new(text.repeat(n as usize).chars().collect())))
+                    }
+                    "padStart" | "padEnd" => {
+                        let width = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
+                        let pad = match args.get(1) {
+                            Some(Value::Str(a)) if !a.is_empty() => a.iter().collect::<String>(),
+                            _ => " ".to_string(),
+                        };
+                        let mut out: Vec<char> = s.as_ref().clone();
+                        let pad_chars: Vec<char> = pad.chars().collect();
+                        let mut k = 0;
+                        while out.len() < width {
+                            let c = pad_chars[k % pad_chars.len()];
+                            if name == "padStart" {
+                                out.insert(k, c);
+                            } else {
+                                out.push(c);
+                            }
+                            k += 1;
+                        }
+                        Ok(Value::Str(Rc::new(out)))
+                    }
                     "split" => {
                         let sep = arg0();
                         let parts: Vec<Value> = if sep.is_empty() {
@@ -2396,6 +2580,35 @@ impl Interp {
                         Ok(Value::Array(Rc::new(RefCell::new(parts))))
                     }
                     _ => self.type_error(format!("no method `{name}` on string")),
+                }
+            }
+            // bigdec.divide(other, { scale: 2, mode: "HALF_EVEN" }) — §3.7
+            Value::BigDecV(a) if name == "divide" => {
+                let Some(Value::BigDecV(b)) = args.first() else {
+                    return self.type_error("divide(divisor, context) needs a bigdec divisor");
+                };
+                let ctx = args.get(1);
+                let (scale, mode) = match ctx {
+                    Some(Value::Record(fields)) => {
+                        let f = fields.borrow();
+                        let scale = rec_get(&f, "scale")
+                            .and_then(|v| as_i64(&v))
+                            .unwrap_or(0)
+                            .clamp(0, 1000) as u32;
+                        let mode_name = match rec_get(&f, "mode") {
+                            Some(Value::Str(s)) => s.iter().collect::<String>(),
+                            _ => "HALF_EVEN".to_string(),
+                        };
+                        let Some(mode) = RoundingMode::parse(&mode_name) else {
+                            return self.type_error(format!("unknown rounding mode `{mode_name}`"));
+                        };
+                        (scale, mode)
+                    }
+                    _ => return self.type_error("divide needs a rounding context"),
+                };
+                match a.divide(b, scale, mode) {
+                    Some(q) => Ok(Value::BigDecV(Rc::new(q))),
+                    None => Err(self.throw("RangeError", "division by zero")),
                 }
             }
             Value::Char(_) | Value::I32(_) | Value::I64(_) | Value::U32(_)
@@ -2962,6 +3175,32 @@ impl Interp {
         };
         self.call_value(&cb, args)?;
         self.drain_microtasks()
+    }
+
+    /// Stable merge sort driven by a Mersey comparator (which may throw).
+    fn merge_sort(&mut self, items: Vec<Value>, cmp: &Value) -> Result<Vec<Value>, Thrown> {
+        if items.len() <= 1 {
+            return Ok(items);
+        }
+        let mid = items.len() / 2;
+        let right = self.merge_sort(items[mid..].to_vec(), cmp)?;
+        let left = self.merge_sort(items[..mid].to_vec(), cmp)?;
+        let mut out = Vec::with_capacity(left.len() + right.len());
+        let (mut i, mut j) = (0, 0);
+        while i < left.len() && j < right.len() {
+            let ord = self.call_value(cmp, vec![left[i].clone(), right[j].clone()])?;
+            let ord = as_i64(&ord).unwrap_or(0);
+            if ord <= 0 {
+                out.push(left[i].clone());
+                i += 1;
+            } else {
+                out.push(right[j].clone());
+                j += 1;
+            }
+        }
+        out.extend_from_slice(&left[i..]);
+        out.extend_from_slice(&right[j..]);
+        Ok(out)
     }
 
     fn map_find(

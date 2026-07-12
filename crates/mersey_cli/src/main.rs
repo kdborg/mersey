@@ -217,6 +217,17 @@ impl interp::Host for CliHost {
     fn drop_cap(&mut self, cap: &str) {
         self.caps.retain(|c| c != cap);
     }
+    fn time_ms(&mut self, epoch: bool) -> f64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        if epoch {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs_f64() * 1000.0)
+                .unwrap_or(0.0)
+        } else {
+            std::time::Instant::now().elapsed().as_secs_f64() * 1000.0
+        }
+    }
 }
 
 /// Load the whole module graph from disk (spec §4.5: closed before

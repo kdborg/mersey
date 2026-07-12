@@ -104,6 +104,7 @@ async function engine() {
       host_web_bytes_write: (ptr, len) =>
         BigInt(bridge.bytesWrite(mem().subarray(Number(ptr), Number(ptr) + Number(len)))),
       host_web_instanceof: (t, c) => bridge.instanceOf(Number(t), Number(c)),
+      host_time_ms: (epoch) => (epoch ? Date.now() : performance.now()),
     },
   };
   const bridge = makeBridge({}, (cb, argsJson) => {

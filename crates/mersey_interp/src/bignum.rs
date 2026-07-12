@@ -287,6 +287,31 @@ impl BigInt {
     }
 }
 
+/// Rounding modes (spec §3.7; the java.math / IEEE 754-2019 decimal set).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RoundingMode {
+    Up,
+    Down,
+    Ceiling,
+    Floor,
+    HalfUp,
+    HalfEven,
+}
+
+impl RoundingMode {
+    pub fn parse(name: &str) -> Option<RoundingMode> {
+        Some(match name {
+            "UP" => RoundingMode::Up,
+            "DOWN" => RoundingMode::Down,
+            "CEILING" => RoundingMode::Ceiling,
+            "FLOOR" => RoundingMode::Floor,
+            "HALF_UP" => RoundingMode::HalfUp,
+            "HALF_EVEN" => RoundingMode::HalfEven,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BigDec {
     pub coef: BigInt,
@@ -360,6 +385,55 @@ impl BigDec {
         None
     }
 
+    /// Divide with an explicit rounding context (spec §3.7): the result has
+    /// exactly `scale` digits, rounded by `mode`.
+    pub fn divide(&self, other: &BigDec, scale: u32, mode: RoundingMode) -> Option<BigDec> {
+        if other.coef.is_zero() {
+            return None;
+        }
+        // Work at scale+1 so we hold the discard digit, then round.
+        let shift = scale as i64 + 1 + other.scale as i64 - self.scale as i64;
+        let num = if shift >= 0 {
+            self.coef.mul(&BigInt::pow10(shift as u32))
+        } else {
+            self.coef.divmod(&BigInt::pow10((-shift) as u32))?.0
+        };
+        let (q, r) = num.divmod(&other.coef)?;
+        let negative = q.neg || (self.coef.neg != other.coef.neg && !q.is_zero());
+        // q currently has scale+1 digits: split off the last one.
+        let (mut quotient, discard) = q.divmod_small(10);
+        let discard = discard as i64;
+        let exact = r.is_zero();
+        let magnitude = discard.abs();
+        let round_up = match mode {
+            RoundingMode::Down => false,
+            RoundingMode::Up => magnitude != 0 || !exact,
+            RoundingMode::HalfUp => magnitude >= 5,
+            RoundingMode::HalfEven => {
+                if magnitude > 5 {
+                    true
+                } else if magnitude < 5 {
+                    false
+                } else if !exact {
+                    true
+                } else {
+                    // Ties to even: round up only if the kept digit is odd.
+                    let (_, last) = quotient.divmod_small(10);
+                    last % 2 == 1
+                }
+            }
+            RoundingMode::Ceiling => (magnitude != 0 || !exact) && !negative,
+            RoundingMode::Floor => (magnitude != 0 || !exact) && negative,
+        };
+        if round_up {
+            let one = BigInt::from_i64(1);
+            let bumped = BigInt { neg: false, mag: quotient.mag.clone() }.add(&one);
+            quotient = BigInt { neg: quotient.neg, mag: bumped.mag };
+        }
+        quotient.neg = negative && !quotient.is_zero();
+        Some(BigDec { coef: quotient, scale })
+    }
+
     pub fn cmp(&self, other: &BigDec) -> Ordering {
         let (a, b, _) = Self::align(self, other);
         a.cmp(&b)
@@ -405,6 +479,27 @@ mod tests {
         let (q, r) = BigInt::from_i64(-7).divmod(&BigInt::from_i64(2)).unwrap();
         assert_eq!(q.to_decimal(), "-3");
         assert_eq!(r.to_decimal(), "-1");
+    }
+
+    #[test]
+    fn bigdec_rounding_contexts() {
+        let one = BigDec::parse("1").unwrap();
+        let three = BigDec::parse("3").unwrap();
+        assert_eq!(one.divide(&three, 4, RoundingMode::HalfEven).unwrap().to_decimal(), "0.3333");
+        let two = BigDec::parse("2").unwrap();
+        // 1/2 at scale 0: HALF_EVEN ties to even (0), HALF_UP goes to 1.
+        assert_eq!(one.divide(&two, 0, RoundingMode::HalfEven).unwrap().to_decimal(), "0");
+        assert_eq!(one.divide(&two, 0, RoundingMode::HalfUp).unwrap().to_decimal(), "1");
+        let three_halves = BigDec::parse("3").unwrap();
+        assert_eq!(
+            three_halves.divide(&two, 0, RoundingMode::HalfEven).unwrap().to_decimal(),
+            "2"
+        );
+        assert_eq!(one.divide(&three, 2, RoundingMode::Up).unwrap().to_decimal(), "0.34");
+        assert_eq!(one.divide(&three, 2, RoundingMode::Down).unwrap().to_decimal(), "0.33");
+        let ten = BigDec::parse("10").unwrap();
+        assert_eq!(ten.divide(&two, 2, RoundingMode::HalfEven).unwrap().to_decimal(), "5.00");
+        assert!(one.divide(&BigDec::parse("0").unwrap(), 2, RoundingMode::HalfUp).is_none());
     }
 
     #[test]

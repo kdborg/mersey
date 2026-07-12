@@ -73,6 +73,7 @@ extern "C" {
     /// handle, or -1.
     fn host_web_bytes_write(ptr: *const u8, len: usize) -> i64;
     fn host_web_instanceof(target: i64, ctor: i64) -> u32;
+    fn host_time_ms(epoch: u32) -> f64;
 }
 
 fn read_packed(packed: u64) -> String {
@@ -198,6 +199,9 @@ impl Host for WasmHost {
     }
     fn web_instanceof(&mut self, target: i64, ctor: i64) -> bool {
         unsafe { host_web_instanceof(target, ctor) != 0 }
+    }
+    fn time_ms(&mut self, epoch: bool) -> f64 {
+        unsafe { host_time_ms(if epoch { 1 } else { 0 }) }
     }
 }
 
