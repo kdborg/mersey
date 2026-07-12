@@ -307,8 +307,25 @@ struct LoopCtx {
     kind: CtxKind,
     label: Option<String>,
     scope_depth: usize,
+    /// How many `finally` blocks were pending when this loop began. A `break`
+    /// out of the loop must run every `finally` entered *since* — and only
+    /// those.
+    finally_depth: usize,
     breaks: Vec<usize>,
     continues: Vec<usize>,
+}
+
+/// A `finally` block that a `return`, `break` or `continue` has to run on its
+/// way out of the `try` it belongs to.
+#[derive(Clone)]
+struct FinallyCtx {
+    stmts: &'static [Stmt],
+    /// Scope depth *outside* the `try`: the finally body must not see the try
+    /// block's locals, so those scopes are popped before it runs.
+    scope_depth: usize,
+    /// Handlers to pop before running it. If the finally itself throws, that
+    /// throw must not be caught by the very `try` it belongs to.
+    handlers: usize,
 }
 
 struct C {
@@ -321,6 +338,8 @@ struct C {
     types: Vec<&'static Type>,
     protos: Vec<Rc<FnData>>,
     loops: Vec<LoopCtx>,
+    /// `finally` blocks currently enclosing the code being compiled.
+    finallys: Vec<FinallyCtx>,
     scope_depth: usize,
     temp: u32,
     labeled_next: Option<String>,
@@ -343,6 +362,7 @@ impl C {
             types: vec![],
             protos: vec![],
             loops: vec![],
+            finallys: vec![],
             scope_depth: 0,
             temp: 0,
             labeled_next: None,
@@ -684,6 +704,7 @@ impl C {
                     kind: CtxKind::Switch,
                     label: None,
                     scope_depth: self.scope_depth,
+                    finally_depth: self.finallys.len(),
                     breaks: vec![],
                     continues: vec![],
                 });
@@ -726,10 +747,15 @@ impl C {
             Stmt::Return { value, .. } => {
                 match value {
                     Some(e) => {
+                        // The value is computed first and rides the operand
+                        // stack while the `finally` blocks run — a `finally`
+                        // cannot change what was already returned.
                         self.expr(e);
+                        self.run_finallys(0);
                         self.emit(Op::Return);
                     }
                     None => {
+                        self.run_finallys(0);
                         self.emit(Op::ReturnNull);
                     }
                 };
@@ -743,18 +769,29 @@ impl C {
                 catches,
                 finally,
             } => {
-                if finally.is_some()
-                    && (contains_abrupt(block) || catches.iter().any(|c| contains_abrupt(&c.block)))
-                {
-                    return self.bail(); // AST tier handles abrupt-through-finally
-                }
                 let outer = finally.as_ref().map(|_| self.emit(Op::PushHandler(0)));
                 let inner = self.emit(Op::PushHandler(0));
+                // Inside the try block both handlers are live, so an abrupt exit
+                // from here pops two.
+                if let Some(f) = finally {
+                    self.finallys.push(FinallyCtx {
+                        stmts: f,
+                        scope_depth: self.scope_depth,
+                        handlers: 2,
+                    });
+                }
                 self.compile_block_stmts(block);
                 self.emit(Op::PopHandler);
                 let mut norm_jumps = vec![self.emit(Op::Jump(0))];
                 let handler_pc = self.here();
                 self.patch(inner, handler_pc);
+                // Dispatching to a handler pops it, so inside a catch block only
+                // the outer (finally) handler is still live.
+                if let Some(ctx) = self.finallys.last_mut() {
+                    if finally.is_some() {
+                        ctx.handlers = 1;
+                    }
+                }
                 for c in catches {
                     let ty = self.types.len() as u16;
                     self.types.push(&c.ty);
@@ -777,6 +814,9 @@ impl C {
                 let norm = self.here();
                 for j in norm_jumps {
                     self.patch(j, norm);
+                }
+                if finally.is_some() {
+                    self.finallys.pop();
                 }
                 if let Some(f) = finally {
                     self.emit(Op::PopHandler); // outer
@@ -825,6 +865,7 @@ impl C {
             kind: CtxKind::Loop,
             label,
             scope_depth: self.scope_depth,
+            finally_depth: self.finallys.len(),
             breaks: vec![],
             continues: vec![],
         });
@@ -845,6 +886,38 @@ impl C {
         }
     }
 
+    /// Emit the `finally` blocks between here and `target_fin`, innermost
+    /// first, and return the scope depth left behind.
+    ///
+    /// A `finally` is *duplicated* at each exit that crosses it rather than
+    /// jumped to, because each exit has to carry on doing something different
+    /// afterwards (return this value, break that loop). Before each copy: pop
+    /// the try block's scopes, so the finally cannot see its locals; then pop
+    /// that try's handlers, so a throw *inside* the finally is not caught by the
+    /// very `try` it belongs to.
+    fn run_finallys(&mut self, target_fin: usize) -> usize {
+        let mut cur = self.scope_depth;
+        for i in (target_fin..self.finallys.len()).rev() {
+            let f = self.finallys[i].clone();
+            while cur > f.scope_depth {
+                self.emit(Op::PopScope);
+                cur -= 1;
+            }
+            for _ in 0..f.handlers {
+                self.emit(Op::PopHandler);
+            }
+            // While compiling the copy, this finally is no longer "pending":
+            // an abrupt exit inside it must not try to run it again.
+            let stashed = self.finallys.split_off(i);
+            let saved_depth = self.scope_depth;
+            self.scope_depth = f.scope_depth;
+            self.compile_block_stmts(f.stmts);
+            self.scope_depth = saved_depth;
+            self.finallys.extend(stashed);
+        }
+        cur
+    }
+
     fn abrupt(&mut self, label: Option<&Name>, is_break: bool) {
         let idx = self.loops.iter().rposition(|ctx| match (label, is_break) {
             (Some(l), _) => ctx.label.as_deref() == Some(l.text.as_str()),
@@ -853,8 +926,11 @@ impl C {
         });
         let Some(idx) = idx else { return self.bail() };
         let target_depth = self.loops[idx].scope_depth;
-        for _ in target_depth..self.scope_depth {
+        let target_fin = self.loops[idx].finally_depth;
+        let mut cur = self.run_finallys(target_fin);
+        while cur > target_depth {
             self.emit(Op::PopScope);
+            cur -= 1;
         }
         let j = self.emit(Op::Jump(0));
         if is_break {
@@ -1522,35 +1598,6 @@ pub(crate) fn expr_pos(e: &Expr) -> Option<Pos> {
 /// Conservative: does this statement list contain `return`/`break`/
 /// `continue` (not crossing into nested arrows, which are separate
 /// functions)? Used to route try+finally with abrupt exits to the AST tier.
-fn contains_abrupt(stmts: &[Stmt]) -> bool {
-    fn stmt(s: &Stmt) -> bool {
-        match s {
-            Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => true,
-            Stmt::Block(b) => b.iter().any(stmt),
-            Stmt::If { then, els, .. } => {
-                stmt(then) || els.as_ref().map(|e| stmt(e)).unwrap_or(false)
-            }
-            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => stmt(body),
-            Stmt::For { body, .. } | Stmt::ForOf { body, .. } => stmt(body),
-            Stmt::Switch { clauses, .. } => clauses.iter().any(|c| c.body.iter().any(stmt)),
-            Stmt::Try {
-                block,
-                catches,
-                finally,
-            } => {
-                block.iter().any(stmt)
-                    || catches.iter().any(|c| c.block.iter().any(stmt))
-                    || finally
-                        .as_ref()
-                        .map(|f| f.iter().any(stmt))
-                        .unwrap_or(false)
-            }
-            Stmt::Labeled { body, .. } => stmt(body),
-            _ => false,
-        }
-    }
-    stmts.iter().any(stmt)
-}
 
 // ---- runtime ----------------------------------------------------------------------
 

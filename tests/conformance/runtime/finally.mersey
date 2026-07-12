@@ -1,0 +1,90 @@
+import { console } from "std:console";
+
+// A `finally` runs on *every* way out of a `try` — including the ways that skip
+// straight past it: `return`, `break`, `continue`. The bytecode compiler used to
+// give up on those and fall back to the tree-walker; now each abrupt exit runs
+// the finallys it crosses, innermost first.
+
+const log: string[] = [];
+
+function ret(): int32 {
+    try {
+        log.push("try");
+        return 1;            // leaves through the finally
+    } finally {
+        log.push("finally");
+    }
+}
+console.log(ret(), log);
+
+// The value is computed *before* the finally runs: a finally cannot change what
+// was already returned.
+let side: int32 = 0;
+function value(): int32 {
+    try {
+        return side;
+    } finally {
+        side = 99;           // too late
+    }
+}
+side = 7;
+console.log(value(), side);
+
+// break and continue, out of and inside a loop.
+const seen: int32[] = [];
+function loop(): void {
+    for (let i = 0; i < 5; i++) {
+        try {
+            if (i == 1) { continue; }   // through the finally
+            if (i == 3) { break; }      // through the finally
+            seen.push(i);
+        } finally {
+            seen.push(100 + i);
+        }
+    }
+}
+loop();
+console.log(seen);
+
+// Nested finallys run innermost-first, and only the ones actually crossed.
+const order: string[] = [];
+function nested(): int32 {
+    try {
+        try {
+            return 5;
+        } finally {
+            order.push("inner");
+        }
+    } finally {
+        order.push("outer");
+    }
+}
+console.log(nested(), order);
+
+// A finally still runs when the try throws, and a return in the *catch* also
+// leaves through it.
+const caught: string[] = [];
+function thrower(): int32 {
+    try {
+        throw new Error("x");
+    } catch (e: Error) {
+        caught.push("catch");
+        return 2;            // out of the catch, through the finally
+    } finally {
+        caught.push("finally");
+    }
+}
+console.log(thrower(), caught);
+
+// A finally does not see the try block's locals — it is outside them.
+function scoping(): int32 {
+    const outer: int32 = 10;
+    try {
+        const inner: int32 = 20;
+        return inner;
+    } finally {
+        // `inner` is not in scope here; `outer` is.
+        log.push(`scope:${outer}`);
+    }
+}
+console.log(scoping(), log[log.length - 1]);

@@ -1,0 +1,6 @@
+1 [try, finally]
+7 99
+[0, 100, 101, 2, 102, 103]
+5 [inner, outer]
+2 [catch, finally]
+20 scope:10
