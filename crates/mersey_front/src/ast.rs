@@ -69,20 +69,20 @@ pub struct FnDecl {
     pub name: Name,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
-    pub ret: Option<Type>,
+    pub ret: Option<TypeExpr>,
     pub body: Vec<Stmt>,
 }
 
 pub struct TypeParam {
     pub name: Name,
-    pub constraint: Option<Type>,
+    pub constraint: Option<TypeExpr>,
 }
 
 pub struct Param {
     pub rest: bool,
     pub target: Pattern,
     pub optional: bool,
-    pub ty: Option<Type>,
+    pub ty: Option<TypeExpr>,
     pub default: Option<Expr>,
 }
 
@@ -91,8 +91,8 @@ pub struct ClassDecl {
     pub is_final: bool,
     pub name: Name,
     pub type_params: Vec<TypeParam>,
-    pub extends: Option<Type>,
-    pub implements: Vec<Type>,
+    pub extends: Option<TypeExpr>,
+    pub implements: Vec<TypeExpr>,
     pub members: Vec<ClassMember>,
 }
 
@@ -141,7 +141,7 @@ pub enum ClassMember {
         mods: MemberMods,
         readonly: bool,
         name: String,
-        ty: Type,
+        ty: TypeExpr,
         init: Option<Expr>,
     },
     Method {
@@ -150,14 +150,14 @@ pub enum ClassMember {
         name: String,
         type_params: Vec<TypeParam>,
         params: Vec<Param>,
-        ret: Type,
+        ret: TypeExpr,
         /// `None` = `;` body (abstract)
         body: Option<Vec<Stmt>>,
     },
     Getter {
         mods: MemberMods,
         name: String,
-        ret: Type,
+        ret: TypeExpr,
         body: Vec<Stmt>,
     },
     Setter {
@@ -176,7 +176,7 @@ pub enum ClassMember {
 pub struct InterfaceDecl {
     pub name: Name,
     pub type_params: Vec<TypeParam>,
-    pub extends: Vec<Type>,
+    pub extends: Vec<TypeExpr>,
     pub members: Vec<InterfaceMember>,
 }
 
@@ -185,13 +185,13 @@ pub enum InterfaceMember {
         readonly: bool,
         name: String,
         optional: bool,
-        ty: Type,
+        ty: TypeExpr,
     },
     Method {
         name: String,
         type_params: Vec<TypeParam>,
         params: Vec<Param>,
-        ret: Type,
+        ret: TypeExpr,
     },
 }
 
@@ -204,7 +204,7 @@ pub struct EnumDecl {
 pub struct TypeAliasDecl {
     pub name: Name,
     pub type_params: Vec<TypeParam>,
-    pub ty: Type,
+    pub ty: TypeExpr,
 }
 
 // ---- statements -----------------------------------------------------------
@@ -237,7 +237,7 @@ pub enum Stmt {
         is_await: bool,
         kind: VarKind,
         target: Pattern,
-        ty: Option<Type>,
+        ty: Option<TypeExpr>,
         iter: Expr,
         body: Box<Stmt>,
     },
@@ -296,7 +296,7 @@ pub struct VarStmt {
 
 pub struct Binding {
     pub target: Pattern,
-    pub ty: Option<Type>,
+    pub ty: Option<TypeExpr>,
     pub init: Option<Expr>,
 }
 
@@ -308,7 +308,7 @@ pub struct SwitchClause {
 
 pub struct Catch {
     pub name: Name,
-    pub ty: Type,
+    pub ty: TypeExpr,
     pub block: Vec<Stmt>,
 }
 
@@ -350,7 +350,7 @@ pub enum Expr {
     Arrow {
         is_async: bool,
         params: Vec<Param>,
-        ret: Option<Type>,
+        ret: Option<TypeExpr>,
         body: ArrowBody,
     },
     Unary {
@@ -381,16 +381,16 @@ pub enum Expr {
     Cast {
         expr: Box<Expr>,
         wrapping: bool,
-        ty: Type,
+        ty: TypeExpr,
     },
     Call {
         callee: Box<Expr>,
-        type_args: Vec<Type>,
+        type_args: Vec<TypeExpr>,
         args: Vec<ArrayElem>,
         optional: bool,
     },
     New {
-        ty: Type,
+        ty: TypeExpr,
         args: Vec<ArrayElem>,
     },
     Member {
@@ -529,23 +529,28 @@ impl BinOp {
 
 // ---- types ----------------------------------------------------------------
 
-pub enum Type {
+/// A type as *written*: the syntax the programmer typed (`int32[]`, `Foo<T>?`).
+///
+/// Not to be confused with `check::Type`, which is what a type *means* once it
+/// has been resolved. `int32[]` and an alias for it are two different
+/// `TypeExpr`s and one `Type`.
+pub enum TypeExpr {
     /// Qualified name (`a.B`) with optional type arguments; predefined
     /// type names and `void` land here too.
     Named {
         name: String,
         pos: Pos,
-        args: Vec<Type>,
+        args: Vec<TypeExpr>,
     },
-    Nullable(Box<Type>),
-    ArrayOf(Box<Type>),
-    Union(Vec<Type>),
-    Tuple(Vec<Type>),
+    Nullable(Box<TypeExpr>),
+    ArrayOf(Box<TypeExpr>),
+    Union(Vec<TypeExpr>),
+    Tuple(Vec<TypeExpr>),
     Record(Vec<RecordTypeMember>),
     Function {
         type_params: Vec<TypeParam>,
         params: Vec<FnTypeParam>,
-        ret: Box<Type>,
+        ret: Box<TypeExpr>,
     },
 }
 
@@ -553,14 +558,14 @@ pub struct RecordTypeMember {
     pub readonly: bool,
     pub name: String,
     pub optional: bool,
-    pub ty: Type,
+    pub ty: TypeExpr,
 }
 
 pub struct FnTypeParam {
     pub rest: bool,
     pub name: String,
     pub optional: bool,
-    pub ty: Type,
+    pub ty: TypeExpr,
 }
 
 /// The *value* of a string literal, whose `text` is the raw source — quotes and

@@ -587,7 +587,7 @@ impl Binder {
         &mut self,
         type_params: &[TypeParam],
         params: &[Param],
-        ret: Option<&Type>,
+        ret: Option<&TypeExpr>,
         body: &[Stmt],
         ctx: Ctx,
     ) {
@@ -1090,9 +1090,9 @@ impl Binder {
 
     // ---- types ----------------------------------------------------------------------
 
-    fn bind_type(&mut self, t: &Type) {
+    fn bind_type(&mut self, t: &TypeExpr) {
         match t {
-            Type::Named { name, pos, args } => {
+            TypeExpr::Named { name, pos, args } => {
                 for a in args {
                     self.bind_type(a);
                 }
@@ -1116,23 +1116,23 @@ impl Binder {
                     self.error(Code::UnknownTypeName, msg, *pos);
                 }
             }
-            Type::Nullable(t) | Type::ArrayOf(t) => self.bind_type(t),
-            Type::Union(arms) => {
+            TypeExpr::Nullable(t) | TypeExpr::ArrayOf(t) => self.bind_type(t),
+            TypeExpr::Union(arms) => {
                 for a in arms {
                     self.bind_type(a);
                 }
             }
-            Type::Tuple(ts) => {
+            TypeExpr::Tuple(ts) => {
                 for t in ts {
                     self.bind_type(t);
                 }
             }
-            Type::Record(members) => {
+            TypeExpr::Record(members) => {
                 for m in members {
                     self.bind_type(&m.ty);
                 }
             }
-            Type::Function {
+            TypeExpr::Function {
                 type_params,
                 params,
                 ret,

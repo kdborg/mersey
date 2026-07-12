@@ -7,7 +7,7 @@
 
 use std::sync::OnceLock;
 
-use crate::ast::{Item, Module, Pattern, Stmt, Type};
+use crate::ast::{Item, Module, Pattern, Stmt, TypeExpr};
 use crate::parser;
 use crate::source::SourceFile;
 
@@ -15,8 +15,8 @@ const SOURCE: &str = include_str!("webapi.gen.mersey");
 
 pub struct WebApi {
     pub module: &'static Module,
-    /// `let name: Type;` ambient globals (importable via `browser:dom`).
-    pub globals: Vec<(String, &'static Type)>,
+    /// `let name: TypeExpr;` ambient globals (importable via `browser:dom`).
+    pub globals: Vec<(String, &'static TypeExpr)>,
     /// All ambient type names (interfaces + aliases), for the binder.
     pub type_names: Vec<String>,
 }
@@ -52,7 +52,7 @@ pub fn webapi() -> &'static WebApi {
                             // shadow it: `window` was silently untyped for as long
                             // as `any` existed to hide it.
                             let precise =
-                                !matches!(ty, Type::Named { name, .. } if name == "JsAny");
+                                !matches!(ty, TypeExpr::Named { name, .. } if name == "JsAny");
                             match globals.iter().position(|(g, _)| *g == n.text) {
                                 Some(i) if precise => globals[i] = (n.text.clone(), ty),
                                 Some(_) => {}
@@ -82,7 +82,7 @@ pub fn webapi() -> &'static WebApi {
 }
 
 /// The declared type of an ambient global (for `browser:dom` imports).
-pub fn global_type(name: &str) -> Option<&'static Type> {
+pub fn global_type(name: &str) -> Option<&'static TypeExpr> {
     webapi()
         .globals
         .iter()

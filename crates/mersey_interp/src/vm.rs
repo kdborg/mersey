@@ -43,7 +43,7 @@ pub struct Chunk {
     pub consts: Vec<Value>,
     pub names: Vec<String>,
     pub patterns: Vec<&'static Pattern>,
-    pub types: Vec<&'static Type>,
+    pub types: Vec<&'static TypeExpr>,
     pub(crate) protos: Vec<Rc<FnData>>,
     /// Source position per instruction (parallel to `code`) — errors get a
     /// file:line:col instead of a bare message.
@@ -340,7 +340,7 @@ struct C {
     consts: Vec<Value>,
     names: Vec<String>,
     patterns: Vec<&'static Pattern>,
-    types: Vec<&'static Type>,
+    types: Vec<&'static TypeExpr>,
     protos: Vec<Rc<FnData>>,
     loops: Vec<LoopCtx>,
     /// `finally` blocks currently enclosing the code being compiled.
@@ -1178,7 +1178,7 @@ impl C {
                 ..
             } => self.call(callee, args, *optional),
             Expr::New { ty, args } => {
-                let Type::Named { name, .. } = ty else {
+                let TypeExpr::Named { name, .. } = ty else {
                     return self.bail();
                 };
                 // Keep the full path: `new geo.Point(…)` resolves through a
@@ -1598,7 +1598,7 @@ pub(crate) fn expr_pos(e: &Expr) -> Option<Pos> {
         Expr::Call { callee, .. } => expr_pos(callee),
         Expr::Member { obj, .. } | Expr::Index { obj, .. } => expr_pos(obj),
         Expr::New { ty, .. } => match ty {
-            Type::Named { pos, .. } => Some(*pos),
+            TypeExpr::Named { pos, .. } => Some(*pos),
             _ => None,
         },
         _ => None,

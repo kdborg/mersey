@@ -354,7 +354,7 @@ impl<'s> Parser<'s> {
 
     fn at_decl_start(&self) -> bool {
         match self.kind() {
-            TK::Keyword(Kw::Function | Kw::Class | Kw::Interface | Kw::Enum | Kw::Type) => true,
+            TK::Keyword(Kw::Function | Kw::Class | Kw::Interface | Kw::Enum | Kw::TypeExpr) => true,
             TK::Keyword(Kw::Async) => self.kind_at(1) == TK::Keyword(Kw::Function),
             TK::Keyword(Kw::Abstract | Kw::Final) => matches!(
                 self.kind_at(1),
@@ -481,7 +481,7 @@ impl<'s> Parser<'s> {
             }
             TK::Keyword(Kw::Interface) => Ok(Decl::Interface(self.parse_interface_decl()?)),
             TK::Keyword(Kw::Enum) => Ok(Decl::Enum(self.parse_enum_decl()?)),
-            TK::Keyword(Kw::Type) => Ok(Decl::TypeAlias(self.parse_type_alias()?)),
+            TK::Keyword(Kw::TypeExpr) => Ok(Decl::TypeAlias(self.parse_type_alias()?)),
             _ => self.expected("a declaration"),
         }
     }
@@ -888,7 +888,7 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_type_alias(&mut self) -> PResult<TypeAliasDecl> {
-        self.expect_kw(Kw::Type)?;
+        self.expect_kw(Kw::TypeExpr)?;
         let name = self.expect_ident("a type alias name")?;
         let type_params = self.parse_type_params_opt()?;
         self.expect_punct(P::Eq)?;
@@ -1490,7 +1490,7 @@ impl<'s> Parser<'s> {
 
     /// Parameter clause + optional return annotation + `=>`. Used
     /// speculatively for plain `(`, directly after `async`.
-    fn parse_arrow_header(&mut self) -> PResult<(Vec<Param>, Option<Type>)> {
+    fn parse_arrow_header(&mut self) -> PResult<(Vec<Param>, Option<TypeExpr>)> {
         let params = self.parse_param_clause()?;
         let ret = if self.eat_punct(P::Colon) {
             Some(self.parse_type()?)
@@ -1505,7 +1505,7 @@ impl<'s> Parser<'s> {
         &mut self,
         is_async: bool,
         params: Vec<Param>,
-        ret: Option<Type>,
+        ret: Option<TypeExpr>,
     ) -> PResult<Expr> {
         let body = if self.at_punct(P::LBrace) {
             ArrowBody::Block(self.parse_block()?)
@@ -2048,14 +2048,14 @@ impl<'s> Parser<'s> {
 
     // ---- types -------------------------------------------------------------
 
-    fn parse_type(&mut self) -> PResult<Type> {
+    fn parse_type(&mut self) -> PResult<TypeExpr> {
         self.depth += 1;
         let out = self.parse_type_inner();
         self.depth -= 1;
         out
     }
 
-    fn parse_type_inner(&mut self) -> PResult<Type> {
+    fn parse_type_inner(&mut self) -> PResult<TypeExpr> {
         if self.depth > MAX_DEPTH {
             return self.err(Code::UnexpectedToken, "type nesting too deep");
         }
@@ -2067,18 +2067,18 @@ impl<'s> Parser<'s> {
         while self.eat_punct(P::Pipe) {
             arms.push(self.parse_postfix_type()?);
         }
-        Ok(Type::Union(arms))
+        Ok(TypeExpr::Union(arms))
     }
 
-    fn parse_postfix_type(&mut self) -> PResult<Type> {
+    fn parse_postfix_type(&mut self) -> PResult<TypeExpr> {
         let mut t = self.parse_primary_type()?;
         loop {
             if self.eat_punct(P::Question) {
-                t = Type::Nullable(Box::new(t));
+                t = TypeExpr::Nullable(Box::new(t));
             } else if self.at_punct(P::LBracket) && self.kind_at(1) == TK::Punct(P::RBracket) {
                 self.advance();
                 self.advance();
-                t = Type::ArrayOf(Box::new(t));
+                t = TypeExpr::ArrayOf(Box::new(t));
             } else {
                 break;
             }
@@ -2111,12 +2111,12 @@ impl<'s> Parser<'s> {
         )
     }
 
-    fn parse_primary_type(&mut self) -> PResult<Type> {
+    fn parse_primary_type(&mut self) -> PResult<TypeExpr> {
         match self.kind() {
             TK::Keyword(k) if Self::is_predefined_type_kw(k) => {
                 let pos = self.pos();
                 self.advance();
-                Ok(Type::Named {
+                Ok(TypeExpr::Named {
                     name: k.as_str().to_string(),
                     pos,
                     args: Vec::new(),
@@ -2133,7 +2133,7 @@ impl<'s> Parser<'s> {
                 if types.len() < 2 {
                     self.report(Code::UnexpectedToken, "1-tuples don't exist (§6.3)");
                 }
-                Ok(Type::Tuple(types))
+                Ok(TypeExpr::Tuple(types))
             }
             TK::Punct(P::LBrace) => {
                 self.advance();
@@ -2162,7 +2162,7 @@ impl<'s> Parser<'s> {
                     }
                 }
                 self.expect_punct(P::RBrace)?;
-                Ok(Type::Record(members))
+                Ok(TypeExpr::Record(members))
             }
             TK::Punct(P::Lt) => self.parse_fn_type(),
             TK::Punct(P::LParen) => {
@@ -2178,7 +2178,7 @@ impl<'s> Parser<'s> {
         }
     }
 
-    fn parse_fn_type(&mut self) -> PResult<Type> {
+    fn parse_fn_type(&mut self) -> PResult<TypeExpr> {
         let type_params = self.parse_type_params_opt()?;
         self.expect_punct(P::LParen)?;
         let mut params = Vec::new();
@@ -2201,7 +2201,7 @@ impl<'s> Parser<'s> {
         self.expect_punct(P::RParen)?;
         self.expect_punct(P::Arrow)?;
         let ret = self.parse_type()?;
-        Ok(Type::Function {
+        Ok(TypeExpr::Function {
             type_params,
             params,
             ret: Box::new(ret),
@@ -2210,7 +2210,7 @@ impl<'s> Parser<'s> {
 
     /// TypeReference ::= QualifiedName TypeArguments? (§6.3). Also the type
     /// position of `new` and `extends`/`implements`.
-    fn parse_type_reference(&mut self) -> PResult<Type> {
+    fn parse_type_reference(&mut self) -> PResult<TypeExpr> {
         let first = self.expect_ident("a type name")?;
         let pos = first.pos;
         let mut name = first.text;
@@ -2230,6 +2230,6 @@ impl<'s> Parser<'s> {
             }
             self.expect_gt()?;
         }
-        Ok(Type::Named { name, pos, args })
+        Ok(TypeExpr::Named { name, pos, args })
     }
 }

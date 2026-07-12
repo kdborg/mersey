@@ -1374,7 +1374,7 @@ impl Interp {
         let mut host_iface: Option<String> = None;
         let parent = match &c.extends {
             None => None,
-            Some(Type::Named { name, .. }) => {
+            Some(TypeExpr::Named { name, .. }) => {
                 let head = name.split('.').next().unwrap_or(name).to_string();
                 match env_get(&self.globals, &head) {
                     Some(Value::Class(p)) => Some(p),
@@ -1799,9 +1799,9 @@ impl Interp {
         Ok(Sig::Normal)
     }
 
-    fn catch_matches(&self, ty: &Type, thrown: &Value) -> bool {
+    fn catch_matches(&self, ty: &TypeExpr, thrown: &Value) -> bool {
         let want = match ty {
-            Type::Named { name, .. } => name.as_str(),
+            TypeExpr::Named { name, .. } => name.as_str(),
             _ => return false,
         };
         if want == "Error" {
@@ -3217,7 +3217,7 @@ impl Interp {
                 self.call_value(&f, argv)
             }
             Expr::New { ty, args } => {
-                let Type::Named { name, .. } = ty else {
+                let TypeExpr::Named { name, .. } = ty else {
                     return self.type_error("`new` needs a class");
                 };
                 let argv = self.eval_args(args, env)?;
@@ -5271,8 +5271,8 @@ impl Interp {
         })
     }
 
-    fn eval_cast(&mut self, v: Value, wrapping: bool, ty: &Type) -> VResult {
-        let Type::Named { name, .. } = ty else {
+    fn eval_cast(&mut self, v: Value, wrapping: bool, ty: &TypeExpr) -> VResult {
+        let TypeExpr::Named { name, .. } = ty else {
             return Ok(v); // casts to complex types: checker's concern
         };
         let out_of_range = || {

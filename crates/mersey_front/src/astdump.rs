@@ -639,9 +639,9 @@ fn pattern(p: &Pattern) -> String {
     }
 }
 
-fn ty(t: &Type) -> String {
+fn ty(t: &TypeExpr) -> String {
     match t {
-        Type::Named { name, args, .. } => {
+        TypeExpr::Named { name, args, .. } => {
             if args.is_empty() {
                 name.clone()
             } else {
@@ -649,17 +649,17 @@ fn ty(t: &Type) -> String {
                 format!("{name}<{}>", list.join(", "))
             }
         }
-        Type::Nullable(t) => format!("{}?", ty(t)),
-        Type::ArrayOf(t) => format!("{}[]", ty(t)),
-        Type::Union(arms) => {
+        TypeExpr::Nullable(t) => format!("{}?", ty(t)),
+        TypeExpr::ArrayOf(t) => format!("{}[]", ty(t)),
+        TypeExpr::Union(arms) => {
             let list: Vec<String> = arms.iter().map(ty).collect();
             format!("({})", list.join(" | "))
         }
-        Type::Tuple(ts) => {
+        TypeExpr::Tuple(ts) => {
             let list: Vec<String> = ts.iter().map(ty).collect();
             format!("[{}]", list.join(", "))
         }
-        Type::Record(members) => {
+        TypeExpr::Record(members) => {
             let list: Vec<String> = members
                 .iter()
                 .map(|m| {
@@ -670,7 +670,7 @@ fn ty(t: &Type) -> String {
                 .collect();
             format!("{{{}}}", list.join(", "))
         }
-        Type::Function {
+        TypeExpr::Function {
             type_params,
             params,
             ret,

@@ -222,7 +222,7 @@ keywords! {
     Readonly => "readonly",
     Return => "return", Set => "set", Static => "static", Super => "super",
     Switch => "switch", This => "this", Throw => "throw", True => "true",
-    Try => "try", Type => "type", Typeof => "typeof", Void => "void",
+    Try => "try", TypeExpr => "type", Typeof => "typeof", Void => "void",
     While => "while", Wrapping => "wrapping", Yield => "yield",
     // Predefined type names (spec §3.1)
     Bool => "bool", CharTy => "char", StringTy => "string",
