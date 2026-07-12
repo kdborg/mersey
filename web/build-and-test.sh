@@ -13,4 +13,5 @@ node web/test/modules.mjs
 node web/test/pixels.mjs
 node web/test/sw.mjs
 node web/test/components.mjs
+node web/test/errors.mjs
 node web/test/security.mjs

@@ -28,10 +28,37 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
     exports.msy_invoke_args(cb, p, l);
   });
 
+  // Sources of every module we loaded, so an error can show a code frame.
+  const sources = new Map();
+
+  /* Errors carry `file:line:col` (the engine keeps a pc→position table and a
+   * frame stack). DevTools cannot step through Mersey bytecode in Stage A —
+   * that needs the native CDP integration — but it *can* show you exactly
+   * which line failed, which is most of what a stack trace is for. */
+  function report(message) {
+    const frame = /\(([^()]+):(\d+):(\d+)\)/.exec(message);
+    if (!frame) {
+      console.error("[mersey]", message);
+      return;
+    }
+    const [, file, lineNo, colNo] = frame;
+    const source = sources.get(file);
+    if (!source) {
+      console.error("[mersey]", message);
+      return;
+    }
+    const line = source.split("\n")[Number(lineNo) - 1] ?? "";
+    const caret = " ".repeat(Math.max(0, Number(colNo) - 1)) + "^";
+    console.error(
+      `%c[mersey] ${message}\n\n  ${file}:${lineNo}:${colNo}\n  ${line}\n  ${caret}`,
+      "color:#c00",
+    );
+  }
+
   const imports = {
     env: {
       host_print: (p, l) => console.log(readStr(p, l)),
-      host_error: (p, l) => console.error("[mersey]", readStr(p, l)),
+      host_error: (p, l) => report(readStr(p, l)),
       // Legacy DOM fast path (kept: the Stage A goldens pin it).
       host_dom_set_text: (ip, il, tp, tl) => {
         const el = realm.document?.getElementById(readStr(ip, il));
@@ -120,7 +147,7 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
   };
 
   async function loadGraph(entrySpec, entrySource, fetchModule) {
-    const sources = new Map([[entrySpec, entrySource]]);
+    sources.set(entrySpec, entrySource);
     const deps = new Map();
     const queue = [entrySpec];
     while (queue.length) {
@@ -159,6 +186,7 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
   return {
     /// Run one module (no relative imports).
     run(source) {
+      sources.set("<script>", source);
       const [ptr, len] = writeStr(source);
       return exports.msy_run(ptr, len);
     },

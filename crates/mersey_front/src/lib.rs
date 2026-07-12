@@ -15,3 +15,4 @@ pub mod source;
 pub mod token;
 pub mod webapi;
 pub mod graph;
+pub mod sourcemap;

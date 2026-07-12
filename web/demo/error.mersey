@@ -1,0 +1,9 @@
+// Deliberately fails at runtime, to show the code frame in DevTools.
+import { console } from "std:console";
+
+function pick(xs: int32[], i: int32): int32 {
+    return xs[i];
+}
+
+console.log("about to fail");
+console.log(pick([1, 2, 3], 99));

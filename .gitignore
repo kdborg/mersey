@@ -2,3 +2,4 @@
 **/*.rs.bk
 /web/mersey_wasm.wasm
 /native/host_demo
+mersey.lock
