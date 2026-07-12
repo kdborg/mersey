@@ -1,1 +1,4 @@
-ok
+error[E0401] @ 16:19: `T` does not satisfy the bound `Comparable<T>` on Node
+error[E0401] @ 22:26: `T` does not satisfy the bound `Comparable<T>` on Node
+error[E0401] @ 23:21: `T` does not satisfy the bound `Comparable<T>` on Node
+error[E0401] @ 31:20: `Leaf` does not satisfy the bound `Comparable<Leaf>` on Node

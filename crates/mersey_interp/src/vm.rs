@@ -865,8 +865,9 @@ impl C {
             Expr::Call { callee, args, optional, .. } => self.call(callee, args, *optional),
             Expr::New { ty, args } => {
                 let Type::Named { name, .. } = ty else { return self.bail() };
-                let head = name.split('.').next().unwrap_or(name);
-                let n = self.name(head);
+                // Keep the full path: `new geo.Point(…)` resolves through a
+                // namespace import at runtime.
+                let n = self.name(name);
                 match self.args_fixed(args) {
                     Some(argc) => {
                         self.emit(Op::NewNamed(n, argc));

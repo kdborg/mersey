@@ -80,8 +80,19 @@ pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> 
                     }
                 }
                 Some(ImportClause::Namespace(n)) => {
-                    // Namespace imports type as `any` (v1).
-                    c.define(&n.text, Ty::Any, true);
+                    // `import * as m from "./x.mersey"` — a record of the
+                    // module's exported values, precisely typed.
+                    let mut fields: Vec<RecField> = exp
+                        .values
+                        .iter()
+                        .map(|(name, ty)| RecField {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            optional: false,
+                        })
+                        .collect();
+                    fields.sort_by(|a, b| a.name.cmp(&b.name));
+                    c.define(&n.text, Ty::Record(Rc::new(fields)), true);
                 }
                 None => {}
             }
@@ -373,6 +384,8 @@ struct VarInfo {
 
 struct Checker {
     diags: Vec<Diagnostic>,
+    /// Declared bound for each type parameter (`<T extends Comparable<T>>`).
+    tv_bounds: HashMap<TvId, Ty>,
     classes: Vec<ClassInfo>,
     ifaces: Vec<IfaceInfo>,
     enums: Vec<EnumInfo>,
@@ -432,6 +445,7 @@ impl Checker {
     fn new() -> Checker {
         let mut c = Checker {
             diags: Vec::new(),
+            tv_bounds: HashMap::new(),
             classes: Vec::new(),
             ifaces: Vec::new(),
             enums: Vec::new(),
@@ -835,9 +849,10 @@ impl Checker {
         None
     }
 
-    fn kill_narrow(&mut self, name: &str) {
+    fn kill_narrow(&mut self, path: &str) {
+        let prefix = format!("{path}.");
         for n in &mut self.narrows {
-            n.remove(name);
+            n.retain(|k, _| k != path && !k.starts_with(&prefix));
         }
     }
 
@@ -992,6 +1007,14 @@ impl Checker {
             scope.insert(tp.name.text.clone(), *tv);
         }
         self.tp_scopes.push(scope);
+        // Bounds may mention the parameters themselves (F-bounded:
+        // `<T extends Comparable<T>>`), so resolve them inside the scope.
+        for (tp, tv) in tps.iter().zip(tvs) {
+            if let Some(c) = &tp.constraint {
+                let bound = self.resolve_type(c);
+                self.tv_bounds.insert(*tv, bound);
+            }
+        }
     }
 
     fn bind_tparams(&mut self, tps: &[TypeParam]) -> Vec<TvId> {
@@ -1003,6 +1026,12 @@ impl Checker {
             ids.push(id);
         }
         self.tp_scopes.push(scope);
+        for (tp, tv) in tps.iter().zip(&ids) {
+            if let Some(c) = &tp.constraint {
+                let bound = self.resolve_type(c);
+                self.tv_bounds.insert(*tv, bound);
+            }
+        }
         ids
     }
 
@@ -1321,6 +1350,8 @@ impl Checker {
             Some(TypeDef::Class(id)) => {
                 let id = *id;
                 self.check_arity(name, self.classes[id].tparams.len(), rargs.len(), pos);
+                let tvs = self.classes[id].tparams.clone();
+                self.check_bounds(&tvs, &rargs, name, pos);
                 Ty::Class(id, Rc::new(rargs))
             }
             Some(TypeDef::Iface(id)) => {
@@ -1381,6 +1412,28 @@ impl Checker {
                 format!("`{name}` takes {want} type argument(s), got {got}"),
                 pos,
             );
+        }
+    }
+
+    /// `<T extends Comparable<T>>` — a type argument must satisfy its bound.
+    fn check_bounds(&mut self, tvs: &[TvId], args: &[Ty], what: &str, pos: Pos) {
+        let map: HashMap<TvId, Ty> =
+            tvs.iter().copied().zip(args.iter().cloned()).collect();
+        for (tv, arg) in tvs.iter().zip(args) {
+            let Some(bound) = self.tv_bounds.get(tv).cloned() else { continue };
+            // The bound may itself mention the parameters (F-bounded).
+            let bound = subst(&bound, &map);
+            if !self.assignable(arg, &bound) {
+                self.error(
+                    Code::TypeMismatch,
+                    format!(
+                        "`{}` does not satisfy the bound `{}` on {what}",
+                        self.show(arg),
+                        self.show(&bound)
+                    ),
+                    pos,
+                );
+            }
         }
     }
 
@@ -1614,7 +1667,7 @@ impl Checker {
             }
             let base = self.find_method_in_chain(pid, &name);
             match (base, has_override) {
-                (Some((bm_final, _)), true) => {
+                (Some((bm_final, base_sig)), true) => {
                     if bm_final {
                         self.error(
                             Code::BadOverride,
@@ -1622,7 +1675,71 @@ impl Checker {
                             pos,
                         );
                     }
-                    let _ = &map;
+                    // The override must be usable wherever the base is:
+                    // parameters contravariant, return type covariant.
+                    let Some(own) = self
+                        .classes[id]
+                        .methods
+                        .iter()
+                        .find(|m| m.name == name && !m.is_static)
+                        .map(|m| m.sig.clone())
+                    else {
+                        continue;
+                    };
+                    let base_sig = FnTy {
+                        tparams: base_sig.tparams.clone(),
+                        params: base_sig
+                            .params
+                            .iter()
+                            .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p.clone() })
+                            .collect(),
+                        ret: subst(&base_sig.ret, &map),
+                    };
+                    if own.params.len() != base_sig.params.len() {
+                        self.error(
+                            Code::BadOverride,
+                            format!(
+                                "`{name}` overrides a method taking {} parameter(s), but takes {}",
+                                base_sig.params.len(),
+                                own.params.len()
+                            ),
+                            pos,
+                        );
+                    } else {
+                        for (i, (o, b)) in
+                            own.params.iter().zip(base_sig.params.iter()).enumerate()
+                        {
+                            // Contravariance: the override must accept at
+                            // least what the base accepted.
+                            if !self.assignable(&b.ty, &o.ty) {
+                                self.error(
+                                    Code::BadOverride,
+                                    format!(
+                                        "`{name}`: parameter {} is `{}`, but the base accepts `{}`",
+                                        i + 1,
+                                        self.show(&o.ty),
+                                        self.show(&b.ty)
+                                    ),
+                                    pos,
+                                );
+                            }
+                        }
+                        // Covariance: the override's result must be usable as
+                        // the base's.
+                        if !matches!(base_sig.ret, Ty::Void)
+                            && !self.assignable(&own.ret, &base_sig.ret)
+                        {
+                            self.error(
+                                Code::BadOverride,
+                                format!(
+                                    "`{name}` returns `{}`, which is not a `{}`",
+                                    self.show(&own.ret),
+                                    self.show(&base_sig.ret)
+                                ),
+                                pos,
+                            );
+                        }
+                    }
                 }
                 (Some(_), false) => self.error(
                     Code::BadOverride,
@@ -2026,10 +2143,44 @@ impl Checker {
         }
     }
 
+    /// A narrowable access path (`x`, `x.y`, `this.z`), or None.
+    fn narrow_path(e: &Expr) -> Option<String> {
+        match e {
+            Expr::Ident(n) => Some(n.text.clone()),
+            Expr::This(_) => Some("this".to_string()),
+            Expr::Member { obj, name, optional: false } => {
+                let base = Self::narrow_path(obj)?;
+                Some(format!("{base}.{name}"))
+            }
+            Expr::Paren(inner) => Self::narrow_path(inner),
+            _ => None,
+        }
+    }
+
     /// `(then, else)` narrowing maps from a condition.
     fn narrow_from(&mut self, cond: &Expr) -> (HashMap<String, Ty>, HashMap<String, Ty>) {
         let mut then = HashMap::new();
         let mut els = HashMap::new();
+        if let Expr::Paren(inner) = cond {
+            return self.narrow_from(inner);
+        }
+        // `a && b`: the then-branch gets both narrowings (b is checked with
+        // a's already applied). `a || b`: the else-branch gets both.
+        if let Expr::Binary { op: op @ (BinOp::And | BinOp::Or), l, r } = cond {
+            let (lt, le) = self.narrow_from(l);
+            let carry = if *op == BinOp::And { lt.clone() } else { le.clone() };
+            self.narrows.push(carry);
+            let (rt, re) = self.narrow_from(r);
+            self.narrows.pop();
+            if *op == BinOp::And {
+                then.extend(lt);
+                then.extend(rt);
+            } else {
+                els.extend(le);
+                els.extend(re);
+            }
+            return (then, els);
+        }
         // `if (x instanceof Foo)` narrows x to Foo in the then-branch.
         if let Expr::Binary { op: BinOp::Instanceof, l, r } = cond {
             if let Expr::Ident(n) = l.as_ref() {
@@ -2053,31 +2204,52 @@ impl Checker {
             return (then, els);
         }
         if let Expr::Binary { op, l, r } = cond {
-            let (ident, other) = match (l.as_ref(), r.as_ref()) {
-                (Expr::Ident(n), o) | (o, Expr::Ident(n)) => (Some(n), o),
+            let (path_expr, other) = match (l.as_ref(), r.as_ref()) {
+                (e, Expr::Lit { kind: LitKind::Null, .. }) => (Some(e), r.as_ref()),
+                (Expr::Lit { kind: LitKind::Null, .. }, e) => (Some(e), l.as_ref()),
                 _ => (None, l.as_ref()),
             };
-            if let Some(n) = ident {
-                if matches!(other, Expr::Lit { kind: LitKind::Null, .. }) {
-                    if let Some(v) = self.lookup(&n.text) {
-                        if let Ty::Nullable(inner) = &v.ty {
-                            match op {
-                                BinOp::Ne => {
-                                    then.insert(n.text.clone(), inner.as_ref().clone());
-                                    els.insert(n.text.clone(), Ty::Null);
-                                }
-                                BinOp::Eq => {
-                                    els.insert(n.text.clone(), inner.as_ref().clone());
-                                    then.insert(n.text.clone(), Ty::Null);
-                                }
-                                _ => {}
+            let _ = other;
+            if let Some(e) = path_expr {
+                // Any access path narrows, not just a bare identifier:
+                // `if (box.item != null) { box.item.length }`.
+                if let Some(path) = Self::narrow_path(e) {
+                    let ty = self.path_type(&path, e);
+                    if let Ty::Nullable(inner) = ty {
+                        match op {
+                            BinOp::Ne => {
+                                then.insert(path.clone(), inner.as_ref().clone());
+                                els.insert(path, Ty::Null);
                             }
+                            BinOp::Eq => {
+                                els.insert(path.clone(), inner.as_ref().clone());
+                                then.insert(path, Ty::Null);
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
         }
         (then, els)
+    }
+
+    /// Current (possibly narrowed) type of an access path.
+    fn path_type(&mut self, path: &str, e: &Expr) -> Ty {
+        for n in self.narrows.iter().rev() {
+            if let Some(t) = n.get(path) {
+                return t.clone();
+            }
+        }
+        self.check_expr_quiet(e)
+    }
+
+    /// Type an expression without emitting diagnostics (narrowing probes).
+    fn check_expr_quiet(&mut self, e: &Expr) -> Ty {
+        let n = self.diags.len();
+        let t = self.check_expr(e, None);
+        self.diags.truncate(n);
+        t
     }
 
     // ---- expressions ------------------------------------------------------------------
@@ -2350,8 +2522,10 @@ impl Checker {
                         self.require_assignable(&res, &tt, pos_of(value), "compound assignment");
                     }
                 }
-                if let Expr::Ident(n) = target.as_ref() {
-                    self.kill_narrow(&n.text);
+                // Assigning through a path invalidates its narrowing (and
+                // any narrowing of paths beneath it).
+                if let Some(path) = Self::narrow_path(target) {
+                    self.kill_narrow(&path);
                 }
                 tt
             }
@@ -2377,6 +2551,16 @@ impl Checker {
             }
             Expr::New { ty, args } => self.check_new(ty, args),
             Expr::Member { obj, name, optional } => {
+                // A narrowed path wins: `if (a.b != null) { a.b.c }`.
+                if !*optional {
+                    if let Some(path) = Self::narrow_path(e) {
+                        for n in self.narrows.iter().rev() {
+                            if let Some(t) = n.get(&path) {
+                                return t.clone();
+                            }
+                        }
+                    }
+                }
                 let ot = self.check_expr(obj, None);
                 self.member_access(&ot, name, *optional, pos_of(obj))
             }
@@ -2526,9 +2710,23 @@ impl Checker {
 
     fn check_binary(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Ty {
         match op {
-            BinOp::And | BinOp::Or => {
+            BinOp::And => {
                 self.check_condition(l);
+                // `a != null && a.b` — the right side sees the left's
+                // narrowing, exactly as it does inside the `if` body.
+                let (then, _) = self.narrow_from(l);
+                self.narrows.push(then);
                 self.check_condition(r);
+                self.narrows.pop();
+                Ty::Bool
+            }
+            BinOp::Or => {
+                self.check_condition(l);
+                // `a == null || a.b` — the right side sees the *else* branch.
+                let (_, els) = self.narrow_from(l);
+                self.narrows.push(els);
+                self.check_condition(r);
+                self.narrows.pop();
                 Ty::Bool
             }
             BinOp::Coalesce => {
@@ -2842,6 +3040,13 @@ impl Checker {
         // Any unfixed type params default to Any (checker v1).
         for tv in &f.tparams {
             map.entry(*tv).or_insert(Ty::Any);
+        }
+        // Every inferred/explicit type argument must satisfy its bound.
+        if !f.tparams.is_empty() {
+            let inferred: Vec<Ty> =
+                f.tparams.iter().map(|tv| map[tv].clone()).collect();
+            let tvs = f.tparams.clone();
+            self.check_bounds(&tvs, &inferred, "this call", pos);
         }
         subst(&f.ret, &map)
     }
@@ -3365,6 +3570,12 @@ impl Checker {
                 _ => self.no_member("document", name, pos),
             },
             Ty::Namespace(Ns::Opaque) => Ty::Any,
+            // A bounded type parameter exposes its bound's members:
+            // `<T extends Comparable<T>>` makes `t.compareTo(u)` legal.
+            Ty::Var(tv) => match self.tv_bounds.get(tv).cloned() {
+                Some(bound) => self.member_access(&bound, name, false, pos),
+                None => self.no_member(&self.show(&base), name, pos),
+            },
             _ => self.no_member(&self.show(&base), name, pos),
         };
         if optional && matches!(ot, Ty::Nullable(_)) {

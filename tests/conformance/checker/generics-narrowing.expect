@@ -1,0 +1,6 @@
+error[E0401] @ 15:20: `Plain` does not satisfy the bound `Comparable<Plain>` on Box
+error[E0401] @ 17:17: `Plain` does not satisfy the bound `Comparable<Plain>` on this call
+error[E0407] @ 25:13: value may be null; use `?.length` or narrow first
+error[E0409] @ 29:7: `speak`: parameter 1 is `string`, but the base accepts `int32`
+error[E0409] @ 30:7: `speak` returns `int32`, which is not a `string`
+error[E0409] @ 31:7: `speak` overrides a method taking 1 parameter(s), but takes 0

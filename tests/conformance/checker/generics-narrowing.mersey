@@ -1,0 +1,31 @@
+import { console } from "std:console";
+
+// --- Type-parameter bounds are enforced at instantiation
+interface Comparable<T> { compareTo(other: T): int32; }
+class Num implements Comparable<Num> {
+    public value: int32 = 0;
+    public compareTo(other: Num): int32 { return this.value - other.value; }
+}
+class Plain { public x: int32 = 1; }
+class Box<T extends Comparable<T>> { public item: T?; public constructor(i: T?) { this.item = i; } }
+function biggest<T extends Comparable<T>>(a: T, b: T): T {
+    return a.compareTo(b) >= 0 ? a : b;   // a bounded param exposes its bound
+}
+const okBox = new Box<Num>(new Num());
+const badBox = new Box<Plain>(new Plain());
+const okCall = biggest(new Num(), new Num());
+const badCall = biggest(new Plain(), new Plain());
+
+// --- Member-path narrowing
+class Cell { public item: string? = null; public inner: Cell? = null; }
+const c = new Cell();
+if (c.item != null) { console.log(c.item.length); }
+if (c.inner != null && c.inner.item != null) { console.log(c.inner.item.length); }
+if (c.item == null || c.item.length > 0) { console.log("ok"); }
+console.log(c.item.length);            // still an error: not narrowed here
+
+// --- Override signature compatibility
+class Animal { public speak(volume: int32): string { return "..."; } }
+class Cat extends Animal { public override speak(volume: string): string { return "meow"; } }
+class Cow extends Animal { public override speak(volume: int32): int32 { return 1; } }
+class Fox extends Animal { public override speak(): string { return "?"; } }

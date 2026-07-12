@@ -705,12 +705,16 @@ impl Interp {
     }
 
     fn bind_import(&mut self, im: &'static ImportDecl) -> Result<(), Thrown> {
+        // `import * as m from "…"`: bind the module (or built-in namespace)
+        // under one name. Relative specifiers are handled below, where the
+        // module's exports are known.
+        let namespace_alias: Option<&'static Name> = match &im.clause {
+            Some(ImportClause::Namespace(n)) => Some(n),
+            _ => None,
+        };
         let names: Vec<&Name> = match &im.clause {
             None => return Ok(()),
-            Some(ImportClause::Namespace(n)) => {
-                return self
-                    .type_error(format!("namespace imports are not in the MVP (`{}`)", n.text));
-            }
+            Some(ImportClause::Namespace(_)) => Vec::new(),
             Some(ImportClause::Named(specs)) => {
                 specs.iter().map(|s| s.alias.as_ref().unwrap_or(&s.name)).collect()
             }
@@ -818,7 +822,7 @@ impl Interp {
                     name: ns_name.to_string(),
                     entries,
                 }));
-                for n in names {
+                for n in names.iter().chain(namespace_alias.iter()) {
                     env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())
@@ -2260,9 +2264,8 @@ impl Interp {
                 let Type::Named { name, .. } = ty else {
                     return self.type_error("`new` needs a class");
                 };
-                let head = name.split('.').next().unwrap_or(name);
                 let argv = self.eval_args(args, env)?;
-                self.new_named(head, argv, env)
+                self.new_named(name, argv, env)
             }
             Expr::Member { obj, name, optional } => {
                 let o = self.eval(obj, env)?;
@@ -3392,17 +3395,30 @@ impl Interp {
     }
 
     fn new_named(&mut self, head: &str, argv: Vec<Value>, env: &Env) -> VResult {
+        // `new geo.Point(…)` — resolve through a namespace import.
+        if let Some((ns, member)) = head.split_once('.') {
+            if let Some(Value::Namespace(entries)) = env_get(env, ns) {
+                return match entries.entries.get(member) {
+                    Some(Value::Class(cls)) => {
+                        let cls = cls.clone();
+                        self.instantiate(&cls, argv)
+                    }
+                    _ => self.type_error(format!("`{head}` is not a class")),
+                };
+            }
+        }
         if head == "Map" && env_get(env, "Map").is_none() {
             return Ok(new_map(Vec::new()));
         }
         if head == "Set" && env_get(env, "Set").is_none() {
             return Ok(new_set(Vec::new()));
         }
-        match env_get(env, head) {
+        let bare = head.split('.').next().unwrap_or(head);
+        match env_get(env, bare) {
             Some(Value::Class(cls)) => self.instantiate(&cls, argv),
             // `new WebSocket(url)`, `new Uint8Array(n)`, …: any host
             // constructor reachable through the bridge.
-            _ => self.web_new(head, argv),
+            _ => self.web_new(bare, argv),
         }
     }
 
@@ -3825,10 +3841,9 @@ fn collect_exports(module: &'static Module, env: &Env) -> HashMap<String, Value>
                     }
                 }
             }
-            ExportKind::Named { specs, from } => {
-                if from.is_some() {
-                    continue; // re-exports need the graph: v1 skips
-                }
+            ExportKind::Named { specs, .. } => {
+                // Re-exports (`export { x } from "./y"`) work because the
+                // import already bound `x` into this module's scope.
                 for s in specs {
                     let exported = s.alias.as_ref().unwrap_or(&s.name);
                     take(&s.name.text, &exported.text);
