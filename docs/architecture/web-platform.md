@@ -45,7 +45,48 @@ Type mapping (v1): integers → `int32`; 64-bit ints and floats → `float64`;
 `Promise<T>`; IDL `any`/`object`/`record<K,V>` → `JsAny` (checker: `any`).
 Overloads take their first signature; parameters are renamed `p0..pN`.
 
-## 2. Values: the universal bridge
+## 2. Bindings: generated for every member
+
+The generator also emits `web/mersey-bindings.gen.js` — a **direct thunk for
+every standardized member**, so the bridge never falls back on reflective
+property lookup:
+
+| table | entries |
+|---|---|
+| method calls | 2,460 |
+| getters | 5,623 |
+| setters | 2,806 |
+| constructors | 438 |
+| **total** | **11,327** |
+
+The bridge resolves `(interface, member) → thunk` once per shape and caches
+it (walking the prototype chain, so `Node.textContent` is found on an
+`HTMLDivElement`). Reflection remains only as the fallback for objects
+outside the IDL corpus. **Stage B swaps this JS backend for native Blink
+bindings from the same generator; the ABI does not change.**
+
+### What actually costs time (measured, real Chromium)
+
+20,000 DOM property writes / 20,000 method calls, via `web/test/bench.mjs`:
+
+| configuration | writes | calls |
+|---|---|---|
+| baseline (reflection + JSON marshalling) | 63 ms | 57 ms |
+| + marshalling fast paths | 49 ms | 48 ms (**22% / 16% faster**) |
+| + generated bindings (both on) | 49 ms | 51 ms |
+
+The honest finding: **generated bindings do not make Stage A faster** —
+V8's inline caches already make `obj[prop]` about as fast as a thunk. The
+speed came from killing the marshalling overhead: member names are now
+*interned* (a name crosses the ABI once, then it is an integer id — no
+`TextDecoder` per call) and scalar arguments/values take dedicated ABI paths
+that skip JSON entirely.
+
+What the generated bindings *do* buy is completeness and correctness — every
+standardized member is bound, typed, and reviewable — and they are the
+artifact the native Stage B integration consumes.
+
+## 3. Values: the universal bridge
 
 `web/mersey-bridge.js` implements five reflective operations that reach any
 object in the host realm — so breadth costs nothing per API:
@@ -64,14 +105,27 @@ handle table that preserves object identity, and **Mersey closures cross as
 real JS functions** (`{"__cb__": id}` → the loader wraps them so JS can call
 them with event objects and resolved promise values).
 
-Because Promises come back as live objects, promise-based APIs work today:
+## 4. async / await
+
+Fully supported. The bytecode VM's state (pc, operand stack, scopes,
+handlers) is plain data, so `await` **suspends** by capturing it into a
+coroutine and resuming when the promise settles — no CPS transform, no
+threads.
 
 ```mersey
-fetch("/api").then(resp => console.log(resp.status));
+async function load(url: string): string {
+    const resp = await fetch(url);          // suspends; the browser resumes us
+    if (!resp.ok) { throw new RangeError(`${url} → ${resp.status}`); }
+    return await resp.text();
+}
 ```
 
-`async`/`await` sugar is still on the deferred list — it needs the engine's
-event loop, not the bindings.
+Awaiting a **host** promise adopts it: the engine hands `resolve`/`reject`
+callbacks to its `.then` through the bridge. `Promise.all` / `resolve` /
+`reject` come from `std:async`, `.then` chains still work, throws cross back
+through `await` into `try`/`catch`, and the engine owns **no event loop** —
+it drains its microtask queue before returning to the host, which owns timers
+and I/O (embedding-api.md rule 1).
 
 ## Proven — in a real browser
 
@@ -100,6 +154,9 @@ Run: `./web/build-and-test.sh && node web/test/browser.mjs`
 - **Record field order** is not preserved across the bridge (Mersey records
   are unordered maps), so `JSON.stringify({a, b})` may emit keys in a
   different order.
+- **Custom Elements** need `class X extends HTMLElement` — Mersey classes
+  cannot yet extend a host interface.
+- **Workers** are not bootstrapped by the loader.
 - **`iterable<>` / `maplike` declarations** are not expanded, so
   `for (const x of someWebIterable)` needs an explicit index loop.
 - Callbacks are retained for the page's lifetime (no handle release yet).

@@ -13,7 +13,40 @@
  *   Mersey fn   -> {"__cb__": id}   (engine → host direction)
  *   reply       -> {"ok": value} | {"err": "message"}
  */
+import { CALLS, GETS, SETS, CTORS } from "./mersey-bindings.gen.js";
+
 export function makeBridge(globalObject, invokeCallback) {
+  // Generated bindings: resolve (interface, member) → direct thunk once, then
+  // cache. Reflection is only the fallback for objects outside the IDL
+  // corpus (plain JS objects, cross-realm values).
+  const thunkCache = new Map();
+  const ifaceNames = (obj) => {
+    const names = [];
+    for (let p = obj; p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+      const n = p.constructor && p.constructor.name;
+      if (n) names.push(n);
+    }
+    return names;
+  };
+  // Escape hatch for A/B measurement (see web/test/bench.mjs).
+  const useBindings = !globalObject.__MERSEY_NO_BINDINGS;
+  const bound = (obj, prop, table, tag) => {
+    if (!useBindings) return null;
+    const ctor = obj && obj.constructor ? obj.constructor.name : "";
+    const key = `${tag}|${ctor}|${prop}`;
+    if (thunkCache.has(key)) return thunkCache.get(key);
+    let thunk = null;
+    for (const iface of ifaceNames(obj)) {
+      const t = table.get(`${iface}.${prop}`);
+      if (t) {
+        thunk = t;
+        break;
+      }
+    }
+    thunkCache.set(key, thunk);
+    return thunk;
+  };
+
   const handles = [globalObject]; // handle 0 = the global object
   const byObject = new Map([[globalObject, 0]]);
 
@@ -58,7 +91,63 @@ export function makeBridge(globalObject, invokeCallback) {
   const ok = (value) => JSON.stringify({ ok: encode(value) });
   const err = (e) => JSON.stringify({ err: String(e && e.message ? e.message : e) });
 
+  // Interned member names: a name crosses the boundary once, then it is an
+  // integer id — no TextDecoder per call.
+  const names = [];
+  const nameIds = new Map();
+  const OK_NULL = JSON.stringify({ ok: null });
+
   return {
+    intern(name) {
+      // Opt out of fast paths for measurement (see web/test/bench.mjs).
+      if (globalObject.__MERSEY_NO_FASTPATH) return 0xffffffff;
+      let id = nameIds.get(name);
+      if (id === undefined) {
+        id = names.length;
+        names.push(name);
+        nameIds.set(name, id);
+      }
+      return id;
+    },
+    getId(target, nameId) {
+      try {
+        const obj = handles[target];
+        const prop = names[nameId];
+        if (obj == null) return err(`stale handle ${target}`);
+        const g = bound(obj, prop, GETS, "g");
+        if (g) return ok(g(obj));
+        const v = obj[prop];
+        return ok(typeof v === "function" ? v.bind(obj) : v);
+      } catch (e) {
+        return err(e);
+      }
+    },
+    setScalar(target, nameId, value) {
+      try {
+        const obj = handles[target];
+        const prop = names[nameId];
+        const s = bound(obj, prop, SETS, "s");
+        if (s) s(obj, value);
+        else obj[prop] = value;
+        return OK_NULL;
+      } catch (e) {
+        return err(e);
+      }
+    },
+    callStr(target, nameId, arg) {
+      try {
+        const obj = handles[target];
+        const method = names[nameId];
+        if (obj == null) return err(`stale handle ${target}`);
+        const c = bound(obj, method, CALLS, "c");
+        if (c) return ok(c(obj, [arg]));
+        const fn = obj[method];
+        if (typeof fn !== "function") return err(`${method} is not a function`);
+        return ok(fn.call(obj, arg));
+      } catch (e) {
+        return err(e);
+      }
+    },
     global(name) {
       // Ambient globals only: the engine already gates this by import.
       return name in globalObject ? handleFor(globalObject[name]) : -1;
@@ -67,8 +156,9 @@ export function makeBridge(globalObject, invokeCallback) {
       try {
         const obj = handles[target];
         if (obj == null) return err(`stale handle ${target}`);
-        const v = obj[prop];
-        // Methods must stay bound to their receiver.
+        const g = bound(obj, prop, GETS, "g");
+        if (g) return ok(g(obj)); // generated binding
+        const v = obj[prop]; // fallback: reflection
         return ok(typeof v === "function" ? v.bind(obj) : v);
       } catch (e) {
         return err(e);
@@ -76,7 +166,11 @@ export function makeBridge(globalObject, invokeCallback) {
     },
     set(target, prop, valueJson) {
       try {
-        handles[target][prop] = decode(JSON.parse(valueJson));
+        const obj = handles[target];
+        const v = decode(JSON.parse(valueJson));
+        const s = bound(obj, prop, SETS, "s");
+        if (s) s(obj, v);
+        else obj[prop] = v;
         return JSON.stringify({ ok: null });
       } catch (e) {
         return err(e);
@@ -88,18 +182,26 @@ export function makeBridge(globalObject, invokeCallback) {
         if (obj == null) return err(`stale handle ${target}`);
         const args = JSON.parse(argsJson).map(decode);
         // method "" => the handle is itself callable (e.g. imported fetch)
-        const fn = method === "" ? obj : obj[method];
-        if (typeof fn !== "function") return err(`${method || "value"} is not a function`);
-        return ok(method === "" ? fn(...args) : fn.apply(obj, args));
+        if (method === "") {
+          if (typeof obj !== "function") return err("value is not a function");
+          return ok(obj(...args));
+        }
+        const c = bound(obj, method, CALLS, "c");
+        if (c) return ok(c(obj, args)); // generated binding
+        const fn = obj[method]; // fallback: reflection
+        if (typeof fn !== "function") return err(`${method} is not a function`);
+        return ok(fn.apply(obj, args));
       } catch (e) {
         return err(e);
       }
     },
     construct(ctorName, argsJson) {
       try {
-        const Ctor = globalObject[ctorName];
-        if (typeof Ctor !== "function") return err(`${ctorName} is not a constructor`);
         const args = JSON.parse(argsJson).map(decode);
+        const c = useBindings ? CTORS.get(ctorName) : null; // generated binding
+        if (c) return ok(c(args));
+        const Ctor = globalObject[ctorName]; // fallback (e.g. Promise, typed arrays)
+        if (typeof Ctor !== "function") return err(`${ctorName} is not a constructor`);
         return ok(new Ctor(...args));
       } catch (e) {
         return err(e);

@@ -246,8 +246,22 @@ gate regressions.
       fetch/promises, DOM
 - [x] `docs/architecture/web-platform.md` documents the mechanism, the type
       mapping, and the known limits
-- Limits recorded: record field order, static members/constants, anonymous
-  special operations (indexed getters), callback handle release
+- [x] **async / await** (2026-07-12): coroutines over the bytecode VM
+      (`await` captures pc/stack/scopes/handlers and resumes on settle),
+      promises with microtask queue drained at every host boundary,
+      `std:async` (`Promise.all`/`resolve`/`reject`), host-promise adoption
+      (`await fetch(…)`), throws crossing `await` into `try`/`catch`.
+      Verified in headless Chromium
+- [x] **Generated bindings for every member** (11,327 thunks: 2,460 calls,
+      5,623 getters, 2,806 setters, 438 constructors) — the bridge no longer
+      reflects; Stage B consumes the same tables natively
+- [x] Marshalling fast paths (interned member names + scalar ABI paths):
+      **22% / 16% faster** DOM writes/calls in real Chromium. Measured
+      honestly: the generated bindings themselves did *not* add speed in
+      Stage A (V8's inline caches already match a thunk) — they buy
+      completeness and are the Stage B artifact
+- Limits recorded: record field order, custom elements (needs host-class
+  subclassing), workers, callback handle release
 
 ## Explicitly deferred (tracked, not forgotten)
 

@@ -57,6 +57,13 @@ extern "C" {
         a_len: usize,
     ) -> u64;
     fn host_web_new(c_ptr: *const u8, c_len: usize, a_ptr: *const u8, a_len: usize) -> u64;
+
+    // Fast paths: member names are interned once, scalars skip JSON.
+    fn host_web_intern(n_ptr: *const u8, n_len: usize) -> u32;
+    fn host_web_get_id(target: i64, name_id: u32) -> u64;
+    fn host_web_set_str(target: i64, name_id: u32, v_ptr: *const u8, v_len: usize) -> u64;
+    fn host_web_set_num(target: i64, name_id: u32, value: f64) -> u64;
+    fn host_web_call_str(target: i64, name_id: u32, a_ptr: *const u8, a_len: usize) -> u64;
 }
 
 fn read_packed(packed: u64) -> String {
@@ -143,6 +150,24 @@ impl Host for WasmHost {
         read_packed(unsafe {
             host_web_new(ctor.as_ptr(), ctor.len(), args_json.as_ptr(), args_json.len())
         })
+    }
+    fn web_intern(&mut self, name: &str) -> u32 {
+        // The host returns u32::MAX to opt out (A/B benchmarking).
+        unsafe { host_web_intern(name.as_ptr(), name.len()) }
+    }
+    fn web_get_id(&mut self, target: i64, name_id: u32) -> String {
+        read_packed(unsafe { host_web_get_id(target, name_id) })
+    }
+    fn web_set_str(&mut self, target: i64, name_id: u32, value: &str) -> String {
+        read_packed(unsafe {
+            host_web_set_str(target, name_id, value.as_ptr(), value.len())
+        })
+    }
+    fn web_set_num(&mut self, target: i64, name_id: u32, value: f64) -> String {
+        read_packed(unsafe { host_web_set_num(target, name_id, value) })
+    }
+    fn web_call_str(&mut self, target: i64, name_id: u32, arg: &str) -> String {
+        read_packed(unsafe { host_web_call_str(target, name_id, arg.as_ptr(), arg.len()) })
     }
 }
 

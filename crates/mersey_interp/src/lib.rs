@@ -85,6 +85,25 @@ pub trait Host {
     fn web_new(&mut self, _ctor: &str, _args_json: &str) -> String {
         "{\"err\":\"no web bridge\"}".into()
     }
+
+    // ---- fast paths (avoid JSON + per-call string decoding) -------------
+    /// Intern a member name; the id is stable for the host's lifetime.
+    fn web_intern(&mut self, _name: &str) -> u32 {
+        u32::MAX
+    }
+    fn web_get_id(&mut self, _target: i64, _name_id: u32) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    fn web_set_str(&mut self, _target: i64, _name_id: u32, _value: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    fn web_set_num(&mut self, _target: i64, _name_id: u32, _value: f64) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
+    /// Call with a single string argument (`createElement("span")`, …).
+    fn web_call_str(&mut self, _target: i64, _name_id: u32, _arg: &str) -> String {
+        "{\"err\":\"no web bridge\"}".into()
+    }
 }
 
 // ---- values -------------------------------------------------------------------
@@ -327,6 +346,8 @@ pub struct Interp {
     /// (embedding-api.md rule 1); the host owns timers and I/O.
     tasks: std::collections::VecDeque<Task>,
     all_cells: Vec<AllCell>,
+    /// Member-name interning: a name crosses the ABI once, then it is an id.
+    interned: HashMap<String, u32>,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
     jit_cache: HashMap<usize, Option<JitFn>>,
@@ -363,6 +384,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
+        interned: HashMap::new(),
         jit: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
@@ -2389,12 +2411,45 @@ impl Interp {
         s
     }
 
+    /// Intern a member name once; afterwards only the id crosses the ABI.
+    fn intern(&mut self, name: &str) -> Option<u32> {
+        if let Some(id) = self.interned.get(name) {
+            return if *id == u32::MAX { None } else { Some(*id) };
+        }
+        let id = self.host.web_intern(name);
+        self.interned.insert(name.to_string(), id);
+        if id == u32::MAX {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
     fn web_get(&mut self, target: i64, prop: &str) -> VResult {
-        let reply = self.host.web_get(target, prop);
+        let reply = match self.intern(prop) {
+            Some(id) => self.host.web_get_id(target, id),
+            None => self.host.web_get(target, prop),
+        };
         self.web_reply(&reply)
     }
 
     fn web_set(&mut self, target: i64, prop: &str, v: Value) -> Result<(), Thrown> {
+        // Fast paths: a scalar value needs no JSON at all.
+        if let Some(id) = self.intern(prop) {
+            let reply = match &v {
+                Value::Str(s) => {
+                    let text: String = s.iter().collect();
+                    Some(self.host.web_set_str(target, id, &text))
+                }
+                Value::I32(n) => Some(self.host.web_set_num(target, id, *n as f64)),
+                Value::F64(f) => Some(self.host.web_set_num(target, id, *f)),
+                Value::I64(n) => Some(self.host.web_set_num(target, id, *n as f64)),
+                _ => None,
+            };
+            if let Some(reply) = reply {
+                return self.web_reply(&reply).map(|_| ());
+            }
+        }
         let j = self.to_web(&v);
         let mut s = String::new();
         webjson::write(&mut s, &j);
@@ -2403,6 +2458,17 @@ impl Interp {
     }
 
     fn web_call(&mut self, target: i64, method: &str, args: Vec<Value>) -> VResult {
+        // Fast path: one string argument (getElementById, createElement, …).
+        // Not for `method == ""`, which calls the handle itself (`fetch(url)`).
+        if args.len() == 1 && !method.is_empty() {
+            if let Value::Str(s) = &args[0] {
+                if let Some(id) = self.intern(method) {
+                    let text: String = s.iter().collect();
+                    let reply = self.host.web_call_str(target, id, &text);
+                    return self.web_reply(&reply);
+                }
+            }
+        }
         let a = self.args_json(&args);
         let reply = self.host.web_call(target, method, &a);
         self.web_reply(&reply)

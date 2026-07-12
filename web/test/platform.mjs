@@ -124,6 +124,11 @@ const imports = {
       packed(bridge.call(Number(t), readStr(mp, ml), readStr(ap, al))),
     host_web_new: (cp, cl, ap, al) =>
       packed(bridge.construct(readStr(cp, cl), readStr(ap, al))),
+    host_web_intern: (np, nl) => bridge.intern(readStr(np, nl)),
+    host_web_get_id: (t, id) => packed(bridge.getId(Number(t), id)),
+    host_web_set_str: (t, id, vp, vl) => packed(bridge.setScalar(Number(t), id, readStr(vp, vl))),
+    host_web_set_num: (t, id, v) => packed(bridge.setScalar(Number(t), id, v)),
+    host_web_call_str: (t, id, ap, al) => packed(bridge.callStr(Number(t), id, readStr(ap, al))),
   },
 };
 ({ instance: { exports } } = await WebAssembly.instantiate(wasmBytes, imports));

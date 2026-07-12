@@ -99,6 +99,12 @@ import { makeBridge } from "./mersey-bridge.js";
       reply(bridge.call(Number(t), readStr(mp, ml), readStr(ap, al))),
     host_web_new: (cp, cl, ap, al) =>
       reply(bridge.construct(readStr(cp, cl), readStr(ap, al))),
+    // fast paths
+    host_web_intern: (np, nl) => bridge.intern(readStr(np, nl)),
+    host_web_get_id: (t, id) => reply(bridge.getId(Number(t), id)),
+    host_web_set_str: (t, id, vp, vl) => reply(bridge.setScalar(Number(t), id, readStr(vp, vl))),
+    host_web_set_num: (t, id, v) => reply(bridge.setScalar(Number(t), id, v)),
+    host_web_call_str: (t, id, ap, al) => reply(bridge.callStr(Number(t), id, readStr(ap, al))),
   });
 
   async function boot() {

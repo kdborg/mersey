@@ -1,0 +1,19 @@
+// Bridge throughput benchmark: N DOM property writes + method calls.
+import { console } from "std:console";
+import { document, performance } from "browser:dom";
+
+const el = document.getElementById("bench") as Element;
+const N = 20000;
+
+const t0 = performance.now();
+for (let i = 0; i < N; i++) {
+    el.textContent = "x";
+}
+const t1 = performance.now();
+for (let i = 0; i < N; i++) {
+    document.createElement("span");
+}
+const t2 = performance.now();
+
+console.log(`BENCH setattr ${N} in ${(t1 - t0) as int32}ms`);
+console.log(`BENCH call ${N} in ${(t2 - t1) as int32}ms`);
