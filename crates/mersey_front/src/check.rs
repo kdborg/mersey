@@ -245,6 +245,8 @@ struct Checker {
     // Built-in class ids
     error_id: ClassId,
     element_id: ClassId,
+    /// The generated `interface Promise<T>` (webapi), resolved lazily.
+    promise_id: Option<IfaceId>,
 }
 
 const PREDEFINED: &[(&str, Ty)] = &[
@@ -293,6 +295,7 @@ impl Checker {
             ret_ty: None,
             error_id: 0,
             element_id: 0,
+            promise_id: None,
         };
         c.install_builtins();
         c
@@ -806,6 +809,13 @@ impl Checker {
                     }
                 };
                 self.tp_scopes.pop();
+                // `async function f(): T` — the body returns T, callers get
+                // Promise<T> (an already-Promise<…> annotation is kept).
+                let ret = if f.is_async && self.unwrap_promise(&ret).is_none() {
+                    self.promise_of(ret)
+                } else {
+                    ret
+                };
                 let fnty = Ty::Fn(Rc::new(FnTy { tparams: tvs, params, ret }));
                 self.define(&f.name.text, fnty, true);
             }
@@ -937,11 +947,16 @@ impl Checker {
                     readonly: *readonly,
                 });
             }
-            ClassMember::Method { mods, name, type_params, params, ret, body, .. } => {
+            ClassMember::Method { mods, is_async, name, type_params, params, ret, body } => {
                 let tvs = self.bind_tparams(type_params);
                 let params = self.resolve_params(params);
                 let ret = self.resolve_type(ret);
                 self.tp_scopes.pop();
+                let ret = if *is_async && self.unwrap_promise(&ret).is_none() {
+                    self.promise_of(ret)
+                } else {
+                    ret
+                };
                 let is_abstract = mods.virt == Some(Virt::Abstract) || body.is_none();
                 if is_abstract && !self.classes[id].is_abstract {
                     self.error(
@@ -1080,6 +1095,9 @@ impl Checker {
             }
             Some(TypeDef::Iface(id)) => {
                 let id = *id;
+                if name == "Promise" {
+                    self.promise_id = Some(id);
+                }
                 self.check_arity(name, self.ifaces[id].tparams.len(), rargs.len(), pos);
                 Ty::Iface(id, Rc::new(rargs))
             }
@@ -1094,6 +1112,35 @@ impl Checker {
             }
             Some(TypeDef::Imported) => Ty::Any,
             None => Ty::Err, // binder already reported E0308
+        }
+    }
+
+    /// `Promise<T>` for the generated interface (falls back to `any`).
+    fn promise_of(&mut self, t: Ty) -> Ty {
+        let id = match self.promise_id {
+            Some(id) => id,
+            None => match self.type_defs.get("Promise") {
+                Some(TypeDef::Iface(id)) => {
+                    self.promise_id = Some(*id);
+                    *id
+                }
+                _ => return Ty::Any,
+            },
+        };
+        Ty::Iface(id, Rc::new(vec![t]))
+    }
+
+    /// `T` from `Promise<T>`; `None` if not a promise.
+    fn unwrap_promise(&mut self, t: &Ty) -> Option<Ty> {
+        let pid = self.promise_id.or(match self.type_defs.get("Promise") {
+            Some(TypeDef::Iface(id)) => Some(*id),
+            _ => None,
+        })?;
+        match strip_null(t) {
+            Ty::Iface(id, args) if id == pid => {
+                Some(args.first().cloned().unwrap_or(Ty::Any))
+            }
+            _ => None,
         }
     }
 
@@ -1140,7 +1187,7 @@ impl Checker {
                 let Some(VarInfo { ty: Ty::Fn(sig), .. }) = self.lookup(&f.name.text) else {
                     return;
                 };
-                self.check_fn_body(&f.type_params, &f.params, &sig, &f.body);
+                self.check_fn_body_async(&f.type_params, &f.params, &sig, &f.body, f.is_async);
             }
             Decl::Class(c) => self.check_class_body(c),
             Decl::Enum(e) => {
@@ -1162,6 +1209,26 @@ impl Checker {
     }
 
     /// Bind type params + params, then check the body against `sig`.
+    /// Check a body against `sig`. For async functions the *body* returns
+    /// `T` while the signature says `Promise<T>` — unwrap for the check.
+    fn check_fn_body_async(
+        &mut self,
+        tps: &[TypeParam],
+        params: &[Param],
+        sig: &FnTy,
+        body: &[Stmt],
+        is_async: bool,
+    ) {
+        if is_async {
+            if let Some(inner) = self.unwrap_promise(&sig.ret) {
+                let unwrapped =
+                    FnTy { tparams: sig.tparams.clone(), params: sig.params.clone(), ret: inner };
+                return self.check_fn_body(tps, params, &unwrapped, body);
+            }
+        }
+        self.check_fn_body(tps, params, sig, body)
+    }
+
     fn check_fn_body(
         &mut self,
         tps: &[TypeParam],
@@ -1230,7 +1297,7 @@ impl Checker {
                         self.pop_scope();
                     }
                 }
-                ClassMember::Method { name, type_params, params, body, mods, .. } => {
+                ClassMember::Method { name, type_params, params, body, mods, is_async, .. } => {
                     if let Some(body) = body {
                         let sig = self
                             .method_sig(id, name, mods.is_static)
@@ -1240,7 +1307,7 @@ impl Checker {
                         if !mods.is_static {
                             self.define("this", self_ty.clone(), true);
                         }
-                        self.check_fn_body(type_params, params, &sig, body);
+                        self.check_fn_body_async(type_params, params, &sig, body, *is_async);
                         self.in_static = false;
                         self.pop_scope();
                     }
@@ -1892,7 +1959,7 @@ impl Checker {
                 Ty::Record(Rc::new(fs))
             }
             Expr::Paren(inner) => self.check_expr(inner, expected),
-            Expr::Arrow { params, ret, body, .. } => {
+            Expr::Arrow { params, ret, body, is_async: is_async_arrow } => {
                 let ctx_fn = expected.map(strip_null).and_then(|t| match t {
                     Ty::Fn(f) => Some(f.clone()),
                     _ => None,
@@ -1928,9 +1995,12 @@ impl Checker {
                     }
                 };
                 self.pop_scope();
-                let ret = declared_ret
-                    .or(want_ret)
-                    .unwrap_or(actual_ret);
+                let ret = declared_ret.or(want_ret).unwrap_or(actual_ret);
+                let ret = if *is_async_arrow && self.unwrap_promise(&ret).is_none() {
+                    self.promise_of(ret)
+                } else {
+                    ret
+                };
                 Ty::Fn(Rc::new(FnTy { tparams: vec![], params: ptys, ret }))
             }
             Expr::Unary { op, expr, pos } => {
@@ -1971,7 +2041,15 @@ impl Checker {
                             Ty::Err
                         }
                     },
-                    UnaryOp::Await => t, // promises land post-MVP
+                    UnaryOp::Await => match self.unwrap_promise(&t) {
+                        Some(inner) => inner,
+                        None => match strip_narrow_helpers(&t) {
+                            // A host object may be a JS thenable; a plain
+                            // value awaits to itself (as in JS).
+                            Ty::Any | Ty::Err | Ty::Iface(..) => Ty::Any,
+                            other => other,
+                        },
+                    },
                 }
             }
             Expr::Update { expr, .. } => {

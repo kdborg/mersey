@@ -120,7 +120,68 @@ pub enum Value {
     /// Opaque handle to a host (JS) object, reached via the universal
     /// bridge. Handle 0 is the global object (window).
     JsRef(i64),
+    /// A Mersey promise (§ async/await).
+    PromiseV(Rc<RefCell<PromiseState>>),
+    /// A callable that settles a promise; handed to host `.then(…)` so JS
+    /// promises can resume Mersey coroutines.
+    Resolver(Rc<RefCell<PromiseState>>, bool),
+    /// Internal reaction used by `Promise.all` (slot index, is_reject).
+    AllSlot(u32, bool),
     Native(&'static str),
+}
+
+/// One input slot of a pending `Promise.all`.
+struct AllCell {
+    results: Rc<RefCell<Vec<Value>>>,
+    remaining: Rc<RefCell<usize>>,
+    out: Rc<RefCell<PromiseState>>,
+    idx: usize,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum PromiseStatus {
+    Pending,
+    Fulfilled,
+    Rejected,
+}
+
+pub struct PromiseState {
+    pub status: PromiseStatus,
+    pub value: Value,
+    /// Coroutines awaiting this promise.
+    waiters: Vec<Coro>,
+    /// `then`/`catch` reactions: (on_fulfilled, on_rejected, downstream).
+    reactions: Vec<(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>)>,
+}
+
+impl PromiseState {
+    fn pending() -> Rc<RefCell<PromiseState>> {
+        Rc::new(RefCell::new(PromiseState {
+            status: PromiseStatus::Pending,
+            value: Value::Null,
+            waiters: Vec::new(),
+            reactions: Vec::new(),
+        }))
+    }
+}
+
+/// A suspended async function: the VM's whole state is data, so `await`
+/// captures it and resumes later (no CPS transform, no threads).
+pub struct Coro {
+    pub chunk: Rc<vm::Chunk>,
+    pub pc: usize,
+    pub stack: Vec<Value>,
+    pub scopes: Vec<Env>,
+    pub handlers: Vec<(usize, usize, usize)>,
+    pub cls: Option<Rc<ClassDef>>,
+    /// The promise this coroutine's completion settles.
+    pub result: Rc<RefCell<PromiseState>>,
+}
+
+/// Work the engine owes itself before returning to the host.
+enum Task {
+    Resume(Coro, Value, bool),
+    React(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>, Value, bool),
 }
 
 pub struct Namespace {
@@ -261,6 +322,11 @@ pub struct Interp {
     /// Execute compiled bytecode where available (Tier 0); AST fallback
     /// otherwise. Off = pure tree-walking (differential-test oracle).
     pub use_vm: bool,
+    /// Microtask queue (promise reactions + coroutine resumptions), drained
+    /// before control returns to the host — the engine owns no event loop
+    /// (embedding-api.md rule 1); the host owns timers and I/O.
+    tasks: std::collections::VecDeque<Task>,
+    all_cells: Vec<AllCell>,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
     jit_cache: HashMap<usize, Option<JitFn>>,
@@ -295,6 +361,8 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         error_classes,
         class_stack: Vec::new(),
         use_vm: true,
+        tasks: std::collections::VecDeque::new(),
+        all_cells: Vec::new(),
         jit: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
@@ -318,6 +386,11 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
 }
 
 impl Interp {
+    /// Public throw for the VM module.
+    pub(crate) fn throw_public(&self, class: &'static str, msg: impl Into<String>) -> Thrown {
+        self.throw(class, msg)
+    }
+
     fn throw(&self, class: &'static str, msg: impl Into<String>) -> Thrown {
         let cls = self.error_classes[class].clone();
         let mut fields = HashMap::new();
@@ -414,7 +487,7 @@ impl Interp {
             if let Some(chunk) = vm::compile_module_stmts(module) {
                 let globals = self.globals.clone();
                 vm::run_chunk(self, &chunk, globals)?;
-                return Ok(());
+                return self.drain_microtasks();
             }
         }
         for item in &module.items {
@@ -428,7 +501,7 @@ impl Interp {
                 _ => {}
             }
         }
-        Ok(())
+        self.drain_microtasks()
     }
 
     fn bind_import(&mut self, im: &'static ImportDecl) -> Result<(), Thrown> {
@@ -452,6 +525,21 @@ impl Interp {
                 }));
                 for n in names {
                     env_define(&self.globals, &n.text, console.clone());
+                }
+                Ok(())
+            }
+            "std:async" => {
+                let mut entries = HashMap::new();
+                for n in ["resolve", "reject", "all"] {
+                    let id: &'static str = Box::leak(format!("promise.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: "Promise".to_string(),
+                    entries,
+                }));
+                for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())
             }
@@ -647,7 +735,8 @@ impl Interp {
             Some(v) => v.clone(),
             None => return self.type_error(format!("unknown callback #{id}")),
         };
-        self.call_value(&cb, Vec::new()).map(|_| ())
+        self.call_value(&cb, Vec::new())?;
+        self.drain_microtasks()
     }
 
     // ---- statements -----------------------------------------------------------
@@ -926,13 +1015,29 @@ impl Interp {
     // ---- calls --------------------------------------------------------------------
 
     fn call_closure(&mut self, c: &Closure, args: Vec<Value>) -> VResult {
-        if c.data.is_async {
-            return self.type_error("async functions are not in the MVP");
-        }
         let scope = child_env(&c.env);
         self.bind_params(c.data.params, args, &scope)?;
         if let Some(this) = &c.this {
             env_define(&scope, "this", this.clone());
+        }
+        // Async functions always run on the bytecode VM: `await` suspends by
+        // capturing VM state, which the AST walker cannot do. (Both tiers
+        // therefore agree on async semantics by construction.)
+        if c.data.is_async {
+            let cached = c.data.chunk.borrow().clone();
+            let compiled = match cached {
+                Some(x) => x,
+                None => {
+                    let out = vm::compile_fn(&c.data.body);
+                    *c.data.chunk.borrow_mut() = Some(out.clone());
+                    out
+                }
+            };
+            let Some(chunk) = compiled else {
+                return self
+                    .type_error("this async function uses a construct the compiler cannot suspend");
+            };
+            return self.start_coro(c, chunk, scope);
         }
         if self.use_vm {
             let cached = c.data.chunk.borrow().clone();
@@ -1059,6 +1164,36 @@ impl Interp {
     fn call_value(&mut self, callee: &Value, args: Vec<Value>) -> VResult {
         match callee {
             Value::Closure(c) => self.call_closure(c, args),
+            Value::AllSlot(slot, is_reject) => {
+                let (slot, is_reject) = (*slot as usize, *is_reject);
+                let v = args.into_iter().next().unwrap_or(Value::Null);
+                let (results, remaining, out, idx) = {
+                    let c = &self.all_cells[slot];
+                    (c.results.clone(), c.remaining.clone(), c.out.clone(), c.idx)
+                };
+                if is_reject {
+                    self.settle(&out, v, true); // first rejection wins
+                } else {
+                    results.borrow_mut()[idx] = v;
+                    let left = {
+                        let mut r = remaining.borrow_mut();
+                        *r -= 1;
+                        *r
+                    };
+                    if left == 0 {
+                        let all = Value::Array(Rc::new(RefCell::new(results.borrow().clone())));
+                        self.settle(&out, all, false);
+                    }
+                }
+                Ok(Value::Null)
+            }
+            // Settling callbacks handed to host promises.
+            Value::Resolver(p, rejected) => {
+                let (p, rejected) = (p.clone(), *rejected);
+                let v = args.into_iter().next().unwrap_or(Value::Null);
+                self.settle(&p, v, rejected);
+                Ok(Value::Null)
+            }
             Value::Native(name) => self.call_native(name, None, args),
             // A handle to a JS function (e.g. imported `fetch`): call it.
             Value::JsRef(h) => {
@@ -1193,6 +1328,47 @@ impl Interp {
                     .map(|c| Value::Str(Rc::new(c.chars().collect())))
                     .collect(),
             )))),
+            "promise.resolve" => {
+                let p = PromiseState::pending();
+                let v = args.into_iter().next().unwrap_or(Value::Null);
+                self.settle(&p, v, false);
+                Ok(Value::PromiseV(p))
+            }
+            "promise.reject" => {
+                let p = PromiseState::pending();
+                let v = args.into_iter().next().unwrap_or(Value::Null);
+                self.settle(&p, v, true);
+                Ok(Value::PromiseV(p))
+            }
+            "promise.all" => {
+                let items: Vec<Value> = match args.first() {
+                    Some(Value::Array(a)) => a.borrow().clone(),
+                    _ => return self.type_error("Promise.all needs an array"),
+                };
+                let out = PromiseState::pending();
+                let results = Rc::new(RefCell::new(vec![Value::Null; items.len()]));
+                let remaining = Rc::new(RefCell::new(items.len()));
+                if items.is_empty() {
+                    let all = Value::Array(Rc::new(RefCell::new(Vec::new())));
+                    self.settle(&out, all, false);
+                    return Ok(Value::PromiseV(out));
+                }
+                for (idx, item) in items.into_iter().enumerate() {
+                    let p = self.as_promise(item)?;
+                    let cell = AllCell {
+                        results: results.clone(),
+                        remaining: remaining.clone(),
+                        out: out.clone(),
+                        idx,
+                    };
+                    self.all_cells.push(cell);
+                    let slot = (self.all_cells.len() - 1) as u32;
+                    let on_ok = Value::AllSlot(slot, false);
+                    let on_err = Value::AllSlot(slot, true);
+                    self.promise_then(&p, Some(on_ok), Some(on_err));
+                }
+                Ok(Value::PromiseV(out))
+            }
             "caps.drop" => {
                 let cap = self.want_string(args.first())?;
                 self.host.drop_cap(&cap);
@@ -1709,6 +1885,22 @@ impl Interp {
 
     fn call_member(&mut self, recv: &Value, name: &str, args: Vec<Value>) -> VResult {
         match recv {
+            Value::PromiseV(p) => {
+                let p = p.clone();
+                let mut it = args.into_iter();
+                match name {
+                    "then" => {
+                        let ok = it.next();
+                        let err = it.next();
+                        Ok(self.promise_then(&p, ok, err))
+                    }
+                    "catch" => {
+                        let err = it.next();
+                        Ok(self.promise_then(&p, None, err))
+                    }
+                    _ => self.type_error(format!("no method `{name}` on Promise")),
+                }
+            }
             Value::JsRef(h) => {
                 let h = *h;
                 self.web_call(h, name, args)
@@ -1929,6 +2121,188 @@ impl Interp {
         Ok(Value::Bool(ok))
     }
 
+    // ---- promises, microtasks, coroutines -------------------------------
+
+    /// Settle a promise and queue its reactions/waiters as microtasks.
+    fn settle(&mut self, p: &Rc<RefCell<PromiseState>>, value: Value, rejected: bool) {
+        {
+            let st = p.borrow();
+            if st.status != PromiseStatus::Pending {
+                return; // already settled: first settle wins
+            }
+        }
+        // Resolving with a promise adopts its state.
+        if !rejected {
+            if let Value::PromiseV(inner) = &value {
+                let inner = inner.clone();
+                let outer = p.clone();
+                let st = inner.borrow().status.clone();
+                match st {
+                    PromiseStatus::Pending => {
+                        inner.borrow_mut().reactions.push((None, None, outer));
+                        return;
+                    }
+                    PromiseStatus::Fulfilled => {
+                        let v = inner.borrow().value.clone();
+                        return self.settle(p, v, false);
+                    }
+                    PromiseStatus::Rejected => {
+                        let v = inner.borrow().value.clone();
+                        return self.settle(p, v, true);
+                    }
+                }
+            }
+        }
+        let (waiters, reactions) = {
+            let mut st = p.borrow_mut();
+            st.status = if rejected { PromiseStatus::Rejected } else { PromiseStatus::Fulfilled };
+            st.value = value.clone();
+            (std::mem::take(&mut st.waiters), std::mem::take(&mut st.reactions))
+        };
+        for coro in waiters {
+            self.tasks.push_back(Task::Resume(coro, value.clone(), rejected));
+        }
+        for (on_ok, on_err, downstream) in reactions {
+            self.tasks
+                .push_back(Task::React(on_ok, on_err, downstream, value.clone(), rejected));
+        }
+    }
+
+    /// Register `then`-style reactions, returning the chained promise.
+    fn promise_then(
+        &mut self,
+        p: &Rc<RefCell<PromiseState>>,
+        on_ok: Option<Value>,
+        on_err: Option<Value>,
+    ) -> Value {
+        let downstream = PromiseState::pending();
+        let st = p.borrow().status.clone();
+        match st {
+            PromiseStatus::Pending => {
+                p.borrow_mut().reactions.push((on_ok, on_err, downstream.clone()));
+            }
+            PromiseStatus::Fulfilled | PromiseStatus::Rejected => {
+                let rejected = st == PromiseStatus::Rejected;
+                let value = p.borrow().value.clone();
+                self.tasks.push_back(Task::React(on_ok, on_err, downstream.clone(), value, rejected));
+            }
+        }
+        Value::PromiseV(downstream)
+    }
+
+    /// Convert any awaitable into a Mersey promise: a host (JS) promise is
+    /// adopted by handing it Resolver callbacks through the bridge.
+    fn as_promise(&mut self, v: Value) -> Result<Rc<RefCell<PromiseState>>, Thrown> {
+        match v {
+            Value::PromiseV(p) => Ok(p),
+            Value::JsRef(h) => {
+                let p = PromiseState::pending();
+                let ok = Value::Resolver(p.clone(), false);
+                let err = Value::Resolver(p.clone(), true);
+                // A JS thenable settles our promise through the bridge.
+                self.web_call(h, "then", vec![ok, err])?;
+                Ok(p)
+            }
+            other => {
+                // Awaiting a plain value: already-resolved promise.
+                let p = PromiseState::pending();
+                self.settle(&p, other, false);
+                Ok(p)
+            }
+        }
+    }
+
+    /// Run microtasks to completion. Called before control returns to the
+    /// host, so a turn always leaves the queue empty.
+    pub fn drain_microtasks(&mut self) -> Result<(), Thrown> {
+        // Bounded to catch runaway promise loops in hostile input.
+        const MAX: u32 = 1_000_000;
+        let mut n = 0;
+        while let Some(task) = self.tasks.pop_front() {
+            n += 1;
+            if n > MAX {
+                return self.type_error("microtask queue did not settle");
+            }
+            match task {
+                Task::Resume(coro, value, rejected) => {
+                    self.resume(coro, value, rejected)?;
+                }
+                Task::React(on_ok, on_err, downstream, value, rejected) => {
+                    let handler = if rejected { on_err } else { on_ok };
+                    match handler {
+                        Some(f) => match self.call_value(&f, vec![value]) {
+                            Ok(out) => self.settle(&downstream, out, false),
+                            Err(t) => self.settle(&downstream, t.0, true),
+                        },
+                        // No handler: pass the settlement through.
+                        None => self.settle(&downstream, value, rejected),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Start an async function: run its chunk until it completes or awaits.
+    fn start_coro(&mut self, c: &Closure, chunk: Rc<vm::Chunk>, scope: Env) -> VResult {
+        let result = PromiseState::pending();
+        let coro = Coro {
+            chunk,
+            pc: 0,
+            stack: Vec::new(),
+            scopes: vec![scope],
+            handlers: Vec::new(),
+            cls: c.cls.clone(),
+            result: result.clone(),
+        };
+        self.drive(coro, None)?;
+        Ok(Value::PromiseV(result))
+    }
+
+    fn resume(&mut self, coro: Coro, value: Value, rejected: bool) -> Result<(), Thrown> {
+        self.drive(coro, Some((value, rejected)))
+    }
+
+    /// Drive a coroutine until it finishes or suspends on an await.
+    fn drive(&mut self, mut coro: Coro, resumed: Option<(Value, bool)>) -> Result<(), Thrown> {
+        let pushed = coro.cls.clone();
+        if let Some(cls) = &pushed {
+            self.class_stack.push(cls.clone());
+        }
+        let outcome = vm::run_coro(self, &mut coro, resumed);
+        if pushed.is_some() {
+            self.class_stack.pop();
+        }
+        match outcome {
+            Ok(vm::Flow::Done(v)) => {
+                let result = coro.result.clone();
+                self.settle(&result, v, false);
+                Ok(())
+            }
+            Ok(vm::Flow::Await(awaited)) => {
+                let p = self.as_promise(awaited)?;
+                let status = p.borrow().status.clone();
+                match status {
+                    PromiseStatus::Pending => {
+                        p.borrow_mut().waiters.push(coro);
+                    }
+                    PromiseStatus::Fulfilled | PromiseStatus::Rejected => {
+                        let v = p.borrow().value.clone();
+                        let rejected = status == PromiseStatus::Rejected;
+                        self.tasks.push_back(Task::Resume(coro, v, rejected));
+                    }
+                }
+                Ok(())
+            }
+            Err(t) => {
+                // An uncaught throw rejects the async function's promise.
+                let result = coro.result.clone();
+                self.settle(&result, t.0, true);
+                Ok(())
+            }
+        }
+    }
+
     // ---- universal web bridge -------------------------------------------
 
     /// Mersey value → tagged JSON. Objects become `{"__ref__":n}`,
@@ -1958,7 +2332,7 @@ impl Interp {
                     r.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 Json::Obj(entries.into_iter().map(|(k, v)| (k, self.to_web(&v))).collect())
             }
-            Value::Closure(_) | Value::Native(_) => {
+            Value::Closure(_) | Value::Native(_) | Value::Resolver(..) | Value::AllSlot(..) => {
                 let id = self.callbacks.len() as u32;
                 self.callbacks.push(v.clone());
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
@@ -2050,7 +2424,8 @@ impl Interp {
             Some(v) => v.clone(),
             None => return self.type_error(format!("unknown callback #{id}")),
         };
-        self.call_value(&cb, args).map(|_| ())
+        self.call_value(&cb, args)?;
+        self.drain_microtasks()
     }
 
     fn map_find(
@@ -2633,6 +3008,8 @@ fn kind_of(v: &Value) -> &'static str {
         Value::Namespace(_) => "namespace",
         Value::Dom(_) => "dom element",
         Value::JsRef(_) => "web object",
+        Value::PromiseV(_) => "Promise",
+        Value::Resolver(..) | Value::AllSlot(..) => "function",
         Value::Native(_) => "native function",
     }
 }
@@ -2681,6 +3058,8 @@ pub fn to_display(v: &Value) -> String {
         Value::Namespace(ns) => format!("<{}>", ns.name),
         Value::Dom(id) => format!("<#{id}>"),
         Value::JsRef(h) => format!("<web:{h}>"),
+        Value::PromiseV(_) => "<Promise>".to_string(),
+        Value::Resolver(..) | Value::AllSlot(..) => "<function>".to_string(),
     }
 }
 

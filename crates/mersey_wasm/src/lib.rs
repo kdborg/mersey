@@ -20,7 +20,7 @@
 //! reply are intentionally leaked — bounded by script size and DOM reads,
 //! acceptable for Stage A; a proper arena arrives with the real engine.
 
-use std::cell::RefCell;
+use std::cell::UnsafeCell;
 
 use mersey_front::{bind, check, parser, source};
 use mersey_interp::{new_interp, Host, Interp};
@@ -147,7 +147,29 @@ impl Host for WasmHost {
 }
 
 thread_local! {
-    static INTERP: RefCell<Option<Interp>> = const { RefCell::new(None) };
+    static INTERP: UnsafeCell<Option<Interp>> = const { UnsafeCell::new(None) };
+}
+
+/// Access the engine, tolerating **re-entrancy**: a bridge call can make the
+/// host call straight back into us (a `new Promise(executor)` runs its
+/// executor synchronously; a JS array callback invokes a Mersey closure), so
+/// the engine must be usable from inside its own call. WASM is
+/// single-threaded and the engine never moves once created, so this forms a
+/// simple call stack — a `RefCell` would spuriously panic here.
+fn with_interp<R>(f: impl FnOnce(&mut Interp) -> R) -> Option<R> {
+    INTERP.with(|cell| {
+        let slot = unsafe { &mut *cell.get() };
+        slot.as_mut().map(f)
+    })
+}
+
+fn ensure_interp() {
+    INTERP.with(|cell| {
+        let slot = unsafe { &mut *cell.get() };
+        if slot.is_none() {
+            *slot = Some(new_interp(Box::new(WasmHost)));
+        }
+    });
 }
 
 /// Allocate `len` bytes the host can write into (deliberately leaked).
@@ -190,21 +212,16 @@ pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
 
     // One module per page lifetime; the AST lives as long as its callbacks.
     let module: &'static _ = Box::leak(Box::new(parsed.module));
-    INTERP.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(new_interp(Box::new(WasmHost)));
-        }
-        let interp = slot.as_mut().expect("interp");
-        match interp.run_module(module) {
-            Ok(()) => 0,
-            Err(t) => {
-                let msg = interp.describe_thrown(&t);
-                send(host_error, &msg);
-                2
-            }
+    ensure_interp();
+    with_interp(|interp| match interp.run_module(module) {
+        Ok(()) => 0,
+        Err(t) => {
+            let msg = interp.describe_thrown(&t);
+            send(host_error, &msg);
+            2
         }
     })
+    .unwrap_or(2)
 }
 
 /// Fire a callback with JSON arguments (event objects, promise values).
@@ -212,38 +229,32 @@ pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
 pub extern "C" fn msy_invoke_args(cb: u32, ptr: *const u8, len: usize) -> u32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let args = String::from_utf8_lossy(bytes).into_owned();
-    INTERP.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let Some(interp) = slot.as_mut() else {
-            send(host_error, "no script loaded");
-            return 2;
-        };
-        match interp.invoke_callback_json(cb, &args) {
-            Ok(()) => 0,
-            Err(t) => {
-                let msg = interp.describe_thrown(&t);
-                send(host_error, &msg);
-                2
-            }
+    with_interp(|interp| match interp.invoke_callback_json(cb, &args) {
+        Ok(()) => 0,
+        Err(t) => {
+            let msg = interp.describe_thrown(&t);
+            send(host_error, &msg);
+            2
         }
+    })
+    .unwrap_or_else(|| {
+        send(host_error, "no script loaded");
+        2
     })
 }
 
 #[no_mangle]
 pub extern "C" fn msy_invoke(cb: u32) -> u32 {
-    INTERP.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let Some(interp) = slot.as_mut() else {
-            send(host_error, "no script loaded");
-            return 2;
-        };
-        match interp.invoke_callback(cb) {
-            Ok(()) => 0,
-            Err(t) => {
-                let msg = interp.describe_thrown(&t);
-                send(host_error, &msg);
-                2
-            }
+    with_interp(|interp| match interp.invoke_callback(cb) {
+        Ok(()) => 0,
+        Err(t) => {
+            let msg = interp.describe_thrown(&t);
+            send(host_error, &msg);
+            2
         }
+    })
+    .unwrap_or_else(|| {
+        send(host_error, "no script loaded");
+        2
     })
 }

@@ -1,0 +1,10 @@
+main() returned synchronously; microtasks drain after
+42
+30
+212
+caught: boom
+[2, 4, 6]
+7
+caught rejection: rejected
+then: 100
+24

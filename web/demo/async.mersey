@@ -1,0 +1,56 @@
+// async/await against the real web platform: awaiting a JS promise
+// (fetch/Response) suspends the Mersey coroutine and resumes it when the
+// browser settles the promise — no .then chains needed.
+import { console } from "std:console";
+import { document, fetch, setTimeout } from "browser:dom";
+import { Promise } from "std:async";
+
+const out = document.getElementById("out") as Element;
+let lines: string[] = [];
+function show(line: string): void {
+    lines.push(line);
+    out.textContent = lines.join("\n");
+    console.log(line);
+}
+
+// Await a host promise directly. Note `fetch` resolves on a 404 (that is
+// the platform's semantics), so an unhappy status is thrown explicitly —
+// and the throw crosses back through `await` into the caller's try/catch.
+async function loadText(url: string): string {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+        throw new RangeError(`${url} → ${resp.status}`);
+    }
+    const body = await resp.text();
+    return `${url} → ${resp.status}, ${body.length} bytes`;
+}
+
+// Wrap a callback API as a promise: `new Promise(...)` constructs a REAL JS
+// promise through the bridge, and `await` adopts it.
+function delay(ms: int32): JsAny {
+    return new Promise<JsAny>((resolve: JsAny) => {
+        setTimeout(() => resolve(null), ms);
+    });
+}
+
+async function main(): void {
+    show(await loadText("mersey-loader.js"));
+
+    // Concurrent awaits via Promise.all
+    const both = await Promise.all([loadText("mersey-bridge.js"), loadText("todo.html")]);
+    show(`parallel: ${(both as JsAny[]).length} loads finished`);
+
+    await delay(40);
+    show("await delay(40): resumed after a real browser timer");
+
+    try {
+        await loadText("does-not-exist.txt");
+        show("unreachable");
+    } catch (e: RangeError) {
+        show(`await rethrew across the coroutine: ${e.message}`);
+    }
+    show("async/await: done");
+}
+
+main();
+show("sync code ran first (async is not blocking)");

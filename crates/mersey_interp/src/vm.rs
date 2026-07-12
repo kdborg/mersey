@@ -21,8 +21,8 @@ use std::rc::Rc;
 use mersey_front::ast::*;
 
 use crate::{
-    child_env, env_define, env_get, env_set, kind_of, parse_literal, to_display, Closure, Env,
-    FnBody, FnData, Interp, Thrown, VResult, Value,
+    child_env, env_define, env_get, env_set, kind_of, parse_literal, to_display, Closure, Coro,
+    Env, FnBody, FnData, Interp, Thrown, VResult, Value,
 };
 
 // ---- chunk -----------------------------------------------------------------
@@ -93,8 +93,16 @@ pub enum Op {
     /// Peeks the thrown value, pushes whether the catch type matches.
     CatchMatches(u16),
     Throw,
+    /// Suspend the coroutine on the awaited value (async functions only).
+    Await,
     Return,
     ReturnNull,
+}
+
+/// How a chunk stopped: with a value, or suspended on an await.
+pub enum Flow {
+    Done(Value),
+    Await(Value),
 }
 
 // ---- public entry points ------------------------------------------------------
@@ -742,7 +750,11 @@ impl C {
             }
             Expr::Unary { op, expr, .. } => {
                 self.expr(expr);
-                self.emit(Op::Un(*op));
+                if *op == UnaryOp::Await {
+                    self.emit(Op::Await);
+                } else {
+                    self.emit(Op::Un(*op));
+                }
             }
             Expr::Update { prefix, inc, expr } => self.update(*prefix, *inc, expr),
             Expr::Binary { op, l, r } => match op {
@@ -1161,11 +1173,76 @@ fn contains_abrupt(stmts: &[Stmt]) -> bool {
 
 // ---- runtime ----------------------------------------------------------------------
 
+/// Synchronous execution: a non-async chunk can never suspend.
 pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
-    let mut stack: Vec<Value> = Vec::with_capacity(16);
-    let mut scopes: Vec<Env> = vec![env];
-    let mut handlers: Vec<(usize, usize, usize)> = vec![];
-    let mut pc = 0usize;
+    let mut state = Exec {
+        pc: 0,
+        stack: Vec::with_capacity(16),
+        scopes: vec![env],
+        handlers: Vec::new(),
+    };
+    match exec(i, chunk, &mut state, None)? {
+        Flow::Done(v) => Ok(v),
+        Flow::Await(_) => {
+            Err(i.throw_public("TypeError", "`await` outside an async function"))
+        }
+    }
+}
+
+/// Resumable execution for async functions: the coroutine carries the whole
+/// VM state, so `await` suspends by simply returning.
+pub(crate) fn run_coro(
+    i: &mut Interp,
+    coro: &mut Coro,
+    resumed: Option<(Value, bool)>,
+) -> Result<Flow, Thrown> {
+    let chunk = coro.chunk.clone();
+    let mut state = Exec {
+        pc: coro.pc,
+        stack: std::mem::take(&mut coro.stack),
+        scopes: std::mem::take(&mut coro.scopes),
+        handlers: std::mem::take(&mut coro.handlers),
+    };
+    let out = exec(i, &chunk, &mut state, resumed);
+    coro.pc = state.pc;
+    coro.stack = state.stack;
+    coro.scopes = state.scopes;
+    coro.handlers = state.handlers;
+    out
+}
+
+pub(crate) struct Exec {
+    pc: usize,
+    stack: Vec<Value>,
+    scopes: Vec<Env>,
+    handlers: Vec<(usize, usize, usize)>,
+}
+
+fn exec(
+    i: &mut Interp,
+    chunk: &Chunk,
+    state: &mut Exec,
+    resumed: Option<(Value, bool)>,
+) -> Result<Flow, Thrown> {
+    let pc_ref: &mut usize = &mut state.pc;
+    let stack: &mut Vec<Value> = &mut state.stack;
+    let scopes: &mut Vec<Env> = &mut state.scopes;
+    let handlers: &mut Vec<(usize, usize, usize)> = &mut state.handlers;
+    let mut pc = *pc_ref;
+    // Resuming from an await: deliver the settled value (or throw it).
+    if let Some((value, rejected)) = resumed {
+        if rejected {
+            match unwind(i, stack, scopes, handlers, Thrown(value), &mut pc) {
+                Ok(()) => {}
+                Err(t) => {
+                    *pc_ref = pc;
+                    return Err(t);
+                }
+            }
+        } else {
+            stack.push(value);
+        }
+    }
 
     macro_rules! cur {
         () => {
@@ -1184,6 +1261,7 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
                         pc = hpc;
                         continue;
                     }
+                    *pc_ref = pc;
                     return Err(t);
                 }
             }
@@ -1295,43 +1373,43 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
                 stack.push(Value::Str(Rc::new(to_display(&v).chars().collect())));
             }
             Op::Call(argc) => {
-                let args = split_args(&mut stack, argc as usize);
+                let args = split_args(stack, argc as usize);
                 let callee = stack.pop().expect("callee");
                 let v = throwing!(i.call_value(&callee, args));
                 stack.push(v);
             }
             Op::CallV => {
-                let args = pop_array(&mut stack);
+                let args = pop_array(stack);
                 let callee = stack.pop().expect("callee");
                 let v = throwing!(i.call_value(&callee, args));
                 stack.push(v);
             }
             Op::CallMethod(ni, argc) => {
-                let args = split_args(&mut stack, argc as usize);
+                let args = split_args(stack, argc as usize);
                 let recv = stack.pop().expect("recv");
                 let v = throwing!(i.call_member(&recv, &chunk.names[ni as usize], args));
                 stack.push(v);
             }
             Op::CallMethodV(ni) => {
-                let args = pop_array(&mut stack);
+                let args = pop_array(stack);
                 let recv = stack.pop().expect("recv");
                 let v = throwing!(i.call_member(&recv, &chunk.names[ni as usize], args));
                 stack.push(v);
             }
             Op::NewNamed(ni, argc) => {
-                let args = split_args(&mut stack, argc as usize);
+                let args = split_args(stack, argc as usize);
                 let env = cur!().clone();
                 let v = throwing!(i.new_named(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
             }
             Op::NewNamedV(ni) => {
-                let args = pop_array(&mut stack);
+                let args = pop_array(stack);
                 let env = cur!().clone();
                 let v = throwing!(i.new_named(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
             }
             Op::SuperCall(argc) => {
-                let args = split_args(&mut stack, argc as usize);
+                let args = split_args(stack, argc as usize);
                 let env = cur!().clone();
                 let v = throwing!(i.super_call(args, &env));
                 stack.push(v);
@@ -1342,7 +1420,7 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
                 stack.push(v);
             }
             Op::CallSuperMethod(ni, argc) => {
-                let args = split_args(&mut stack, argc as usize);
+                let args = split_args(stack, argc as usize);
                 let env = cur!().clone();
                 let v = throwing!(i.call_super_method(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
@@ -1467,9 +1545,41 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
                 let v = stack.pop().expect("throw");
                 throwing!(Err::<(), Thrown>(Thrown(v)));
             }
-            Op::Return => return Ok(stack.pop().expect("ret")),
-            Op::ReturnNull => return Ok(Value::Null),
+            Op::Await => {
+                let v = stack.pop().expect("await");
+                *pc_ref = pc; // resume after the Await
+                return Ok(Flow::Await(v));
+            }
+            Op::Return => {
+                *pc_ref = pc;
+                return Ok(Flow::Done(stack.pop().expect("ret")));
+            }
+            Op::ReturnNull => {
+                *pc_ref = pc;
+                return Ok(Flow::Done(Value::Null));
+            }
         }
+    }
+}
+
+/// Route a thrown value into the innermost handler, or propagate.
+fn unwind(
+    _i: &mut Interp,
+    stack: &mut Vec<Value>,
+    scopes: &mut Vec<Env>,
+    handlers: &mut Vec<(usize, usize, usize)>,
+    t: Thrown,
+    pc: &mut usize,
+) -> Result<(), Thrown> {
+    match handlers.pop() {
+        Some((hpc, sl, stl)) => {
+            scopes.truncate(sl);
+            stack.truncate(stl);
+            stack.push(t.0);
+            *pc = hpc;
+            Ok(())
+        }
+        None => Err(t),
     }
 }
 
@@ -1609,6 +1719,7 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
                 (0, 1)
             }
             Op::Throw => (1, 0),
+            Op::Await => (1, 1),
             Op::Return => (1, 0),
             Op::ReturnNull => (0, 0),
         };

@@ -1,0 +1,75 @@
+import { console } from "std:console";
+import { Promise } from "std:async";
+
+// async functions return promises; await suspends the coroutine
+async function double(n: int32): int32 {
+    return n * 2;
+}
+
+async function chain(n: int32): int32 {
+    const a = await double(n);
+    const b = await double(a);
+    return a + b;
+}
+
+async function loopy(n: int32): int32 {
+    // await inside loops and conditionals — the VM suspends mid-loop
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        total += await double(i);
+        if (total > 10) {
+            total += await double(100);
+            break;
+        }
+    }
+    return total;
+}
+
+async function thrower(): int32 {
+    throw new RangeError("boom");
+}
+
+async function catcher(): string {
+    try {
+        await thrower();
+        return "no throw";
+    } catch (e: RangeError) {
+        return `caught: ${e.message}`;
+    }
+}
+
+async function main(): void {
+    console.log(await double(21));
+    console.log(await chain(5));
+    console.log(await loopy(5));
+    console.log(await catcher());
+
+    // Promise combinators
+    const all = await Promise.all([double(1), double(2), double(3)]);
+    console.log(all);
+    console.log(await Promise.resolve(7));
+    try {
+        await Promise.reject(new Error("rejected"));
+    } catch (e: Error) {
+        console.log("caught rejection:", e.message);
+    }
+
+    // .then chains still work alongside await
+    double(50).then(v => console.log("then:", v));
+
+    // async methods on classes
+    const svc = new Service(3);
+    console.log(await svc.compute(4));
+}
+
+class Service {
+    private readonly factor: int32;
+    public constructor(factor: int32) { this.factor = factor; }
+    public async compute(x: int32): int32 {
+        const d = await double(x);
+        return d * this.factor;
+    }
+}
+
+main();
+console.log("main() returned synchronously; microtasks drain after");

@@ -33,6 +33,8 @@ const makeElement = (tag) => {
     addEventListener(type, fn) {
       (this.listeners[type] ??= []).push(fn);
     },
+    className: "",
+    style: {},
     getContext(kind) {
       return {
         canvasKind: kind,
@@ -51,12 +53,15 @@ const byId = new Map([
 ]);
 const store = new Map();
 
+const paras = [makeElement("p"), makeElement("p")];
 const realm = {
+  Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
   document: {
     body: makeElement("body"),
     getElementById: (id) => byId.get(id) ?? null,
     createElement: (tag) => makeElement(tag),
     querySelector: () => null,
+    querySelectorAll: () => paras,
     title: "test realm",
   },
   localStorage: {
@@ -159,6 +164,11 @@ check("Timers (setTimeout fired a Mersey closure)",
       logged(/^timer: fired after 50ms$/), logs.join(" | "));
 check("Network (fetch promise resolved into Mersey)",
       logged(/^fetch: status 200$/), logs.join(" | "));
+check("interface constants (Node.ELEMENT_NODE)", logged(/^constants: ELEMENT_NODE=1 TEXT_NODE=3$/),
+      logs.join(" | "));
+check("indexed collections (querySelectorAll[0])", logged(/^nodelist: 2 <p>, first tag=P$/),
+      logs.join(" | "));
+check("CSS / CSSOM", logged(/^style: color=rebeccapurple class=generated$/), logs.join(" | "));
 check("DOM render (textContent aggregated)",
       byId.get("out").textContent.split("\n").length >= 6,
       JSON.stringify(byId.get("out").textContent));
@@ -169,4 +179,4 @@ if (failures) {
   console.error("errors:", errors);
   process.exit(1);
 }
-console.log(`\nWeb platform bridge: all ${11} technologies reached from Mersey`);
+console.log(`\nWeb platform bridge: all technologies reached from Mersey`);

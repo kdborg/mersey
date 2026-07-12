@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mersey — async/await</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; }
+    #out { white-space: pre-wrap; font-family: ui-monospace, monospace;
+           background: #f5f5f5; padding: 1rem; border-radius: 6px; min-height: 8rem; }
+  </style>
+  <script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm"></script>
+</head>
+<body>
+  <h1>Mersey async/await</h1>
+  <p><code>await fetch(…)</code> suspends the Mersey coroutine and resumes it
+     when the browser settles the promise.</p>
+  <div id="out">loading…</div>
+  <script type="text/mersey" src="demo/async.mersey"></script>
+</body>
+</html>

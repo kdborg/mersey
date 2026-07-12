@@ -136,6 +136,26 @@ async function open(path) {
   await page.close();
 }
 
+// ---- 4. async / await against real browser promises ----------------------------
+{
+  const { page, logs, errors } = await open("/async.html");
+  check("async: no page errors", errors.length === 0, errors.join("; "));
+  const has = (re) => logs.some((l) => re.test(l));
+  check("REAL BROWSER · sync code runs before the coroutine suspends",
+        logs[0] === "sync code ran first (async is not blocking)", logs[0]);
+  check("REAL BROWSER · await fetch(…) + await resp.text()",
+        has(/^mersey-loader\.js → 200, \d+ bytes$/), logs.join(" | "));
+  check("REAL BROWSER · Promise.all over concurrent awaits",
+        has(/^parallel: 2 loads finished$/), logs.join(" | "));
+  check("REAL BROWSER · await a promise wrapping setTimeout",
+        has(/^await delay\(40\): resumed after a real browser timer$/), logs.join(" | "));
+  check("REAL BROWSER · rejection crosses await into Mersey try/catch",
+        has(/^await rethrew across the coroutine: does-not-exist\.txt → 404$/),
+        logs.join(" | "));
+  check("REAL BROWSER · async flow completed", has(/^async\/await: done$/), logs.join(" | "));
+  await page.close();
+}
+
 await browser.close();
 server.close();
 
