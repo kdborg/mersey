@@ -47,6 +47,10 @@ let postMessage: (message: JsAny, p1?: JsAny) => void;
 // Engine helper (not IDL): hand a host object back, so long-lived pages that
 // churn through DOM objects do not retain handles forever.
 let release: (obj: JsAny) => void;
+// Engine helper (not IDL): bind a Mersey instance of a host-backed class to
+// an existing host object (the browser constructs custom elements, so the
+// instance is attached rather than constructed).
+let attach: (instance: JsAny, host: JsAny) => JsAny;
 type GLuint64EXT = float64;
 type BlobPart = (BufferSource | Blob | string);
 type AutofillValueEntry = JsAny[];

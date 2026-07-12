@@ -283,12 +283,18 @@ pub struct ClassDef {
     static_methods: HashMap<String, Rc<FnData>>,
     /// Built-in error classes construct without an AST ctor.
     is_builtin_error: bool,
+    /// Host interface this class extends, if any (`extends HTMLElement`).
+    host_iface: Option<String>,
     env: Option<Env>,
 }
 
 pub struct Instance {
     class: Rc<ClassDef>,
     fields: HashMap<String, Value>,
+    /// Host object backing this instance (`class X extends HTMLElement`):
+    /// members not declared in Mersey resolve against it, and the instance
+    /// crosses the bridge AS that object.
+    host: Option<i64>,
 }
 
 // ---- environments ----------------------------------------------------------------
@@ -388,6 +394,9 @@ pub struct Interp {
     modules: HashMap<String, HashMap<String, Value>>,
     /// The module currently executing (for relative import resolution).
     current_module: String,
+    /// Mersey classes declared in the module being defined but not yet
+    /// created, so `extends` can tell a late Mersey base from a host one.
+    pending_class_names: std::collections::HashSet<String>,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
     jit_cache: HashMap<usize, Option<JitFn>>,
@@ -430,6 +439,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         interned: HashMap::new(),
         modules: HashMap::new(),
         current_module: String::new(),
+        pending_class_names: std::collections::HashSet::new(),
         jit: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
@@ -448,6 +458,7 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
         statics: RefCell::new(HashMap::new()),
         static_methods: HashMap::new(),
         is_builtin_error: true,
+        host_iface: None,
         env: None,
     }
 }
@@ -465,7 +476,11 @@ impl Interp {
         // Attach where it happened and how we got there.
         let stack = self.stack_trace();
         fields.insert("stack".to_string(), Value::Str(Rc::new(stack.chars().collect())));
-        Thrown(Value::Instance(Rc::new(RefCell::new(Instance { class: cls, fields }))))
+        Thrown(Value::Instance(Rc::new(RefCell::new(Instance {
+            class: cls,
+            fields,
+            host: None,
+        }))))
     }
 
     /// `at fn (module:line:col)` per frame, innermost first.
@@ -590,12 +605,14 @@ impl Interp {
                 _ => None,
             })
             .collect();
+        self.pending_class_names = pending.iter().map(|c| c.name.text.clone()).collect();
         while !pending.is_empty() {
             let mut still = Vec::new();
             let mut progressed = false;
             for c in pending {
                 if self.try_define_class(c)? {
                     progressed = true;
+                    self.pending_class_names.remove(&c.name.text);
                 } else {
                     still.push(c);
                 }
@@ -738,6 +755,12 @@ impl Interp {
                         env_define(&self.globals, "release", Value::Native("web.release"));
                         continue;
                     }
+                    // Bind a Mersey instance of a host-backed class to an
+                    // existing host object (the browser builds custom elements).
+                    if n.text == "attach" {
+                        env_define(&self.globals, "attach", Value::Native("web.attach"));
+                        continue;
+                    }
                     // Fast path: the hand-written DOM surface (kept because
                     // the Stage A demos and goldens pin it).
                     if n.text == "document" && self.host.web_global("document") < 0 {
@@ -805,14 +828,31 @@ impl Interp {
     }
 
     fn try_define_class(&mut self, c: &'static ClassDecl) -> Result<bool, Thrown> {
+        let mut host_iface: Option<String> = None;
         let parent = match &c.extends {
             None => None,
-            Some(Type::Named { name, .. }) => match env_get(&self.globals, name) {
-                Some(Value::Class(p)) => Some(p),
-                _ => return Ok(false), // base not defined yet
-            },
+            Some(Type::Named { name, .. }) => {
+                let head = name.split('.').next().unwrap_or(name).to_string();
+                match env_get(&self.globals, &head) {
+                    Some(Value::Class(p)) => Some(p),
+                    // A Mersey base class declared later in this module.
+                    _ if self.pending_class_names.contains(&head) => return Ok(false),
+                    // Otherwise it is a host interface (`extends HTMLElement`):
+                    // instances are backed by host objects.
+                    _ => {
+                        host_iface = Some(head);
+                        None
+                    }
+                }
+            }
             Some(_) => return self.type_error("invalid extends clause"),
         };
+        // A Mersey base class may itself be host-backed: inherit that.
+        if host_iface.is_none() {
+            if let Some(p) = &parent {
+                host_iface = p.host_iface.clone();
+            }
+        }
 
         let mut fields: Vec<(String, Option<&'static Expr>)> = Vec::new();
         if let Some(p) = &parent {
@@ -892,6 +932,7 @@ impl Interp {
             statics,
             static_methods,
             is_builtin_error: false,
+            host_iface,
             env: Some(self.globals.clone()),
         });
         env_define(&self.globals, &c.name.text, Value::Class(def));
@@ -1611,6 +1652,27 @@ impl Interp {
                 b.borrow_mut().iter_mut().for_each(|x| *x = v);
                 Ok(Value::Null)
             }
+            "web.attach" => {
+                let (Some(inst_v), Some(host)) = (args.first(), args.get(1)) else {
+                    return self.type_error("attach(instance, hostObject) needs both");
+                };
+                let Value::Instance(inst) = inst_v else {
+                    return self.type_error("attach: the first value must be a class instance");
+                };
+                let h = match host {
+                    Value::JsRef(h) => *h,
+                    Value::Instance(i) => match i.borrow().host {
+                        Some(h) => h,
+                        None => {
+                            return self
+                                .type_error("attach: the second value is not a host object")
+                        }
+                    },
+                    _ => return self.type_error("attach: the second value is not a host object"),
+                };
+                inst.borrow_mut().host = Some(h);
+                Ok(inst_v.clone())
+            }
             "web.release" => {
                 if let Some(v) = args.first() {
                     self.web_release_value(v);
@@ -1643,11 +1705,13 @@ impl Interp {
             return Ok(Value::Instance(Rc::new(RefCell::new(Instance {
                 class: cls.clone(),
                 fields,
+                host: None,
             }))));
         }
         let inst = Rc::new(RefCell::new(Instance {
             class: cls.clone(),
             fields: HashMap::new(),
+            host: None,
         }));
         let this = Value::Instance(inst.clone());
         let env = cls.env.clone().unwrap_or_else(|| self.globals.clone());
@@ -1771,6 +1835,11 @@ impl Interp {
                         cls: Some(defining),
                     }))));
                 }
+                // Host-backed class: read it off the host object.
+                let host = inst.borrow().host;
+                if let Some(h) = host {
+                    return self.web_get(h, name).map(Some);
+                }
                 Ok(None)
             }
             _ => Ok(None),
@@ -1826,13 +1895,18 @@ impl Interp {
                 // Sealed shapes (§4.1): the field must be declared.
                 if class_has_field(&class, name) || inst.borrow().fields.contains_key(name) {
                     inst.borrow_mut().fields.insert(name.to_string(), value);
-                    Ok(())
-                } else {
-                    self.type_error(format!(
-                        "class `{}` has no field `{name}` (shapes are sealed)",
-                        class.name
-                    ))
+                    return Ok(());
                 }
+                // Host-backed class: write through to the host object
+                // (`this.textContent = …` on a class extending HTMLElement).
+                let host = inst.borrow().host;
+                if let Some(h) = host {
+                    return self.web_set(h, name, value);
+                }
+                self.type_error(format!(
+                    "class `{}` has no field `{name}` (shapes are sealed)",
+                    class.name
+                ))
             }
             _ => self.type_error("cannot assign to a member of this value"),
         }
@@ -2344,6 +2418,27 @@ impl Interp {
                 }
                 _ => self.type_error(format!("no member `{name}` on `{}`", ns.name)),
             },
+            // Host-backed instances: a method not declared in Mersey is the
+            // host's (`this.addEventListener(…)`).
+            Value::Instance(inst) => {
+                let declared_in_mersey = {
+                    let i = inst.borrow();
+                    i.fields.contains_key(name)
+                        || find_in_chain(&i.class, |c| c.methods.get(name).map(|_| ())).is_some()
+                        || find_in_chain(&i.class, |c| c.getters.get(name).map(|_| ())).is_some()
+                };
+                let host = inst.borrow().host;
+                if !declared_in_mersey {
+                    if let Some(h) = host {
+                        return self.web_call(h, name, args);
+                    }
+                }
+                let member = self.get_member(recv, name)?;
+                match member {
+                    Some(f) => self.call_value(&f, args),
+                    None => self.type_error(format!("no method `{name}` on {}", kind_of(recv))),
+                }
+            }
             _ => {
                 let member = self.get_member(recv, name)?;
                 match member {
@@ -2654,6 +2749,11 @@ impl Interp {
             Value::BigIntV(b) => Json::Str(b.to_decimal()),
             Value::BigDecV(d) => Json::Str(d.to_decimal()),
             Value::JsRef(h) => Json::Obj(vec![("__ref__".into(), Json::Num(*h as f64))]),
+            // A host-backed instance IS its host object on the wire.
+            Value::Instance(i) if i.borrow().host.is_some() => {
+                let h = i.borrow().host.expect("checked");
+                Json::Obj(vec![("__ref__".into(), Json::Num(h as f64))])
+            }
             Value::Dom(id) => Json::Obj(vec![("__dom__".into(), Json::Str(id.to_string()))]),
             Value::Array(a) => {
                 let items: Vec<Value> = a.borrow().clone();

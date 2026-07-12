@@ -312,6 +312,10 @@ struct ClassInfo {
     name: String,
     tparams: Vec<TvId>,
     parent: Option<(ClassId, Vec<Ty>)>,
+    /// `class X extends HTMLElement` — instances ARE host objects: members
+    /// not declared in Mersey resolve against this interface, and the class
+    /// is assignable wherever the interface is expected.
+    host_parent: Option<(IfaceId, Vec<Ty>)>,
     ifaces: Vec<(IfaceId, Vec<Ty>)>,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
@@ -457,6 +461,7 @@ impl Checker {
             name: "Error".into(),
             tparams: vec![],
             parent: None,
+            host_parent: None,
             ifaces: vec![],
             fields: vec![
                 FieldInfo {
@@ -488,6 +493,7 @@ impl Checker {
                 name: name.into(),
                 tparams: vec![],
                 parent: Some((error_id, vec![])),
+                host_parent: None,
                 ifaces: vec![],
                 fields: vec![],
                 methods: vec![],
@@ -506,6 +512,7 @@ impl Checker {
             name: "Element".into(),
             tparams: vec![],
             parent: None,
+            host_parent: None,
             ifaces: vec![],
             fields: vec![
                 FieldInfo {
@@ -592,6 +599,7 @@ impl Checker {
             name: "Bytes".into(),
             tparams: vec![],
             parent: None,
+            host_parent: None,
             ifaces: vec![],
             fields: vec![FieldInfo {
                 name: "length".into(),
@@ -651,6 +659,7 @@ impl Checker {
             name: "Map".into(),
             tparams: vec![kv.0, kv.1],
             parent: None,
+            host_parent: None,
             ifaces: vec![],
             fields: vec![FieldInfo {
                 name: "size".into(),
@@ -688,6 +697,7 @@ impl Checker {
             name: "Set".into(),
             tparams: vec![t],
             parent: None,
+            host_parent: None,
             ifaces: vec![],
             fields: vec![FieldInfo {
                 name: "size".into(),
@@ -840,6 +850,7 @@ impl Checker {
                         name: c.name.text.clone(),
                         tparams: vec![],
                         parent: None,
+                        host_parent: None,
                         ifaces: vec![],
                         fields: vec![],
                         methods: vec![],
@@ -1014,6 +1025,7 @@ impl Checker {
                 let tvs = self.classes[id].tparams.clone();
                 self.push_tp_scope(&c.type_params, &tvs);
 
+                let mut host_parent = None;
                 let parent = c.extends.as_ref().and_then(|t| {
                     let rt = self.resolve_type(t);
                     match rt {
@@ -1030,11 +1042,16 @@ impl Checker {
                             }
                             Some((pid, args.as_ref().clone()))
                         }
+                        // Host-backed class: instances ARE host objects.
+                        Ty::Iface(iid, args) => {
+                            host_parent = Some((iid, args.as_ref().clone()));
+                            None
+                        }
                         Ty::Err => None,
                         _ => {
                             self.error(
                                 Code::TypeMismatch,
-                                "`extends` must name a class",
+                                "`extends` must name a class or a host interface",
                                 c.name.pos,
                             );
                             None
@@ -1042,6 +1059,13 @@ impl Checker {
                     }
                 });
                 self.classes[id].parent = parent;
+                // A Mersey base class may itself be host-backed: inherit that.
+                if host_parent.is_none() {
+                    if let Some((pid, _)) = &self.classes[id].parent {
+                        host_parent = self.classes[*pid].host_parent.clone();
+                    }
+                }
+                self.classes[id].host_parent = host_parent;
                 let mut ifaces = Vec::new();
                 for t in &c.implements {
                     match self.resolve_type(t) {
@@ -2366,14 +2390,29 @@ impl Checker {
             }
             Expr::SuperMember { name, pos } => {
                 let Some(id) = self.current_class else { return Ty::Err };
-                let Some((pid, pargs)) = self.classes[id].parent.clone() else {
-                    return Ty::Err;
-                };
-                let parent_ty = Ty::Class(pid, Rc::new(pargs));
-                self.member_access(&parent_ty, name, false, *pos)
+                if let Some((pid, pargs)) = self.classes[id].parent.clone() {
+                    let parent_ty = Ty::Class(pid, Rc::new(pargs));
+                    return self.member_access(&parent_ty, name, false, *pos);
+                }
+                // Host-backed: `super.m()` is the host implementation.
+                if let Some((iid, iargs)) = self.classes[id].host_parent.clone() {
+                    let iface_ty = Ty::Iface(iid, Rc::new(iargs));
+                    return self.member_access(&iface_ty, name, false, *pos);
+                }
+                Ty::Err
             }
             Expr::SuperCall { args, pos } => {
                 let Some(id) = self.current_class else { return Ty::Err };
+                // Host-backed with no Mersey base: `super(…)` constructs the
+                // host object (arguments are the interface constructor's).
+                if self.classes[id].parent.is_none()
+                    && self.classes[id].host_parent.is_some()
+                {
+                    for a in args {
+                        self.check_expr(&a.expr, None);
+                    }
+                    return Ty::Void;
+                }
                 let Some((pid, pargs)) = self.classes[id].parent.clone() else {
                     return Ty::Err;
                 };
@@ -3060,6 +3099,25 @@ impl Checker {
                             .collect(),
                         ret: subst(&sig.ret, &map),
                     }))
+                } else if let Some((iid, iargs)) = self.host_parent_of(id) {
+                    // Host-backed: fall back to the interface's members.
+                    let imap: HashMap<TvId, Ty> = self.ifaces[iid]
+                        .tparams
+                        .iter()
+                        .copied()
+                        .zip(iargs.iter().cloned())
+                        .collect();
+                    match self.iface_member(iid, name) {
+                        Some((t, optional)) => {
+                            let t = subst(&t, &imap);
+                            if optional {
+                                nullable(t)
+                            } else {
+                                t
+                            }
+                        }
+                        None => self.no_member(&self.classes[id].name.clone(), name, pos),
+                    }
                 } else {
                     self.no_member(&self.classes[id].name.clone(), name, pos)
                 }
@@ -3162,6 +3220,18 @@ impl Checker {
         } else {
             out
         }
+    }
+
+    /// The host interface backing this class, if any (walks the chain).
+    fn host_parent_of(&self, id: ClassId) -> Option<(IfaceId, Vec<Ty>)> {
+        let mut cur = Some(id);
+        while let Some(cid) = cur {
+            if let Some(hp) = &self.classes[cid].host_parent {
+                return Some(hp.clone());
+            }
+            cur = self.classes[cid].parent.as_ref().map(|(p, _)| *p);
+        }
+        None
     }
 
     fn method_access(&self, id: ClassId, name: &str) -> Access {
@@ -3364,6 +3434,12 @@ impl Checker {
                 false
             }
             (Class(a, aargs), Iface(b, bargs)) => {
+                // A host-backed class IS its host interface.
+                if let Some((iid, iargs)) = self.host_parent_of(*a) {
+                    if self.iface_extends(iid, &iargs, *b, bargs) {
+                        return true;
+                    }
+                }
                 let mut cur = Some((*a, aargs.as_ref().clone()));
                 while let Some((cid, cargs)) = cur {
                     let map = self.subst_map(cid, &cargs);

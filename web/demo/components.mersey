@@ -1,5 +1,5 @@
-// Custom elements that look like ordinary classes: subclass, override,
-// register. Each <mersey-counter> gets its own instance and its own state.
+// Components that ARE elements: subclass, override, register. `this` is the
+// DOM element — no wrapper, no `this.element`.
 import { console } from "std:console";
 import { document } from "browser:dom";
 import { CustomElement, defineElement } from "../lib/custom-element.mersey";
@@ -14,11 +14,12 @@ class CounterBadge extends CustomElement {
 
     public override connected(): void {
         this.render();
-        this.on("click", () => {
+        // `this` IS the element: host methods work directly.
+        this.addEventListener("click", () => {
             this.count += 1;
             this.render();
         });
-        console.log(`[counter] connected (label=${this.label})`);
+        console.log(`[counter] connected (label=${this.label}, tag=${this.tagName})`);
     }
 
     public override attributeChanged(name: string, oldValue: string, newValue: string): void {
@@ -33,22 +34,22 @@ class CounterBadge extends CustomElement {
     }
 
     private render(): void {
-        this.setText(`${this.label}: ${this.count}`);
+        this.textContent = `${this.label}: ${this.count}`;   // host property
     }
 }
 
 class HelloTag extends CustomElement {
     public override connected(): void {
-        this.setText("hello from a Mersey component 🌊");
+        this.textContent = "hello from a Mersey component 🌊";
+        this.setAttribute("data-mersey", "yes");             // host method
     }
 }
 
 defineElement("mersey-counter", () => new CounterBadge());
 defineElement("mersey-hello", () => new HelloTag());
-
 console.log("components: registered");
 
-// Elements already in the page get upgraded; new ones work the same.
 const added = document.createElement("mersey-counter");
 added.setAttribute("label", "taps");
+// A host-backed instance passes anywhere an Element is expected.
 (document.getElementById("host") as Element).appendChild(added);
