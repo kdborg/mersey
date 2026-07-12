@@ -1,0 +1,1 @@
+error[E0001] @ 1:1: err-utf16.mersey: source files must be UTF-8, but a UTF-16LE byte-order mark was found; run `mersey convert` to transcode

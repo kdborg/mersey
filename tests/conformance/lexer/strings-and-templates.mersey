@@ -1,0 +1,10 @@
+const s1: string = "double \"quoted\" with \n and \u{1F600}";
+const s2: string = 'single';
+const c1: char = c'A';
+const c2: char = c'\u{1F600}';
+const c3: char = c'\'';
+const t1 = `no substitution`;
+const t2 = `a ${name} b ${1 + 2} c`;
+const t3 = `outer ${ `inner ${x}` } done`;
+const t4 = `record ${ ({ a: 1 }).a } end`;
+const t5 = `dollar $ not sub, price $5`;

@@ -1,0 +1,12 @@
+error[E0301] @ 1:9: cannot find name `missing`
+error[E0303] @ 2:9: `c` is used before its declaration at 3:5 (temporal dead zone)
+error[E0304] @ 5:1: cannot assign to `FIXED`: it is a `const`
+error[E0304] @ 6:1: cannot assign to `FIXED`: it is a `const`
+error[E0302] @ 7:5: duplicate declaration of `FIXED` (first declared at 4:7)
+error[E0302] @ 9:5: duplicate declaration of `dup` (first declared at 8:5)
+error[E0308] @ 10:15: cannot find type `Unknown`
+error[E0308] @ 11:8: cannot find type `list`
+error[E0308] @ 12:10: enum backing type must be an integer type, not `string`
+error[E0302] @ 12:25: duplicate enum member `A` (first declared at 12:19)
+error[E0302] @ 13:7: duplicate field `x` in class `Twice`
+error[E0301] @ 14:10: cannot export `ghost`: no such name in this module

@@ -1,0 +1,16 @@
+[package]
+name = "mersey_wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stage A browser engine: mersey_front + mersey_interp compiled to WebAssembly behind a hand-rolled C-style ABI"
+
+[lib]
+crate-type = ["cdylib"]
+
+# No `workspace = true` lints here: this crate is the FFI boundary and is
+# the one place `unsafe` is permitted (pointer traffic across the WASM ABI).
+
+[dependencies]
+mersey_front = { path = "../mersey_front" }
+mersey_interp = { path = "../mersey_interp" }

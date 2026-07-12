@@ -1,0 +1,7 @@
+// Reserved words are reserved everywhere as bindings, but legal as member
+// names (grammar §6.9 note 1).
+const kind = config.type;
+const sender = req.from;
+let ok = table.get(key);
+export extern function main(): void {}
+abstract final override wrapping extern;

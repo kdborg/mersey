@@ -1,0 +1,61 @@
+import { console } from "std:console";
+
+abstract class Shape {
+    protected readonly name: string;
+    private area2: float64 = 0.0;
+
+    public constructor(name: string) {
+        this.name = name;
+    }
+
+    public abstract area(): float64;
+
+    public get label(): string {
+        return this.name;
+    }
+
+    public set scale(factor: float64) {
+        this.area2 = this.area2 * factor;
+    }
+
+    describe(): string {
+        return `${this.name}: ${this.area()}`;
+    }
+}
+
+final class Circle extends Shape implements Comparable<Circle> {
+    private static count: int32 = 0;
+    private readonly radius: float64;
+
+    public constructor(radius: float64) {
+        super("circle");
+        this.radius = radius;
+        Circle.count++;
+    }
+
+    public override area(): float64 {
+        return 3.14159 * this.radius ** 2;
+    }
+
+    public compareTo(other: Circle): int32 {
+        return (this.radius - other.radius) as int32;
+    }
+
+    get(): int32 {
+        return 0;
+    }
+}
+
+interface Comparable<T> {
+    compareTo(other: T): int32;
+    readonly tag?: string;
+}
+
+enum Color : uint8 {
+    RED = 1,
+    GREEN,
+    BLUE,
+}
+
+type Pair<T extends Comparable<T>> = [T, T];
+type Handler = (event: string, data: Data?) => void;

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mersey — Stage A demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }
+    button { font-size: 1.2rem; padding: .5rem 1.5rem; }
+    #out { font-size: 1.5rem; margin: 1rem 0; }
+  </style>
+  <script src="mersey-loader.js" data-engine="mersey_wasm.wasm" defer></script>
+</head>
+<body>
+  <h1>Mersey in the browser</h1>
+  <p>The counter below is driven by <code>demo/app.mersey</code>, executed by
+     the Mersey engine compiled to WebAssembly. The only JavaScript on this
+     page is the loader polyfill.</p>
+  <div id="out">loading…</div>
+  <button id="btn">Click me</button>
+
+  <script type="text/mersey" src="demo/app.mersey"></script>
+</body>
+</html>

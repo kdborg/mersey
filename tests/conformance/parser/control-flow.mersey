@@ -1,0 +1,48 @@
+let total: int64 = 0l;
+
+for (let i = 0, j = 10; i < j; i++, j--) {
+    total += i as int64;
+}
+
+outer: for (const row of grid.rows()) {
+    for (const cell of row) {
+        if (cell == 0) { continue outer; }
+        if (cell < 0) { break outer; }
+    }
+}
+
+while (total > 0l) {
+    total >>= 1;
+}
+
+do {
+    total++;
+} while (total < 5l);
+
+switch (kind) {
+    case 1:
+    case 2:
+        handle(kind);
+        break;
+    default:
+        reject();
+        break;
+}
+
+try {
+    risky();
+} catch (e: RangeError) {
+    report(e);
+} catch (e: Error) {
+    rethrow(e);
+} finally {
+    cleanup();
+}
+
+const [first, second = 0, ...rest] = numbers;
+const { name, type: kind2, size = 4 } = header;
+
+if (a ?? b) { f(); }
+let m = (a && b) ?? c;
+let p = (-2) ** 3;
+let q = cond ? x + 1 : y - 1;

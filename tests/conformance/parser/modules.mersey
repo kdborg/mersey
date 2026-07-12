@@ -1,0 +1,16 @@
+import { Account, SavingsAccount as Savings } from "./account.mersey";
+import * as fmt from "std:format";
+import "std:polyfill";
+
+export const RATE: bigdec = 0.05m;
+export function open(owner: string): Account {
+    return new Account(next(), owner);
+}
+export extern function main(argv: string[]): int32 {
+    return 0;
+}
+export extern class Api {
+    public ping(): bool { return true; }
+}
+export { Account, Savings as Sav } from "./account.mersey";
+export { open as openAccount };

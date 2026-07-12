@@ -1,0 +1,72 @@
+import { console } from "std:console";
+import * as fmt from "std:format";
+
+const LIMIT: int32 = 10;
+
+function tail(): int32 {
+    return head() + LIMIT;
+}
+
+function head(): int32 {
+    return 1;
+}
+
+class Node<T extends Comparable<T>> {
+    private value: T;
+    private next: Node<T>? = null;
+
+    public constructor(value: T) {
+        this.value = value;
+    }
+
+    public insert(other: Node<T>): void {
+        let cursor: Node<T>? = this.next;
+        while (cursor != null) {
+            cursor = cursor?.next;
+        }
+        this.next = other;
+    }
+}
+
+class Leaf extends Node<Leaf> implements Comparable<Leaf> {
+    public constructor() {
+        super(null as wrapping Leaf);
+    }
+    public compareTo(other: Leaf): int32 {
+        return super.hash() - other.hash();
+    }
+    public hash(): int32 { return 0; }
+}
+
+interface Comparable<T> {
+    compareTo(other: T): int32;
+}
+
+async function fetchAll(urls: string[]): Promise {
+    for (const u of urls) {
+        await go(u);
+    }
+    outer: for (let i = 0; i < LIMIT; i++) {
+        while (true) {
+            if (i > 3) { continue outer; }
+            break;
+        }
+    }
+    return null as wrapping Promise;
+}
+
+type Promise = { done: bool };
+async function go(u: string): Promise { return { done: true }; }
+
+const shadow: int32 = 1;
+function shade(): int32 {
+    const shadow: int32 = 2;
+    { let shadow: float64 = 3.0; console.log(fmt.pad(shadow)); }
+    return shadow;
+}
+
+const { a, b: renamed, c = 4 } = source2();
+const [x, y = 2, ...zs] = list();
+function source2(): { a: int32, b: int32, c: int32 } { return { a: 1, b: 2, c: 3 }; }
+function list(): int32[] { return [1]; }
+export { tail as last, Node };

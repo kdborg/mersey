@@ -1,0 +1,83 @@
+/* Mersey Stage A loader polyfill (docs/architecture/browser-integration.md).
+ *
+ * Executes <script type="text/mersey"> tags via the Mersey engine compiled
+ * to WebAssembly. This is the only JavaScript in the system, and it exists
+ * precisely so the page author never writes any: it disappears entirely at
+ * Stage B when Chromium hosts the engine natively.
+ *
+ * Usage:
+ *   <script src="mersey-loader.js" data-engine="mersey_wasm.wasm" defer></script>
+ *   <script type="text/mersey" src="app.mersey"></script>
+ */
+(() => {
+  "use strict";
+
+  const engineUrl =
+    (document.currentScript && document.currentScript.dataset.engine) ||
+    "mersey_wasm.wasm";
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let exports = null;
+
+  const mem = () => new Uint8Array(exports.memory.buffer);
+  const readStr = (ptr, len) => decoder.decode(mem().subarray(ptr, ptr + len));
+  const writeStr = (s) => {
+    const bytes = encoder.encode(s);
+    const ptr = exports.msy_alloc(bytes.length);
+    mem().set(bytes, ptr);
+    return [ptr, bytes.length];
+  };
+
+  const imports = {
+    env: {
+      host_print: (p, l) => console.log(readStr(p, l)),
+      host_error: (p, l) => console.error("[mersey]", readStr(p, l)),
+      host_dom_set_text: (ip, il, tp, tl) => {
+        const el = document.getElementById(readStr(ip, il));
+        if (el) el.textContent = readStr(tp, tl);
+      },
+      host_dom_get_text: (ip, il) => {
+        const el = document.getElementById(readStr(ip, il));
+        if (!el) return 0n;
+        const [ptr, len] = writeStr(el.textContent ?? "");
+        return (BigInt(ptr) << 32n) | BigInt(len);
+      },
+      host_dom_on_click: (ip, il, cb) => {
+        const el = document.getElementById(readStr(ip, il));
+        if (el) el.addEventListener("click", () => exports.msy_invoke(cb));
+      },
+    },
+  };
+
+  async function boot() {
+    const response = fetch(engineUrl);
+    let instance;
+    try {
+      ({ instance } = await WebAssembly.instantiateStreaming(response, imports));
+    } catch {
+      // Server sent a non-wasm MIME type; fall back to ArrayBuffer.
+      const bytes = await (await fetch(engineUrl)).arrayBuffer();
+      ({ instance } = await WebAssembly.instantiate(bytes, imports));
+    }
+    exports = instance.exports;
+
+    const tags = document.querySelectorAll('script[type="text/mersey"]');
+    for (const tag of tags) {
+      const source = tag.src
+        ? await (await fetch(tag.src)).text()
+        : tag.textContent;
+      const [ptr, len] = writeStr(source);
+      const status = exports.msy_run(ptr, len);
+      if (status !== 0) {
+        console.error(`[mersey] ${tag.src || "<inline>"}: exited with status ${status}`);
+      }
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();

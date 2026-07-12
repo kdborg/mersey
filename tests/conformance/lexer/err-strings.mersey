@@ -1,0 +1,9 @@
+let a = "unterminated
+let b = "bad escape \q here";
+let c = "bad codepoint \u{110000}";
+let d = "surrogate \u{D800}";
+let e = c'';
+let f = c'ab';
+let g = 1.;
+let h = 1_;
+let i = 1__0;

@@ -1,0 +1,126 @@
+1:1 keyword let
+1:5 ident a
+1:7 punct =
+1:9 int 123
+1:12 punct ;
+2:1 keyword let
+2:5 ident b
+2:7 punct =
+2:9 int 0x7F
+2:13 punct ;
+3:1 keyword let
+3:5 ident c
+3:7 punct =
+3:9 int 0o17
+3:13 punct ;
+4:1 keyword let
+4:5 ident d
+4:7 punct =
+4:9 int 0b1010
+4:15 punct ;
+5:1 keyword let
+5:5 ident e
+5:7 punct =
+5:9 int 1_000_000
+5:18 punct ;
+6:1 keyword let
+6:5 ident f
+6:7 punct =
+6:9 int 255u8 (U8)
+6:14 punct ;
+7:1 keyword let
+7:5 ident g
+7:7 punct =
+7:9 int 5000000000l (L)
+7:20 punct ;
+8:1 keyword let
+8:5 ident h
+8:7 punct =
+8:9 int 42u (U)
+8:12 punct ;
+9:1 keyword let
+9:5 ident i
+9:7 punct =
+9:9 int 7ul (Ul)
+9:12 punct ;
+10:1 keyword let
+10:5 ident j
+10:7 punct =
+10:9 int 1i8 (I8)
+10:12 punct ;
+10:14 keyword let
+10:18 ident k
+10:20 punct =
+10:22 int 2i16 (I16)
+10:26 punct ;
+10:28 keyword let
+10:32 ident l2
+10:35 punct =
+10:37 int 3i32 (I32)
+10:41 punct ;
+10:43 keyword let
+10:47 ident m2
+10:50 punct =
+10:52 int 4i64 (I64)
+10:56 punct ;
+11:1 keyword let
+11:5 ident n2
+11:8 punct =
+11:10 int 5u16 (U16)
+11:14 punct ;
+11:16 keyword let
+11:20 ident o
+11:22 punct =
+11:24 int 6u32 (U32)
+11:28 punct ;
+11:30 keyword let
+11:34 ident p
+11:36 punct =
+11:38 int 7u64 (U64)
+11:42 punct ;
+12:1 keyword let
+12:5 ident q
+12:7 punct =
+12:9 float 1.5 (float64)
+12:12 punct ;
+13:1 keyword let
+13:5 ident r
+13:7 punct =
+13:9 float 2.5f (float32)
+13:13 punct ;
+14:1 keyword let
+14:5 ident s
+14:7 punct =
+14:9 float 1e10 (float64)
+14:13 punct ;
+15:1 keyword let
+15:5 ident t
+15:7 punct =
+15:9 float 1.5e-3f (float32)
+15:16 punct ;
+16:1 keyword let
+16:5 ident u2
+16:8 punct =
+16:10 bigint 123n
+16:14 punct ;
+17:1 keyword let
+17:5 ident v
+17:7 punct =
+17:9 bigint 0xFFn
+17:14 punct ;
+18:1 keyword let
+18:5 ident w
+18:7 punct =
+18:9 bigdec 19.99m
+18:15 punct ;
+19:1 keyword let
+19:5 ident x
+19:7 punct =
+19:9 bigdec 3m
+19:11 punct ;
+20:1 keyword let
+20:5 ident y
+20:7 punct =
+20:9 bigdec 1e3m
+20:13 punct ;
+21:1 eof

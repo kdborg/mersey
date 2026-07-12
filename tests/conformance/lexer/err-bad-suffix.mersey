@@ -1,0 +1,5 @@
+let a = 5q;
+let b = 1.5u8;
+let c = 0x10m;
+let d = 1.5n;
+let e = 3lx;

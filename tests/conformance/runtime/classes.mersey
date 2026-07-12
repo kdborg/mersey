@@ -1,0 +1,85 @@
+import { console } from "std:console";
+
+abstract class Shape {
+    protected name: string = "?";
+    private area2: float64 = 0.0;
+
+    public constructor(name: string) {
+        this.name = name;
+    }
+
+    public describe(): string {
+        return `${this.name} area=${this.area()}`;
+    }
+
+    public area(): float64 { return 0.0; }
+
+    public get label(): string { return this.name; }
+    public set label(v: string) { this.name = v; }
+}
+
+final class Square extends Shape {
+    private static count: int32 = 0;
+    private readonly side: float64;
+
+    public constructor(side: float64) {
+        super("square");
+        this.side = side;
+        Square.count += 1;
+    }
+
+    public override area(): float64 {
+        return this.side * this.side;
+    }
+
+    public override describe(): string {
+        return "Square: " + super.describe();
+    }
+
+    public static made(): int32 { return Square.count; }
+}
+
+const sq = new Square(4.0);
+console.log(sq.describe());
+console.log(sq.label);
+sq.label = "quadrat";
+console.log(sq.describe());
+console.log(Square.made(), new Square(1.0) instanceof Shape);
+console.log(Square.made());
+
+// Sealed shapes: unknown field assignment throws (§4.1)
+try {
+    sq.wild = 1;
+} catch (e: TypeError) {
+    console.log("sealed:", e.message);
+}
+
+// Errors: typed catches, division by zero traps (§3.6)
+function risky(n: int32): int32 {
+    if (n == 0) { throw new RangeError("n was zero"); }
+    return 10 / n;
+}
+try {
+    risky(0);
+} catch (e: RangeError) {
+    console.log("caught range:", e.message);
+} catch (e: Error) {
+    console.log("caught other");
+}
+try {
+    let boom = 1 / 0;
+} catch (e: RangeError) {
+    console.log("div:", e.message);
+}
+let cleanup = "";
+try {
+    throw new Error("plain");
+} catch (e: Error) {
+    cleanup = "handled";
+} finally {
+    cleanup = cleanup + "+finally";
+}
+console.log(cleanup);
+
+enum Color : uint8 { RED = 1, GREEN, BLUE = 10 }
+console.log(Color.RED, Color.GREEN, Color.BLUE);

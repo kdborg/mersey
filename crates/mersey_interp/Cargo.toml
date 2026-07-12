@@ -1,0 +1,12 @@
+[package]
+name = "mersey_interp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mersey MVP tree-walking interpreter (the bytecode VM replaces this in Phase 2)"
+
+[dependencies]
+mersey_front = { path = "../mersey_front" }
+
+[lints]
+workspace = true

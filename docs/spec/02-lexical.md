@@ -43,8 +43,9 @@ identifier (and the formatter rewrites to NFC).
 Reserved: `abstract as async await break case catch class const continue
 default do else enum export extends extern false final finally for from
 function get if implements import in instanceof interface let new null of
-override private protected public return set static super switch this throw
-true try type typeof void while wrapping yield` plus the primitive type names
+override private protected public readonly return set static super switch
+this throw true try type typeof void while wrapping yield` plus the primitive
+type names
 in §3.1. No contextual keywords: reserved words are reserved everywhere.
 (`in`, `typeof`, and `yield` are reserved for future use and appear in no
 0.1 production.) Reserved words are still permitted as *member names* —

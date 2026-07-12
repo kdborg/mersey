@@ -55,4 +55,15 @@ ROADMAP.md           Phased implementation plan
 
 ## Status
 
-Phase 0: specification. See `ROADMAP.md`.
+**MVP working end-to-end.** The frontend (lexer → parser → binder) is done;
+an MVP interpreter runs Mersey natively (`mersey run app.mersey`) and in the
+browser via the Stage A polyfill:
+
+```sh
+./web/build-and-test.sh          # build engine to WASM + headless e2e test
+cd web && python3 -m http.server # then open http://localhost:8000
+```
+
+The type checker, bytecode VM, and JIT replace the MVP internals in later
+phases without changing behavior — the conformance suites are the contract.
+See `ROADMAP.md`.

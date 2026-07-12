@@ -1,0 +1,53 @@
+import { console } from "std:console";
+
+// Closures capture their environment
+function makeCounter(start: int32): () => int32 {
+    let n = start;
+    return () => {
+        n += 1;
+        return n;
+    };
+}
+const c1 = makeCounter(10);
+const c2 = makeCounter(100);
+console.log(c1(), c1(), c2(), c1());
+
+// Higher-order functions, rest params, defaults
+function apply(f: (x: int32) => int32, x: int32): int32 { return f(x); }
+console.log(apply(x => x * 2, 21));
+function sum(...xs: int32[]): int32 {
+    let t = 0;
+    for (const x of xs) { t += x; }
+    return t;
+}
+console.log(sum(1, 2, 3), sum(), sum(...[4, 5]));
+function greet(name: string, punct: string = "!"): string {
+    return `hi ${name}${punct}`;
+}
+console.log(greet("a"), greet("b", "?"));
+
+// Arrows capture `this` lexically
+class Ticker {
+    private ticks: int32 = 0;
+    public makeTick(): () => int32 {
+        return () => {
+            this.ticks += 1;
+            return this.ticks;
+        };
+    }
+}
+const t = new Ticker();
+const tick = t.makeTick();
+console.log(tick(), tick(), tick());
+
+// Casts: checked vs wrapping (§3.3)
+let wide: int64 = 5000000000l;
+console.log(wide as wrapping int32);
+try {
+    let narrow = wide as int32;
+} catch (e: RangeError) {
+    console.log("checked cast:", e.message);
+}
+console.log(3.7 as int32);
+console.log(300 as wrapping uint8);
+console.log((100 as uint8).toString());

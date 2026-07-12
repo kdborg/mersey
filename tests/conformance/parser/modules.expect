@@ -1,0 +1,18 @@
+(module
+  (import "./account.mersey" names Account (SavingsAccount as Savings))
+  (import "std:format" namespace fmt)
+  (import "std:polyfill" side-effect)
+  (export
+    (const (RATE bigdec = 0.05m)))
+  (export
+    (function open (params (owner string)) : Account
+      (return (new Account (call next ) owner))))
+  (export extern
+    (function main (params (argv string[])) : int32
+      (return 0)))
+  (export extern
+    (class Api
+      (method public ping (params ) : bool
+        (return true))))
+  (export Account (Savings as Sav) from "./account.mersey")
+  (export (open as openAccount)))

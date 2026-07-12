@@ -1,0 +1,36 @@
+(module
+  (import "std:console" names console)
+  (abstract class Shape
+    (field protected readonly name string)
+    (field private area2 float64 = 0.0)
+    (constructor public (params (name string))
+      (expr (= (. this name) name)))
+    (method public abstract area (params ) : float64 ;)
+    (get public label : string
+      (return (. this name)))
+    (set public scale (factor float64)
+      (expr (= (. this area2) (* (. this area2) factor))))
+    (method describe (params ) : string
+      (return (template "" (. this name) ": " (call (. this area) ) ""))))
+  (final class Circle extends Shape implements Comparable<Circle>
+    (field private static count int32 = 0)
+    (field private readonly radius float64)
+    (constructor public (params (radius float64))
+      (expr (call super "circle"))
+      (expr (= (. this radius) radius))
+      (expr (++post (. Circle count))))
+    (method public override area (params ) : float64
+      (return (* 3.14159 (** (. this radius) 2))))
+    (method public compareTo (params (other Circle)) : int32
+      (return (as (paren (- (. this radius) (. other radius))) int32)))
+    (method get (params ) : int32
+      (return 0)))
+  (interface Comparable<T>
+    (method compareTo (params (other T)) : int32)
+    (prop readonly tag? string))
+  (enum Color : uint8
+    (member RED = 1)
+    (member GREEN)
+    (member BLUE))
+  (type Pair<T extends Comparable<T>> = [T, T])
+  (type Handler = ((event: string, data: Data?) => void)))

@@ -1,0 +1,32 @@
+const nested: Map<string, Array<int32>> = new Map<string, Array<int32>>();
+const deeper: Array<Array<Array<int32>>> = make();
+
+let ids = users.map<uint64>((u: User) => u.id);
+let sum = (a: int32, b: int32): int32 => a + b;
+let thunk = () => 42;
+let effect = async (url: string) => {
+    const res = await fetch(url);
+    return res;
+};
+let bare = x => x * 2;
+let asyncBare = async x => await load(x);
+
+function clamp<T extends Comparable<T>>(value: T, lo: T, hi: T): T {
+    if (value.compareTo(lo) < 0) { return lo; }
+    if (value.compareTo(hi) > 0) { return hi; }
+    return value;
+}
+
+let comparison = a < b;
+let alsoComparison = a < b && c > d;
+let genericCall = first<int32>(items);
+
+let fn: (x: int32, ...rest: string[]) => bool = check;
+let pairs: [string, int32][] = table.entries();
+let maybe: string? = null;
+let either: int32 | string = pick();
+let rec: { readonly id: uint64, name?: string } = load2();
+
+let record2 = { a: 1, b: two, ...defaults };
+let list2 = [1, 2, ...tail];
+let viaImport = import("./plugin.mersey");

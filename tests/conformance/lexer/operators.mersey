@@ -1,0 +1,14 @@
+a = b + c - d * e / f % g ** h;
+a += 1; a -= 1; a *= 2; a /= 2; a %= 2; a **= 2;
+a <<= 1; a >>= 1; a &= 1; a |= 1; a ^= 1;
+a &&= b; a ||= b; a ??= b;
+x = a == b != c < d > e <= f >= g;
+x = a << 2 >> 3;
+x = a & b | c ^ ~d;
+x = !a && b || c ?? d;
+i++; i--; ++i; --i;
+y = obj?.field?.[idx]?.(arg);
+z = (a, ...rest) => a;
+list = [1, 2, 3];
+box = new Box<int32>(v as wrapping int32);
+q = cond ? yes : no;

@@ -1,0 +1,47 @@
+(module
+  (let (total int64 = 0l))
+  (for [(let (i = 0) (j = 10)) ; (< i j) ; (++post i), (--post j)]
+    (block
+      (expr (+= total (as i int64)))))
+  (label outer
+    (for-of const row of (call (. grid rows) )
+      (block
+        (for-of const cell of row
+          (block
+            (if (== cell 0)
+              (block
+                (continue outer)))
+            (if (< cell 0)
+              (block
+                (break outer))))))))
+  (while (> total 0l)
+    (block
+      (expr (>>= total 1))))
+  (do-while (< total 5l)
+    (block
+      (expr (++post total))))
+  (switch kind
+    (case 1)
+    (case 2
+      (expr (call handle kind))
+      (break))
+    (default
+      (expr (call reject ))
+      (break)))
+  (try
+    (block
+      (expr (call risky )))
+    (catch (e RangeError)
+      (expr (call report e)))
+    (catch (e Error)
+      (expr (call rethrow e)))
+    (finally
+      (expr (call cleanup ))))
+  (const ([first, second = 0, ...rest] = numbers))
+  (const ({name, type: kind2, size = 4} = header))
+  (if (?? a b)
+    (block
+      (expr (call f ))))
+  (let (m = (?? (paren (&& a b)) c)))
+  (let (p = (** (paren (- 2)) 3)))
+  (let (q = (?: cond (+ x 1) (- y 1)))))

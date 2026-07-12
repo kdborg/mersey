@@ -92,6 +92,11 @@ export class SavingsAccount extends Account { … }
   (§5).
 - `std:` namespace for the standard library; `browser:` for host bindings in
   the browser profile (see architecture docs).
+- Module-level *declarations* (functions, classes, interfaces, enums, type
+  aliases, imports) are order-independent: a function may call one declared
+  below it. Module-level `let`/`const` follow textual order with a temporal
+  dead zone, exactly like locals — this is a compiled language, not a
+  top-to-bottom script.
 
 ## 4.6 Exceptions
 

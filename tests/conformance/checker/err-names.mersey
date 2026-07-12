@@ -1,0 +1,14 @@
+let a = missing;
+let b = c + 1;
+let c = 2;
+const FIXED: int32 = 1;
+FIXED = 2;
+FIXED++;
+let FIXED = 3;
+let dup = 1;
+let dup = 2;
+function f(): Unknown { return null; }
+let g: list<int32> = [];
+enum E : string { A, B, A }
+class Twice { private x: int32; private x: int32; }
+export { ghost };

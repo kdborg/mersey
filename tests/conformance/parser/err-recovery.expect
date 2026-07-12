@@ -1,0 +1,26 @@
+(module
+  (let (ok1 = 1))
+  (let (ok2 = 2))
+  (let (x = (?? a (|| b c))))
+  (let (y = (** (- 2) 3)))
+  (expr (= (+ 1 2) 3))
+  (function inner (params ) : void)
+  (if x
+    (block
+      (empty)))
+  (let (ok4 = 4))
+  (label label
+    (block
+      (expr (call block ))))
+  (const ({type} = header)))
+error[E0201] @ 2:12: expected an expression, found `;`
+error[E0205] @ 4:20: `??` cannot be mixed with `&&`/`||` without parentheses (§6.4)
+error[E0206] @ 5:12: unary operand of `**` must be parenthesized (§6.4)
+error[E0204] @ 6:7: invalid assignment target; expected a variable, member, or index
+error[E0207] @ 7:5: `let` is a reserved word and cannot be used as a binding name
+error[E0201] @ 7:9: expected a binding name, found `=`
+error[E0202] @ 10:5: declarations are only allowed at module level (§6.7); for a local function use `const f = (…) => …;`
+error[E0201] @ 13:1: expected `;`, found `let`
+error[E0203] @ 15:1: a label must be attached to a loop (§6.5)
+error[E0201] @ 16:1: expected `catch` or `finally` after `try` block, found `const`
+error[E0207] @ 16:12: shorthand `{type}` would bind the reserved word `type`; write `type: otherName`

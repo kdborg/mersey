@@ -1,0 +1,33 @@
+// Mersey browser demo: a click counter, no JavaScript written by hand.
+import { console } from "std:console";
+import { document } from "browser:dom";
+
+class Counter {
+    private count: int32 = 0;
+    private readonly caption: string;
+
+    public constructor(caption: string) {
+        this.caption = caption;
+    }
+
+    public increment(): void {
+        this.count += 1;
+    }
+
+    public render(): string {
+        const wave: string = this.count >= 5 ? " 🌊" : "";
+        return `${this.caption}: ${this.count}${wave}`;
+    }
+}
+
+const counter = new Counter("Clicks");
+const out = document.getElementById("out");
+const btn = document.getElementById("btn");
+
+out.textContent = counter.render();
+btn.addEventListener("click", () => {
+    counter.increment();
+    out.textContent = counter.render();
+});
+
+console.log("Mersey is running in your browser 🌊");

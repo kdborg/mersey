@@ -32,8 +32,8 @@ ReservedWord  ::=
   | 'export' | 'extends' | 'extern' | 'false' | 'final' | 'finally' | 'for'
   | 'from' | 'function' | 'get' | 'if' | 'implements' | 'import' | 'in'
   | 'instanceof' | 'interface' | 'let' | 'new' | 'null' | 'of' | 'override'
-  | 'private' | 'protected' | 'public' | 'return' | 'set' | 'static'
-  | 'super' | 'switch' | 'this' | 'throw' | 'true' | 'try' | 'type'
+  | 'private' | 'protected' | 'public' | 'readonly' | 'return' | 'set'
+  | 'static' | 'super' | 'switch' | 'this' | 'throw' | 'true' | 'try' | 'type'
   | 'typeof' | 'void' | 'while' | 'wrapping' | 'yield'
   | PredefinedTypeName ;
 
@@ -53,10 +53,12 @@ IdentifierName ::= Identifier | ReservedWord ;   /* member names only, §6.9 */
 
 ```
 IntLiteral    ::= (DecDigits | HexLiteral | OctLiteral | BinLiteral) IntSuffix? ;
-DecDigits     ::= /[0-9]/ ( /[0-9_]/* /[0-9]/ )? ;
-HexLiteral    ::= '0x' /[0-9a-fA-F]/ ( /[0-9a-fA-F_]/* /[0-9a-fA-F]/ )? ;
-OctLiteral    ::= '0o' /[0-7]/ ( /[0-7_]/* /[0-7]/ )? ;
-BinLiteral    ::= '0b' /[01]/ ( /[01_]/* /[01]/ )? ;
+/* A `_` separator sits between exactly two digits: no leading, trailing,
+   or doubled separators. */
+DecDigits     ::= /[0-9]/ ('_'? /[0-9]/)* ;
+HexLiteral    ::= '0x' /[0-9a-fA-F]/ ('_'? /[0-9a-fA-F]/)* ;
+OctLiteral    ::= '0o' /[0-7]/ ('_'? /[0-7]/)* ;
+BinLiteral    ::= '0b' /[01]/ ('_'? /[01]/)* ;
 IntSuffix     ::= 'u' | 'l' | 'ul'
                 | 'i8' | 'i16' | 'i32' | 'i64'
                 | 'u8' | 'u16' | 'u32' | 'u64' ;

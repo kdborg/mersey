@@ -1,0 +1,13 @@
+//! Mersey language frontend.
+//!
+//! Pipeline (spec §1.4): decode → lex → parse → bind → typecheck.
+//! This crate currently implements decode (spec §2.1) and lex (spec §6.2).
+
+pub mod ast;
+pub mod astdump;
+pub mod bind;
+pub mod diag;
+pub mod lexer;
+pub mod parser;
+pub mod source;
+pub mod token;

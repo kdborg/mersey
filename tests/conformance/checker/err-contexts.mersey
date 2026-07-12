@@ -1,0 +1,32 @@
+return 1;
+break;
+continue;
+this.x = 1;
+let w = await p();
+function p(): int32 { return 1; }
+
+function ctx(): void {
+    let t = this;
+    super.m();
+    let inner = await p();
+    let ok = async () => await p();
+    let alsoBad = () => await p();
+    missing: while (true) { break missing; }
+    while (true) { break gone; }
+}
+
+class Base {}
+class Sub extends Base {
+    public constructor() {
+        super();
+    }
+    public m(): void {
+        super();
+        let fine = super.toString;
+    }
+}
+class NoParent {
+    public m(): void {
+        super.m();
+    }
+}

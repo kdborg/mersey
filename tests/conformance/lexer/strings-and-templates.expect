@@ -1,0 +1,81 @@
+1:1 keyword const
+1:7 ident s1
+1:9 punct :
+1:11 keyword string
+1:18 punct =
+1:20 string "double \"quoted\" with \n and \u{1F600}"
+1:61 punct ;
+2:1 keyword const
+2:7 ident s2
+2:9 punct :
+2:11 keyword string
+2:18 punct =
+2:20 string 'single'
+2:28 punct ;
+3:1 keyword const
+3:7 ident c1
+3:9 punct :
+3:11 keyword char
+3:16 punct =
+3:18 char c'A'
+3:22 punct ;
+4:1 keyword const
+4:7 ident c2
+4:9 punct :
+4:11 keyword char
+4:16 punct =
+4:18 char c'\u{1F600}'
+4:30 punct ;
+5:1 keyword const
+5:7 ident c3
+5:9 punct :
+5:11 keyword char
+5:16 punct =
+5:18 char c'\''
+5:23 punct ;
+6:1 keyword const
+6:7 ident t1
+6:10 punct =
+6:12 template `no substitution`
+6:29 punct ;
+7:1 keyword const
+7:7 ident t2
+7:10 punct =
+7:12 template-head `a ${
+7:17 ident name
+7:21 template-middle } b ${
+7:27 int 1
+7:29 punct +
+7:31 int 2
+7:32 template-tail } c`
+7:36 punct ;
+8:1 keyword const
+8:7 ident t3
+8:10 punct =
+8:12 template-head `outer ${
+8:22 template-head `inner ${
+8:31 ident x
+8:32 template-tail }`
+8:35 template-tail } done`
+8:42 punct ;
+9:1 keyword const
+9:7 ident t4
+9:10 punct =
+9:12 template-head `record ${
+9:23 punct (
+9:24 punct {
+9:26 ident a
+9:27 punct :
+9:29 int 1
+9:31 punct }
+9:32 punct )
+9:33 punct .
+9:34 ident a
+9:36 template-tail } end`
+9:42 punct ;
+10:1 keyword const
+10:7 ident t5
+10:10 punct =
+10:12 template `dollar $ not sub, price $5`
+10:40 punct ;
+11:1 eof

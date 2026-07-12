@@ -1,0 +1,16 @@
+(module
+  (import "std:console" names console)
+  (class Greeter
+    (field private readonly name string)
+    (constructor public (params (name string))
+      (expr (= (. this name) name)))
+    (method public greet (params ) : string
+      (return (template "Hello, " (. this name) "! π ≈ 3.14159, 🌊"))))
+  (const (g = (new Greeter "Mersey")))
+  (expr (call (. console log) (call (. g greet) )))
+  (let (small int16 = 1000))
+  (let (wide int64 = small))
+  (let (ratio float64 = (/ wide 3)))
+  (const (price bigdec = 19.99m))
+  (const (total = (* price 3m)))
+  (expr (call (. console log) (call (. total toString) ))))

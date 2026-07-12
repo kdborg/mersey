@@ -1,0 +1,54 @@
+1:1 keyword let
+1:5 ident a
+1:7 punct =
+1:9 string "unterminated
+2:1 keyword let
+2:5 ident b
+2:7 punct =
+2:9 string "bad escape \q here"
+2:29 punct ;
+3:1 keyword let
+3:5 ident c
+3:7 punct =
+3:9 string "bad codepoint \u{110000}"
+3:35 punct ;
+4:1 keyword let
+4:5 ident d
+4:7 punct =
+4:9 string "surrogate \u{D800}"
+4:29 punct ;
+5:1 keyword let
+5:5 ident e
+5:7 punct =
+5:9 char c''
+5:12 punct ;
+6:1 keyword let
+6:5 ident f
+6:7 punct =
+6:9 char c'ab'
+6:14 punct ;
+7:1 keyword let
+7:5 ident g
+7:7 punct =
+7:9 float 1. (float64)
+7:11 punct ;
+8:1 keyword let
+8:5 ident h
+8:7 punct =
+8:9 int 1_
+8:11 punct ;
+9:1 keyword let
+9:5 ident i
+9:7 punct =
+9:9 int 1__0
+9:13 punct ;
+10:1 eof
+error[E0102] @ 1:9: string literal must close before the end of the line
+error[E0103] @ 2:21: unknown escape `\q`
+error[E0103] @ 3:24: escape does not name a Unicode scalar value
+error[E0103] @ 4:20: escape does not name a Unicode scalar value
+error[E0107] @ 5:9: empty character literal
+error[E0107] @ 6:9: character literal must contain exactly one code point
+error[E0105] @ 7:9: expected a digit after the decimal point; write `1.0`, not `1.`
+error[E0109] @ 8:10: `_` must separate two digits
+error[E0109] @ 9:11: `_` must separate two digits

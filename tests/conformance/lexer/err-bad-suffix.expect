@@ -1,0 +1,31 @@
+1:1 keyword let
+1:5 ident a
+1:7 punct =
+1:9 int 5q
+1:11 punct ;
+2:1 keyword let
+2:5 ident b
+2:7 punct =
+2:9 int 1.5u8
+2:14 punct ;
+3:1 keyword let
+3:5 ident c
+3:7 punct =
+3:9 int 0x10m
+3:14 punct ;
+4:1 keyword let
+4:5 ident d
+4:7 punct =
+4:9 int 1.5n
+4:13 punct ;
+5:1 keyword let
+5:5 ident e
+5:7 punct =
+5:9 int 3lx
+5:12 punct ;
+6:1 eof
+error[E0104] @ 1:9: invalid suffix `q` on this numeric literal
+error[E0104] @ 2:9: invalid suffix `u8` on this numeric literal
+error[E0104] @ 3:9: invalid suffix `m` on this numeric literal
+error[E0104] @ 4:9: invalid suffix `n` on this numeric literal
+error[E0104] @ 5:9: invalid suffix `lx` on this numeric literal

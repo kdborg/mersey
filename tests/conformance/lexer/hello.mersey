@@ -1,0 +1,28 @@
+// hello.mersey — first Mersey program.
+import { console } from "std:console";
+
+class Greeter {
+    private readonly name: string;
+
+    public constructor(name: string) {
+        this.name = name;
+    }
+
+    public greet(): string {
+        return `Hello, ${this.name}! π ≈ 3.14159, 🌊`;
+    }
+}
+
+const g = new Greeter("Mersey");
+console.log(g.greet());
+
+// Strict typing + C-style numeric coercion:
+let small: int16 = 1000;
+let wide: int64 = small;        // implicit widening, as in C
+let ratio: float64 = wide / 3;  // int promotes to float
+// let bad = small + " apples"; // compile error: no string coercion
+
+// Big numbers are first-class:
+const price: bigdec = 19.99m;
+const total = price * 3m;       // exactly 59.97
+console.log(total.toString());

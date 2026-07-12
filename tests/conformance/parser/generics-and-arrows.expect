@@ -1,0 +1,28 @@
+(module
+  (const (nested Map<string, Array<int32>> = (new Map<string, Array<int32>> )))
+  (const (deeper Array<Array<Array<int32>>> = (call make )))
+  (let (ids = (call (. users map) <uint64> (arrow (params (u User)) (. u id)))))
+  (let (sum = (arrow (params (a int32) (b int32)) : int32 (+ a b))))
+  (let (thunk = (arrow (params ) 42)))
+  (let (effect = (async-arrow (params (url string)) (block (const (res = (await (call fetch url)))) (return res)))))
+  (let (bare = (arrow (params (x)) (* x 2))))
+  (let (asyncBare = (async-arrow (params (x)) (await (call load x)))))
+  (function clamp<T extends Comparable<T>> (params (value T) (lo T) (hi T)) : T
+    (if (< (call (. value compareTo) lo) 0)
+      (block
+        (return lo)))
+    (if (> (call (. value compareTo) hi) 0)
+      (block
+        (return hi)))
+    (return value))
+  (let (comparison = (< a b)))
+  (let (alsoComparison = (&& (< a b) (> c d))))
+  (let (genericCall = (call first <int32> items)))
+  (let (fn ((x: int32, ...rest: string[]) => bool) = check))
+  (let (pairs [string, int32][] = (call (. table entries) )))
+  (let (maybe string? = null))
+  (let (either (int32 | string) = (call pick )))
+  (let (rec {readonly id: uint64, name?: string} = (call load2 )))
+  (let (record2 = (record (a 1) (b two) (... defaults))))
+  (let (list2 = (array 1 2 (... tail))))
+  (let (viaImport = (import-call "./plugin.mersey"))))

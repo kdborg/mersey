@@ -1,0 +1,12 @@
+[package]
+name = "mersey_front"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mersey language frontend: source decoding, lexer (parser and type checker to follow)"
+
+[dependencies]
+unicode-ident = "1"
+
+[lints]
+workspace = true
