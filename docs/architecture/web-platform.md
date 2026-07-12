@@ -159,6 +159,21 @@ The last pieces of the initial integration, all verified in real Chromium
   the iterator protocol, with an array-like fallback. Tree walking
   (`childNodes`, `nodeType`, `Node.ELEMENT_NODE`) and node construction /
   attachment behave as expected.
+- **`instanceof` works against host interfaces.** Every interface has an
+  interface *object* (`window.HTMLElement`), so it can be imported as a value
+  and used on the right of `instanceof` — including for host-backed Mersey
+  instances, which really are elements. It also **narrows**:
+
+  ```mersey
+  import { HTMLElement } from "browser:dom";
+
+  if (node instanceof HTMLElement) {
+      console.log(node.tagName);   // narrowed to HTMLElement
+  }
+  ```
+
+  (`instanceof` now narrows for Mersey classes too — it previously didn't.)
+
 - **Host-backed classes.** A Mersey class may `extend` a host interface, and
   its instances then **are** host objects:
 
@@ -285,8 +300,8 @@ The initial integration is complete. Beyond §5:
   different order.
 - **Host handles are released manually** (`release(obj)`), not by GC — the
   engine's refcounting heap doesn't yet trace into the host's handle table.
-- **`x instanceof HTMLElement`** is not supported for host interfaces
-  (`instanceof` is Mersey-class only); use the host's own checks if needed.
+- Record field order isn't preserved across the bridge (Mersey records are
+  unordered maps).
 - **`iterable<>` / `maplike` declarations** are not expanded, so
   `for (const x of someWebIterable)` needs an explicit index loop.
 - Callbacks are retained for the page's lifetime (no handle release yet).

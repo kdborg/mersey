@@ -72,6 +72,7 @@ extern "C" {
     /// Bulk transfer: engine memory → a fresh host Uint8Array. Returns its
     /// handle, or -1.
     fn host_web_bytes_write(ptr: *const u8, len: usize) -> i64;
+    fn host_web_instanceof(target: i64, ctor: i64) -> u32;
 }
 
 fn read_packed(packed: u64) -> String {
@@ -194,6 +195,9 @@ impl Host for WasmHost {
     }
     fn web_bytes_write(&mut self, bytes: &[u8]) -> i64 {
         unsafe { host_web_bytes_write(bytes.as_ptr(), bytes.len()) }
+    }
+    fn web_instanceof(&mut self, target: i64, ctor: i64) -> bool {
+        unsafe { host_web_instanceof(target, ctor) != 0 }
     }
 }
 

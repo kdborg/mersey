@@ -59,13 +59,23 @@ await page.evaluate(() => document.getElementById("a").remove());
 await page.waitForTimeout(200);
 // Host-backed: the instance IS the element.
 check("REAL BROWSER · `this` is the element (tagName read off the host)",
-      logs.some((l) => /^\[counter\] connected \(label=clicks, tag=MERSEY-COUNTER\)$/.test(l)),
+      logs.some((l) => /^\[counter\] connected \(label=clicks, tag=MERSEY-COUNTER,/.test(l)),
       logs.join(" | "));
 const attrSet = await page.$eval("mersey-hello", (e) => e.getAttribute("data-mersey"));
 check("REAL BROWSER · host method called on `this` (setAttribute)", attrSet === "yes", attrSet);
 const isElement = await page.$eval("#host mersey-counter",
                                    (e) => e instanceof HTMLElement && e.isConnected);
 check("REAL BROWSER · instance passed as an Element really is in the DOM", isElement === true);
+
+// instanceof against host interfaces
+check("REAL BROWSER · `x instanceof HTMLElement` (host object)",
+      logs.some((l) => /^instanceof: element is HTMLElement = true$/.test(l)), logs.join(" | "));
+check("REAL BROWSER · `x instanceof Node` (base interface, prototype chain)",
+      logs.some((l) => /^instanceof: element is Node = true$/.test(l)), logs.join(" | "));
+check("REAL BROWSER · instanceof narrows the type (tagName reachable)",
+      logs.some((l) => /^instanceof: narrowed, tag = SPAN$/.test(l)), logs.join(" | "));
+check("REAL BROWSER · a host-backed Mersey instance IS an HTMLElement",
+      logs.some((l) => /isHTMLElement=true/.test(l)), logs.join(" | "));
 
 check("REAL BROWSER · disconnected() ran with that instance's state",
       logs.some((l) => /^\[counter\] disconnected after 3 clicks$/.test(l)),

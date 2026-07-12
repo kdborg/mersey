@@ -211,6 +211,17 @@ export function makeBridge(globalObject, invokeCallback) {
     bytesWrite(view) {
       return handleFor(new Uint8ClampedArray(view)); // copies out of wasm memory
     },
+    /// `object instanceof constructor`, both sides being handles.
+    instanceOf(target, ctor) {
+      const obj = handles[target];
+      const Ctor = handles[ctor];
+      if (obj == null || typeof Ctor !== "function") return 0;
+      try {
+        return obj instanceof Ctor ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    },
     /// Drop a handle: the object becomes collectable by the JS GC.
     release(target) {
       const obj = handles[target];

@@ -140,6 +140,7 @@ const imports = {
     },
     host_web_bytes_write: (ptr, len) =>
       BigInt(bridge.bytesWrite(mem().subarray(Number(ptr), Number(ptr) + Number(len)))),
+    host_web_instanceof: (t, c) => bridge.instanceOf(Number(t), Number(c)),
   },
 };
 ({ instance: { exports } } = await WebAssembly.instantiate(wasmBytes, imports));

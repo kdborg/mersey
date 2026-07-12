@@ -244,6 +244,9 @@ pub enum Ty {
     Enum(EnumId),
     /// The class object itself (statics, `instanceof` RHS).
     ClassMeta(ClassId),
+    /// The host *interface object* (`window.HTMLElement`) — the right-hand
+    /// side of `x instanceof HTMLElement`, plus its statics/constants.
+    IfaceMeta(IfaceId),
     /// The enum object itself (`Color.RED`).
     EnumMeta(EnumId),
     /// Built-in namespaces (`console`, `document`); Any-typed namespace for
@@ -778,6 +781,7 @@ impl Checker {
             }
             Ty::Enum(id) => self.enums[*id].name.clone(),
             Ty::ClassMeta(id) => format!("class {}", self.classes[*id].name),
+            Ty::IfaceMeta(id) => format!("interface {}", self.ifaces[*id].name),
             Ty::EnumMeta(id) => format!("enum {}", self.enums[*id].name),
             Ty::Namespace(_) => "namespace".into(),
             Ty::Var(tv) => self.tv_names[*tv].clone(),
@@ -956,9 +960,15 @@ impl Checker {
                         ("std:console", "console") => Ty::Namespace(Ns::Console),
                         ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
                         ("browser:dom", global) => {
-                            match crate::webapi::global_type(global) {
-                                Some(ast_ty) => self.resolve_type(ast_ty),
-                                None => Ty::Any,
+                            // An interface NAME imported as a value is the
+                            // interface object: `x instanceof HTMLElement`.
+                            if let Some(TypeDef::Iface(iid)) = self.type_defs.get(global) {
+                                Ty::IfaceMeta(*iid)
+                            } else {
+                                match crate::webapi::global_type(global) {
+                                    Some(ast_ty) => self.resolve_type(ast_ty),
+                                    None => Ty::Any,
+                                }
                             }
                         }
                         _ => Ty::Any,
@@ -2014,6 +2024,28 @@ impl Checker {
     fn narrow_from(&mut self, cond: &Expr) -> (HashMap<String, Ty>, HashMap<String, Ty>) {
         let mut then = HashMap::new();
         let mut els = HashMap::new();
+        // `if (x instanceof Foo)` narrows x to Foo in the then-branch.
+        if let Expr::Binary { op: BinOp::Instanceof, l, r } = cond {
+            if let Expr::Ident(n) = l.as_ref() {
+                let narrowed = match self.check_expr(r, None) {
+                    Ty::ClassMeta(id) => {
+                        let args: Vec<Ty> =
+                            self.classes[id].tparams.iter().map(|_| Ty::Any).collect();
+                        Some(Ty::Class(id, Rc::new(args)))
+                    }
+                    Ty::IfaceMeta(id) => {
+                        let args: Vec<Ty> =
+                            self.ifaces[id].tparams.iter().map(|_| Ty::Any).collect();
+                        Some(Ty::Iface(id, Rc::new(args)))
+                    }
+                    _ => None,
+                };
+                if let Some(t) = narrowed {
+                    then.insert(n.text.clone(), t);
+                }
+            }
+            return (then, els);
+        }
         if let Expr::Binary { op, l, r } = cond {
             let (ident, other) = match (l.as_ref(), r.as_ref()) {
                 (Expr::Ident(n), o) | (o, Expr::Ident(n)) => (Some(n), o),
@@ -2513,10 +2545,10 @@ impl Checker {
             BinOp::Instanceof => {
                 self.check_expr(l, None);
                 let rt = self.check_expr(r, None);
-                if !matches!(rt, Ty::ClassMeta(_) | Ty::Any | Ty::Err) {
+                if !matches!(rt, Ty::ClassMeta(_) | Ty::IfaceMeta(_) | Ty::Any | Ty::Err) {
                     self.error(
                         Code::BadOperand,
-                        "right side of `instanceof` must be a class",
+                        "right side of `instanceof` must be a class or a host interface",
                         pos_of(r),
                     );
                 }
@@ -3157,6 +3189,19 @@ impl Checker {
                 } else {
                     self.no_member(&format!("class {}", self.classes[id].name), name, pos)
                 }
+            }
+            Ty::IfaceMeta(id) => {
+                let id = *id;
+                // Constants and statics live on the interface object; the
+                // generator emits them as `__static_<Iface>`.
+                let statics = format!("__static_{}", self.ifaces[id].name);
+                if let Some(TypeDef::Iface(sid)) = self.type_defs.get(&statics) {
+                    let sid = *sid;
+                    if let Some((t, optional)) = self.iface_member(sid, name) {
+                        return if optional { nullable(t) } else { t };
+                    }
+                }
+                self.no_member(&format!("interface {}", self.ifaces[id].name), name, pos)
             }
             Ty::EnumMeta(id) => {
                 let id = *id;

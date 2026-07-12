@@ -3,6 +3,7 @@
 import { console } from "std:console";
 import { document } from "browser:dom";
 import { CustomElement, defineElement } from "../lib/custom-element.mersey";
+import { HTMLElement, Node } from "browser:dom";
 
 class CounterBadge extends CustomElement {
     private count: int32 = 0;
@@ -19,7 +20,11 @@ class CounterBadge extends CustomElement {
             this.count += 1;
             this.render();
         });
-        console.log(`[counter] connected (label=${this.label}, tag=${this.tagName})`);
+        // A host-backed Mersey instance really is an HTMLElement.
+        console.log(
+            `[counter] connected (label=${this.label}, tag=${this.tagName}, ` +
+            `isHTMLElement=${this instanceof HTMLElement})`,
+        );
     }
 
     public override attributeChanged(name: string, oldValue: string, newValue: string): void {
@@ -53,3 +58,19 @@ const added = document.createElement("mersey-counter");
 added.setAttribute("label", "taps");
 // A host-backed instance passes anywhere an Element is expected.
 (document.getElementById("host") as Element).appendChild(added);
+
+// --- instanceof against host interfaces
+
+const badge = document.getElementById("a") as Element;
+console.log(`instanceof: element is HTMLElement = ${badge instanceof HTMLElement}`);
+console.log(`instanceof: element is Node = ${badge instanceof Node}`);
+
+// A host-backed Mersey instance IS an HTMLElement — this is the real test.
+const mine = document.getElementById("host") as Element;
+console.log(`instanceof: div is HTMLElement = ${mine instanceof HTMLElement}`);
+
+// Negative case + narrowing
+const notAnElement = document.createElement("span");
+if (notAnElement instanceof HTMLElement) {
+    console.log(`instanceof: narrowed, tag = ${notAnElement.tagName}`);
+}

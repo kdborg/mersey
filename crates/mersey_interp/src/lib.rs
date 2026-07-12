@@ -121,6 +121,10 @@ pub trait Host {
     fn web_bytes_write(&mut self, _bytes: &[u8]) -> i64 {
         -1
     }
+    /// `object instanceof constructor` on the host side.
+    fn web_instanceof(&mut self, _target: i64, _ctor: i64) -> bool {
+        false
+    }
 }
 
 // ---- values -------------------------------------------------------------------
@@ -2530,22 +2534,38 @@ impl Interp {
         }
     }
 
-    fn instance_of(&self, l: &Value, r: &Value) -> VResult {
-        let Value::Class(want) = r else {
-            return self.type_error("right side of instanceof must be a class");
-        };
-        let mut ok = false;
-        if let Value::Instance(i) = l {
-            let mut cls = Some(i.borrow().class.clone());
-            while let Some(c) = cls {
-                if Rc::ptr_eq(&c, want) {
-                    ok = true;
-                    break;
+    fn instance_of(&mut self, l: &Value, r: &Value) -> VResult {
+        match r {
+            // `x instanceof SomeMerseyClass`
+            Value::Class(want) => {
+                let mut ok = false;
+                if let Value::Instance(i) = l {
+                    let mut cls = Some(i.borrow().class.clone());
+                    while let Some(c) = cls {
+                        if Rc::ptr_eq(&c, want) {
+                            ok = true;
+                            break;
+                        }
+                        cls = c.parent.clone();
+                    }
                 }
-                cls = c.parent.clone();
+                Ok(Value::Bool(ok))
             }
+            // `x instanceof HTMLElement` — a host interface object. The left
+            // side may be a host object, or a host-backed Mersey instance.
+            Value::JsRef(ctor) => {
+                let target = match l {
+                    Value::JsRef(h) => Some(*h),
+                    Value::Instance(i) => i.borrow().host,
+                    _ => None,
+                };
+                match target {
+                    Some(h) => Ok(Value::Bool(self.host.web_instanceof(h, *ctor))),
+                    None => Ok(Value::Bool(false)),
+                }
+            }
+            _ => self.type_error("right side of instanceof must be a class or host interface"),
         }
-        Ok(Value::Bool(ok))
     }
 
     // ---- promises, microtasks, coroutines -------------------------------

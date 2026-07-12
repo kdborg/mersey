@@ -421,10 +421,11 @@ for (const [name, rec] of interfaces) {
       statics.push(`    readonly ${m.name}: ${mapType(m.idlType)};`);
     }
   }
-  if (statics.length) {
-    out += `interface __static_${name} {\n${statics.join("\n")}\n}\n`;
-    staticGlobals.push([name, `__static_${name}`]);
-  }
+  // Every interface has an interface OBJECT (window.HTMLElement): emit it as
+  // an ambient global so `x instanceof HTMLElement` works, and hang the
+  // constants/statics off it.
+  out += `interface __static_${name} {\n${statics.join("\n")}\n}\n`;
+  staticGlobals.push([name, `__static_${name}`]);
 }
 
 // Interface objects as ambient globals (constants + statics).

@@ -63,3 +63,9 @@ pub fn webapi() -> &'static WebApi {
 pub fn global_type(name: &str) -> Option<&'static Type> {
     webapi().globals.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
 }
+
+/// Is `name` an ambient global at all? (Interface objects included, so
+/// `import { HTMLElement } from "browser:dom"` binds.)
+pub fn is_global(name: &str) -> bool {
+    webapi().globals.iter().any(|(n, _)| n == name)
+}
