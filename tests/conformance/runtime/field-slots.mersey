@@ -1,0 +1,55 @@
+import { console } from "std:console";
+
+// Sealed shapes (§4.1): a class's field layout is fixed when the class is
+// defined, base-class fields first. Field access compiles to a constant
+// offset, cached per access site. These tests pin the layout rules that the
+// cache depends on.
+
+class Base {
+    public a: int32 = 1;
+    public b: int32 = 2;
+
+    public sum(): int32 {
+        return this.a + this.b;
+    }
+}
+
+// Derived fields come *after* the base's, so a Base method reading `this.a`
+// works unchanged on a Derived instance: same offset, deeper class.
+class Derived extends Base {
+    public c: int32 = 3;
+
+    public override sum(): int32 {
+        return this.a + this.b + this.c;
+    }
+}
+
+const base = new Base();
+const derived = new Derived();
+console.log(base.sum(), derived.sum());
+
+// The same *source site* (`o.a` inside `first`) sees two different classes.
+// A cache keyed on the class must miss and refill, never reuse a stale slot.
+function first(o: Base): int32 {
+    return o.a;
+}
+
+class Other {
+    public z: int32 = 9;
+    public a: int32 = 42; // `a` lives at a different offset here
+
+    public geta(): int32 {
+        return this.a;
+    }
+}
+
+console.log(first(base), first(derived), new Other().geta());
+
+// Writes go through the same slots as reads.
+derived.a = 10;
+derived.c = 30;
+console.log(derived.sum(), first(derived));
+
+// Fields are per-instance, not per-class.
+const d2 = new Derived();
+console.log(d2.a, derived.a);

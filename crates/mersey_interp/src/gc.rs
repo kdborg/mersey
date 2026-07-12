@@ -142,7 +142,7 @@ pub(crate) fn collect(roots: &Roots) -> GcStats {
                         reachable += 1;
                         true
                     } else {
-                        rc.borrow_mut().fields.clear();
+                        rc.borrow_mut().slots.clear();
                         collected += 1;
                         false
                     }
@@ -321,10 +321,7 @@ fn mark_value(v: &Value, marked: &mut HashSet<usize>, stack: &mut Vec<Env>) {
             if mark_ptr(Rc::as_ptr(i) as usize, marked) {
                 let (fields, class) = {
                     let inst = i.borrow();
-                    (
-                        inst.fields.values().cloned().collect::<Vec<Value>>(),
-                        inst.class.clone(),
-                    )
+                    (inst.slots.clone(), inst.class.clone())
                 };
                 for f in &fields {
                     mark_value(f, marked, stack);

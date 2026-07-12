@@ -304,10 +304,19 @@ enum FnBody {
 }
 
 pub struct ClassDef {
+    /// Process-unique, never reused. Inline caches key on this rather than on
+    /// the `Rc` address, which a later class could otherwise reuse after a
+    /// free and silently make a stale cache hit (§4.1 layouts differ).
+    pub(crate) id: u64,
     name: String,
     pub(crate) parent: Option<Rc<ClassDef>>,
     /// Instance fields in initialization order (base-class fields first).
+    /// Sealed shapes (§4.1) mean this layout is fixed at class-definition
+    /// time, so a field is a **constant offset** — the whole point of
+    /// removing prototypes.
     fields: Vec<(String, Option<&'static Expr>)>,
+    /// name → slot, computed once when the class is defined.
+    field_slots: HashMap<String, u32>,
     methods: HashMap<String, Rc<FnData>>,
     getters: HashMap<String, Rc<FnData>>,
     setters: HashMap<String, Rc<FnData>>,
@@ -323,7 +332,9 @@ pub struct ClassDef {
 
 pub struct Instance {
     pub(crate) class: Rc<ClassDef>,
-    pub(crate) fields: HashMap<String, Value>,
+    /// Flat slots, indexed by the class's fixed layout — a constant-offset
+    /// load, not a hash lookup.
+    pub(crate) slots: Vec<Value>,
     /// Host object backing this instance (`class X extends HTMLElement`):
     /// members not declared in Mersey resolve against it, and the instance
     /// crosses the bridge AS that object.
@@ -507,11 +518,39 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     }
 }
 
+thread_local! {
+    static NEXT_CLASS_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+fn fresh_class_id() -> u64 {
+    NEXT_CLASS_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
+impl ClassDef {
+    /// The constant offset of `name` in this class's instances, if it is a
+    /// declared field.
+    pub(crate) fn slot_of(&self, name: &str) -> Option<u32> {
+        self.field_slots.get(name).copied()
+    }
+}
+
 fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> ClassDef {
+    let fields = vec![("message".to_string(), None), ("stack".to_string(), None)];
+    let field_slots = fields
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| (n.clone(), i as u32))
+        .collect();
     ClassDef {
+        id: fresh_class_id(),
         name: name.to_string(),
         parent,
-        fields: vec![("message".to_string(), None), ("stack".to_string(), None)],
+        field_slots,
+        fields,
         methods: HashMap::new(),
         getters: HashMap::new(),
         setters: HashMap::new(),
@@ -532,14 +571,15 @@ impl Interp {
 
     fn throw(&self, class: &'static str, msg: impl Into<String>) -> Thrown {
         let cls = self.error_classes[class].clone();
-        let mut fields = HashMap::new();
-        fields.insert("message".to_string(), Value::Str(Rc::new(msg.into().chars().collect())));
-        // Attach where it happened and how we got there.
         let stack = self.stack_trace();
-        fields.insert("stack".to_string(), Value::Str(Rc::new(stack.chars().collect())));
+        let mut slots = vec![Value::Null; cls.fields.len()];
+        slots[0] = Value::Str(Rc::new(msg.into().chars().collect())); // message
+        if slots.len() > 1 {
+            slots[1] = Value::Str(Rc::new(stack.chars().collect())); // stack
+        }
         Thrown(Value::Instance(Rc::new(RefCell::new(Instance {
             class: cls,
-            fields,
+            slots,
             host: None,
         }))))
     }
@@ -586,13 +626,15 @@ impl Interp {
         match &t.0 {
             Value::Instance(i) => {
                 let i = i.borrow();
-                let msg = i.fields.get("message").map(to_display).unwrap_or_default();
-                let stack = i
-                    .fields
-                    .get("stack")
-                    .map(to_display)
-                    .unwrap_or_default();
-                format!("{}: {}{}", i.class.name, msg, stack)
+                let get = |name: &str| {
+                    i.class
+                        .field_slots
+                        .get(name)
+                        .and_then(|s| i.slots.get(*s as usize))
+                        .map(to_display)
+                        .unwrap_or_default()
+                };
+                format!("{}: {}{}", i.class.name, get("message"), get("stack"))
             }
             other => format!("uncaught: {}", to_display(other)),
         }
@@ -1039,9 +1081,16 @@ impl Interp {
             }
         }
 
+        let field_slots: HashMap<String, u32> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| (n.clone(), i as u32))
+            .collect();
         let def = Rc::new(ClassDef {
+            id: fresh_class_id(),
             name: c.name.text.clone(),
             parent,
+            field_slots,
             fields,
             methods,
             getters,
@@ -1968,14 +2017,14 @@ impl Interp {
 
     fn instantiate(&mut self, cls: &Rc<ClassDef>, args: Vec<Value>) -> VResult {
         if cls.is_builtin_error {
-            let mut fields = HashMap::new();
-            fields.insert(
-                "message".to_string(),
-                args.into_iter().next().unwrap_or(Value::Null),
-            );
+            let mut slots = vec![Value::Null; cls.fields.len()];
+            slots[0] = args.into_iter().next().unwrap_or(Value::Null);
+            if slots.len() > 1 {
+                slots[1] = Value::Str(Rc::new(self.stack_trace().chars().collect()));
+            }
             let inst = Rc::new(RefCell::new(Instance {
                 class: cls.clone(),
-                fields,
+                slots,
                 host: None,
             }));
             gc::track_instance(&inst);
@@ -1983,7 +2032,7 @@ impl Interp {
         }
         let inst = Rc::new(RefCell::new(Instance {
             class: cls.clone(),
-            fields: HashMap::new(),
+            slots: vec![Value::Null; cls.fields.len()],
             host: None,
         }));
         gc::track_instance(&inst);
@@ -1991,7 +2040,7 @@ impl Interp {
         let env = cls.env.clone().unwrap_or_else(|| self.globals.clone());
 
         // Field initializers, base-first, with `this` in scope.
-        for (name, init) in &cls.fields {
+        for (slot, (_, init)) in cls.fields.clone().iter().enumerate() {
             let v = match init {
                 Some(e) => {
                     let scope = child_env(&env);
@@ -2000,7 +2049,7 @@ impl Interp {
                 }
                 None => Value::Null,
             };
-            inst.borrow_mut().fields.insert(name.clone(), v);
+            inst.borrow_mut().slots[slot] = v;
         }
 
         // Nearest constructor up the chain; implicit pass-through otherwise.
@@ -2080,9 +2129,11 @@ impl Interp {
             }
             Value::Instance(inst) => {
                 {
+                    // Constant-offset load: sealed shapes make the slot
+                    // known from the class alone (§4.1).
                     let i = inst.borrow();
-                    if let Some(v) = i.fields.get(name) {
-                        return Ok(Some(v.clone()));
+                    if let Some(slot) = i.class.field_slots.get(name) {
+                        return Ok(i.slots.get(*slot as usize).cloned());
                     }
                 }
                 let class = inst.borrow().class.clone();
@@ -2166,9 +2217,11 @@ impl Interp {
                     self.call_closure(&closure, vec![value])?;
                     return Ok(());
                 }
-                // Sealed shapes (§4.1): the field must be declared.
-                if class_has_field(&class, name) || inst.borrow().fields.contains_key(name) {
-                    inst.borrow_mut().fields.insert(name.to_string(), value);
+                // Sealed shapes (§4.1): the field must be declared, and its
+                // slot is a constant.
+                let slot = class.field_slots.get(name).copied();
+                if let Some(slot) = slot {
+                    inst.borrow_mut().slots[slot as usize] = value;
                     return Ok(());
                 }
                 // Host-backed class: write through to the host object
@@ -3000,7 +3053,7 @@ impl Interp {
             Value::Instance(inst) => {
                 let declared_in_mersey = {
                     let i = inst.borrow();
-                    i.fields.contains_key(name)
+                    i.class.field_slots.contains_key(name)
                         || find_in_chain(&i.class, |c| c.methods.get(name).map(|_| ())).is_some()
                         || find_in_chain(&i.class, |c| c.getters.get(name).map(|_| ())).is_some()
                 };

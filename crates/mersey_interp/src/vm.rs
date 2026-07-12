@@ -28,6 +28,16 @@ use crate::{
 
 // ---- chunk -----------------------------------------------------------------
 
+/// A monomorphic inline cache: one per member-access site.
+///
+/// Sealed shapes (§4.1) mean a class's field layout is fixed forever, so once
+/// a site has seen a class the offset never changes. `class == 0` is empty.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ICache {
+    pub(crate) class: u64,
+    pub(crate) slot: u32,
+}
+
 pub struct Chunk {
     pub code: Vec<Op>,
     pub consts: Vec<Value>,
@@ -40,6 +50,8 @@ pub struct Chunk {
     pub positions: Vec<Pos>,
     /// The module this chunk came from.
     pub module: String,
+    /// One inline cache per member-access site, filled on first execution.
+    pub(crate) caches: Vec<std::cell::Cell<ICache>>,
 }
 
 impl Chunk {
@@ -85,8 +97,8 @@ pub enum Op {
     SuperCall(u8),
     SuperMember(u16),
     CallSuperMethod(u16, u8),
-    GetMember(u16),
-    SetMember(u16),
+    GetMember(u16, u16),
+    SetMember(u16, u16),
     IndexGet,
     IndexSet,
     MakeArray,
@@ -234,8 +246,8 @@ pub fn listing(module: &'static Module) -> String {
 fn annotate(ch: &Chunk, op: &Op) -> String {
     match op {
         Op::Const(i) => format!("        ; {}", to_display(&ch.consts[*i as usize])),
-        Op::LoadName(i) | Op::StoreName(i) | Op::DeclareName(i) | Op::GetMember(i)
-        | Op::SetMember(i) | Op::CallMethod(i, _) | Op::CallMethodV(i) | Op::NewNamed(i, _)
+        Op::LoadName(i) | Op::StoreName(i) | Op::DeclareName(i) | Op::GetMember(i, _)
+        | Op::SetMember(i, _) | Op::CallMethod(i, _) | Op::CallMethodV(i) | Op::NewNamed(i, _)
         | Op::NewNamedV(i) | Op::SuperMember(i) | Op::CallSuperMethod(i, _)
         | Op::RecordSetField(i) => {
             format!("        ; {}", ch.names[*i as usize])
@@ -273,6 +285,8 @@ struct C {
     temp: u32,
     labeled_next: Option<String>,
     module: String,
+    /// Number of inline-cache slots reserved so far.
+    n_caches: u16,
     ok: bool,
 }
 
@@ -280,6 +294,7 @@ impl C {
     fn new() -> C {
         C {
             code: vec![],
+            n_caches: 0,
             positions: vec![],
             cur_pos: Pos { line: 0, col: 0 },
             consts: vec![],
@@ -309,6 +324,7 @@ impl C {
             protos: self.protos,
             positions: self.positions,
             module: self.module,
+            caches: (0..self.n_caches).map(|_| std::cell::Cell::new(ICache::default())).collect(),
         };
         debug_assert!(verify(&chunk).is_ok(), "verifier: {:?}", verify(&chunk));
         Some(Rc::new(chunk))
@@ -316,6 +332,24 @@ impl C {
 
     fn bail(&mut self) {
         self.ok = false;
+    }
+
+    /// Reserve a fresh cache slot: caches are per *site*, not per name, so a
+    /// megamorphic site elsewhere cannot poison a monomorphic one here.
+    fn new_cache(&mut self) -> u16 {
+        let i = self.n_caches;
+        self.n_caches += 1;
+        i
+    }
+
+    fn emit_get_member(&mut self, ni: u16) -> usize {
+        let c = self.new_cache();
+        self.emit(Op::GetMember(ni, c))
+    }
+
+    fn emit_set_member(&mut self, ni: u16) -> usize {
+        let c = self.new_cache();
+        self.emit(Op::SetMember(ni, c))
     }
 
     fn emit(&mut self, op: Op) -> usize {
@@ -471,7 +505,7 @@ impl C {
                     c.emit(Op::LoadName(n_idx));
                     c.emit(Op::LoadName(n_items));
                     let len = c.name("length");
-                    c.emit(Op::GetMember(len));
+                    c.emit_get_member(len);
                     c.emit(Op::Bin(BinOp::Lt));
                     let jf = c.emit(Op::JumpIfFalse(0));
                     c.emit(Op::PushScope);
@@ -893,11 +927,11 @@ impl C {
                 let i = self.name(name);
                 if *optional {
                     let j = self.emit(Op::OnNullJump(0));
-                    self.emit(Op::GetMember(i));
+                    self.emit_get_member(i);
                     let end = self.here();
                     self.patch(j, end);
                 } else {
-                    self.emit(Op::GetMember(i));
+                    self.emit_get_member(i);
                 }
             }
             Expr::Index { obj, index, optional } => {
@@ -1029,7 +1063,7 @@ impl C {
                 self.emit(Op::DeclareName(no));
                 let nm = self.name(name);
                 self.emit(Op::LoadName(no));
-                self.emit(Op::GetMember(nm));
+                self.emit_get_member(nm);
                 if !prefix {
                     self.emit(Op::Dup); // old kept as result
                 }
@@ -1044,7 +1078,7 @@ impl C {
                 self.emit(Op::DeclareName(nv));
                 self.emit(Op::LoadName(no));
                 self.emit(Op::LoadName(nv));
-                self.emit(Op::SetMember(nm));
+                self.emit_set_member(nm);
                 self.emit(Op::Pop);
                 self.scope_depth -= 1;
                 self.emit(Op::PopScope);
@@ -1097,7 +1131,7 @@ impl C {
                     self.expr(obj);
                     self.expr(value);
                     let i = self.name(name);
-                    self.emit(Op::SetMember(i));
+                    self.emit_set_member(i);
                 }
                 Expr::Index { obj, index, .. } => {
                     self.expr(obj);
@@ -1170,7 +1204,7 @@ impl C {
                 self.emit(Op::DeclareName(no));
                 let nm = self.name(name);
                 self.emit(Op::LoadName(no));
-                self.emit(Op::GetMember(nm));
+                self.emit_get_member(nm);
                 self.expr(value);
                 self.emit(Op::Bin(bin.expect("compound")));
                 let v = self.fresh_temp("v");
@@ -1178,7 +1212,7 @@ impl C {
                 self.emit(Op::DeclareName(nv));
                 self.emit(Op::LoadName(no));
                 self.emit(Op::LoadName(nv));
-                self.emit(Op::SetMember(nm));
+                self.emit_set_member(nm);
                 self.scope_depth -= 1;
                 self.emit(Op::PopScope);
             }
@@ -1536,21 +1570,62 @@ fn exec(
                 let v = throwing!(i.call_super_method(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
             }
-            Op::GetMember(ni) => {
+            Op::GetMember(ni, ci) => {
                 let o = stack.pop().expect("obj");
-                let name = &chunk.names[ni as usize];
-                let v = throwing!(match i.get_member(&o, name) {
-                    Ok(Some(v)) => Ok(v),
-                    Ok(None) =>
-                        Err(i.throw("TypeError", format!("no member `{name}` on {}", kind_of(&o)))),
-                    Err(t) => Err(t),
-                });
+                // Fast path: a hit is a constant-offset load out of the
+                // instance's slot vector — no hashing, no chain walk.
+                let hit = match &o {
+                    Value::Instance(inst) => {
+                        let b = inst.borrow();
+                        let ic = chunk.caches[ci as usize].get();
+                        if ic.class == b.class.id {
+                            Some(b.slots[ic.slot as usize].clone())
+                        } else if let Some(slot) = b.class.slot_of(&chunk.names[ni as usize]) {
+                            chunk.caches[ci as usize].set(ICache { class: b.class.id, slot });
+                            Some(b.slots[slot as usize].clone())
+                        } else {
+                            None // a method, a getter, or an error: slow path
+                        }
+                    }
+                    _ => None,
+                };
+                let v = match hit {
+                    Some(v) => v,
+                    None => {
+                        let name = &chunk.names[ni as usize];
+                        throwing!(match i.get_member(&o, name) {
+                            Ok(Some(v)) => Ok(v),
+                            Ok(None) => Err(i
+                                .throw("TypeError", format!("no member `{name}` on {}", kind_of(&o)))),
+                            Err(t) => Err(t),
+                        })
+                    }
+                };
                 stack.push(v);
             }
-            Op::SetMember(ni) => {
+            Op::SetMember(ni, ci) => {
                 let v = stack.pop().expect("val");
                 let o = stack.pop().expect("obj");
-                throwing!(i.set_member(&o, &chunk.names[ni as usize], v.clone()));
+                let stored = match &o {
+                    Value::Instance(inst) => {
+                        let mut b = inst.borrow_mut();
+                        let ic = chunk.caches[ci as usize].get();
+                        if ic.class == b.class.id {
+                            b.slots[ic.slot as usize] = v.clone();
+                            true
+                        } else if let Some(slot) = b.class.slot_of(&chunk.names[ni as usize]) {
+                            chunk.caches[ci as usize].set(ICache { class: b.class.id, slot });
+                            b.slots[slot as usize] = v.clone();
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+                if !stored {
+                    throwing!(i.set_member(&o, &chunk.names[ni as usize], v.clone()));
+                }
                 stack.push(v);
             }
             Op::IndexGet => {
@@ -1809,12 +1884,14 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
                 bounds(i, chunk.names.len(), "name")?;
                 (a as i32, 1)
             }
-            Op::GetMember(i) => {
+            Op::GetMember(i, c) => {
                 bounds(i, chunk.names.len(), "name")?;
+                bounds(c, chunk.caches.len(), "cache")?;
                 (1, 1)
             }
-            Op::SetMember(i) => {
+            Op::SetMember(i, c) => {
                 bounds(i, chunk.names.len(), "name")?;
+                bounds(c, chunk.caches.len(), "cache")?;
                 (2, 1)
             }
             Op::IndexGet => (2, 1),
