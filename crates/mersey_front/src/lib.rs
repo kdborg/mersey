@@ -6,7 +6,9 @@
 pub mod ast;
 pub mod astdump;
 pub mod bind;
+pub mod check;
 pub mod diag;
+pub mod fmt;
 pub mod lexer;
 pub mod parser;
 pub mod source;

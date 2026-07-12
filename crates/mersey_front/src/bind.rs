@@ -27,7 +27,7 @@ pub struct BindOutput {
 
 /// Names every module sees without importing: the built-in error classes
 /// (spec §4.6 — only `Error` subclasses may be thrown).
-const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError"];
+const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element"];
 
 pub fn bind(module: &Module) -> BindOutput {
     let mut prelude = Scope::default();
@@ -185,7 +185,20 @@ impl Binder {
                 return Some(*sym);
             }
         }
-        let msg = format!("cannot find name `{}`", name.text);
+        // Targeted messages for the JS constructs Mersey removed (§1.1).
+        let msg = match name.text.as_str() {
+            "undefined" => "there is no `undefined`; the null type is `T?` with `null` (§3.2)".into(),
+            "eval" => "there is no `eval`; no string ever becomes code (§5.1)".into(),
+            "arguments" => "there is no `arguments`; use a rest parameter `...args: T[]` (§4.4)".into(),
+            "require" => "use `import { … } from \"…\";` (§4.5)".into(),
+            "globalThis" | "window" => {
+                "there is no global object; import what you need (§5.4)".into()
+            }
+            "NaN" | "Infinity" => {
+                "float constants live in the standard library, not the global scope".into()
+            }
+            _ => format!("cannot find name `{}`", name.text),
+        };
         let pos = name.pos;
         self.error(Code::UndefinedName, msg, pos);
         None

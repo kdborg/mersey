@@ -1,0 +1,22 @@
+import{console}from"std:console";
+   const   x:int32=1+2*3;
+let s="a"+"b";
+function   f<T extends Comparable<T>>(a:int32,b:int32=2,...rest:string[]):int32{
+if(a>b){return a-b;}else{  return -a; }
+}
+class   P{
+    private n:int32=0;
+
+
+    public constructor(n:int32){this.n=n;}
+  public get value():int32{return this.n;}
+     public bump(k:int32):void{this.n+=k;this.n++;}
+}
+const p=new P(  3 );
+let arr:int32[]=[1,2,3];
+let m:Map<string,Array<int32>>?=null;
+let t=`x=${x} and ${ 1+2 }`;
+let cond=x>2?x:0;
+for(let i=0;i<3;i++){console.log(i,arr[i]);}
+let neg=-x+(+x)- -1;
+// trailing comment

@@ -1,0 +1,4 @@
+let strictEq = a === b;
+let strictNe = a !== b;
+let oct = 0755;
+let esc = "\u0041";

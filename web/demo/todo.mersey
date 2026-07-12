@@ -1,0 +1,56 @@
+// TODO app (ROADMAP Phase 5 demo): list manipulation, element creation,
+// events — zero hand-written JavaScript beyond the loader.
+import { console } from "std:console";
+import { document } from "browser:dom";
+
+class TodoList {
+    private items: Map<string, Element> = new Map<string, Element>();
+    private nextId: int32 = 1;
+    private readonly container: Element;
+    private readonly counter: Element;
+
+    public constructor(container: Element, counter: Element) {
+        this.container = container;
+        this.counter = counter;
+        this.render();
+    }
+
+    public addItem(text: string): void {
+        if (text.length == 0) { return; }
+        const key = `todo-${this.nextId}`;
+        this.nextId += 1;
+        const li = document.createElement("li");
+        li.textContent = text + "  (click to remove)";
+        const items = this.items;
+        const self = this;
+        li.addEventListener("click", () => {
+            li.remove();
+            items.remove(key);
+            self.render();
+        });
+        this.items.set(key, li);
+        this.container.appendChild(li);
+        this.render();
+    }
+
+    public render(): void {
+        const n = this.items.size;
+        this.counter.textContent = n == 0
+            ? "nothing to do 🌊"
+            : `${n} item${n == 1 ? "" : "s"} to do`;
+    }
+}
+
+const list = new TodoList(
+    document.getElementById("list"),
+    document.getElementById("count"),
+);
+const input = document.getElementById("new-todo");
+const add = document.getElementById("add");
+
+add.addEventListener("click", () => {
+    list.addItem(input.value);
+    input.value = "";
+});
+
+console.log("todo app ready");

@@ -1,0 +1,17 @@
+[package]
+name = "mersey_fuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hardening harness: mutation fuzzing of the frontend + differential engine fuzzing (Phase 7)"
+
+[[bin]]
+name = "mersey-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+mersey_front = { path = "../mersey_front" }
+mersey_interp = { path = "../mersey_interp" }
+
+[lints]
+workspace = true

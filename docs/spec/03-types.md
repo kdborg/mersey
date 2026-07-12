@@ -59,6 +59,18 @@ let z = x as wrapping int32; // truncates like C (defined, two's complement)
 let f = 0.5 + 1;             // float64: int promotes to float, as in C
 ```
 
+Two ergonomic rules complete the model:
+
+5. **Literals fit their context.** An unsuffixed integer literal (possibly
+   negated) takes the integer type expected by its context when the value
+   fits: `let small: int16 = 1000;` is `int16`. A literal that does not fit
+   is a compile error (E0110), never a silent wrap.
+6. **Compound assignment converts back.** `a op= b` computes in the common
+   type and converts the result back to `a`'s type with wrapping, as in C:
+   `int16 a; a += 1;` stays `int16`. (Plain `a = a + 1` still requires the
+   result type to be assignable — promotion makes it `int32`, so write `+=`
+   or cast.)
+
 `bigint` and `bigdec` never convert implicitly to or from fixed-size types
 (too easy to lose precision or allocate accidentally); `BigInt.from(x)`,
 `big.toInt64()` etc. are explicit.

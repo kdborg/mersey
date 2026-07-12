@@ -1,0 +1,22 @@
+// Tier 1 benchmark: integer kernel called hot. Compare:
+//   MERSEY_JIT=0 mersey run bench/hotloop.mersey   (Tier 0 interpreter)
+//   mersey run bench/hotloop.mersey                (Tier 1 JIT)
+import { console } from "std:console";
+
+function mix(n: int32, seed: int32): int32 {
+    let h = seed;
+    let i = 0;
+    while (i < n) {
+        h = (h ^ (h << 13)) + i;
+        h = h ^ (h >> 7);
+        h = h * 31 + 1;
+        i += 1;
+    }
+    return h;
+}
+
+let acc = 0;
+for (let round = 0; round < 400; round++) {
+    acc = acc ^ mix(20000, round);
+}
+console.log("checksum:", acc);

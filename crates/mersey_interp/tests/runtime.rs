@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mersey_front::{bind, parser, source};
+use mersey_front::{bind, check, parser, source};
 use mersey_interp::{new_interp, Host};
 
 use std::cell::RefCell;
@@ -41,16 +41,22 @@ impl Host for TestHost {
 }
 
 fn run_program(bytes: &[u8], name: &str) -> String {
+    run_program_with(bytes, name, true)
+}
+
+fn run_program_with(bytes: &[u8], name: &str, use_vm: bool) -> String {
     let src = match source::decode(name, bytes) {
         Ok(s) => s,
         Err(d) => return format!("{d}\n"),
     };
     let parsed = parser::parse(&src);
-    let diags = if parsed.diagnostics.is_empty() {
-        bind::bind(&parsed.module).diagnostics
-    } else {
-        parsed.diagnostics
-    };
+    let mut diags = parsed.diagnostics;
+    if diags.is_empty() {
+        diags = bind::bind(&parsed.module).diagnostics;
+    }
+    if diags.is_empty() {
+        diags = check::check(&parsed.module).diagnostics;
+    }
     if !diags.is_empty() {
         let mut s = String::new();
         for d in &diags {
@@ -62,6 +68,7 @@ fn run_program(bytes: &[u8], name: &str) -> String {
     let buffer = Rc::new(RefCell::new(String::new()));
     let host = Box::new(TestHost { out: buffer.clone(), dom: Default::default() });
     let mut interp = new_interp(host);
+    interp.use_vm = use_vm;
     let err = match interp.run_module(module) {
         Ok(()) => None,
         Err(t) => Some(format!("runtime error: {}", interp.describe_thrown(&t))),
@@ -72,6 +79,27 @@ fn run_program(bytes: &[u8], name: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Differential guarantee: the AST tree-walker and the bytecode VM must
+/// produce identical output for the whole runtime suite (ROADMAP Phase 2:
+/// goldens are the contract between tiers).
+#[test]
+fn runtime_conformance_tree_walker() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/runtime");
+    for case in std::fs::read_dir(&dir).unwrap() {
+        let path = case.unwrap().path();
+        if path.extension().is_none_or(|x| x != "mersey") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let vm_out = run_program_with(&bytes, &name, true);
+        let tree_out = run_program_with(&bytes, &name, false);
+        assert_eq!(vm_out, tree_out, "engines diverge on {name}");
+        let expected = std::fs::read_to_string(path.with_extension("expect")).unwrap();
+        assert_eq!(tree_out, expected, "tree-walker vs golden on {name}");
+    }
 }
 
 #[test]

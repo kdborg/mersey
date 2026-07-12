@@ -273,7 +273,7 @@ pub struct PatternField {
 pub enum Expr {
     Ident(Name),
     This(Pos),
-    Lit { kind: LitKind, text: String },
+    Lit { kind: LitKind, text: String, pos: Pos },
     Template(Vec<TplPart>),
     Array(Vec<ArrayElem>),
     Record(Vec<RecordField>),
@@ -328,7 +328,7 @@ pub enum ArrowBody {
     Block(Vec<Stmt>),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UnaryOp {
     Plus,
     Neg,
@@ -349,7 +349,7 @@ impl UnaryOp {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinOp {
     Coalesce, Or, And,
     BitOr, BitXor, BitAnd,

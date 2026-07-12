@@ -1,0 +1,4 @@
+import { console } from "std:console";
+let café: int32 = 1;
+café = café + 1;
+console.log(café);

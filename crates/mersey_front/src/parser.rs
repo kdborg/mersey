@@ -9,7 +9,19 @@
 //! remainder after a leading `>` is consumed, without mutating the token
 //! buffer, so speculation can roll it back.
 
+use unicode_normalization::{is_nfc, UnicodeNormalization};
+
 use crate::ast::*;
+
+/// Identifiers are NFC-normalized so visually identical names are the same
+/// name (spec §2.4). Fast path: most source is already NFC.
+fn nfc(s: &str) -> String {
+    if is_nfc(s) {
+        s.to_string()
+    } else {
+        s.nfc().collect()
+    }
+}
 use crate::diag::{Code, Diagnostic, Pos};
 use crate::lexer::{self, LexOutput};
 use crate::source::SourceFile;
@@ -21,8 +33,15 @@ pub struct ParseOutput {
 }
 
 pub fn parse(source: &SourceFile) -> ParseOutput {
-    let LexOutput { tokens, diagnostics } = lexer::lex(source);
-    let mut p = Parser { text: &source.text, tokens, idx: 0, carry: None, diags: diagnostics };
+    let LexOutput { tokens, diagnostics, .. } = lexer::lex(source);
+    let mut p = Parser {
+        text: &source.text,
+        tokens,
+        idx: 0,
+        carry: None,
+        diags: diagnostics,
+        depth: 0,
+    };
     let module = p.parse_module();
     ParseOutput { module, diagnostics: p.diags }
 }
@@ -33,7 +52,11 @@ struct Parser<'s> {
     idx: usize,
     carry: Option<(usize, P)>,
     diags: Vec<Diagnostic>,
+    /// Expression/type recursion depth (hostile-input DoS guard).
+    depth: u32,
 }
+
+const MAX_DEPTH: u32 = 200;
 
 type PResult<T> = Result<T, ()>;
 
@@ -169,7 +192,7 @@ impl<'s> Parser<'s> {
     fn expect_ident(&mut self, what: &str) -> PResult<Name> {
         match self.kind() {
             TK::Ident => {
-                let name = Name { text: self.text_of(0).to_string(), pos: self.pos() };
+                let name = Name { text: nfc(self.text_of(0)), pos: self.pos() };
                 self.advance();
                 Ok(name)
             }
@@ -186,7 +209,7 @@ impl<'s> Parser<'s> {
     fn expect_member_name(&mut self) -> PResult<String> {
         match self.kind() {
             TK::Ident => {
-                let s = self.text_of(0).to_string();
+                let s = nfc(self.text_of(0));
                 self.advance();
                 Ok(s)
             }
@@ -327,8 +350,9 @@ impl<'s> Parser<'s> {
     }
 
     fn string_text(&self) -> String {
+        // Error recovery can leave a 1-byte unterminated token; slice safely.
         let raw = self.text_of(0);
-        raw[1..raw.len().saturating_sub(1)].to_string()
+        raw.get(1..raw.len().saturating_sub(1)).unwrap_or("").to_string()
     }
 
     fn expect_string(&mut self, what: &str) -> PResult<String> {
@@ -825,7 +849,7 @@ impl<'s> Parser<'s> {
                 Ok(Stmt::Empty)
             }
             TK::Ident if self.kind_at(1) == TK::Punct(P::Colon) => {
-                let label = Name { text: self.text_of(0).to_string(), pos: self.pos() };
+                let label = Name { text: nfc(self.text_of(0)), pos: self.pos() };
                 self.advance();
                 self.advance();
                 let body = self.parse_stmt()?;
@@ -837,6 +861,36 @@ impl<'s> Parser<'s> {
                 }
                 Ok(Stmt::Labeled { label, body: Box::new(body) })
             }
+            TK::Ident
+                if self.text_of(0) == "var"
+                    && matches!(self.kind_at(1), TK::Ident | TK::Punct(P::LBracket | P::LBrace)) =>
+            {
+                self.report(
+                    Code::UnexpectedToken,
+                    "there is no `var`; use `let` (or `const`) — block scoping only (§1.1)",
+                );
+                self.advance();
+                // Recover by parsing the rest as a `let` statement.
+                let mut bindings = vec![self.parse_binding()?];
+                while self.eat_punct(P::Comma) {
+                    bindings.push(self.parse_binding()?);
+                }
+                self.expect_punct(P::Semi)?;
+                Ok(Stmt::Var(VarStmt { kind: VarKind::Let, bindings }))
+            }
+            TK::Ident
+                if self.text_of(0) == "delete"
+                    && matches!(self.kind_at(1), TK::Ident | TK::Keyword(Kw::This)) =>
+            {
+                self.report(
+                    Code::UnexpectedToken,
+                    "there is no `delete`; object shapes are sealed (§4.1)",
+                );
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect_punct(P::Semi)?;
+                Ok(Stmt::Expr(e))
+            }
             _ => {
                 let e = self.parse_expr()?;
                 self.expect_punct(P::Semi)?;
@@ -847,7 +901,7 @@ impl<'s> Parser<'s> {
 
     fn opt_label(&mut self) -> PResult<Option<Name>> {
         if self.kind() == TK::Ident {
-            let name = Name { text: self.text_of(0).to_string(), pos: self.pos() };
+            let name = Name { text: nfc(self.text_of(0)), pos: self.pos() };
             self.advance();
             Ok(Some(name))
         } else {
@@ -971,6 +1025,19 @@ impl<'s> Parser<'s> {
                 let body = Box::new(self.parse_stmt()?);
                 return Ok(Stmt::ForOf { is_await, kind, target, ty, iter, body });
             }
+            if self.at_kw(Kw::In) {
+                self.report(
+                    Code::UnexpectedToken,
+                    "there is no `for`-`in`; iterate `for (… of map.keys())` (§6.5)",
+                );
+                // Recover: skip the head, parse the body, report once.
+                while !matches!(self.kind(), TK::Punct(P::RParen) | TK::Eof) {
+                    self.advance();
+                }
+                self.eat_punct(P::RParen);
+                let _ = self.parse_stmt()?;
+                return Ok(Stmt::Empty);
+            }
             if is_await {
                 return self.err(Code::UnexpectedToken, "`for await` requires `of` (§6.5)");
             }
@@ -1083,6 +1150,16 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_assignment(&mut self) -> PResult<Expr> {
+        self.depth += 1;
+        let out = self.parse_assignment_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn parse_assignment_inner(&mut self) -> PResult<Expr> {
+        if self.depth > MAX_DEPTH {
+            return self.err(Code::UnexpectedToken, "expression nesting too deep");
+        }
         // Arrow forms (§6.4): bare-ident, async bare-ident, (params) via
         // speculation, async (params) directly (async is reserved, so
         // `async (` can only start an arrow).
@@ -1445,7 +1522,8 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_primary(&mut self) -> PResult<Expr> {
-        let lit = |k: LitKind, text: &str| Expr::Lit { kind: k, text: text.to_string() };
+        let pos = self.pos();
+        let lit = move |k: LitKind, text: &str| Expr::Lit { kind: k, text: text.to_string(), pos };
         match self.kind() {
             TK::Int { .. } => {
                 let e = lit(LitKind::Int, self.text_of(0));
@@ -1484,7 +1562,7 @@ impl<'s> Parser<'s> {
             }
             TK::Keyword(Kw::Null) => {
                 self.advance();
-                Ok(Expr::Lit { kind: LitKind::Null, text: "null".to_string() })
+                Ok(Expr::Lit { kind: LitKind::Null, text: "null".to_string(), pos })
             }
             TK::Keyword(Kw::This) => {
                 let pos = self.pos();
@@ -1518,7 +1596,7 @@ impl<'s> Parser<'s> {
                 Ok(Expr::ImportCall(Box::new(e)))
             }
             TK::Ident => {
-                let e = Expr::Ident(Name { text: self.text_of(0).to_string(), pos: self.pos() });
+                let e = Expr::Ident(Name { text: nfc(self.text_of(0)), pos: self.pos() });
                 self.advance();
                 Ok(e)
             }
@@ -1577,6 +1655,22 @@ impl<'s> Parser<'s> {
                 self.expect_punct(P::RBrace)?;
                 Ok(Expr::Record(fields))
             }
+            TK::Keyword(Kw::Function) => {
+                self.report(
+                    Code::UnexpectedToken,
+                    "function expressions do not exist; use an arrow function (§6.4)",
+                );
+                self.advance();
+                Err(())
+            }
+            TK::Keyword(Kw::Typeof) => {
+                self.report(
+                    Code::UnexpectedToken,
+                    "there is no runtime `typeof`; types are static (§1.2)",
+                );
+                self.advance();
+                Err(())
+            }
             _ => self.expected("an expression"),
         }
     }
@@ -1587,7 +1681,9 @@ impl<'s> Parser<'s> {
             TK::TemplateNoSub | TK::TemplateTail => (1, 1), // `…`  or  }…`
             _ => (1, 2),                                    // `…${ or }…${
         };
-        raw[a..raw.len() - b].to_string()
+        // Unterminated templates from error recovery may be shorter than
+        // their delimiters; slice safely.
+        raw.get(a..raw.len().saturating_sub(b)).unwrap_or("").to_string()
     }
 
     fn parse_template(&mut self) -> PResult<Expr> {
@@ -1619,6 +1715,16 @@ impl<'s> Parser<'s> {
     // ---- types -------------------------------------------------------------
 
     fn parse_type(&mut self) -> PResult<Type> {
+        self.depth += 1;
+        let out = self.parse_type_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn parse_type_inner(&mut self) -> PResult<Type> {
+        if self.depth > MAX_DEPTH {
+            return self.err(Code::UnexpectedToken, "type nesting too deep");
+        }
         let first = self.parse_postfix_type()?;
         if !self.at_punct(P::Pipe) {
             return Ok(first);

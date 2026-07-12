@@ -1,0 +1,5 @@
+let u = undefined;
+let e = eval;
+function noArgs(): void { let a = arguments; }
+let g = globalThis;
+let r = require;

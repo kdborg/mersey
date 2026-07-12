@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mersey — TODO demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }
+    li { cursor: pointer; margin: .3rem 0; }
+    input, button { font-size: 1rem; padding: .4rem; }
+  </style>
+  <script src="mersey-loader.js" data-engine="mersey_wasm.wasm" defer></script>
+</head>
+<body>
+  <h1>Mersey TODO</h1>
+  <p id="count">…</p>
+  <input id="new-todo" placeholder="what needs doing?">
+  <button id="add">Add</button>
+  <ul id="list"></ul>
+  <script type="text/mersey" src="demo/todo.mersey"></script>
+</body>
+</html>

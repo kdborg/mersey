@@ -5,6 +5,9 @@ members = [
     "crates/mersey_interp",
     "crates/mersey_cli",
     "crates/mersey_wasm",
+    "crates/mersey_jit",
+    "crates/mersey_capi",
+    "crates/mersey_fuzz",
 ]
 
 [workspace.package]

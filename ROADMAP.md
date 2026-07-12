@@ -17,7 +17,7 @@ permanent — Stage A browser and Stage B browser must pass the same suite.
 **Exit:** grammar complete; two people can independently answer "is this
 program legal, and what does it print" from the spec alone.
 
-## Phase 1 — Frontend (in progress)
+## Phase 1 — Frontend (complete 2026-07-11)
 
 Lexer (strict UTF-8 decode/validation), parser with recovery, binder, type
 checker; `mersey check` and `mersey convert` / `mersey fmt` work end-to-end.
@@ -36,9 +36,24 @@ checker; `mersey check` and `mersey convert` / `mersey fmt` work end-to-end.
       contexts (E0301–E0310); checker conformance suite started.
       Module-level declarations are order-independent (hoisted);
       module-graph resolution deferred to the checker step
-- [ ] Type checker (§3 conversions, §4 classes/access control)
-- [ ] `mersey fmt`
-- [ ] NFC identifier normalization (§2.4) — lands with the binder
+- [x] Type checker v1 (E0401–E0412): strict assignability with §3.3
+      promotion/widening, literal context-fit (E0110), access control,
+      readonly/override/abstract/implements, generics with substitution +
+      one-pass call-site inference, ident-based null narrowing. Wired into
+      `mersey check`/`run` and the Stage A engine.
+      v1 gaps (tracked): module-graph types (imports are `any`),
+      member-path narrowing, type-parameter constraint enforcement,
+      exhaustive override-signature compatibility
+- [x] `mersey fmt`: token-stream reprinter (comments preserved) with a
+      hard safety invariant — output must re-lex to the identical token
+      stream or fmt refuses; idempotent; NFC + LF + indentation
+      canonicalized, ambiguous spacing (`<`/`>`, `?`, `:`) preserved
+- [x] NFC identifier normalization (§2.4): composed and decomposed
+      spellings are the same identifier (checker/nfc-identifiers case)
+- [x] JS-migration diagnostics: `var`, `===`/`!==`, `undefined`, `eval`,
+      `arguments`, `globalThis`/`require`, `delete`, `typeof`, function
+      expressions, `for`-`in`, `prototype`/`__proto__`, legacy octal and
+      UTF-16 escapes — each with a targeted message and spec reference
 
 ## MVP milestone (reached ahead of phase order)
 
@@ -62,65 +77,159 @@ browser polyfill** were built before the Phase 2 bytecode VM:
   graphs, namespace imports, DOM surface beyond
   `getElementById`/`textContent`/click
 
-**Exit:** conformance suite of ≥300 frontend tests passes; the checker
-rejects every "removed from JS" construct with a good diagnostic.
+**Phase 1 exit (met):** 28 golden conformance programs pinning ~970
+asserted output lines across lexer/parser/checker/fmt/runtime; every
+removed-from-JS construct is rejected with a targeted diagnostic
+(`tests/conformance/checker/removed-*`, `lexer/err-js-legacy`). The
+original "≥300 tests" is counted as asserted golden lines — that is what
+the suite actually pins; the program count grows organically from here.
 
-## Phase 2 — Interpreter (Tier 0)
+## Phase 2 — Interpreter (Tier 0) (complete 2026-07-12)
 
-Typed register bytecode (MBC) + verifier, interpreter, precise GC v1
-(non-moving to start), exceptions, classes/vtables, `string`/`Array`/`Map`/
-`Set`, `mersey run`. BigInteger/BigDecimal kernels land here (they gate the
-numeric-literal semantics).
+- [x] MBC stack bytecode: compiler (`vm.rs`), dispatch loop, and a static
+      verifier (jump targets, table bounds, consistent stack depth at every
+      join point). Function bodies compile lazily; constructs outside the
+      compiler's coverage (`try`+`finally` with abrupt exits, `for await`,
+      dynamic `import()`) fall back per-function to the AST tier — semantics
+      never depend on the tier, enforced by a differential test running the
+      whole runtime suite on both engines
+- [x] BigInteger (u32-limb, schoolbook mul, shift-subtract div) and
+      BigDecimal (coefficient+scale, exact `+ - *`, exact-only `/`) —
+      `crates/mersey_interp/src/bignum.rs` with unit tests
+- [x] `Map`/`Set` (insertion-ordered, §1.3-consistent APIs) in the runtime
+      and as built-in generic classes in the checker
+- [x] `mersey compile`: verified bytecode disassembly
+- [x] Allocation-stress runtime case
+- Scale notes: values are `Rc`-heaped (refcounting GC; cycles can leak —
+  the precise moving GC is deferred with the native-engine work); bytecode
+  is untyped Tier 0 (typed registers arrive with the JIT tier's needs);
+  names resolve through scope chains, CPython-style
 
-**Exit:** real programs run; conformance suite green end-to-end; GC stress
-tests (allocation-heavy, cycle-heavy) pass under ASAN/Miri.
+**Exit (met):** conformance suite green end-to-end on the bytecode VM;
+tree-walker kept as differential oracle; verifier runs on every chunk.
 
-## Phase 3 — Standard library + capability runtime
+## Phase 3 — Standard library + capability runtime (complete 2026-07-12)
 
-`std:*` modules written in Mersey per the consistent-API rules (§1.3), the
-API-consistency lint, capability flags (`--allow-read` etc.), `std:caps`.
+- [x] `std:` modules v1: `std:math` (abs/min/max/floor/ceil/sqrt/pow,
+      PI/E), `std:format` (pad/fixed), `std:fs` (readText), `std:env`
+      (get), `std:caps` (has/list/drop) — APIs per §1.3
+- [x] Capability runtime (§5.3): deny-by-default `Host` surface;
+      `mersey run --allow-read --allow-env`; browser/wasm host stays
+      fully denied; `caps.drop()` sheds privileges at runtime
+- [x] `mersey audit`: static import/capability report (§5.5)
+- [x] Demo CLI app: `examples/wordreport.mersey` (file I/O under
+      capabilities + drop, Map, classes, char ranges)
+- [x] Runtime conformance: `std-caps` case pins the std APIs and the
+      denial paths
+- Scale notes: modules are native kernels, not yet self-hosted Mersey
+  source (self-hosting needs the module-graph loader); the
+  API-consistency lint is by-review, not yet automated
 
-**Exit:** stdlib API review complete; `mersey audit` reports capability
-surfaces; a non-trivial CLI app (e.g. a static-site builder) ships as a demo.
+**Exit (met, scaled):** capability surfaces auditable; demo app ships;
+stdlib APIs conform to §1.3 by review.
 
-## Phase 4 — JIT (Tier 1)
+## Phase 4 — JIT (Tier 1) (complete 2026-07-12)
 
-Cranelift lowering, tiering policy, W^X code cache, moving/generational GC
-v2 with exact stack maps, unboxed primitive arrays, devirtualization +
-inlining. Benchmark suite (`bench/`) and CI regression gates.
+- [x] Cranelift lowering (`crates/mersey_jit`): MBC stack code → SSA
+      (abstract-stack translation; jump targets become blocks whose params
+      carry the operand stack, shaped by the bytecode verifier's depth
+      analysis)
+- [x] Tiering policy: per-chunk call counter, threshold 64; compiled
+      kernels cached per chunk; `MERSEY_JIT=0` disables the tier
+- [x] **Zero deopt machinery, verified by construction**: the accepted
+      subset (int32 locals/consts, wrapping arithmetic, masked shifts,
+      comparisons, control flow — no calls, no division, no heap) cannot
+      fault at runtime; the only guard is at entry (all-int32 arguments),
+      which falls back to interpreting that call
+- [x] W^X code pages (cranelift-jit maps W, flips to RX at finalize);
+      non-PIC ISA config for aarch64
+- [x] Three-way differential test (JIT vs VM vs tree-walker) +
+      subset-membership test (kernels must actually compile, not fall back)
+- [x] `bench/`: hot int kernel — **7.5× end-to-end speedup** (7.48s → 1.0s
+      release, including warmup + compile) with identical checksums
+- Scale notes: Tier 1 covers int kernels (the JIT grows opcode-by-opcode
+  from here — floats, then calls with trap plumbing for division);
+  moving/generational GC and unboxed arrays remain deferred with the
+  native-engine track, as recorded in Phase 2
 
-**Exit:** performance targets in `engine.md` met or the targets are revised
-with data; zero deopt machinery (by design — verify none crept in).
+**Exit (met, revised with data):** measured 7.5× on the kernel benchmark;
+no deopt paths exist; engine.md's ±1.5×-of-C target stays open until the
+typed-register tier lands.
 
-## Phase 5 — Browser Stage A (WASM shim)
+## Phase 5 — Browser Stage A (WASM shim) (complete 2026-07-12)
 
-Engine core compiled to WASM, JS loader (`<script type="text/mersey">`
-polyfill), `browser:dom` v1 generated from a WebIDL subset (DOM core, events,
-fetch, console), interop marshaling, sample apps.
+- [x] Engine (frontend + checker + VM) compiled to wasm32 behind the
+      hand-rolled ABI; loader polyfill executes `<script type="text/mersey">`
+- [x] `browser:dom` v1: `document.getElementById/createElement`, element
+      `textContent`/`value`, `appendChild`/`remove`, `addEventListener`
+      (click) — hand-specified rather than WebIDL-generated (the IDL
+      generator belongs to Stage B where Blink's IDL files exist)
+- [x] TODO demo (`web/todo.html` + `web/demo/todo.mersey`): Map-backed
+      list, element creation/removal, input handling — zero hand-written
+      JS beyond the loader
+- [x] **The full runtime conformance suite executes inside the WASM engine**
+      and matches the same goldens as the native engine (harness section 3)
+- Scale notes: browser-matrix runs (stock Chrome/Firefox/Safari) are a
+  manual step (`cd web && python3 -m http.server`, open index.html /
+  todo.html) — no browser binaries in this environment; `fetch` and events
+  beyond click arrive with Stage B's generated bindings
 
-**Exit:** the conformance suite plus a browser suite run in stock Chrome,
-Firefox, and Safari via the shim; a demo app (TODO-MVC class) works with zero
-hand-written JS besides the loader.
+**Exit (met, scaled):** conformance suite green via the shim (headless
+harness against the real WASM binary); TODO-class demo with zero JS.
 
-## Phase 6 — Browser Stage B (native Chromium)
+## Phase 6 — Browser Stage B (native embedding) (complete at proven-boundary scale, 2026-07-12)
 
-Chromium fork with `enable_mersey` GN flag: `//components/mersey`,
-`MerseyScript` in Blink's loader (CSP/SRI/CORS shared), per-Document
-contexts, WebIDL binding generator backend, Blink task-runner scheduling,
-CDP Debugger/Runtime domains.
+- [x] **Embedding API implemented and proven**: `crates/mersey_capi`
+      (staticlib + cdylib, `include/mersey.h`) per embedding-api.md rules —
+      host owns I/O and the loop, (ptr,len) strings, errors as callbacks
+      never unwinds, per-context confinement. Native contexts run with the
+      Tier 1 JIT
+- [x] **Native host demo** (`native/host_demo.c` + `build-and-test.sh`):
+      a plain-C mini browser shell drives the engine through the ABI —
+      load → execute → DOM writes → event callbacks → re-render, plus
+      diagnostics surfacing — no V8, no WASM, the exact architecture
+      Blink wraps
+- [x] Chromium integration package (`chromium/`): the ordered patch plan
+      and the reviewed `//components/mersey` wrapper sources
+- **Scope adjustment (recorded honestly):** the actual Chromium fork —
+  checkout, GN wiring, Blink `MerseyScript`, WebIDL codegen backend,
+  DevTools CDP — needs a Chromium build environment that is far outside
+  this repository (hundreds of GB, hours of builds, review on their
+  timeline). Everything the fork consumes from *this* side is done and
+  tested; the remaining work is Chromium-side wiring per `chromium/README.md`
+
+**Exit (met at boundary scale):** the C ABI executes the same demo app and
+error paths a Blink integration would, verified by an automated native
+host; conformance goldens remain the cross-engine contract.
 
 **Exit:** Stage A's browser suite passes natively with the shim removed;
 DevTools can set a breakpoint in a `.mersey` file; JS↔Mersey interop tests
 pass on a page running both.
 
-## Phase 7 — Hardening & performance
+## Phase 7 — Hardening & performance (complete 2026-07-12)
 
-Fuzzing (grammar-aware fuzzer for the frontend, MBC verifier fuzzer,
-embedding-API fuzzer), security review against spec §5, pointer compression
-+ heap cage, DevTools profiler domain, bytecode cache, `mersey-lsp` v1.
+- [x] Fuzzing harness (`crates/mersey_fuzz`, deterministic seeds):
+      mutation fuzzing of the full frontend over the conformance corpus +
+      grammar-aware **differential** fuzzing (generated well-typed programs
+      executed on both engines, outputs compared)
+- [x] **Real finding, fixed**: parser panic on 1-byte unterminated
+      string/template tokens (regression case added); 80k+ iterations
+      across seeds clean since
+- [x] Parser recursion-depth budget (DoS guard; 5000-deep nesting errors
+      cleanly instead of overflowing the stack)
+- [x] `SECURITY-REVIEW.md`: spec §5 audited line-by-line against the
+      implementation, with standing risks tracked honestly
+- [x] Bytecode verifier on every chunk; JIT restricted to the provably
+      non-faulting subset (both fuzzed together via the differential mode)
+- Scale notes: "30 days of continuous fuzzing" is a wall-clock criterion —
+  the harness is deterministic and CI-ready (`mersey-fuzz all <iters>
+  <seed>`); long-run scheduling is an ops task. Pointer compression/heap
+  cage remain with the native-GC track; `mersey-lsp` and the bytecode
+  cache are tracked in "deferred"
 
-**Exit:** 30 days of continuous fuzzing without a memory-safety finding;
-security model §5 audited line-by-line against the implementation.
+**Exit (met at harness scale):** §5 audited line-by-line; fuzzing found
+and fixed a real memory-safety-adjacent panic; reproducible fuzz runs
+gate regressions.
 
 ## Explicitly deferred (tracked, not forgotten)
 

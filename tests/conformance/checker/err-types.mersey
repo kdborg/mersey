@@ -1,0 +1,67 @@
+import { console } from "std:console";
+
+// E0401 assignability
+let a: int32 = "hello";
+let b: int64 = 5;
+let narrow: int32 = b;
+let s: string = 42;
+let n: int32 = null;
+let maybe: int32? = null;
+let sure: int32 = maybe;
+
+// E0405 operators, E0406 conditions
+let bad1 = 1 + "one";
+let bad2 = "a" * 2;
+if ("truthy") { console.log("no"); }
+let bad3 = 1n + 1;
+
+// E0402 calls
+function twice(x: int32): int32 { return x * 2; }
+twice();
+twice(1, 2);
+twice("one");
+let notf: int32 = 5;
+notf();
+
+// E0403 members, E0407 nullability
+console.log("x".missing);
+class Box<T> { public item: T?; public constructor(item: T?) { this.item = item; } }
+const box = new Box<string>("s");
+console.log(box.item.length);
+console.log(box.item?.length);
+const unpacked = box.item;
+if (unpacked != null) { console.log(unpacked.length); }
+
+// E0404 access control
+class Vault {
+    private secret: int32 = 1;
+    protected door: int32 = 2;
+    public open: int32 = 3;
+}
+const v = new Vault();
+console.log(v.secret);
+console.log(v.door);
+console.log(v.open);
+
+// E0408 readonly
+class Fixed {
+    public readonly id: int32;
+    public constructor() { this.id = 1; }
+    public reset(): void { this.id = 0; }
+}
+
+// E0409 override / abstract
+abstract class BaseA { public abstract go(): void; }
+class NoImpl extends BaseA {}
+class BadMark { public override go(): void {} }
+final class Sealed {}
+class SubSealed extends Sealed {}
+
+// E0410 casts, E0411 return, E0412 throw
+let f: float64 = 1.5;
+let asStr = f as string;
+let wrapped = f as wrapping string;
+function noRet(): int32 { return; }
+function voidRet(): void { return 5; }
+function missing1(x: int32) { return x; }
+throw 42;

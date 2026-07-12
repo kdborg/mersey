@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 mersey_front = { path = "../mersey_front" }
 mersey_interp = { path = "../mersey_interp" }
+mersey_jit = { path = "../mersey_jit" }
 
 [lints]
 workspace = true

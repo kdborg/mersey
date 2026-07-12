@@ -1,0 +1,6 @@
+error[E0201] @ 2:1: there is no `var`; use `let` (or `const`) — block scoping only (§1.1)
+error[E0201] @ 5:1: there is no `delete`; object shapes are sealed (§4.1)
+error[E0201] @ 6:36: function expressions do not exist; use an arrow function (§6.4)
+error[E0201] @ 6:52: expected an expression, found `}`
+error[E0201] @ 7:10: there is no runtime `typeof`; types are static (§1.2)
+error[E0201] @ 8:14: there is no `for`-`in`; iterate `for (… of map.keys())` (§6.5)

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mersey_front::{astdump, bind, lexer, parser, source::{self, SourceFile}};
+use mersey_front::{astdump, bind, check, lexer, parser, source::{self, SourceFile}};
 
 fn conformance_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
@@ -34,11 +34,13 @@ fn parser_conformance() {
 fn check_dump(src: &SourceFile) -> String {
     use std::fmt::Write;
     let parsed = parser::parse(src);
-    let diags = if parsed.diagnostics.is_empty() {
-        bind::bind(&parsed.module).diagnostics
-    } else {
-        parsed.diagnostics
-    };
+    let mut diags = parsed.diagnostics;
+    if diags.is_empty() {
+        diags = bind::bind(&parsed.module).diagnostics;
+    }
+    if diags.is_empty() {
+        diags = check::check(&parsed.module).diagnostics;
+    }
     if diags.is_empty() {
         return "ok\n".to_string();
     }
@@ -52,6 +54,26 @@ fn check_dump(src: &SourceFile) -> String {
 #[test]
 fn checker_conformance() {
     run_dir("checker", check_dump);
+}
+
+/// fmt/ goldens hold the formatter's exact output.
+fn fmt_dump(src: &SourceFile) -> String {
+    use std::fmt::Write;
+    match mersey_front::fmt::format(src) {
+        Ok(text) => text,
+        Err(diags) => {
+            let mut s = String::new();
+            for d in &diags {
+                let _ = writeln!(s, "{d}");
+            }
+            s
+        }
+    }
+}
+
+#[test]
+fn fmt_conformance() {
+    run_dir("fmt", fmt_dump);
 }
 
 fn run_dir(stage: &str, dump: fn(&SourceFile) -> String) {

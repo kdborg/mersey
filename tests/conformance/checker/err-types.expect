@@ -1,0 +1,27 @@
+error[E0401] @ 4:16: initializer: `string` is not assignable to `int32`
+error[E0401] @ 6:21: initializer: `int64` is not assignable to `int32`
+error[E0401] @ 7:17: initializer: `int32` is not assignable to `string`
+error[E0401] @ 8:16: initializer: `null` is not assignable to `int32`
+error[E0401] @ 10:19: initializer: `int32?` is not assignable to `int32`
+error[E0405] @ 13:16: `+` needs numeric operands, got `int32` and `string`
+error[E0405] @ 14:18: `*` needs numeric operands, got `string` and `int32`
+error[E0406] @ 15:5: condition must be bool or numeric, got `string`; write the comparison (§3.3)
+error[E0405] @ 16:17: `+` needs numeric operands, got `bigint` and `int32`
+error[E0402] @ 20:1: expected 1 argument(s), got 0
+error[E0402] @ 21:1: expected 1 argument(s), got 2
+error[E0401] @ 22:7: argument: `string` is not assignable to `int32`
+error[E0402] @ 24:1: `int32` is not callable
+error[E0403] @ 27:13: no member `missing` on `string`
+error[E0407] @ 30:13: value may be null; use `?.length` or narrow first
+error[E0404] @ 42:13: field `secret` is private in class `Vault`
+error[E0404] @ 43:13: field `door` is protected in class `Vault`
+error[E0408] @ 50:28: `id` is readonly; it can only be assigned in the constructor of `Fixed`
+error[E0409] @ 55:7: class `NoImpl` must implement abstract method `go`
+error[E0409] @ 56:7: `go` is marked override but there is no base class
+error[E0409] @ 58:7: cannot extend `Sealed`: it is final
+error[E0410] @ 62:13: cannot cast `float64` to `string`
+error[E0410] @ 63:15: `as wrapping` applies only to numeric-to-integer casts
+error[E0411] @ 64:27: expected a `int32` return value
+error[E0411] @ 65:28: this function returns `void`; remove the value
+error[E0411] @ 66:10: module-level function `missing1` must declare its return type
+error[E0412] @ 67:7: only `Error` subclasses may be thrown, got `int32`

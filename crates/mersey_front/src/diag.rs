@@ -70,6 +70,30 @@ pub enum Code {
     ReturnOutsideFunction,
     /// E0310: `break`/`continue` outside a loop (or `switch` for break)
     BreakOutsideLoop,
+    /// E0401: type mismatch (assignment, argument, return, …)
+    TypeMismatch,
+    /// E0402: bad call (not callable, arity, type arguments)
+    BadCall,
+    /// E0403: unknown member
+    UnknownMember,
+    /// E0404: access control violation (§4.2)
+    AccessViolation,
+    /// E0405: operator applied to invalid operand types (§3.3)
+    BadOperand,
+    /// E0406: condition is not bool or numeric (§3.3)
+    BadCondition,
+    /// E0407: nullable used without narrowing (§3.2)
+    NullableMisuse,
+    /// E0408: assignment to `readonly` outside the constructor
+    ReadonlyViolation,
+    /// E0409: override / implements / abstract violations (§4.2–4.3)
+    BadOverride,
+    /// E0410: invalid cast (§3.3)
+    BadCast,
+    /// E0411: return type errors / missing annotation
+    BadReturn,
+    /// E0412: only `Error` subclasses may be thrown or caught (§4.6)
+    BadThrow,
 }
 
 impl Code {
@@ -104,6 +128,18 @@ impl Code {
             Code::UnknownTypeName => "E0308",
             Code::ReturnOutsideFunction => "E0309",
             Code::BreakOutsideLoop => "E0310",
+            Code::TypeMismatch => "E0401",
+            Code::BadCall => "E0402",
+            Code::UnknownMember => "E0403",
+            Code::AccessViolation => "E0404",
+            Code::BadOperand => "E0405",
+            Code::BadCondition => "E0406",
+            Code::NullableMisuse => "E0407",
+            Code::ReadonlyViolation => "E0408",
+            Code::BadOverride => "E0409",
+            Code::BadCast => "E0410",
+            Code::BadReturn => "E0411",
+            Code::BadThrow => "E0412",
         }
     }
 }

@@ -1,0 +1,8 @@
+import { console } from "std:console";
+var x = 1;
+class C { public f: int32 = 1; }
+const c = new C();
+delete c.f;
+function fnExpr(): void { let f2 = function () {}; }
+let ty = typeof x;
+for (const k in c) { console.log(k); }

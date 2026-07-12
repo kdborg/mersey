@@ -1,0 +1,18 @@
+[package]
+name = "mersey_jit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tier 1 JIT backend: Cranelift lowering of MBC int kernels (native builds only)"
+
+# No workspace lints: Cranelift function pointers cross an unsafe boundary
+# (the same exemption as the WASM ABI crate).
+
+[dependencies]
+mersey_interp = { path = "../mersey_interp" }
+mersey_front = { path = "../mersey_front" }
+cranelift-codegen = "0.116"
+cranelift-frontend = "0.116"
+cranelift-jit = "0.116"
+cranelift-module = "0.116"
+cranelift-native = "0.116"

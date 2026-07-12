@@ -1,0 +1,17 @@
+[package]
+name = "mersey_capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stage B embedding API: the C ABI every native host (Chromium, shells, tests) drives the engine through"
+
+# No workspace lints: this crate IS the FFI boundary (same exemption as
+# mersey_wasm / mersey_jit).
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+mersey_front = { path = "../mersey_front" }
+mersey_interp = { path = "../mersey_interp" }
+mersey_jit = { path = "../mersey_jit" }

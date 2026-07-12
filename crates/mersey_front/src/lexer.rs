@@ -13,6 +13,8 @@ use crate::token::{IntSuffix, Keyword, Punct, Span, Token, TokenKind};
 
 pub struct LexOutput {
     pub tokens: Vec<Token>,
+    /// Comment spans in source order (the formatter re-emits these).
+    pub comments: Vec<Span>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -32,6 +34,7 @@ struct Lexer<'s> {
     /// Brace depth per open template substitution, innermost last.
     template_stack: Vec<u32>,
     tokens: Vec<Token>,
+    comments: Vec<Span>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -46,6 +49,7 @@ impl<'s> Lexer<'s> {
             start_pos: Pos { line: 1, col: 1 },
             template_stack: Vec::new(),
             tokens: Vec::new(),
+            comments: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -61,7 +65,7 @@ impl<'s> Lexer<'s> {
             };
             self.scan_token(c);
         }
-        LexOutput { tokens: self.tokens, diagnostics: self.diagnostics }
+        LexOutput { tokens: self.tokens, comments: self.comments, diagnostics: self.diagnostics }
     }
 
     // ---- cursor ----------------------------------------------------------
@@ -152,14 +156,18 @@ impl<'s> Lexer<'s> {
                     self.bump();
                 }
                 Some('/') if self.peek2() == Some('/') => {
+                    let start = self.idx;
+                    let pos = self.pos();
                     while let Some(c) = self.peek() {
                         if is_line_terminator(c) {
                             break;
                         }
                         self.bump();
                     }
+                    self.comments.push(Span { start, end: self.idx, pos });
                 }
                 Some('/') if self.peek2() == Some('*') => {
+                    let start = self.idx;
                     let open = self.pos();
                     self.bump();
                     self.bump();
@@ -178,6 +186,7 @@ impl<'s> Lexer<'s> {
                             break;
                         }
                     }
+                    self.comments.push(Span { start, end: self.idx, pos: open });
                 }
                 _ => break,
             }
@@ -240,6 +249,13 @@ impl<'s> Lexer<'s> {
         }
 
         self.scan_digits(10);
+        let int_part = &self.text[self.start..self.idx];
+        if int_part.len() > 1 && int_part.starts_with('0') {
+            self.error(
+                Code::BadDigitSeparator,
+                "leading zeros are not allowed; write octal as `0o…` (§2.6)",
+            );
+        }
         let mut form = NumForm::Int { radix: 10 };
 
         // Fractional part: `.` must be followed by a digit — `1.foo()` and
@@ -509,6 +525,14 @@ impl<'s> Lexer<'s> {
                     );
                 }
             }
+            Some('u') => {
+                self.bump();
+                self.error_at(
+                    Code::InvalidEscape,
+                    "write code points as `\\u{…}`; there are no UTF-16 `\\uXXXX` escapes (§2.6)",
+                    pos,
+                );
+            }
             Some(c) => {
                 self.bump();
                 self.error_at(Code::InvalidEscape, format!("unknown escape `\\{c}`"), pos);
@@ -521,6 +545,19 @@ impl<'s> Lexer<'s> {
 
     fn scan_punct(&mut self, c: char) {
         use Punct::*;
+        // JS-migration: `===`/`!==` don't exist; `==` is already strict.
+        if self.rest().starts_with("===") {
+            self.error(Code::UnexpectedChar, "there is no `===`; `==` is already strict (§3.5)");
+            self.eat_str("===");
+            self.emit(TokenKind::Punct(EqEq));
+            return;
+        }
+        if self.rest().starts_with("!==") {
+            self.error(Code::UnexpectedChar, "there is no `!==`; `!=` is already strict (§3.5)");
+            self.eat_str("!==");
+            self.emit(TokenKind::Punct(NotEq));
+            return;
+        }
         // Longest match first within each leading character.
         let table: &[(&str, Punct)] = &[
             ("...", DotDotDot),

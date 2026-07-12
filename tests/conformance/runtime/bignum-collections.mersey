@@ -1,0 +1,47 @@
+import { console } from "std:console";
+
+// bigint: arbitrary precision (§3.7)
+const big: bigint = 123456789012345678901234567890n;
+console.log(big * big);
+console.log(big + 1n, big - 1n);
+console.log((0xFFn) * 2n);
+console.log(10n / 3n, 10n % 3n, -10n / 3n);
+console.log(big > 5n, 5n == 5n, -big);
+
+// bigdec: exact decimal (§3.7)
+const price: bigdec = 19.99m;
+console.log(price * 3m);
+console.log(price + 0.01m, price - 20m);
+console.log(1m / 8m);
+console.log(2.5e-2m, 1e3m);
+try {
+    let bad = 1m / 3m;
+} catch (e: RangeError) {
+    console.log("inexact:", e.message);
+}
+
+// Map / Set (§3.8)
+const scores = new Map<string, int32>();
+scores.set("ada", 3);
+scores.set("bob", 1);
+scores.set("ada", 5);
+console.log(scores.size, scores.get("ada"), scores.get("nobody"));
+console.log(scores.has("bob"), scores.remove("bob"), scores.remove("bob"));
+for (const k of scores.keys()) { console.log("key:", k); }
+scores.set("cy", 9);
+for (const [name, score] of scores.entries()) {
+    console.log(`${name} -> ${score}`);
+}
+const seen = new Set<int32>();
+seen.add(1); seen.add(2); seen.add(1);
+console.log(seen.size, seen.has(1), seen.has(3));
+console.log(seen.values());
+
+// allocation stress (GC v1 = refcounting; must not blow up)
+let keep: int32[][] = [];
+for (let i = 0; i < 2000; i++) {
+    let row: int32[] = [];
+    for (let j = 0; j < 10; j++) { row.push(i * j); }
+    if (i % 500 == 0) { keep.push(row); }
+}
+console.log(keep.length, keep[3][9]);

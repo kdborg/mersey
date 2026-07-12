@@ -23,6 +23,10 @@ use std::rc::Rc;
 
 use mersey_front::ast::*;
 
+pub mod bignum;
+pub mod vm;
+use bignum::{BigDec, BigInt};
+
 // ---- host interface ---------------------------------------------------------
 
 /// Everything the interpreter can ask of the outside world. The CLI wires
@@ -35,6 +39,29 @@ pub trait Host {
     /// Register callback `cb` (an index the driver passes back to
     /// `Interp::invoke_callback`) for click events on element `id`.
     fn dom_on_click(&mut self, id: &str, cb: u32);
+
+    /// Create an element; returns its handle id.
+    fn dom_create(&mut self, _tag: &str) -> String {
+        String::new()
+    }
+    fn dom_append(&mut self, _parent: &str, _child: &str) {}
+    fn dom_remove(&mut self, _id: &str) {}
+    fn dom_get_value(&mut self, _id: &str) -> String {
+        String::new()
+    }
+    fn dom_set_value(&mut self, _id: &str, _value: &str) {}
+
+    // ---- capability-gated I/O (spec §5.3): deny by default -------------
+    fn read_text(&mut self, _path: &str) -> Result<String, String> {
+        Err("no `read` capability (run with --allow-read)".into())
+    }
+    fn env_var(&mut self, _name: &str) -> Option<String> {
+        None
+    }
+    fn caps(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn drop_cap(&mut self, _cap: &str) {}
 }
 
 // ---- values -------------------------------------------------------------------
@@ -53,7 +80,12 @@ pub enum Value {
     F64(f64),
     Char(char),
     Str(Str),
+    BigIntV(Rc<BigInt>),
+    BigDecV(Rc<BigDec>),
     Array(Rc<RefCell<Vec<Value>>>),
+    /// Insertion-ordered map; key equality is `values_equal` (O(n) MVP).
+    MapV(Rc<RefCell<Vec<(Value, Value)>>>),
+    SetV(Rc<RefCell<Vec<Value>>>),
     Record(Rc<RefCell<HashMap<String, Value>>>),
     Closure(Rc<Closure>),
     Class(Rc<ClassDef>),
@@ -84,6 +116,16 @@ struct FnData {
     is_async: bool,
     params: &'static [Param],
     body: FnBody,
+    /// Lazily compiled bytecode: None = not tried, Some(None) = this body
+    /// uses a construct the compiler doesn't cover (AST fallback),
+    /// Some(Some(chunk)) = compiled.
+    chunk: RefCell<Option<Option<Rc<vm::Chunk>>>>,
+}
+
+impl FnData {
+    fn new(name: String, is_async: bool, params: &'static [Param], body: FnBody) -> FnData {
+        FnData { name, is_async, params, body, chunk: RefCell::new(None) }
+    }
 }
 
 enum FnBody {
@@ -190,7 +232,24 @@ pub struct Interp {
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
     /// Class whose method is currently executing (innermost last), for `super`.
     class_stack: Vec<Rc<ClassDef>>,
+    /// Execute compiled bytecode where available (Tier 0); AST fallback
+    /// otherwise. Off = pure tree-walking (differential-test oracle).
+    pub use_vm: bool,
+    /// Tier 1: optional JIT backend (native builds register Cranelift).
+    pub jit: Option<JitHook>,
+    jit_cache: HashMap<usize, Option<JitFn>>,
+    call_counts: HashMap<usize, u32>,
 }
+
+/// A JIT-compiled kernel: takes int32 arguments, returns a tagged result
+/// (high 32 bits: 0 = int32 payload, 1 = null).
+pub type JitFn = Rc<dyn Fn(&[i32]) -> i64>;
+/// Backend entry: compile a chunk whose parameters are the given simple
+/// names; None = outside the JIT-able subset.
+pub type JitHook = fn(&vm::Chunk, &[String]) -> Option<JitFn>;
+
+/// Calls before a function is considered hot (Tier 1 threshold).
+const JIT_THRESHOLD: u32 = 64;
 
 pub fn new_interp(host: Box<dyn Host>) -> Interp {
     let globals = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: None }));
@@ -203,7 +262,17 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     for (name, cls) in &error_classes {
         env_define(&globals, name, Value::Class(cls.clone()));
     }
-    Interp { host, globals, callbacks: Vec::new(), error_classes, class_stack: Vec::new() }
+    Interp {
+        host,
+        globals,
+        callbacks: Vec::new(),
+        error_classes,
+        class_stack: Vec::new(),
+        use_vm: true,
+        jit: None,
+        jit_cache: HashMap::new(),
+        call_counts: HashMap::new(),
+    }
 }
 
 fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> ClassDef {
@@ -272,12 +341,12 @@ impl Interp {
         // classes declared later, so define in dependency order.
         for d in &decls {
             if let Decl::Function(f) = d {
-                let data = Rc::new(FnData {
-                    name: f.name.text.clone(),
-                    is_async: f.is_async,
-                    params: &f.params,
-                    body: FnBody::Block(&f.body),
-                });
+                let data = Rc::new(FnData::new(
+                    f.name.text.clone(),
+                    f.is_async,
+                    &f.params,
+                    FnBody::Block(&f.body),
+                ));
                 let c = Closure { data, env: self.globals.clone(), this: None, cls: None };
                 env_define(&self.globals, &f.name.text, Value::Closure(Rc::new(c)));
             }
@@ -314,7 +383,14 @@ impl Interp {
         }
 
         // Execute remaining top-level statements in order (including
-        // exported variable statements).
+        // exported variable statements) — compiled when possible.
+        if self.use_vm {
+            if let Some(chunk) = vm::compile_module_stmts(module) {
+                let globals = self.globals.clone();
+                vm::run_chunk(self, &chunk, globals)?;
+                return Ok(());
+            }
+        }
         for item in &module.items {
             match item {
                 Item::Stmt(s) => {
@@ -353,9 +429,45 @@ impl Interp {
                 }
                 Ok(())
             }
+            "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" => {
+                let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
+                    match im.from.as_str() {
+                        "std:math" => (
+                            "math",
+                            &["abs", "min", "max", "floor", "ceil", "sqrt", "pow"],
+                            &[
+                                ("PI", Value::F64(std::f64::consts::PI)),
+                                ("E", Value::F64(std::f64::consts::E)),
+                            ],
+                        ),
+                        "std:format" => ("format", &["pad", "fixed"], &[]),
+                        "std:fs" => ("fs", &["readText"], &[]),
+                        "std:env" => ("env", &["get"], &[]),
+                        _ => ("caps", &["has", "list", "drop"], &[]),
+                    };
+                let mut entries = HashMap::new();
+                for n in natives {
+                    // Native ids are `<ns>.<method>`, leaked once per import.
+                    let id: &'static str =
+                        Box::leak(format!("{ns_name}.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                for (n, v) in consts {
+                    entries.insert(n.to_string(), v.clone());
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: ns_name.to_string(),
+                    entries,
+                }));
+                for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
+                }
+                Ok(())
+            }
             "browser:dom" => {
                 let mut entries = HashMap::new();
                 entries.insert("getElementById".to_string(), Value::Native("dom.getElementById"));
+                entries.insert("createElement".to_string(), Value::Native("dom.createElement"));
                 let document = Value::Namespace(Rc::new(Namespace {
                     name: "document".to_string(),
                     entries,
@@ -408,12 +520,12 @@ impl Interp {
                 }
                 ClassMember::Method { mods, is_async, name, params, body, .. } => {
                     if let Some(body) = body {
-                        let data = Rc::new(FnData {
-                            name: name.clone(),
-                            is_async: *is_async,
+                        let data = Rc::new(FnData::new(
+                            name.clone(),
+                            *is_async,
                             params,
-                            body: FnBody::Block(body),
-                        });
+                            FnBody::Block(body),
+                        ));
                         if mods.is_static {
                             static_methods.insert(name.clone(), data);
                         } else {
@@ -424,32 +536,27 @@ impl Interp {
                 ClassMember::Getter { name, body, .. } => {
                     getters.insert(
                         name.clone(),
-                        Rc::new(FnData {
-                            name: name.clone(),
-                            is_async: false,
-                            params: &[],
-                            body: FnBody::Block(body),
-                        }),
+                        Rc::new(FnData::new(name.clone(), false, &[], FnBody::Block(body))),
                     );
                 }
                 ClassMember::Setter { name, param, body, .. } => {
                     setters.insert(
                         name.clone(),
-                        Rc::new(FnData {
-                            name: name.clone(),
-                            is_async: false,
-                            params: std::slice::from_ref(param),
-                            body: FnBody::Block(body),
-                        }),
+                        Rc::new(FnData::new(
+                            name.clone(),
+                            false,
+                            std::slice::from_ref(param),
+                            FnBody::Block(body),
+                        )),
                     );
                 }
                 ClassMember::Ctor { params, body, .. } => {
-                    ctor = Some(Rc::new(FnData {
-                        name: format!("{}.constructor", c.name.text),
-                        is_async: false,
+                    ctor = Some(Rc::new(FnData::new(
+                        format!("{}.constructor", c.name.text),
+                        false,
                         params,
-                        body: FnBody::Block(body),
-                    }));
+                        FnBody::Block(body),
+                    )));
                 }
             }
         }
@@ -785,6 +892,29 @@ impl Interp {
         if let Some(this) = &c.this {
             env_define(&scope, "this", this.clone());
         }
+        if self.use_vm {
+            let cached = c.data.chunk.borrow().clone();
+            let compiled = match cached {
+                Some(x) => x,
+                None => {
+                    let out = vm::compile_fn(&c.data.body);
+                    *c.data.chunk.borrow_mut() = Some(out.clone());
+                    out
+                }
+            };
+            if let Some(chunk) = compiled {
+                // Tier 1: hot, simple-int kernels run native (Phase 4).
+                if let Some(hook) = self.jit {
+                    if c.this.is_none() && c.cls.is_none() {
+                        if let Some(v) = self.try_jit(hook, &chunk, c.data.params, &scope)? {
+                            return Ok(v);
+                        }
+                    }
+                }
+                let frame = Frame::enter(self, c);
+                return vm::run_chunk(frame.i, &chunk, scope);
+            }
+        }
         match &c.data.body {
             FnBody::Expr(e) => {
                 let frame = Frame::enter(self, c);
@@ -798,6 +928,51 @@ impl Interp {
                 }
             }
         }
+    }
+
+    /// Attempt a Tier 1 native call: count the call site, compile once
+    /// hot, and dispatch when every argument is an int32. The arguments are
+    /// re-read from the freshly bound scope so default-value semantics
+    /// stayed with `bind_params`.
+    fn try_jit(
+        &mut self,
+        hook: JitHook,
+        chunk: &Rc<vm::Chunk>,
+        params: &'static [Param],
+        scope: &Env,
+    ) -> Result<Option<Value>, Thrown> {
+        let key = Rc::as_ptr(chunk) as usize;
+        let count = self.call_counts.entry(key).or_insert(0);
+        *count += 1;
+        if *count < JIT_THRESHOLD {
+            return Ok(None);
+        }
+        let names: Option<Vec<String>> = params
+            .iter()
+            .map(|p| match (&p.target, p.rest, &p.default) {
+                (Pattern::Name(n), false, None) => Some(n.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let Some(names) = names else { return Ok(None) };
+        let compiled = self
+            .jit_cache
+            .entry(key)
+            .or_insert_with(|| hook(chunk, &names))
+            .clone();
+        let Some(f) = compiled else { return Ok(None) };
+        let mut args = Vec::with_capacity(names.len());
+        for n in &names {
+            match env_get(scope, n) {
+                Some(Value::I32(v)) => args.push(v),
+                _ => return Ok(None), // guard failed: interpret instead
+            }
+        }
+        let packed = f(&args);
+        Ok(Some(match packed >> 32 {
+            1 => Value::Null,
+            _ => Value::I32(packed as i32),
+        }))
     }
 
     fn bind_params(
@@ -858,6 +1033,30 @@ impl Interp {
                 let id = self.want_string(args.first())?;
                 Ok(Value::Dom(Rc::new(id)))
             }
+            "dom.createElement" => {
+                let tag = self.want_string(args.first())?;
+                let id = self.host.dom_create(&tag);
+                Ok(Value::Dom(Rc::new(id)))
+            }
+            "dom.appendChild" => {
+                let Some(Value::Dom(parent)) = recv else {
+                    return self.type_error("appendChild needs an element");
+                };
+                let Some(Value::Dom(child)) = args.first() else {
+                    return self.type_error("appendChild takes an element");
+                };
+                let (p, c) = (parent.to_string(), child.to_string());
+                self.host.dom_append(&p, &c);
+                Ok(Value::Null)
+            }
+            "dom.remove" => {
+                let Some(Value::Dom(id)) = recv else {
+                    return self.type_error("remove needs an element");
+                };
+                let id = id.to_string();
+                self.host.dom_remove(&id);
+                Ok(Value::Null)
+            }
             "dom.addEventListener" => {
                 let Some(Value::Dom(id)) = recv else {
                     return self.type_error("addEventListener needs an element");
@@ -870,6 +1069,86 @@ impl Interp {
                 let cb_id = self.callbacks.len() as u32;
                 self.callbacks.push(cb);
                 self.host.dom_on_click(id, cb_id);
+                Ok(Value::Null)
+            }
+            "math.abs" => Ok(match args.first() {
+                Some(Value::I32(n)) => Value::I32(n.wrapping_abs()),
+                Some(Value::I64(n)) => Value::I64(n.wrapping_abs()),
+                Some(Value::F32(f)) => Value::F32(f.abs()),
+                Some(Value::F64(f)) => Value::F64(f.abs()),
+                v => Value::F64(v.and_then(as_num).unwrap_or(f64::NAN).abs()),
+            }),
+            "math.min" | "math.max" => {
+                let mut best: Option<Value> = None;
+                for a in args {
+                    best = Some(match best {
+                        None => a,
+                        Some(b) => {
+                            let take_a = match self.numeric_binop(BinOp::Lt, a.clone(), b.clone())?
+                            {
+                                Value::Bool(lt) => lt == (name == "math.min"),
+                                _ => false,
+                            };
+                            if take_a { a } else { b }
+                        }
+                    });
+                }
+                Ok(best.unwrap_or(Value::Null))
+            }
+            "math.floor" | "math.ceil" | "math.sqrt" => {
+                let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
+                Ok(Value::F64(match name {
+                    "math.floor" => x.floor(),
+                    "math.ceil" => x.ceil(),
+                    _ => x.sqrt(),
+                }))
+            }
+            "math.pow" => {
+                let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
+                let y = args.get(1).and_then(as_num).unwrap_or(f64::NAN);
+                Ok(Value::F64(x.powf(y)))
+            }
+            "format.pad" => {
+                let text = to_display(args.first().unwrap_or(&Value::Null));
+                let width = args.get(1).and_then(as_i64).unwrap_or(0).max(0) as usize;
+                let n = text.chars().count();
+                let padded =
+                    if n >= width { text } else { format!("{}{text}", " ".repeat(width - n)) };
+                Ok(Value::Str(Rc::new(padded.chars().collect())))
+            }
+            "format.fixed" => {
+                let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
+                let d = args.get(1).and_then(as_i64).unwrap_or(0).clamp(0, 17) as usize;
+                Ok(Value::Str(Rc::new(format!("{x:.d$}").chars().collect())))
+            }
+            "fs.readText" => {
+                let path = self.want_string(args.first())?;
+                match self.host.read_text(&path) {
+                    Ok(text) => Ok(Value::Str(Rc::new(text.chars().collect()))),
+                    Err(msg) => Err(self.throw("Error", msg)),
+                }
+            }
+            "env.get" => {
+                let key = self.want_string(args.first())?;
+                Ok(match self.host.env_var(&key) {
+                    Some(v) => Value::Str(Rc::new(v.chars().collect())),
+                    None => Value::Null,
+                })
+            }
+            "caps.has" => {
+                let cap = self.want_string(args.first())?;
+                Ok(Value::Bool(self.host.caps().contains(&cap)))
+            }
+            "caps.list" => Ok(Value::Array(Rc::new(RefCell::new(
+                self.host
+                    .caps()
+                    .into_iter()
+                    .map(|c| Value::Str(Rc::new(c.chars().collect())))
+                    .collect(),
+            )))),
+            "caps.drop" => {
+                let cap = self.want_string(args.first())?;
+                self.host.drop_cap(&cap);
                 Ok(Value::Null)
             }
             _ => self.type_error(format!("unknown native `{name}`")),
@@ -945,12 +1224,26 @@ impl Interp {
                 "length" => Some(Value::I32(a.borrow().len() as i32)),
                 _ => None,
             }),
+            Value::MapV(m) => Ok(match name {
+                "size" => Some(Value::I32(m.borrow().len() as i32)),
+                _ => None,
+            }),
+            Value::SetV(m) => Ok(match name {
+                "size" => Some(Value::I32(m.borrow().len() as i32)),
+                _ => None,
+            }),
             Value::Record(r) => Ok(r.borrow().get(name).cloned()),
             Value::Namespace(ns) => Ok(ns.entries.get(name).cloned()),
             Value::Dom(id) => match name {
                 "textContent" => Ok(Some(Value::Str(Rc::new(
                     self.host.dom_get_text(id).unwrap_or_default().chars().collect(),
                 )))),
+                "value" => {
+                    let id = id.to_string();
+                    Ok(Some(Value::Str(Rc::new(
+                        self.host.dom_get_value(&id).chars().collect(),
+                    ))))
+                }
                 _ => Ok(None),
             },
             Value::Class(c) => {
@@ -1011,15 +1304,19 @@ impl Interp {
                 r.borrow_mut().insert(name.to_string(), value);
                 Ok(())
             }
-            Value::Dom(id) => {
-                if name == "textContent" {
+            Value::Dom(id) => match name {
+                "textContent" => {
                     let id = id.to_string();
                     self.host.dom_set_text(&id, &to_display(&value));
                     Ok(())
-                } else {
-                    self.type_error(format!("MVP DOM elements have no settable `{name}`"))
                 }
-            }
+                "value" => {
+                    let id = id.to_string();
+                    self.host.dom_set_value(&id, &to_display(&value));
+                    Ok(())
+                }
+                _ => self.type_error(format!("DOM elements have no settable `{name}`")),
+            },
             Value::Class(c) => {
                 if c.statics.borrow().contains_key(name) {
                     c.statics.borrow_mut().insert(name.to_string(), value);
@@ -1090,7 +1387,7 @@ impl Interp {
                 .ok_or_else(|| self.throw("TypeError", format!("`{}` is not defined", n.text))),
             Expr::This(_) => env_get(env, "this")
                 .ok_or_else(|| self.throw("TypeError", "`this` is not available here")),
-            Expr::Lit { kind, text } => self.eval_literal(*kind, text),
+            Expr::Lit { kind, text, .. } => self.eval_literal(*kind, text),
             Expr::Template(parts) => {
                 let mut out = String::new();
                 for p in parts {
@@ -1149,15 +1446,15 @@ impl Interp {
             }
             Expr::Paren(e) => self.eval(e, env),
             Expr::Arrow { is_async, params, body, .. } => {
-                let data = Rc::new(FnData {
-                    name: "<arrow>".to_string(),
-                    is_async: *is_async,
+                let data = Rc::new(FnData::new(
+                    "<arrow>".to_string(),
+                    *is_async,
                     params,
-                    body: match body {
+                    match body {
                         ArrowBody::Expr(e) => FnBody::Expr(e),
                         ArrowBody::Block(b) => FnBody::Block(b),
                     },
-                });
+                ));
                 // Arrows capture `this` lexically.
                 let this = env_get(env, "this");
                 Ok(Value::Closure(Rc::new(Closure {
@@ -1213,21 +1510,7 @@ impl Interp {
                 BinOp::Instanceof => {
                     let lv = self.eval(l, env)?;
                     let rv = self.eval(r, env)?;
-                    let Value::Class(want) = rv else {
-                        return self.type_error("right side of instanceof must be a class");
-                    };
-                    let mut ok = false;
-                    if let Value::Instance(i) = &lv {
-                        let mut cls = Some(i.borrow().class.clone());
-                        while let Some(c) = cls {
-                            if Rc::ptr_eq(&c, &want) {
-                                ok = true;
-                                break;
-                            }
-                            cls = c.parent.clone();
-                        }
-                    }
-                    Ok(Value::Bool(ok))
+                    self.instance_of(&lv, &rv)
                 }
                 BinOp::Eq | BinOp::Ne => {
                     let lv = self.eval(l, env)?;
@@ -1294,22 +1577,25 @@ impl Interp {
                 self.eval_cast(v, *wrapping, ty)
             }
             Expr::Call { callee, args, optional, .. } => {
-                let argv = self.eval_args(args, env)?;
-                // Method-call fast path: dispatch on the receiver.
+                // Receiver/callee evaluates before the arguments; a null
+                // receiver under `?.` skips argument evaluation entirely.
                 if let Expr::Member { obj, name, optional: mopt } = callee.as_ref() {
                     let recv = self.eval(obj, env)?;
                     if (*mopt || *optional) && matches!(recv, Value::Null) {
                         return Ok(Value::Null);
                     }
+                    let argv = self.eval_args(args, env)?;
                     return self.call_member(&recv, name, argv);
                 }
                 if let Expr::SuperMember { name, .. } = callee.as_ref() {
+                    let argv = self.eval_args(args, env)?;
                     return self.call_super_method(name, argv, env);
                 }
                 let f = self.eval(callee, env)?;
                 if *optional && matches!(f, Value::Null) {
                     return Ok(Value::Null);
                 }
+                let argv = self.eval_args(args, env)?;
                 self.call_value(&f, argv)
             }
             Expr::New { ty, args } => {
@@ -1317,13 +1603,8 @@ impl Interp {
                     return self.type_error("`new` needs a class");
                 };
                 let head = name.split('.').next().unwrap_or(name);
-                let v = env_get(env, head)
-                    .ok_or_else(|| self.throw("TypeError", format!("`{head}` is not defined")))?;
-                let Value::Class(cls) = v else {
-                    return self.type_error(format!("`{name}` is not a class"));
-                };
                 let argv = self.eval_args(args, env)?;
-                self.instantiate(&cls, argv)
+                self.new_named(head, argv, env)
             }
             Expr::Member { obj, name, optional } => {
                 let o = self.eval(obj, env)?;
@@ -1341,30 +1622,7 @@ impl Interp {
                     return Ok(Value::Null);
                 }
                 let i = self.eval(index, env)?;
-                match (&o, as_i64(&i)) {
-                    (Value::Array(a), Some(ix)) => {
-                        let a = a.borrow();
-                        if ix < 0 || ix as usize >= a.len() {
-                            Err(self.throw(
-                                "RangeError",
-                                format!("index {ix} out of bounds (length {})", a.len()),
-                            ))
-                        } else {
-                            Ok(a[ix as usize].clone())
-                        }
-                    }
-                    (Value::Str(s), Some(ix)) => {
-                        if ix < 0 || ix as usize >= s.len() {
-                            Err(self.throw(
-                                "RangeError",
-                                format!("index {ix} out of bounds (length {})", s.len()),
-                            ))
-                        } else {
-                            Ok(Value::Char(s[ix as usize]))
-                        }
-                    }
-                    _ => self.type_error("only arrays and strings are indexable"),
-                }
+                self.index_get(&o, &i)
             }
             Expr::SuperMember { name, .. } => {
                 // Non-call super member: resolve to a bound closure.
@@ -1372,28 +1630,7 @@ impl Interp {
             }
             Expr::SuperCall { args, .. } => {
                 let argv = self.eval_args(args, env)?;
-                let this = env_get(env, "this")
-                    .ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
-                let cls = self.current_class()?;
-                let parent = cls
-                    .parent
-                    .clone()
-                    .ok_or_else(|| self.throw("TypeError", "class has no base class"))?;
-                let mut search = Some(parent);
-                while let Some(c) = search {
-                    if let Some(ctor) = &c.ctor {
-                        let env2 = c.env.clone().unwrap_or_else(|| self.globals.clone());
-                        let closure = Closure {
-                            data: ctor.clone(),
-                            env: env2,
-                            this: Some(this.clone()),
-                            cls: Some(c.clone()),
-                        };
-                        return self.call_closure(&closure, argv);
-                    }
-                    search = c.parent.clone();
-                }
-                Ok(Value::Null) // no ctor anywhere up the chain: nothing to do
+                self.super_call(argv, env)
             }
             Expr::ImportCall(_) => self.type_error("dynamic import() is not in the MVP"),
         }
@@ -1434,6 +1671,89 @@ impl Interp {
                 "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
                 _ => self.type_error(format!("arrays have no method `{name}` in the MVP")),
             },
+            Value::MapV(m) => {
+                let m = m.clone();
+                match name {
+                    "set" => {
+                        let (k, v) = (
+                            args.first().cloned().unwrap_or(Value::Null),
+                            args.get(1).cloned().unwrap_or(Value::Null),
+                        );
+                        let idx = self.map_find(&m, &k)?;
+                        match idx {
+                            Some(i) => m.borrow_mut()[i].1 = v,
+                            None => m.borrow_mut().push((k, v)),
+                        }
+                        Ok(Value::Null)
+                    }
+                    "get" => {
+                        let k = args.first().cloned().unwrap_or(Value::Null);
+                        Ok(match self.map_find(&m, &k)? {
+                            Some(i) => m.borrow()[i].1.clone(),
+                            None => Value::Null,
+                        })
+                    }
+                    "has" => {
+                        let k = args.first().cloned().unwrap_or(Value::Null);
+                        Ok(Value::Bool(self.map_find(&m, &k)?.is_some()))
+                    }
+                    "remove" => {
+                        let k = args.first().cloned().unwrap_or(Value::Null);
+                        Ok(match self.map_find(&m, &k)? {
+                            Some(i) => {
+                                m.borrow_mut().remove(i);
+                                Value::Bool(true)
+                            }
+                            None => Value::Bool(false),
+                        })
+                    }
+                    "keys" => Ok(Value::Array(Rc::new(RefCell::new(
+                        m.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                    )))),
+                    "values" => Ok(Value::Array(Rc::new(RefCell::new(
+                        m.borrow().iter().map(|(_, v)| v.clone()).collect(),
+                    )))),
+                    "entries" => Ok(Value::Array(Rc::new(RefCell::new(
+                        m.borrow()
+                            .iter()
+                            .map(|(k, v)| {
+                                Value::Array(Rc::new(RefCell::new(vec![k.clone(), v.clone()])))
+                            })
+                            .collect(),
+                    )))),
+                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    _ => self.type_error(format!("no method `{name}` on Map")),
+                }
+            }
+            Value::SetV(m) => {
+                let m = m.clone();
+                match name {
+                    "add" => {
+                        let v = args.first().cloned().unwrap_or(Value::Null);
+                        if self.set_find(&m, &v)?.is_none() {
+                            m.borrow_mut().push(v);
+                        }
+                        Ok(Value::Null)
+                    }
+                    "has" => {
+                        let v = args.first().cloned().unwrap_or(Value::Null);
+                        Ok(Value::Bool(self.set_find(&m, &v)?.is_some()))
+                    }
+                    "remove" => {
+                        let v = args.first().cloned().unwrap_or(Value::Null);
+                        Ok(match self.set_find(&m, &v)? {
+                            Some(i) => {
+                                m.borrow_mut().remove(i);
+                                Value::Bool(true)
+                            }
+                            None => Value::Bool(false),
+                        })
+                    }
+                    "values" => Ok(Value::Array(Rc::new(RefCell::new(m.borrow().clone())))),
+                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    _ => self.type_error(format!("no method `{name}` on Set")),
+                }
+            }
             Value::Str(_) | Value::Char(_) | Value::I32(_) | Value::I64(_) | Value::U32(_)
             | Value::U64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_)
                 if name == "toString" =>
@@ -1442,6 +1762,12 @@ impl Interp {
             }
             Value::Dom(_) if name == "addEventListener" => {
                 self.call_native("dom.addEventListener", Some(recv), args)
+            }
+            Value::Dom(_) if name == "appendChild" => {
+                self.call_native("dom.appendChild", Some(recv), args)
+            }
+            Value::Dom(_) if name == "remove" => {
+                self.call_native("dom.remove", Some(recv), args)
             }
             Value::Namespace(ns) => match ns.entries.get(name) {
                 Some(Value::Native(n)) => {
@@ -1462,6 +1788,97 @@ impl Interp {
                 }
             }
         }
+    }
+
+    fn index_get(&self, o: &Value, i: &Value) -> VResult {
+        match (o, as_i64(i)) {
+            (Value::Array(a), Some(ix)) => {
+                let a = a.borrow();
+                if ix < 0 || ix as usize >= a.len() {
+                    Err(self.throw(
+                        "RangeError",
+                        format!("index {ix} out of bounds (length {})", a.len()),
+                    ))
+                } else {
+                    Ok(a[ix as usize].clone())
+                }
+            }
+            (Value::Str(s), Some(ix)) => {
+                if ix < 0 || ix as usize >= s.len() {
+                    Err(self.throw(
+                        "RangeError",
+                        format!("index {ix} out of bounds (length {})", s.len()),
+                    ))
+                } else {
+                    Ok(Value::Char(s[ix as usize]))
+                }
+            }
+            _ => self.type_error("only arrays and strings are indexable"),
+        }
+    }
+
+    fn index_set(&self, o: &Value, i: &Value, value: Value) -> Result<(), Thrown> {
+        match (o, as_i64(i)) {
+            (Value::Array(a), Some(ix)) => {
+                let mut a = a.borrow_mut();
+                if ix < 0 || ix as usize >= a.len() {
+                    Err(self.throw(
+                        "RangeError",
+                        format!("index {ix} out of bounds (length {})", a.len()),
+                    ))
+                } else {
+                    a[ix as usize] = value;
+                    Ok(())
+                }
+            }
+            _ => self.type_error("only array elements can be assigned by index"),
+        }
+    }
+
+    fn instance_of(&self, l: &Value, r: &Value) -> VResult {
+        let Value::Class(want) = r else {
+            return self.type_error("right side of instanceof must be a class");
+        };
+        let mut ok = false;
+        if let Value::Instance(i) = l {
+            let mut cls = Some(i.borrow().class.clone());
+            while let Some(c) = cls {
+                if Rc::ptr_eq(&c, want) {
+                    ok = true;
+                    break;
+                }
+                cls = c.parent.clone();
+            }
+        }
+        Ok(Value::Bool(ok))
+    }
+
+    fn map_find(
+        &self,
+        m: &Rc<RefCell<Vec<(Value, Value)>>>,
+        k: &Value,
+    ) -> Result<Option<usize>, Thrown> {
+        let items = m.borrow();
+        for (i, (key, _)) in items.iter().enumerate() {
+            if self.values_equal(key, k)? {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
+    fn set_find(
+        &self,
+        m: &Rc<RefCell<Vec<Value>>>,
+        v: &Value,
+    ) -> Result<Option<usize>, Thrown> {
+        let items = m.borrow();
+        for (i, item) in items.iter().enumerate() {
+            if self.values_equal(item, v)? {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
     }
 
     fn current_class(&self) -> Result<Rc<ClassDef>, Thrown> {
@@ -1493,6 +1910,46 @@ impl Interp {
         self.type_error(format!("no method `{name}` on the base class"))
     }
 
+    fn new_named(&mut self, head: &str, argv: Vec<Value>, env: &Env) -> VResult {
+        if head == "Map" && env_get(env, "Map").is_none() {
+            return Ok(Value::MapV(Rc::new(RefCell::new(Vec::new()))));
+        }
+        if head == "Set" && env_get(env, "Set").is_none() {
+            return Ok(Value::SetV(Rc::new(RefCell::new(Vec::new()))));
+        }
+        let v = env_get(env, head)
+            .ok_or_else(|| self.throw("TypeError", format!("`{head}` is not defined")))?;
+        let Value::Class(cls) = v else {
+            return self.type_error(format!("`{head}` is not a class"));
+        };
+        self.instantiate(&cls, argv)
+    }
+
+    fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
+        let this = env_get(env, "this")
+            .ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
+        let cls = self.current_class()?;
+        let parent = cls
+            .parent
+            .clone()
+            .ok_or_else(|| self.throw("TypeError", "class has no base class"))?;
+        let mut search = Some(parent);
+        while let Some(c) = search {
+            if let Some(ctor) = &c.ctor {
+                let env2 = c.env.clone().unwrap_or_else(|| self.globals.clone());
+                let closure = Closure {
+                    data: ctor.clone(),
+                    env: env2,
+                    this: Some(this.clone()),
+                    cls: Some(c.clone()),
+                };
+                return self.call_closure(&closure, argv);
+            }
+            search = c.parent.clone();
+        }
+        Ok(Value::Null) // no ctor anywhere up the chain: nothing to do
+    }
+
     fn call_super_method(&mut self, name: &str, args: Vec<Value>, env: &Env) -> VResult {
         let f = self.super_lookup(name, env)?;
         self.call_value(&f, args)
@@ -1514,21 +1971,7 @@ impl Interp {
             Expr::Index { obj, index, .. } => {
                 let o = self.eval(obj, env)?;
                 let i = self.eval(index, env)?;
-                match (&o, as_i64(&i)) {
-                    (Value::Array(a), Some(ix)) => {
-                        let mut a = a.borrow_mut();
-                        if ix < 0 || ix as usize >= a.len() {
-                            Err(self.throw(
-                                "RangeError",
-                                format!("index {ix} out of bounds (length {})", a.len()),
-                            ))
-                        } else {
-                            a[ix as usize] = value;
-                            Ok(())
-                        }
-                    }
-                    _ => self.type_error("only array elements can be assigned by index"),
-                }
+                self.index_set(&o, &i, value)
             }
             _ => self.type_error("invalid assignment target"),
         }
@@ -1537,67 +1980,7 @@ impl Interp {
     // ---- literals, numerics, casts ------------------------------------------------
 
     fn eval_literal(&self, kind: LitKind, text: &str) -> VResult {
-        match kind {
-            LitKind::Null => Ok(Value::Null),
-            LitKind::Bool => Ok(Value::Bool(text == "true")),
-            LitKind::Str => {
-                let inner = &text[1..text.len() - 1];
-                Ok(Value::Str(Rc::new(unescape(inner).chars().collect())))
-            }
-            LitKind::Char => {
-                let inner = &text[2..text.len() - 1]; // strip c' and '
-                let s = unescape(inner);
-                s.chars()
-                    .next()
-                    .map(Value::Char)
-                    .ok_or_else(|| self.throw("TypeError", "empty char literal"))
-            }
-            LitKind::Int => self.parse_int(text),
-            LitKind::Float => {
-                let is_f32 = text.ends_with('f');
-                let core: String = text.trim_end_matches('f').replace('_', "");
-                let v: f64 = core
-                    .parse()
-                    .map_err(|_| self.throw("TypeError", format!("bad float literal `{text}`")))?;
-                Ok(if is_f32 { Value::F32(v as f32) } else { Value::F64(v) })
-            }
-            LitKind::BigInt | LitKind::BigDec => {
-                self.type_error("bigint/bigdec literals are not in the MVP")
-            }
-        }
-    }
-
-    fn parse_int(&self, text: &str) -> VResult {
-        let t = text.replace('_', "");
-        // Longest suffix first; hex digits can't collide with any of these.
-        const SUFFIXES: &[&str] =
-            &["u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u"];
-        let suffix = SUFFIXES.iter().find(|s| t.ends_with(**s)).copied().unwrap_or("");
-        let digits = &t[..t.len() - suffix.len()];
-        let (radix, body) = if let Some(b) = digits.strip_prefix("0x") {
-            (16, b)
-        } else if let Some(b) = digits.strip_prefix("0o") {
-            (8, b)
-        } else if let Some(b) = digits.strip_prefix("0b") {
-            (2, b)
-        } else {
-            (10, digits)
-        };
-        let raw = u64::from_str_radix(body, radix)
-            .map_err(|_| self.throw("RangeError", format!("integer literal `{text}` overflows")))?;
-        let out_of = || self.throw("RangeError", format!("literal `{text}` does not fit its type"));
-        Ok(match suffix {
-            "" | "i32" => Value::I32(i32::try_from(raw).map_err(|_| out_of())?),
-            "u" | "u32" => Value::U32(u32::try_from(raw).map_err(|_| out_of())?),
-            "l" | "i64" => Value::I64(i64::try_from(raw).map_err(|_| out_of())?),
-            "ul" | "u64" => Value::U64(raw),
-            // Small types promote to int32 immediately (§3.3 rule 1).
-            "i8" => Value::I32(i8::try_from(raw).map_err(|_| out_of())? as i32),
-            "i16" => Value::I32(i16::try_from(raw).map_err(|_| out_of())? as i32),
-            "u8" => Value::I32(u8::try_from(raw).map_err(|_| out_of())? as i32),
-            "u16" => Value::I32(u16::try_from(raw).map_err(|_| out_of())? as i32),
-            _ => return self.type_error(format!("unsupported suffix on `{text}`")),
-        })
+        parse_literal(kind, text).map_err(|(class, msg)| self.throw(class, msg))
     }
 
     fn eval_unary(&mut self, op: UnaryOp, v: Value) -> VResult {
@@ -1609,6 +1992,10 @@ impl Interp {
                 _ => self.type_error("unary `+` needs a number"),
             },
             UnaryOp::Neg => match v {
+                Value::BigIntV(b) => Ok(Value::BigIntV(Rc::new(b.negate()))),
+                Value::BigDecV(d) => Ok(Value::BigDecV(Rc::new(
+                    BigDec { coef: d.coef.negate(), scale: d.scale },
+                ))),
                 Value::I32(n) => Ok(Value::I32(n.wrapping_neg())),
                 Value::I64(n) => Ok(Value::I64(n.wrapping_neg())),
                 Value::U32(n) => Ok(Value::U32(n.wrapping_neg())),
@@ -1635,6 +2022,10 @@ impl Interp {
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Char(x), Value::Char(y)) => x == y,
             (Value::Str(x), Value::Str(y)) => x == y,
+            (Value::BigIntV(x), Value::BigIntV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
+            (Value::BigDecV(x), Value::BigDecV(y)) => x.cmp(y) == std::cmp::Ordering::Equal,
+            (Value::MapV(x), Value::MapV(y)) => Rc::ptr_eq(x, y),
+            (Value::SetV(x), Value::SetV(y)) => Rc::ptr_eq(x, y),
             (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
             (Value::Record(x), Value::Record(y)) => Rc::ptr_eq(x, y),
             (Value::Instance(x), Value::Instance(y)) => Rc::ptr_eq(x, y),
@@ -1679,6 +2070,11 @@ impl Interp {
                     _ => c.is_ge(),
                 }));
             }
+            _ => {}
+        }
+        match (&l, &r) {
+            (Value::BigIntV(a), Value::BigIntV(b)) => return self.bigint_op(op, a, b),
+            (Value::BigDecV(a), Value::BigDecV(b)) => return self.bigdec_op(op, a, b),
             _ => {}
         }
         let (a, b) = promote_pair(&l, &r).ok_or_else(|| {
@@ -1769,6 +2165,51 @@ impl Interp {
             (Value::F32(x), Value::F32(y)) => float_ops!(x, y, Value::F32),
             (Value::F64(x), Value::F64(y)) => float_ops!(x, y, Value::F64),
             _ => return self.type_error("operands did not promote to a common type"),
+        })
+    }
+
+    fn bigint_op(&mut self, op: BinOp, a: &BigInt, b: &BigInt) -> VResult {
+        use std::cmp::Ordering as O;
+        use BinOp::*;
+        Ok(match op {
+            Add => Value::BigIntV(Rc::new(a.add(b))),
+            Sub => Value::BigIntV(Rc::new(a.sub(b))),
+            Mul => Value::BigIntV(Rc::new(a.mul(b))),
+            Div | Rem => {
+                let (q, r) = a
+                    .divmod(b)
+                    .ok_or_else(|| self.throw("RangeError", "division by zero"))?;
+                Value::BigIntV(Rc::new(if op == Div { q } else { r }))
+            }
+            Lt => Value::Bool(a.cmp(b) == O::Less),
+            Gt => Value::Bool(a.cmp(b) == O::Greater),
+            Le => Value::Bool(a.cmp(b) != O::Greater),
+            Ge => Value::Bool(a.cmp(b) != O::Less),
+            _ => return self.type_error("operator not defined for bigint"),
+        })
+    }
+
+    fn bigdec_op(&mut self, op: BinOp, a: &BigDec, b: &BigDec) -> VResult {
+        use std::cmp::Ordering as O;
+        use BinOp::*;
+        Ok(match op {
+            Add => Value::BigDecV(Rc::new(a.add(b))),
+            Sub => Value::BigDecV(Rc::new(a.sub(b))),
+            Mul => Value::BigDecV(Rc::new(a.mul(b))),
+            Div => match a.div_exact(b) {
+                Some(q) => Value::BigDecV(Rc::new(q)),
+                None => {
+                    return Err(self.throw(
+                        "RangeError",
+                        "inexact bigdec division needs a rounding context (§3.7)",
+                    ))
+                }
+            },
+            Lt => Value::Bool(a.cmp(b) == O::Less),
+            Gt => Value::Bool(a.cmp(b) == O::Greater),
+            Le => Value::Bool(a.cmp(b) != O::Greater),
+            Ge => Value::Bool(a.cmp(b) != O::Less),
+            _ => return self.type_error("operator not defined for bigdec"),
         })
     }
 
@@ -1980,6 +2421,10 @@ fn kind_of(v: &Value) -> &'static str {
         Value::F64(_) => "float64",
         Value::Char(_) => "char",
         Value::Str(_) => "string",
+        Value::BigIntV(_) => "bigint",
+        Value::BigDecV(_) => "bigdec",
+        Value::MapV(_) => "Map",
+        Value::SetV(_) => "Set",
         Value::Array(_) => "array",
         Value::Record(_) => "record",
         Value::Closure(_) => "function",
@@ -2003,6 +2448,20 @@ pub fn to_display(v: &Value) -> String {
         Value::F64(f) => f.to_string(),
         Value::Char(c) => c.to_string(),
         Value::Str(s) => s.iter().collect(),
+        Value::BigIntV(b) => b.to_decimal(),
+        Value::BigDecV(d) => d.to_decimal(),
+        Value::MapV(m) => {
+            let items: Vec<String> = m
+                .borrow()
+                .iter()
+                .map(|(k, v)| format!("{} => {}", to_display(k), to_display(v)))
+                .collect();
+            format!("Map{{{}}}", items.join(", "))
+        }
+        Value::SetV(m) => {
+            let items: Vec<String> = m.borrow().iter().map(to_display).collect();
+            format!("Set{{{}}}", items.join(", "))
+        }
         Value::Array(a) => {
             let items: Vec<String> = a.borrow().iter().map(to_display).collect();
             format!("[{}]", items.join(", "))
@@ -2021,6 +2480,92 @@ pub fn to_display(v: &Value) -> String {
         Value::Namespace(ns) => format!("<{}>", ns.name),
         Value::Dom(id) => format!("<#{id}>"),
     }
+}
+
+/// Literal text → runtime value; pure so the bytecode compiler can bake
+/// constants at compile time. Err = (error class, message).
+pub(crate) fn parse_literal(kind: LitKind, text: &str) -> Result<Value, (&'static str, String)> {
+    match kind {
+        LitKind::Null => Ok(Value::Null),
+        LitKind::Bool => Ok(Value::Bool(text == "true")),
+        LitKind::Str => {
+            let inner = &text[1..text.len() - 1];
+            Ok(Value::Str(Rc::new(unescape(inner).chars().collect())))
+        }
+        LitKind::Char => {
+            let inner = &text[2..text.len() - 1]; // strip c' and '
+            let s = unescape(inner);
+            s.chars()
+                .next()
+                .map(Value::Char)
+                .ok_or_else(|| ("TypeError", "empty char literal".to_string()))
+        }
+        LitKind::Int => parse_int_literal(text),
+        LitKind::Float => {
+            let is_f32 = text.ends_with('f');
+            let core: String = text.trim_end_matches('f').replace('_', "");
+            let v: f64 = core
+                .parse()
+                .map_err(|_| ("TypeError", format!("bad float literal `{text}`")))?;
+            Ok(if is_f32 { Value::F32(v as f32) } else { Value::F64(v) })
+        }
+        LitKind::BigInt => {
+            let t = text.replace('_', "");
+            let body = t.trim_end_matches('n');
+            let (radix, body) = if let Some(b) = body.strip_prefix("0x") {
+                (16, b)
+            } else if let Some(b) = body.strip_prefix("0o") {
+                (8, b)
+            } else if let Some(b) = body.strip_prefix("0b") {
+                (2, b)
+            } else {
+                (10, body)
+            };
+            match BigInt::parse(body, radix) {
+                Some(b) => Ok(Value::BigIntV(Rc::new(b))),
+                None => Err(("TypeError", format!("bad bigint literal `{text}`"))),
+            }
+        }
+        LitKind::BigDec => {
+            let t = text.replace('_', "");
+            match BigDec::parse(t.trim_end_matches('m')) {
+                Some(b) => Ok(Value::BigDecV(Rc::new(b))),
+                None => Err(("TypeError", format!("bad bigdec literal `{text}`"))),
+            }
+        }
+    }
+}
+
+fn parse_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
+    let t = text.replace('_', "");
+    const SUFFIXES: &[&str] =
+        &["u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u"];
+    let suffix = SUFFIXES.iter().find(|s| t.ends_with(**s)).copied().unwrap_or("");
+    let digits = &t[..t.len() - suffix.len()];
+    let (radix, body) = if let Some(b) = digits.strip_prefix("0x") {
+        (16, b)
+    } else if let Some(b) = digits.strip_prefix("0o") {
+        (8, b)
+    } else if let Some(b) = digits.strip_prefix("0b") {
+        (2, b)
+    } else {
+        (10, digits)
+    };
+    let raw = u64::from_str_radix(body, radix)
+        .map_err(|_| ("RangeError", format!("integer literal `{text}` overflows")))?;
+    let out_of = || ("RangeError", format!("literal `{text}` does not fit its type"));
+    Ok(match suffix {
+        "" | "i32" => Value::I32(i32::try_from(raw).map_err(|_| out_of())?),
+        "u" | "u32" => Value::U32(u32::try_from(raw).map_err(|_| out_of())?),
+        "l" | "i64" => Value::I64(i64::try_from(raw).map_err(|_| out_of())?),
+        "ul" | "u64" => Value::U64(raw),
+        // Small types promote to int32 immediately (§3.3 rule 1).
+        "i8" => Value::I32(i8::try_from(raw).map_err(|_| out_of())? as i32),
+        "i16" => Value::I32(i16::try_from(raw).map_err(|_| out_of())? as i32),
+        "u8" => Value::I32(u8::try_from(raw).map_err(|_| out_of())? as i32),
+        "u16" => Value::I32(u16::try_from(raw).map_err(|_| out_of())? as i32),
+        _ => return Err(("TypeError", format!("unsupported suffix on `{text}`"))),
+    })
 }
 
 fn unescape(s: &str) -> String {

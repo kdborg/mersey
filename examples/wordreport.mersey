@@ -1,0 +1,58 @@
+// wordreport: frequency report over a text file — the Phase 3 demo app.
+// Run: mersey run --allow-read examples/wordreport.mersey
+import { console } from "std:console";
+import { fs } from "std:fs";
+import { format } from "std:format";
+import { caps } from "std:caps";
+
+function isLetter(ch: char): bool {
+    return (ch >= c'a' && ch <= c'z') || (ch >= c'A' && ch <= c'Z');
+}
+
+class Counter {
+    private readonly counts: Map<string, int32> = new Map<string, int32>();
+    private total: int32 = 0;
+
+    public tally(word: string): void {
+        const seen = this.counts.get(word);
+        this.counts.set(word, (seen ?? 0) + 1);
+        this.total += 1;
+    }
+
+    public report(top: int32): void {
+        console.log(`${this.total} words, ${this.counts.size} distinct`);
+        let shown = 0;
+        let more = true;
+        while (more && shown < top) {
+            let bestWord: string? = null;
+            let bestCount = 0;
+            for (const [w, c] of this.counts.entries()) {
+                if (c > bestCount) { bestWord = w; bestCount = c; }
+            }
+            if (bestWord != null) {
+                console.log(`${format.pad(bestCount, 6)}  ${bestWord}`);
+                this.counts.remove(bestWord);
+                shown += 1;
+            } else {
+                more = false;
+            }
+        }
+    }
+}
+
+const text = fs.readText("README.md");
+caps.drop("read"); // §5.3: shed privileges once initialization is done
+
+const counter = new Counter();
+let word = "";
+for (const ch of text) {
+    if (isLetter(ch)) {
+        word = word + `${ch}`;
+    } else if (word.length > 3) {
+        counter.tally(word);
+        word = "";
+    } else {
+        word = "";
+    }
+}
+counter.report(5);

@@ -1,0 +1,5 @@
+error[E0301] @ 1:9: there is no `undefined`; the null type is `T?` with `null` (§3.2)
+error[E0301] @ 2:9: there is no `eval`; no string ever becomes code (§5.1)
+error[E0301] @ 3:35: there is no `arguments`; use a rest parameter `...args: T[]` (§4.4)
+error[E0301] @ 4:9: there is no global object; import what you need (§5.4)
+error[E0301] @ 5:9: use `import { … } from "…";` (§4.5)

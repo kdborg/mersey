@@ -1,0 +1,5 @@
+import { console } from "std:console";
+class C { public f: int32 = 1; }
+const c = new C();
+console.log(c.prototype);
+console.log(c.__proto__);

@@ -1,0 +1,29 @@
+1:1 keyword let
+1:5 ident strictEq
+1:14 punct =
+1:16 ident a
+1:18 punct ==
+1:22 ident b
+1:23 punct ;
+2:1 keyword let
+2:5 ident strictNe
+2:14 punct =
+2:16 ident a
+2:18 punct !=
+2:22 ident b
+2:23 punct ;
+3:1 keyword let
+3:5 ident oct
+3:9 punct =
+3:11 int 0755
+3:15 punct ;
+4:1 keyword let
+4:5 ident esc
+4:9 punct =
+4:11 string "\u0041"
+4:19 punct ;
+5:1 eof
+error[E0101] @ 1:18: there is no `===`; `==` is already strict (§3.5)
+error[E0101] @ 2:18: there is no `!==`; `!=` is already strict (§3.5)
+error[E0109] @ 3:11: leading zeros are not allowed; write octal as `0o…` (§2.6)
+error[E0103] @ 4:12: write code points as `\u{…}`; there are no UTF-16 `\uXXXX` escapes (§2.6)

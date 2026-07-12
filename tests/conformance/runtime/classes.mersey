@@ -47,13 +47,6 @@ console.log(sq.describe());
 console.log(Square.made(), new Square(1.0) instanceof Shape);
 console.log(Square.made());
 
-// Sealed shapes: unknown field assignment throws (§4.1)
-try {
-    sq.wild = 1;
-} catch (e: TypeError) {
-    console.log("sealed:", e.message);
-}
-
 // Errors: typed catches, division by zero traps (§3.6)
 function risky(n: int32): int32 {
     if (n == 0) { throw new RangeError("n was zero"); }

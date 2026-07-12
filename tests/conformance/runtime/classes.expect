@@ -3,7 +3,6 @@ square
 Square: quadrat area=16
 1 true
 2
-sealed: class `Square` has no field `wild` (shapes are sealed)
 caught range: n was zero
 div: division by zero
 handled+finally

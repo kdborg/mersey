@@ -12,10 +12,10 @@ function head(): int32 {
 }
 
 class Node<T extends Comparable<T>> {
-    private value: T;
+    private value: T?;
     private next: Node<T>? = null;
 
-    public constructor(value: T) {
+    public constructor(value: T?) {
         this.value = value;
     }
 
@@ -29,34 +29,36 @@ class Node<T extends Comparable<T>> {
 }
 
 class Leaf extends Node<Leaf> implements Comparable<Leaf> {
-    public constructor() {
-        super(null as wrapping Leaf);
+    private readonly weight: int32;
+
+    public constructor(weight: int32) {
+        super(null);
+        this.weight = weight;
     }
     public compareTo(other: Leaf): int32 {
-        return super.hash() - other.hash();
+        return this.hash() - other.hash();
     }
-    public hash(): int32 { return 0; }
+    public hash(): int32 { return this.weight; }
 }
 
 interface Comparable<T> {
     compareTo(other: T): int32;
 }
 
-async function fetchAll(urls: string[]): Promise {
-    for (const u of urls) {
-        await go(u);
-    }
+function fetchAll(urls: string[]): int32 {
+    let count = 0;
     outer: for (let i = 0; i < LIMIT; i++) {
         while (true) {
             if (i > 3) { continue outer; }
+            count += 1;
             break;
         }
     }
-    return null as wrapping Promise;
+    for (const u of urls) {
+        count += u.length;
+    }
+    return count;
 }
-
-type Promise = { done: bool };
-async function go(u: string): Promise { return { done: true }; }
 
 const shadow: int32 = 1;
 function shade(): int32 {
@@ -69,4 +71,11 @@ const { a, b: renamed, c = 4 } = source2();
 const [x, y = 2, ...zs] = list();
 function source2(): { a: int32, b: int32, c: int32 } { return { a: 1, b: 2, c: 3 }; }
 function list(): int32[] { return [1]; }
+
+const leaves = new Node<Leaf>(null);
+leaves.insert(new Node<Leaf>(new Leaf(3)));
+const pair: [string, int32] = ["k", 1];
+const handler: (ev: string) => void = ev => console.log(ev, x, y, zs, a, renamed, c, pair);
+handler(`total ${tail() + fetchAll(["ab"]) + shade()}`);
+
 export { tail as last, Node };

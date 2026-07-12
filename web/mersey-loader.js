@@ -34,21 +34,50 @@
       host_print: (p, l) => console.log(readStr(p, l)),
       host_error: (p, l) => console.error("[mersey]", readStr(p, l)),
       host_dom_set_text: (ip, il, tp, tl) => {
-        const el = document.getElementById(readStr(ip, il));
+        const el = elementById(readStr(ip, il));
         if (el) el.textContent = readStr(tp, tl);
       },
       host_dom_get_text: (ip, il) => {
-        const el = document.getElementById(readStr(ip, il));
+        const el = elementById(readStr(ip, il));
         if (!el) return 0n;
         const [ptr, len] = writeStr(el.textContent ?? "");
         return (BigInt(ptr) << 32n) | BigInt(len);
       },
       host_dom_on_click: (ip, il, cb) => {
-        const el = document.getElementById(readStr(ip, il));
+        const el = elementById(readStr(ip, il));
         if (el) el.addEventListener("click", () => exports.msy_invoke(cb));
+      },
+      host_dom_create: (tp, tl) => {
+        const el = document.createElement(readStr(tp, tl));
+        const id = `--mersey-${nextId++}`;
+        el.id = id;
+        created.set(id, el);
+        const [ptr, len] = writeStr(id);
+        return (BigInt(ptr) << 32n) | BigInt(len);
+      },
+      host_dom_append: (pp, pl, cp, cl) => {
+        const parent = elementById(readStr(pp, pl));
+        const child = elementById(readStr(cp, cl));
+        if (parent && child) parent.appendChild(child);
+      },
+      host_dom_remove: (ip, il) => {
+        const el = elementById(readStr(ip, il));
+        if (el) el.remove();
+      },
+      host_dom_get_value: (ip, il) => {
+        const el = elementById(readStr(ip, il));
+        const [ptr, len] = writeStr(el && "value" in el ? el.value : "");
+        return (BigInt(ptr) << 32n) | BigInt(len);
+      },
+      host_dom_set_value: (ip, il, vp, vl) => {
+        const el = elementById(readStr(ip, il));
+        if (el && "value" in el) el.value = readStr(vp, vl);
       },
     },
   };
+  let nextId = 1;
+  const created = new Map();
+  const elementById = (id) => created.get(id) ?? document.getElementById(id);
 
   async function boot() {
     const response = fetch(engineUrl);
