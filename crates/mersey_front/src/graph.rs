@@ -24,19 +24,46 @@ pub fn is_relative(spec: &str) -> bool {
     spec.starts_with("./") || spec.starts_with("../")
 }
 
-/// Specifiers that are modules in the graph: relative files, plus the `std:`
-/// modules that are written in Mersey (`crate::stdlib`).
-pub fn is_module(spec: &str) -> bool {
-    is_relative(spec) || crate::stdlib::is_source_module(spec)
+/// A remote dependency: an ordinary URL, which any static host can serve.
+///
+/// The engine never fetches one. `mersey fetch` downloads it, pins its hash in
+/// mersey.lock, and caches it on disk; `mersey run` resolves it from that cache
+/// or fails. Code that is running has no authority to reach the network (§5.4),
+/// and a build that has already fetched is reproducible and offline.
+pub fn is_remote(spec: &str) -> bool {
+    spec.starts_with("https://") || spec.starts_with("http://")
 }
 
-/// Resolve for the graph: `std:` modules resolve to themselves.
+/// Specifiers that are modules in the graph: relative files, remote URLs, plus
+/// the `std:` modules that are written in Mersey (`crate::stdlib`).
+pub fn is_module(spec: &str) -> bool {
+    is_relative(spec) || is_remote(spec) || crate::stdlib::is_source_module(spec)
+}
+
+/// Resolve for the graph: `std:` modules resolve to themselves, and a relative
+/// import *inside* a remote module stays remote — a package's own files come
+/// from the package, not from the importing project's disk.
 pub fn resolve_module(referrer: &str, spec: &str) -> String {
-    if crate::stdlib::is_source_module(spec) {
-        spec.to_string()
-    } else {
-        resolve(referrer, spec)
+    if crate::stdlib::is_source_module(spec) || is_remote(spec) {
+        return spec.to_string();
     }
+    if is_remote(referrer) && is_relative(spec) {
+        return resolve_url(referrer, spec);
+    }
+    resolve(referrer, spec)
+}
+
+/// Resolve `spec` against a remote `referrer`, keeping scheme and host.
+pub fn resolve_url(referrer: &str, spec: &str) -> String {
+    let Some((scheme, rest)) = referrer.split_once("://") else {
+        return spec.to_string();
+    };
+    let (host, path) = match rest.split_once('/') {
+        Some((h, p)) => (h, p),
+        None => (rest, ""),
+    };
+    let resolved = resolve(path, spec);
+    format!("{scheme}://{host}/{resolved}")
 }
 
 /// Resolve `spec` against the directory of `referrer` (POSIX-style, as URLs

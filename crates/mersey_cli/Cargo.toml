@@ -13,6 +13,7 @@ path = "src/main.rs"
 mersey_front = { path = "../mersey_front" }
 mersey_interp = { path = "../mersey_interp" }
 mersey_jit = { path = "../mersey_jit" }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [lints]
 workspace = true

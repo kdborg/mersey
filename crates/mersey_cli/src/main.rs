@@ -28,6 +28,7 @@ commands:
   check <file.mersey>     report diagnostics (currently: encoding + syntax)
   parse <file.mersey>     dump the AST (debugging / conformance)
   test [path]             run every *.test.mersey (default: ./)
+  fetch <file.mersey>     download remote imports into .mersey/cache, pin hashes
   lex <file.mersey>       dump the token stream (debugging / conformance)
   convert <file>          transcode UTF-16/UTF-32 source to UTF-8 on stdout
 ";
@@ -70,6 +71,7 @@ fn main() -> ExitCode {
             let path = rest.first().map(|s| s.as_str()).unwrap_or(".");
             test_cmd(path)
         }
+        ("fetch", [file]) => fetch_cmd(file),
         ("audit", [file]) => audit(file),
         ("lock", [file]) => lock_cmd(file, false),
         ("verify", [file]) => lock_cmd(file, true),
@@ -264,8 +266,20 @@ fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Mo
             continue;
         }
         // `std:` modules written in Mersey are embedded, not read from disk.
+        // A remote dependency is read from the local cache — running code has
+        // no authority to reach the network (§5.4), so if it was never fetched
+        // this is an error, not a download.
         let bytes = match mersey_front::stdlib::source(&spec) {
             Some(text) => text.as_bytes().to_vec(),
+            None if graph::is_remote(&spec) => match std::fs::read(cache_path(&spec)) {
+                Ok(b) => b,
+                Err(_) => {
+                    eprintln!(
+                        "mersey: `{spec}` is not in the local cache — run `mersey fetch {entry}`"
+                    );
+                    return Err(ExitCode::FAILURE);
+                }
+            },
             None => read(&spec)?,
         };
         let src = match source::decode(&spec, &bytes) {
@@ -499,7 +513,12 @@ fn lock_cmd(entry: &str, verify: bool) -> ExitCode {
     };
     let mut lines = vec![format!("# mersey.lock — entry: {entry}")];
     for (spec, _) in &modules {
-        let Ok(bytes) = std::fs::read(spec) else {
+        let from = if graph::is_remote(spec) {
+            cache_path(spec)
+        } else {
+            spec.into()
+        };
+        let Ok(bytes) = std::fs::read(&from) else {
             eprintln!("mersey: cannot read {spec}");
             return ExitCode::FAILURE;
         };
@@ -535,6 +554,11 @@ fn lock_cmd(entry: &str, verify: bool) -> ExitCode {
 
 /// SHA-256, base64 — no external crate (the engine ships none).
 fn sha256_base64(data: &[u8]) -> String {
+    base64(&sha256(data))
+}
+
+/// SHA-256, hex — used to name a cache file after the URL it came from.
+fn sha256(data: &[u8]) -> Vec<u8> {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -604,7 +628,10 @@ fn sha256_base64(data: &[u8]) -> String {
         }
     }
 
-    let digest: Vec<u8> = h.iter().flat_map(|v| v.to_be_bytes()).collect();
+    h.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+fn base64(digest: &[u8]) -> String {
     const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for c in digest.chunks(3) {
@@ -740,4 +767,161 @@ impl interp::Host for TapHost {
         None
     }
     fn dom_on_click(&mut self, _: &str, _: u32) {}
+}
+
+// ---- remote dependencies ------------------------------------------------------
+
+/// Where a remote module is cached. The URL is hashed rather than mapped onto
+/// the filesystem: a URL can say `..`, contain a drive letter, or be long
+/// enough to break a path — none of which should be able to decide where a file
+/// lands on disk.
+fn cache_path(url: &str) -> std::path::PathBuf {
+    let digest = sha256_hex(url.as_bytes());
+    std::path::Path::new(".mersey")
+        .join("cache")
+        .join(format!("{digest}.mersey"))
+}
+
+/// Download every remote import reachable from `entry`, transitively.
+///
+/// This is the *only* place Mersey talks to the network, and it is a
+/// deliberate, separate step: `mersey run` reads the cache and nothing else. A
+/// hash already pinned in mersey.lock is enforced here — if a URL now serves
+/// different bytes than the ones the project locked, the fetch fails rather
+/// than silently updating, which is the whole point of pinning.
+fn fetch_cmd(entry: &str) -> ExitCode {
+    let pinned = read_lock();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = vec![entry.to_string()];
+    let mut fetched = 0usize;
+    let mut new_pins: Vec<(String, String)> = Vec::new();
+
+    while let Some(spec) = queue.pop() {
+        if !seen.insert(spec.clone()) {
+            continue;
+        }
+        let bytes = if graph::is_remote(&spec) {
+            let path = cache_path(&spec);
+            let cached = std::fs::read(&path).ok();
+            match cached {
+                Some(b) => b,
+                None => {
+                    println!("fetching {spec}");
+                    let b = match http_get(&spec) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("mersey: cannot fetch {spec}: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                    let hash = format!("sha256-{}", sha256_base64(&b));
+                    // Supply chain: a URL that changed under a pinned hash is
+                    // refused outright.
+                    if let Some(want) = pinned.get(&spec) {
+                        if want != &hash {
+                            eprintln!(
+                                "mersey: {spec} does not match mersey.lock\n  locked: {want}\n  served: {hash}"
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    if let Some(dir) = path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(dir) {
+                            eprintln!("mersey: cannot create {}: {e}", dir.display());
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    if let Err(e) = std::fs::write(&path, &b) {
+                        eprintln!("mersey: cannot write {}: {e}", path.display());
+                        return ExitCode::FAILURE;
+                    }
+                    new_pins.push((spec.clone(), hash));
+                    fetched += 1;
+                    b
+                }
+            }
+        } else if let Some(text) = mersey_front::stdlib::source(&spec) {
+            text.as_bytes().to_vec()
+        } else {
+            match std::fs::read(&spec) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("mersey: cannot read {spec}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        };
+
+        // Follow this module's own imports — a package brings its own files.
+        let Ok(src) = source::decode(&spec, &bytes) else {
+            eprintln!("mersey: {spec} is not valid UTF-8");
+            return ExitCode::FAILURE;
+        };
+        let parsed = parser::parse(&src);
+        if !parsed.diagnostics.is_empty() {
+            for d in &parsed.diagnostics {
+                eprintln!("{spec}: {d}");
+            }
+            return ExitCode::FAILURE;
+        }
+        for import in graph::imports(&parsed.module) {
+            if graph::is_module(&import) {
+                queue.push(graph::resolve_module(&spec, &import));
+            }
+        }
+    }
+
+    if fetched == 0 {
+        println!("up to date ({} modules, nothing to fetch)", seen.len());
+    } else {
+        println!("fetched {fetched} module(s) into .mersey/cache");
+    }
+    for (spec, hash) in &new_pins {
+        if !pinned.contains_key(spec) {
+            println!("  {spec}  {hash}");
+        }
+    }
+    if !new_pins.is_empty() {
+        println!("run `mersey lock {entry}` to pin these in mersey.lock");
+    }
+    ExitCode::SUCCESS
+}
+
+/// The hashes mersey.lock already pins, by specifier.
+fn read_lock() -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(text) = std::fs::read_to_string("mersey.lock") else {
+        return out;
+    };
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some((spec, hash)) = line.split_once("  ") {
+            out.insert(spec.trim().to_string(), hash.trim().to_string());
+        }
+    }
+    out
+}
+
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    // A dependency should be a file, not a stream: cap it rather than let a
+    // hostile host stream forever.
+    const MAX: u64 = 8 << 20;
+    let mut resp = ureq::get(url).call().map_err(|e| e.to_string())?;
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let mut buf = Vec::new();
+    let mut reader = std::io::Read::take(resp.body_mut().as_reader(), MAX);
+    std::io::Read::read_to_end(&mut reader, &mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut out = String::new();
+    for b in sha256(data) {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
