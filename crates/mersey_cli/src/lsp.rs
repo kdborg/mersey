@@ -169,7 +169,7 @@ fn handle(msg: &str) -> Option<String> {
             let uri = field(msg, "uri")?;
             let pos = request_pos(msg)?;
             let result = get_doc(uri)
-                .and_then(|text| hover(&text, pos))
+                .and_then(|text| hover(uri, &text, pos))
                 .map(|h| {
                     format!(
                         r#"{{"contents":{{"kind":"markdown","value":"```mersey\n{}\n```"}}}}"#,
@@ -186,7 +186,7 @@ fn handle(msg: &str) -> Option<String> {
             let uri = field(msg, "uri")?;
             let pos = request_pos(msg)?;
             let result = get_doc(uri)
-                .and_then(|text| definition(&text, pos))
+                .and_then(|text| definition(uri, &text, pos))
                 .map(|d| {
                     // LSP is 0-based; our positions are 1-based code points.
                     let line = d.line.saturating_sub(1);
@@ -206,7 +206,7 @@ fn handle(msg: &str) -> Option<String> {
             let uri = field(msg, "uri")?;
             let pos = request_pos(msg)?;
             let items = get_doc(uri)
-                .map(|text| complete(&text, pos))
+                .map(|text| complete(uri, &text, pos))
                 .unwrap_or_default();
             let items: Vec<String> = items
                 .iter()
@@ -280,29 +280,120 @@ fn request_pos(msg: &str) -> Option<Pos> {
     })
 }
 
-/// The checked module, or None if it does not even parse.
-fn analyze(text: &str) -> Option<check::Analysis> {
-    let src = source::decode("<buffer>", text.as_bytes()).ok()?;
-    let parsed = parser::parse(&src);
-    if !parsed.diagnostics.is_empty() {
-        return None;
+/// The path an editor's `file://` URI names.
+fn uri_to_path(uri: &str) -> String {
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    // Percent-decoding, enough for the paths editors actually send.
+    let bytes = path.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
+                out.push(b as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
     }
-    // The AST must outlive the analysis; an editor session is short and this
-    // is bounded by keystrokes that produce a *parsing* buffer.
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
-    Some(check::analyze(module))
+    out
 }
 
-fn hover(text: &str, pos: Pos) -> Option<String> {
-    let a = analyze(text)?;
+/// The buffer and everything it imports, dependency-first, with the buffer
+/// last.
+///
+/// The file the editor has open is *not* read from disk: the whole point is to
+/// answer questions about what the user has typed, including the parts they
+/// have not saved. Its dependencies are read from disk, because those are what
+/// the compiler would see.
+fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, &'static mersey_front::ast::Module)>> {
+    let entry = uri_to_path(uri);
+    let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut queue = vec![entry.clone()];
+
+    while let Some(spec) = queue.pop() {
+        if sources.contains_key(&spec) {
+            continue;
+        }
+        let bytes: Vec<u8> = if spec == entry {
+            text.as_bytes().to_vec()
+        } else if let Some(embedded) = mersey_front::stdlib::source(&spec) {
+            embedded.as_bytes().to_vec()
+        } else if mersey_front::graph::is_remote(&spec) {
+            // Remote dependencies are only ever read from the fetched cache;
+            // an editor does not get to reach the network either.
+            match std::fs::read(cache_path(&spec)) {
+                Ok(b) => b,
+                Err(_) => continue, // not fetched: leave it unresolved
+            }
+        } else {
+            match std::fs::read(&spec) {
+                Ok(b) => b,
+                Err(_) => continue, // missing file: diagnostics say so
+            }
+        };
+        let Ok(src) = source::decode(&spec, &bytes) else {
+            continue;
+        };
+        let parsed = parser::parse(&src);
+        if spec == entry && !parsed.diagnostics.is_empty() {
+            return None; // mid-keystroke: nothing to analyse
+        }
+        // The AST must outlive the analysis. An editor session is bounded by
+        // keystrokes that produce a *parsing* buffer.
+        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        let mut edges = Vec::new();
+        for import in mersey_front::graph::imports(module) {
+            if mersey_front::graph::is_module(&import) {
+                let target = mersey_front::graph::resolve_module(&spec, &import);
+                edges.push(target.clone());
+                queue.push(target);
+            }
+        }
+        deps.insert(spec.clone(), edges);
+        sources.insert(spec, module);
+    }
+
+    // Dependency-first, with the buffer last: `analyze_graph` indexes the last.
+    let order = mersey_front::graph::topo_order(&entry, &deps).ok()?;
+    Some(
+        order
+            .into_iter()
+            .filter_map(|spec| sources.get(&spec).map(|m| (spec.clone(), *m)))
+            .collect(),
+    )
+}
+
+/// Where `mersey fetch` cached a remote module (mirrors the CLI).
+fn cache_path(url: &str) -> std::path::PathBuf {
+    let digest = crate::sha256_hex(url.as_bytes());
+    std::path::Path::new(".mersey")
+        .join("cache")
+        .join(format!("{digest}.mersey"))
+}
+
+/// The checked graph, or None if the buffer does not even parse.
+fn analyze(uri: &str, text: &str) -> Option<check::Analysis> {
+    let modules = graph_for(uri, text)?;
+    if modules.is_empty() {
+        return None;
+    }
+    Some(check::analyze_graph(&modules))
+}
+
+fn hover(uri: &str, text: &str, pos: Pos) -> Option<String> {
+    let a = analyze(uri, text)?;
     // The cursor is rarely on the first character of the name it is in, so
     // hover asks about the token under it, not the exact column.
     let start = token_start(text, pos)?;
     a.hover(start)
 }
 
-fn definition(text: &str, pos: Pos) -> Option<Pos> {
-    let a = analyze(text)?;
+fn definition(uri: &str, text: &str, pos: Pos) -> Option<Pos> {
+    let a = analyze(uri, text)?;
     let start = token_start(text, pos)?;
     a.definition(start)
 }
@@ -311,23 +402,22 @@ fn definition(text: &str, pos: Pos) -> Option<Pos> {
 /// receiver's type — so the buffer is repaired into something that parses
 /// (`foo.` → `foo.MERSEY__COMPLETE`) and the checker reports what the receiver
 /// turned out to be. Otherwise it is the names in scope.
-fn complete(text: &str, pos: Pos) -> Vec<check::Completion> {
+fn complete(uri: &str, text: &str, pos: Pos) -> Vec<check::Completion> {
     if let Some(repaired) = repair_member_access(text, pos) {
-        if let Ok(src) = source::decode("<buffer>", repaired.as_bytes()) {
-            let parsed = parser::parse(&src);
-            if parsed.diagnostics.is_empty() {
-                let module: &'static _ = Box::leak(Box::new(parsed.module));
-                let items = check::member_completions(module);
-                if !items.is_empty() {
-                    return items;
-                }
+        // The repaired buffer is analysed *with its imports*, so the receiver
+        // may be a type declared in another file — which, in a real project, it
+        // usually is.
+        if let Some(modules) = graph_for(uri, &repaired) {
+            let items = check::member_completions_graph(&modules);
+            if !items.is_empty() {
+                return items;
             }
         }
         // A dot with no resolvable receiver: suggesting locals here would be
         // wrong (they are not valid after a `.`), so suggest nothing.
         return Vec::new();
     }
-    match analyze(text) {
+    match analyze(uri, text) {
         Some(a) => a.scope_completions(pos),
         None => Vec::new(),
     }

@@ -69,14 +69,15 @@ pub fn resolve_url(referrer: &str, spec: &str) -> String {
 /// Resolve `spec` against the directory of `referrer` (POSIX-style, as URLs
 /// and file paths both behave here).
 pub fn resolve(referrer: &str, spec: &str) -> String {
-    let base: Vec<&str> = referrer
-        .rsplit_once('/')
-        .map(|(d, _)| d)
-        .unwrap_or("")
+    let dir = referrer.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    // An absolute referrer resolves to an absolute path. Dropping the leading
+    // separator would silently reinterpret `/home/me/app.mersey` as
+    // `home/me/…` — relative to whatever directory the process happens to be
+    // in, which is how an editor or a build tool passing an absolute path ends
+    // up unable to find the file next to the one it just opened.
+    let absolute = dir.starts_with('/');
+    let mut parts: Vec<String> = dir
         .split('/')
-        .collect();
-    let mut parts: Vec<String> = base
-        .into_iter()
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string())
         .collect();
@@ -89,7 +90,44 @@ pub fn resolve(referrer: &str, spec: &str) -> String {
             other => parts.push(other.to_string()),
         }
     }
-    parts.join("/")
+    let joined = parts.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_referrer_stays_relative() {
+        assert_eq!(resolve("app.mersey", "./lib.mersey"), "lib.mersey");
+        assert_eq!(resolve("src/app.mersey", "./lib.mersey"), "src/lib.mersey");
+        assert_eq!(resolve("src/app.mersey", "../lib.mersey"), "lib.mersey");
+    }
+
+    #[test]
+    fn absolute_referrer_stays_absolute() {
+        assert_eq!(
+            resolve("/home/me/app.mersey", "./lib.mersey"),
+            "/home/me/lib.mersey"
+        );
+        assert_eq!(
+            resolve("/home/me/src/app.mersey", "../lib.mersey"),
+            "/home/me/lib.mersey"
+        );
+    }
+
+    #[test]
+    fn a_package_brings_its_own_files() {
+        assert_eq!(
+            resolve_module("https://h/pkg/index.mersey", "./util.mersey"),
+            "https://h/pkg/util.mersey"
+        );
+    }
 }
 
 /// Dependency-first ordering. `deps(spec) -> its relative imports`.

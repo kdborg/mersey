@@ -64,18 +64,21 @@ pub struct Analysis {
 
 /// Check a module and keep everything the checker learned.
 pub fn analyze(module: &Module) -> Analysis {
-    let mut c = Checker::new();
-    let n = c.diags.len();
-    c.collect(crate::webapi::webapi().module);
-    c.diags.truncate(n);
-    c.index = Some(IndexData::default());
-    c.module_spec = "<main>".to_string();
-    c.collect(module);
-    c.check_module(module);
-    let index = c.index.take().unwrap_or_default();
-    let diagnostics = std::mem::take(&mut c.diags);
+    analyze_graph(&[("<main>".to_string(), module)])
+}
+
+/// Analyse a whole graph, dependency-first; the **last** module is the one the
+/// editor is asking about. Its imports therefore have real types, so hover,
+/// go-to-definition and completion work across files instead of stopping at the
+/// module boundary.
+pub fn analyze_graph(modules: &[(String, &Module)]) -> Analysis {
+    let (mut results, checker, index) = check_graph_indexed(modules, true);
+    let diagnostics = results
+        .pop()
+        .map(|(_, o)| o.diagnostics)
+        .unwrap_or_default();
     Analysis {
-        checker: c,
+        checker,
         index,
         diagnostics,
     }
@@ -218,14 +221,13 @@ fn add_all(out: &mut Vec<Completion>, items: Vec<Completion>) {
 
 /// Members available on the receiver of `x.MERSEY__COMPLETE` in `module`.
 pub fn member_completions(module: &Module) -> Vec<Completion> {
-    let mut c = Checker::new();
-    let n = c.diags.len();
-    c.collect(crate::webapi::webapi().module);
-    c.diags.truncate(n);
-    c.module_spec = "<main>".to_string();
-    c.want_marker = true;
-    c.collect(module);
-    c.check_module(module);
+    member_completions_graph(&[("<main>".to_string(), module)])
+}
+
+/// The same, over a whole graph — so the receiver may be a type that came from
+/// another file, which in a real project it usually is.
+pub fn member_completions_graph(modules: &[(String, &Module)]) -> Vec<Completion> {
+    let (_, mut c, _) = check_graph_indexed_with(modules, false, true);
     let Some(t) = c.marker_recv.clone() else {
         return Vec::new();
     };
@@ -243,7 +245,30 @@ pub fn check(module: &Module) -> CheckOutput {
 /// graph so a class declared in one module is the *same* type when imported
 /// into another; scopes and type namespaces are per-module.
 pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> {
+    check_graph_indexed(modules, false).0
+}
+
+/// The one checking pass, optionally recording an editor index for the *last*
+/// module in the graph.
+///
+/// Both callers go through here on purpose. An editor that typechecks a file on
+/// its own sees a different program than the compiler does — imported names
+/// have no types, so hover says `<error>` and completion offers nothing — and
+/// the two must not be allowed to disagree about what the code means.
+fn check_graph_indexed(
+    modules: &[(String, &Module)],
+    index_last: bool,
+) -> (Vec<(String, CheckOutput)>, Checker, IndexData) {
+    check_graph_indexed_with(modules, index_last, false)
+}
+
+fn check_graph_indexed_with(
+    modules: &[(String, &Module)],
+    index_last: bool,
+    want_marker: bool,
+) -> (Vec<(String, CheckOutput)>, Checker, IndexData) {
     let mut c = Checker::new();
+    c.want_marker = want_marker;
     // Ambient web platform (generated from WebIDL); its own collection
     // diagnostics are suppressed — the generator is validated separately.
     let n = c.diags.len();
@@ -254,13 +279,22 @@ pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> 
     let base_scope = c.scopes[0].clone();
     let mut exports: HashMap<String, ModuleExports> = HashMap::new();
     let mut results = Vec::new();
+    let mut index = IndexData::default();
 
-    for (spec, module) in modules {
+    let last = modules.len().saturating_sub(1);
+    for (i, (spec, module)) in modules.iter().enumerate() {
         c.diags.clear();
         c.type_defs = base_types.clone();
         c.scopes = vec![base_scope.clone(), HashMap::new()];
         c.module_spec = spec.clone();
         c.imported.clear();
+        // Only the file the editor is asking about is indexed; its
+        // dependencies are checked purely to give its imports real types.
+        c.index = if index_last && i == last {
+            Some(IndexData::default())
+        } else {
+            None
+        };
 
         // Bind this module's relative imports from already-checked modules.
         for item in &module.items {
@@ -364,8 +398,11 @@ pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> 
         let mut diagnostics = std::mem::take(&mut c.diags);
         diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
         results.push((spec.clone(), CheckOutput { diagnostics }));
+        if index_last && i == last {
+            index = c.index.take().unwrap_or_default();
+        }
     }
-    results
+    (results, c, index)
 }
 
 #[derive(Default)]

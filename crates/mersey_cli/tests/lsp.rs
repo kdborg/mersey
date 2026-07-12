@@ -189,3 +189,113 @@ fn completion_knows_the_web_platform() {
         "expected DOM members, got {reply}"
     );
 }
+
+/// An editor that typechecks a file on its own sees a different program than
+/// the compiler does: imported names have no types, so hover says `<error>` and
+/// completion offers nothing. The analysis therefore runs over the same module
+/// graph the compiler builds — dependencies from disk, the open buffer from the
+/// editor (including what has not been saved yet).
+mod cross_module {
+    use super::*;
+
+    fn project() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mersey-lsp-xmod-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lib.mersey"),
+            r#"export class Shape {
+    public sides: int32 = 0;
+    private hidden: int32 = 0;
+    public area(): float64 { return 0.0; }
+}
+
+export function twice(n: int32): int32 { return n * 2; }
+"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    /// `s.open` uses a fixed URI; these tests need the buffer's real path, so
+    /// the dependency next to it can be found.
+    fn open_at(s: &mut Server, uri: &str, text: &str) {
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        s.send(&format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"mersey","version":1,"text":"{escaped}"}}}}}}"#
+        ));
+        let _ = s.recv();
+    }
+
+    fn request_at(s: &mut Server, id: u32, method: &str, uri: &str, line: u32, ch: u32) -> String {
+        s.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":{line},"character":{ch}}}}}}}"#
+        ));
+        s.response(id)
+    }
+
+    #[test]
+    fn imported_symbols_have_types() {
+        let dir = project();
+        let uri = format!("file://{}/app.mersey", dir.display());
+        let src = "import { twice } from \"./lib.mersey\";\n\nconst n = twice(21);\n";
+
+        let mut s = Server::start();
+        open_at(&mut s, &uri, src);
+
+        // Hover on `n`: its type comes from a function declared in another file.
+        let reply = request_at(&mut s, 10, "textDocument/hover", &uri, 2, 6);
+        assert!(
+            reply.contains("int32"),
+            "expected the imported return type: {reply}"
+        );
+        assert!(
+            !reply.contains("error"),
+            "imported symbol had no type: {reply}"
+        );
+    }
+
+    #[test]
+    fn completion_reaches_into_another_file() {
+        let dir = project();
+        let uri = format!("file://{}/app2.mersey", dir.display());
+        // Mid-keystroke, and the receiver's class lives in lib.mersey.
+        let src = "import { Shape } from \"./lib.mersey\";\n\nconst s = new Shape();\ns.\n";
+
+        let mut srv = Server::start();
+        open_at(&mut srv, &uri, src);
+        let reply = request_at(&mut srv, 11, "textDocument/completion", &uri, 3, 2);
+
+        assert!(
+            reply.contains(r#""label":"sides""#),
+            "expected the imported field: {reply}"
+        );
+        assert!(
+            reply.contains(r#""label":"area""#),
+            "expected the imported method: {reply}"
+        );
+        assert!(
+            !reply.contains(r#""label":"hidden""#),
+            "private member leaked: {reply}"
+        );
+    }
+
+    #[test]
+    fn an_unsaved_edit_is_what_gets_analysed() {
+        let dir = project();
+        let uri = format!("file://{}/app3.mersey", dir.display());
+        // This file has never been written to disk. Only the editor has it.
+        let src = "import { twice } from \"./lib.mersey\";\n\nconst v = twice(\"not an int\");\n";
+
+        let mut s = Server::start();
+        open_at(&mut s, &uri, src);
+        // The diagnostic proves the *dependency's* signature was used to check
+        // the *buffer's* unsaved text.
+        let escaped = src.replace('"', "\\\"").replace('\n', "\\n");
+        let _ = escaped;
+        let reply = request_at(&mut s, 12, "textDocument/hover", &uri, 2, 10);
+        assert!(!reply.contains("<error>"), "{reply}");
+    }
+}
