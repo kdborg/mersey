@@ -11,8 +11,10 @@
 //! editor that suggests a member the compiler rejects is worse than one that
 //! suggests nothing, so the two cannot be allowed to drift apart.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use mersey_front::check::COMPLETION_MARKER;
@@ -389,9 +391,9 @@ fn uri_to_path(uri: &str) -> String {
 /// answer questions about what the user has typed, including the parts they
 /// have not saved. Its dependencies are read from disk, because those are what
 /// the compiler would see.
-fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, &'static mersey_front::ast::Module)>> {
+fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, mersey_front::ast::Module)>> {
     let entry = uri_to_path(uri);
-    let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
+    let mut sources: HashMap<String, mersey_front::ast::Module> = HashMap::new();
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
     let mut queue = vec![entry.clone()];
 
@@ -423,11 +425,14 @@ fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, &'static mersey_front
         if spec == entry && !parsed.diagnostics.is_empty() {
             return None; // mid-keystroke: nothing to analyse
         }
-        // The AST must outlive the analysis. An editor session is bounded by
-        // keystrokes that produce a *parsing* buffer.
-        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        let module = parsed.module;
         let mut edges = Vec::new();
-        for import in mersey_front::graph::imports(module) {
+        // A dynamic import is an edge for *checking* — the importer's type
+        // depends on the target's exports — even though it is not one for
+        // execution.
+        let mut specs = mersey_front::graph::imports(&module);
+        specs.extend(mersey_front::graph::dynamic_imports(&module));
+        for import in specs {
             if mersey_front::graph::is_module(&import) {
                 let target = mersey_front::graph::resolve_module(&spec, &import);
                 edges.push(target.clone());
@@ -440,12 +445,13 @@ fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, &'static mersey_front
 
     // Dependency-first, with the buffer last: `analyze_graph` indexes the last.
     let order = mersey_front::graph::topo_order(&entry, &deps).ok()?;
-    Some(
-        order
-            .into_iter()
-            .filter_map(|spec| sources.get(&spec).map(|m| (spec.clone(), *m)))
-            .collect(),
-    )
+    let mut out = Vec::new();
+    for spec in order {
+        if let Some(m) = sources.remove(&spec) {
+            out.push((spec, m));
+        }
+    }
+    Some(out)
 }
 
 /// Where `mersey fetch` cached a remote module (mirrors the CLI).
@@ -456,13 +462,41 @@ fn cache_path(url: &str) -> std::path::PathBuf {
         .join(format!("{digest}.mersey"))
 }
 
+thread_local! {
+    /// The last analysis, keyed by what was analysed.
+    ///
+    /// An editor asks several questions about the *same* buffer in a row —
+    /// diagnostics, then hover, then completion — and re-checking the whole
+    /// graph for each was both slow and, worse, unbounded: the AST used to be
+    /// leaked on every request, so a long editing session grew forever.
+    static LAST: RefCell<Option<(String, String, Rc<check::Analysis>)>> =
+        const { RefCell::new(None) };
+}
+
 /// The checked graph, or None if the buffer does not even parse.
-fn analyze(uri: &str, text: &str) -> Option<check::Analysis> {
+fn analyze(uri: &str, text: &str) -> Option<Rc<check::Analysis>> {
+    let hit = LAST.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(u, t, _)| u == uri && t == text)
+            .map(|(_, _, a)| a.clone())
+    });
+    if let Some(a) = hit {
+        return Some(a);
+    }
+
     let modules = graph_for(uri, text)?;
     if modules.is_empty() {
         return None;
     }
-    Some(check::analyze_graph(&modules))
+    // The analysis owns everything it needs, so the ASTs are dropped here.
+    let refs: Vec<(String, &mersey_front::ast::Module)> =
+        modules.iter().map(|(s, m)| (s.clone(), m)).collect();
+    let analysis = Rc::new(check::analyze_graph(&refs));
+    LAST.with(|c| {
+        *c.borrow_mut() = Some((uri.to_string(), text.to_string(), analysis.clone()));
+    });
+    Some(analysis)
 }
 
 fn hover(uri: &str, text: &str, pos: Pos) -> Option<String> {
@@ -489,7 +523,9 @@ fn complete(uri: &str, text: &str, pos: Pos) -> Vec<check::Completion> {
         // may be a type declared in another file — which, in a real project, it
         // usually is.
         if let Some(modules) = graph_for(uri, &repaired) {
-            let items = check::member_completions_graph(&modules);
+            let refs: Vec<(String, &mersey_front::ast::Module)> =
+                modules.iter().map(|(s, m)| (s.clone(), m)).collect();
+            let items = check::member_completions_graph(&refs);
             if !items.is_empty() {
                 return items;
             }
