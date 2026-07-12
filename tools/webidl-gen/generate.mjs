@@ -12,9 +12,24 @@
 //  - overloads: first wins; params are renamed p0..pN; statics/ctors skipped
 //  - special ops (indexed getters, iterable<>, maplike) skipped
 import idl from "@webref/idl";
+import css from "@webref/css";
 import { writeFileSync } from "node:fs";
 
 const files = await idl.parseAll();
+
+// CSS properties are defined by the CSS specs, not by WebIDL: pull them
+// from @webref/css and attach them to CSSStyleProperties (camelCased, as
+// the CSSOM requires) so `el.style.backgroundColor = …` type-checks.
+const cssAll = await css.listAll();
+const cssProps = new Set();
+for (const spec of Object.values(cssAll)) {
+  for (const d of Object.values(spec)) {
+    if (d && d.initial && /^[a-z-]+$/.test(d.name) && !d.name.startsWith("--")) {
+      cssProps.add(d.name);
+    }
+  }
+}
+const camel = (p) => p.replace(/^-/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
 const interfaces = new Map(); // name -> { members: [], inheritance, isMixin }
 const dictionaries = new Map();
@@ -217,6 +232,7 @@ interface Promise<T> {
 ${ES_AMBIENT}`;
 
 let counts = { interfaces: 0, members: 0, dicts: 0, typedefs: 0, callbacks: 0, globals: 0 };
+const staticGlobals = [];
 
 // typedefs first (order-independent anyway, but keep readable)
 for (const [name, t] of typedefs) {
@@ -291,12 +307,64 @@ for (const [name, rec] of interfaces) {
       let ret = mapType(m.idlType);
       lines.push(`    ${m.name}(${mapArgs(m.arguments)}): ${ret};`);
       counts.members++;
-    } else if (m.type === "const") {
-      // interface constants: skip (need static surface)
     }
+  }
+  // CSS properties (from the CSS specs, not the IDL).
+  if (name === "CSSStyleProperties") {
+    for (const prop of cssProps) {
+      const jsName = camel(prop);
+      if (validName(jsName) && !seen.has(jsName)) {
+        seen.add(jsName);
+        lines.push(`    ${jsName}: string;`);
+        counts.members++;
+        counts.cssProps = (counts.cssProps ?? 0) + 1;
+      }
+    }
+  }
+  // Indexed getters (NodeList[i], HTMLCollection[i], …): expose as item().
+  const indexed = allMembers(name).find(
+    (m) => m.type === "operation" && m.special === "getter" && !m.name,
+  );
+  if (indexed && !seen.has("item")) {
+    lines.push(`    item(p0: int32): ${mapType(indexed.idlType)};`);
+    counts.members++;
   }
   out += `interface ${name}${parent} {\n${lines.join("\n")}\n}\n`;
   counts.interfaces++;
+
+  // Statics + constants live on the interface OBJECT: emit a companion
+  // interface and an ambient global of that type (e.g. `Node.ELEMENT_NODE`,
+  // `Response.error()`), so `Node.ELEMENT_NODE` type-checks.
+  const statics = [];
+  const seenS = new Set();
+  for (const m of allMembers(name)) {
+    if (m.type === "const" && validName(m.name) && !seenS.has(m.name)) {
+      seenS.add(m.name);
+      statics.push(`    readonly ${m.name}: ${mapType(m.idlType)};`);
+    } else if (
+      m.type === "operation" && m.special === "static" && validName(m.name) &&
+      !seenS.has(m.name)
+    ) {
+      seenS.add(m.name);
+      statics.push(`    ${m.name}(${mapArgs(m.arguments)}): ${mapType(m.idlType)};`);
+    } else if (
+      m.type === "attribute" && m.special === "static" && validName(m.name) &&
+      !seenS.has(m.name)
+    ) {
+      seenS.add(m.name);
+      statics.push(`    readonly ${m.name}: ${mapType(m.idlType)};`);
+    }
+  }
+  if (statics.length) {
+    out += `interface __static_${name} {\n${statics.join("\n")}\n}\n`;
+    staticGlobals.push([name, `__static_${name}`]);
+  }
+}
+
+// Interface objects as ambient globals (constants + statics).
+for (const [name, ty] of staticGlobals) {
+  out += `let ${name}: ${ty};\n`;
+  counts.globals++;
 }
 
 // namespaces (console, CSS, …) → pseudo-interface + global
@@ -340,7 +408,8 @@ counts.globals++;
 
 writeFileSync(new URL("../../crates/mersey_front/src/webapi.gen.mersey", import.meta.url), out);
 console.log(
-  `generated: ${counts.interfaces} interfaces (${counts.members} members), ` +
-    `${counts.dicts} dictionaries, ${counts.typedefs} typedefs/enums, ` +
-    `${counts.callbacks} callbacks, ${counts.globals} globals`,
+  `generated: ${counts.interfaces} interfaces (${counts.members} members, ` +
+    `${counts.cssProps ?? 0} of them CSS properties), ${counts.dicts} dictionaries, ` +
+    `${counts.typedefs} typedefs/enums, ${counts.callbacks} callbacks, ` +
+    `${counts.globals} globals`,
 );

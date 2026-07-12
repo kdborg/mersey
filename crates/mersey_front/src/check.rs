@@ -2047,18 +2047,24 @@ impl Checker {
             Expr::Index { obj, index, optional } => {
                 let ot = self.check_expr(obj, None);
                 let it = self.check_expr(index, None);
-                if !matches!(strip_narrow_helpers(&it), Ty::Int(_) | Ty::Any | Ty::Err) {
+                let base = if *optional { strip_null(&ot) } else { ot.clone() };
+                let host_obj = matches!(base, Ty::Iface(..));
+                if !matches!(strip_narrow_helpers(&it), Ty::Int(_) | Ty::Any | Ty::Err)
+                    && !(host_obj && matches!(strip_narrow_helpers(&it), Ty::Str))
+                {
                     self.error(
                         Code::TypeMismatch,
                         format!("index must be an integer, got `{}`", self.show(&it)),
                         pos_of(index),
                     );
                 }
-                let base = if *optional { strip_null(&ot) } else { ot.clone() };
                 let out = match &base {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
                     Ty::Any | Ty::Err => Ty::Any,
+                    // Host objects are indexable (`nodeList[0]`, `obj[key]`);
+                    // the element type is not knowable from IDL.
+                    Ty::Iface(..) => Ty::Any,
                     Ty::Nullable(_) => {
                         self.error(
                             Code::NullableMisuse,

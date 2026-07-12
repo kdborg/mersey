@@ -1857,7 +1857,12 @@ impl Interp {
         }
     }
 
-    fn index_get(&self, o: &Value, i: &Value) -> VResult {
+    fn index_get(&mut self, o: &Value, i: &Value) -> VResult {
+        // Host objects: `list[0]`, `obj["key"]` → bridge property read.
+        if let Value::JsRef(h) = o {
+            let (h, prop) = (*h, to_display(i));
+            return self.web_get(h, &prop);
+        }
         match (o, as_i64(i)) {
             (Value::Array(a), Some(ix)) => {
                 let a = a.borrow();
@@ -1884,7 +1889,11 @@ impl Interp {
         }
     }
 
-    fn index_set(&self, o: &Value, i: &Value, value: Value) -> Result<(), Thrown> {
+    fn index_set(&mut self, o: &Value, i: &Value, value: Value) -> Result<(), Thrown> {
+        if let Value::JsRef(h) = o {
+            let (h, prop) = (*h, to_display(i));
+            return self.web_set(h, &prop, value);
+        }
         match (o, as_i64(i)) {
             (Value::Array(a), Some(ix)) => {
                 let mut a = a.borrow_mut();

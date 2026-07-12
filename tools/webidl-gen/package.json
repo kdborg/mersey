@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@webref/css": "^8.7.0",
     "@webref/idl": "^3.81.3",
     "webidl2": "^24.5.0"
   }

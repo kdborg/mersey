@@ -12,11 +12,18 @@ and emits `crates/mersey_front/src/webapi.gen.mersey`:
 | | count |
 |---|---|
 | interfaces | 1,122 |
-| members (attributes + operations) | 7,340 |
+| members (attributes + operations) | 8,101 |
+| — of which CSS properties (from `@webref/css`) | 743 |
 | dictionaries | 903 |
 | typedefs / enums | 538 |
 | callbacks | 78 |
-| ambient globals (from `Window`) | 256 |
+| ambient globals (Window + interface objects) | 381 |
+
+Interface objects are emitted too, so constants and statics work
+(`Node.ELEMENT_NODE`, `Response.error()`), indexed getters become both
+`item(i)` and real indexing (`nodeList[0]`), and CSS properties are attached
+to `CSSStyleProperties` camelCased, so `el.style.backgroundColor = "…"`
+type-checks and applies.
 
 These are ambient **types** only. Per spec §5.4 (no ambient authority) the
 *values* are unavailable until imported:
@@ -66,25 +73,35 @@ fetch("/api").then(resp => console.log(resp.status));
 `async`/`await` sugar is still on the deferred list — it needs the engine's
 event loop, not the bindings.
 
-## Proven
+## Proven — in a real browser
 
-`web/test/platform.mjs` points the bridge at a real JS realm and drives
-`web/demo/platform.mersey` through the actual WASM engine, asserting on the
-JS side that each technology was really reached: Web Storage, Web Crypto
-(real `getRandomValues` into a real `Uint8Array`), the real `URL` parser,
-the platform's `JSON`, Canvas 2D (`getContext` + `fillRect`), timers
-(`setTimeout` firing a Mersey closure), `fetch` (promise resolving back into
-Mersey), and DOM rendering. Run: `./web/build-and-test.sh`.
+`web/test/browser.mjs` launches **headless Chromium (Playwright)**, serves
+`web/` over HTTP, loads the real pages, and drives them with real user
+input. Nothing is stubbed. It asserts from the browser side that:
+
+- the counter and TODO demos respond to **real clicks and typing**, creating
+  and removing real `<li>` elements;
+- **Web Storage** really wrote (`localStorage.getItem` from the page);
+- **Web Crypto** filled a real `Uint8Array`;
+- the **URL** parser, the platform's **JSON**, and **timers** work;
+- **Canvas 2D** actually painted — the test reads back pixel `(5,5)` and
+  gets `0,170,255,255`, the `#0af` fill Mersey requested;
+- **fetch** resolved a promise back into Mersey code;
+- **interface constants** (`Node.ELEMENT_NODE`), **indexed collections**
+  (`querySelectorAll("p")[0]`), and **CSS/CSSOM** work — the browser's own
+  `getComputedStyle` confirms `rgb(102, 51, 153)` after Mersey set
+  `style.color = "rebeccapurple"`.
+
+Run: `./web/build-and-test.sh && node web/test/browser.mjs`
+(headless-only harness against a stub realm: `node web/test/platform.mjs`).
 
 ## Known limits
 
 - **Record field order** is not preserved across the bridge (Mersey records
   are unordered maps), so `JSON.stringify({a, b})` may emit keys in a
   different order.
-- **Static members and interface constants** are not emitted yet
-  (`Response.error()`, `Node.ELEMENT_NODE`).
-- **Anonymous special operations** (indexed/named getters, `iterable<>`,
-  `maplike`) are skipped — `list[0]` on a `NodeList` needs `item(0)`.
+- **`iterable<>` / `maplike` declarations** are not expanded, so
+  `for (const x of someWebIterable)` needs an explicit index loop.
 - Callbacks are retained for the page's lifetime (no handle release yet).
 - In Stage B the same generator targets Blink's own IDL and the bridge is
   replaced by direct native bindings; the ABI is unchanged.

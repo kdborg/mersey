@@ -3,7 +3,7 @@
 // none of it hand-wired into the engine. Each call goes through the
 // universal bridge, typed by the generated WebIDL declarations.
 import { console } from "std:console";
-import { document, localStorage, fetch, setTimeout, crypto, JSON, URL } from "browser:dom";
+import { document, localStorage, fetch, setTimeout, crypto, JSON, URL, Node } from "browser:dom";
 
 const out: Element = document.getElementById("out") as Element;
 let lines: string[] = [];
@@ -45,6 +45,22 @@ show("canvas: filled a 120x40 rect");
 setTimeout(() => show("timer: fired after 50ms"), 50);
 
 // --- Network (promises work today via .then; async/await is on the roadmap)
-fetch("https://example.com/").then(resp => {
+fetch("mersey-loader.js").then(resp => {
     show(`fetch: status ${resp.status}`);
 });
+
+// --- Interface constants and statics (Node.ELEMENT_NODE, Response.error)
+show(`constants: ELEMENT_NODE=${Node.ELEMENT_NODE} TEXT_NODE=${Node.TEXT_NODE}`);
+
+// --- Collections: indexed access on a live NodeList
+const paras = document.querySelectorAll("p");
+const first = paras[0];
+show(`nodelist: ${paras.length} <p>, first tag=${(first as Element).tagName}`);
+
+// --- Live DOM query + class/style manipulation
+const box = document.createElement("div") as HTMLElement;
+box.className = "generated";
+box.style.color = "rebeccapurple";
+box.textContent = "styled by Mersey";
+(document.body as Element).appendChild(box);
+show(`style: color=${box.style.color} class=${box.className}`);
