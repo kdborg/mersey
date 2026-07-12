@@ -703,13 +703,22 @@ impl Binder {
                 self.pop_scope();
             }
             Stmt::ForOf {
+                is_await,
                 kind,
                 target,
                 ty,
                 iter,
                 body,
-                ..
             } => {
+                // `for await` is the loop form of `await`, and lives where
+                // `await` does: an async function, or a module's top level.
+                if *is_await && self.ctx.in_function && !self.ctx.in_async {
+                    self.error(
+                        Code::AwaitOutsideAsync,
+                        "`for await` outside an `async` function",
+                        crate::check::pos_of(iter),
+                    );
+                }
                 self.push_scope();
                 // The iterable is evaluated before the binding exists.
                 self.bind_expr(iter);

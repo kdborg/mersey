@@ -1,0 +1,50 @@
+import { console } from "std:console";
+
+// Mersey has no `function*`: a function that contains `yield` *is* a generator.
+// So an *async* generator needs no new syntax either — it is an `async` function
+// that yields, and it can `await` between yields. One coroutine does both: the
+// VM already reports all three outcomes (done, yielded, awaiting).
+
+async function fetchOne(n: int32): int32 {
+    return n * 10;
+}
+
+async function pages(count: int32): int32 {
+    let i: int32 = 1;
+    while (i <= count) {
+        const page = await fetchOne(i); // await inside the generator
+        yield page;                     // then hand it out
+        i += 1;
+    }
+}
+
+// `for await` is the loop form of `await`: it pulls a promise from the async
+// iterator, awaits it, and stops at `null` — the same end-of-sequence signal a
+// synchronous generator uses.
+let total: int32 = 0;
+for await (const p of pages(4)) {
+    console.log("page:", p);
+    total += p;
+}
+console.log("total:", total);
+
+// `next()` by hand: an async iterator hands back a promise.
+const it = pages(2);
+const first = await it.next();
+const second = await it.next();
+const end = await it.next();
+console.log(first, second, end);
+
+// Synchronous generators are unchanged.
+function counter(start: int32, to: int32): int32 {
+    let i = start;
+    while (i <= to) {
+        yield i;
+        i += 1;
+    }
+}
+let sum: int32 = 0;
+for (const n of counter(1, 4)) {
+    sum += n;
+}
+console.log("sync generator:", sum);

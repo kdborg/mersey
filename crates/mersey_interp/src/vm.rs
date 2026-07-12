@@ -590,7 +590,48 @@ impl C {
                 ..
             } => {
                 if *is_await {
-                    return self.bail();
+                    // `for await (const x of gen())` is the loop form of
+                    // `await`: pull a promise from the async iterator, await it,
+                    // stop at `null`. It compiles to exactly that, so it needs
+                    // no machinery of its own and suspends like any other await.
+                    self.emit(Op::PushScope);
+                    self.scope_depth += 1;
+                    let ait = self.fresh_temp("ait");
+                    let item = self.fresh_temp("aitem");
+                    let n_ait = self.name(&ait);
+                    let n_item = self.name(&item);
+                    let n_next = self.name("next");
+                    self.expr(iter);
+                    self.emit(Op::DeclareName(n_ait));
+                    self.emit(Op::Null);
+                    self.emit(Op::DeclareName(n_item));
+
+                    self.compile_loop(None, |c| {
+                        let start = c.here();
+                        c.emit(Op::LoadName(n_ait));
+                        c.emit(Op::CallMethod(n_next, 0));
+                        c.emit(Op::Await);
+                        c.emit(Op::StoreName(n_item));
+                        // `null` ends the sequence, exactly as it does for a
+                        // synchronous generator's `next()`.
+                        c.emit(Op::LoadName(n_item));
+                        c.emit(Op::Null);
+                        c.emit(Op::Bin(BinOp::Ne));
+                        let jf = vec![c.emit(Op::JumpIfFalse(0))];
+
+                        c.emit(Op::PushScope);
+                        c.scope_depth += 1;
+                        c.emit(Op::LoadName(n_item));
+                        c.bind_target(target);
+                        c.stmt(body);
+                        let cont = c.here();
+                        c.emit(Op::PopScope);
+                        c.scope_depth -= 1;
+                        (start, cont, jf)
+                    });
+                    self.emit(Op::PopScope);
+                    self.scope_depth -= 1;
+                    return;
                 }
                 self.emit(Op::PushScope);
                 self.scope_depth += 1;

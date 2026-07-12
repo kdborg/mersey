@@ -809,6 +809,11 @@ impl Marker<'_> {
     /// A suspended coroutine: its operand stack and scope chain may be the
     /// only reference to everything it was working on.
     fn coro(&mut self, coro: &Coro) {
+        if let Some(g) = &coro.gen {
+            if self.enter(Rc::as_ptr(g) as usize) {
+                self.gen_contents(g);
+            }
+        }
         for e in &coro.scopes {
             self.env(e);
         }
@@ -822,9 +827,17 @@ impl Marker<'_> {
     }
 
     fn gen_contents(&mut self, g: &Rc<GcCell<GenState>>) {
-        let saved = g.borrow().saved();
+        let (saved, pending) = {
+            let st = g.borrow();
+            (st.saved(), st.pending_next())
+        };
         if let Some(coro) = saved {
             self.coro(&coro);
+        }
+        // An async generator's in-flight `next()` promise: whoever is awaiting
+        // it is holding it, but the generator is what will settle it.
+        if let Some(p) = pending {
+            self.promise(&p);
         }
     }
 

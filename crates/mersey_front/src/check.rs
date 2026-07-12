@@ -690,6 +690,7 @@ struct Checker {
     bytes_id: Option<ClassId>,
     regex_id: Option<ClassId>,
     iter_id: Option<ClassId>,
+    async_iter_id: Option<ClassId>,
     /// Element type of the generator currently being checked.
     yield_ty: Option<Ty>,
     /// The module being checked (diagnostics/context).
@@ -756,6 +757,7 @@ impl Checker {
             bytes_id: None,
             regex_id: None,
             iter_id: None,
+            async_iter_id: None,
             yield_ty: None,
             module_spec: String::new(),
             imported: std::collections::HashSet::new(),
@@ -929,6 +931,7 @@ impl Checker {
         self.install_bytes();
         self.install_regex();
         self.install_iter();
+        self.install_async_iter();
     }
 
     /// `Iter<T>` — what a generator returns and what `for … of` consumes.
@@ -991,6 +994,62 @@ impl Checker {
 
     fn unwrap_iter(&self, t: &Ty) -> Option<Ty> {
         let id = self.iter_id?;
+        match strip_null(t) {
+            Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Any)),
+            _ => None,
+        }
+    }
+
+    /// `AsyncIter<T>`: what an `async` function containing `yield` returns.
+    ///
+    /// Mersey has no `function*`: a function that yields *is* a generator, so an
+    /// async one needs no new syntax either. Its `next()` returns a promise of
+    /// the next element — which is exactly what `for await` consumes.
+    fn install_async_iter(&mut self) {
+        let t = self.fresh_tv("T");
+        let tv = Ty::Var(t);
+        let next_ret = self.promise_of(nullable(tv.clone()));
+        let id = self.classes.len();
+        self.classes.push(ClassInfo {
+            name: "AsyncIter".into(),
+            tparams: vec![t],
+            parent: None,
+            host_parent: None,
+            ifaces: vec![],
+            fields: vec![],
+            methods: vec![MethodInfo {
+                name: "next".into(),
+                sig: FnTy {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: next_ret,
+                },
+                access: Access::Public,
+                is_static: false,
+                is_abstract: false,
+                is_final: false,
+                has_override: false,
+            }],
+            getters: vec![],
+            setters: vec![],
+            ctor: None,
+            is_abstract: false,
+            is_final: true,
+        });
+        self.type_defs
+            .insert("AsyncIter".into(), TypeDef::Class(id));
+        self.async_iter_id = Some(id);
+    }
+
+    fn async_iter_of(&mut self, t: Ty) -> Ty {
+        match self.async_iter_id {
+            Some(id) => Ty::Class(id, Rc::new(vec![t])),
+            None => Ty::Any,
+        }
+    }
+
+    fn unwrap_async_iter(&self, t: &Ty) -> Option<Ty> {
+        let id = self.async_iter_id?;
         match strip_null(t) {
             Ty::Class(cid, args) if cid == id => Some(args.first().cloned().unwrap_or(Ty::Any)),
             _ => None,
@@ -1609,7 +1668,16 @@ impl Checker {
                 self.tp_scopes.pop();
                 // `async function f(): T` — the body returns T, callers get
                 // Promise<T> (an already-Promise<…> annotation is kept).
-                let ret = if f.is_async && self.unwrap_promise(&ret).is_none() {
+                let ret = if f.is_async && body_yields(&f.body) {
+                    // An async generator: `async function f(): int32` with
+                    // `yield` in the body hands callers an `AsyncIter<int32>`,
+                    // which is what `for await` consumes.
+                    if self.unwrap_async_iter(&ret).is_none() {
+                        self.async_iter_of(ret)
+                    } else {
+                        ret
+                    }
+                } else if f.is_async && self.unwrap_promise(&ret).is_none() {
                     self.promise_of(ret)
                 } else if body_yields(&f.body) && self.unwrap_iter(&ret).is_none() {
                     // A generator: `function f(): int32` with `yield` in the
@@ -2136,6 +2204,17 @@ impl Checker {
         }
         // A generator's body yields elements; its `return` (if any) is bare.
         if body_yields(body) {
+            if let Some(elem) = self.unwrap_async_iter(&sig.ret) {
+                let saved = self.yield_ty.replace(elem);
+                let unwrapped = FnTy {
+                    tparams: sig.tparams.clone(),
+                    params: sig.params.clone(),
+                    ret: Ty::Void,
+                };
+                self.check_fn_body(tps, params, &unwrapped, body);
+                self.yield_ty = saved;
+                return;
+            }
             if let Some(elem) = self.unwrap_iter(&sig.ret) {
                 let saved = self.yield_ty.replace(elem);
                 let unwrapped = FnTy {
@@ -2803,15 +2882,44 @@ impl Checker {
                 self.pop_scope();
             }
             Stmt::ForOf {
+                is_await,
                 kind,
                 target,
                 ty,
                 iter,
                 body,
-                ..
             } => {
                 self.push_scope();
                 let it = self.check_expr(iter, None);
+                if *is_await {
+                    // `for await (const x of gen())` consumes an AsyncIter<T>,
+                    // awaiting each `next()`. It is the loop form of `await`,
+                    // and lives wherever `await` does.
+                    let elem = match self.unwrap_async_iter(&it) {
+                        Some(e) => e,
+                        None => match strip_null(&it) {
+                            Ty::Any | Ty::Err => Ty::Any,
+                            other => {
+                                self.error(
+                                    Code::BadOperand,
+                                    format!(
+                                        "`for await` needs an `AsyncIter<T>` (an `async` \
+                                         function that yields), found `{}`",
+                                        self.show(&other)
+                                    ),
+                                    pos_of(iter),
+                                );
+                                Ty::Err
+                            }
+                        },
+                    };
+                    let declared = ty.as_ref().map(|t| self.resolve_type(t));
+                    let bound = declared.unwrap_or(elem);
+                    self.bind_pattern_ty(target, &bound, *kind == VarKind::Const);
+                    self.check_stmt(body);
+                    self.pop_scope();
+                    return;
+                }
                 let elem = match strip_null(&it) {
                     Ty::Array(e) => e.as_ref().clone(),
                     Ty::Str => Ty::Char,
@@ -5483,7 +5591,7 @@ fn unify_infer(want: &Ty, got: &Ty, tparams: &[TvId], out: &mut HashMap<TvId, Ty
 
 // ---- position helpers ------------------------------------------------------------
 
-fn pos_of(e: &Expr) -> Pos {
+pub(crate) fn pos_of(e: &Expr) -> Pos {
     match e {
         Expr::Ident(n) => n.pos,
         Expr::This(p) => *p,

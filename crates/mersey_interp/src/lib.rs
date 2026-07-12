@@ -260,6 +260,13 @@ impl PromiseState {
 pub struct GenState {
     coro: Option<Coro>,
     done: bool,
+    /// An *async* generator: one coroutine that both yields and awaits. The VM
+    /// already reports all three outcomes (done, yielded, awaiting), so this
+    /// needs no second mechanism — only somewhere to put the promise that the
+    /// current `next()` will settle when the body finally reaches a `yield`.
+    is_async: bool,
+    /// The promise handed out by the `next()` now in flight.
+    pending: Option<Rc<GcCell<PromiseState>>>,
 }
 
 impl GenState {
@@ -267,6 +274,12 @@ impl GenState {
     /// operand stack and scopes are GC roots for as long as it can be resumed.
     pub(crate) fn saved(&self) -> Option<Coro> {
         self.coro.clone()
+    }
+
+    /// The promise the in-flight `next()` will settle, if this is an async
+    /// generator that is mid-await.
+    pub(crate) fn pending_next(&self) -> Option<Rc<GcCell<PromiseState>>> {
+        self.pending.clone()
     }
 
     /// Sweep: an unreachable generator can never be resumed, so drop the
@@ -281,6 +294,7 @@ impl GenState {
         if let Some(coro) = self.coro.take() {
             out.extend(coro.stack);
         }
+        self.pending = None;
         self.done = true;
     }
 }
@@ -318,6 +332,11 @@ pub struct Frame_ {
 /// captures it and resumes later (no CPS transform, no threads).
 #[derive(Clone)]
 pub struct Coro {
+    /// The async generator this coroutine belongs to, if any. An `await` inside
+    /// it suspends through the ordinary promise machinery; when the microtask
+    /// queue resumes it, this is how the engine knows a `yield` must settle the
+    /// generator's pending `next()` rather than the coroutine's own result.
+    pub(crate) gen: Option<Rc<GcCell<GenState>>>,
     pub chunk: Rc<vm::Chunk>,
     pub pc: usize,
     pub stack: Vec<Value>,
@@ -989,6 +1008,7 @@ impl Interp {
                 if vm::chunk_awaits(&chunk) {
                     let result = PromiseState::pending();
                     let coro = Coro {
+                        gen: None,
                         chunk,
                         pc: 0,
                         stack: Vec::new(),
@@ -1816,6 +1836,7 @@ impl Interp {
             if let Some(chunk) = compiled {
                 if vm::chunk_yields(&chunk) {
                     let coro = Coro {
+                        gen: None,
                         chunk,
                         pc: 0,
                         stack: Vec::new(),
@@ -1827,6 +1848,8 @@ impl Interp {
                     let g = Rc::new(GcCell::new(GenState {
                         coro: Some(coro),
                         done: false,
+                        is_async: false,
+                        pending: None,
                     }));
                     gc::track_gen(&g);
                     return Ok(Value::IterV(g));
@@ -1852,6 +1875,29 @@ impl Interp {
                     "this async function uses a construct the compiler cannot suspend",
                 );
             };
+            // An `async` function that yields is an async generator: one
+            // coroutine that both awaits and yields. Its `next()` hands back a
+            // promise, which settles when the body reaches the next `yield`.
+            if vm::chunk_yields(&chunk) {
+                let coro = Coro {
+                    gen: None,
+                    chunk,
+                    pc: 0,
+                    stack: Vec::new(),
+                    scopes: vec![scope],
+                    handlers: Vec::new(),
+                    cls: c.cls.clone(),
+                    result: PromiseState::pending(),
+                };
+                let g = Rc::new(GcCell::new(GenState {
+                    coro: Some(coro),
+                    done: false,
+                    is_async: true,
+                    pending: None,
+                }));
+                gc::track_gen(&g);
+                return Ok(Value::IterV(g));
+            }
             return self.start_coro(c, chunk, scope);
         }
         if self.use_vm {
@@ -3879,6 +3925,7 @@ impl Interp {
     fn start_coro(&mut self, c: &Closure, chunk: Rc<vm::Chunk>, scope: Env) -> VResult {
         let result = PromiseState::pending();
         let coro = Coro {
+            gen: None,
             chunk,
             pc: 0,
             stack: Vec::new(),
@@ -3897,6 +3944,11 @@ impl Interp {
 
     /// Drive a coroutine until it finishes or suspends on an await.
     fn drive(&mut self, mut coro: Coro, resumed: Option<(Value, bool)>) -> Result<(), Thrown> {
+        // A coroutine belonging to an async generator settles that generator's
+        // pending `next()` when it yields — not its own result promise.
+        if let Some(g) = coro.gen.clone() {
+            return self.drive_gen(g, coro, resumed);
+        }
         let pushed = coro.cls.clone();
         if let Some(cls) = &pushed {
             self.class_stack.push(cls.clone());
@@ -4308,7 +4360,92 @@ impl Interp {
     }
 
     /// Resume a generator to its next `yield` (or to completion).
+    /// `next()` on an async generator: a promise that settles at the next
+    /// `yield` (with the value), at the end (with `null`), or with whatever the
+    /// body threw.
+    fn gen_next_async(&mut self, g: Rc<GcCell<GenState>>) -> VResult {
+        let promise = PromiseState::pending();
+        if g.borrow().done {
+            self.settle(&promise, Value::Null, false);
+            return Ok(Value::PromiseV(promise));
+        }
+        let Some(mut coro) = g.borrow_mut().coro.take() else {
+            g.borrow_mut().done = true;
+            self.settle(&promise, Value::Null, false);
+            return Ok(Value::PromiseV(promise));
+        };
+        g.borrow_mut().pending = Some(promise.clone());
+        coro.gen = Some(g.clone());
+        self.drive_gen(g, coro, None)?;
+        Ok(Value::PromiseV(promise))
+    }
+
+    /// Drive an async generator's coroutine until it yields, finishes, or
+    /// suspends on an `await`.
+    fn drive_gen(
+        &mut self,
+        g: Rc<GcCell<GenState>>,
+        mut coro: Coro,
+        resumed: Option<(Value, bool)>,
+    ) -> Result<(), Thrown> {
+        let pushed = coro.cls.clone();
+        if let Some(cls) = &pushed {
+            self.class_stack.push(cls.clone());
+        }
+        let outcome = vm::run_coro(self, &mut coro, resumed);
+        if pushed.is_some() {
+            self.class_stack.pop();
+        }
+        let pending = g.borrow_mut().pending.take();
+        match outcome {
+            Ok(vm::Flow::Yield(v)) => {
+                // Suspended at a `yield`: keep the coroutine for the next call
+                // and hand the value to whoever is awaiting `next()`.
+                g.borrow_mut().coro = Some(coro);
+                if let Some(p) = pending {
+                    self.settle(&p, v, false);
+                }
+                Ok(())
+            }
+            Ok(vm::Flow::Done(_)) => {
+                g.borrow_mut().discard();
+                if let Some(p) = pending {
+                    self.settle(&p, Value::Null, false); // exhausted
+                }
+                Ok(())
+            }
+            Ok(vm::Flow::Await(awaited)) => {
+                // The body awaited something. This `next()` has not settled yet:
+                // put its promise back, and resume when the awaited thing does.
+                g.borrow_mut().pending = pending;
+                let p = self.as_promise(awaited)?;
+                let status = p.borrow().status.clone();
+                match status {
+                    PromiseStatus::Pending => {
+                        p.borrow_mut().waiters.push(coro);
+                    }
+                    PromiseStatus::Fulfilled | PromiseStatus::Rejected => {
+                        let v = p.borrow().value.clone();
+                        let rejected = status == PromiseStatus::Rejected;
+                        self.tasks.push_back(Task::Resume(coro, v, rejected));
+                    }
+                }
+                Ok(())
+            }
+            Err(t) => {
+                g.borrow_mut().discard();
+                if let Some(p) = pending {
+                    self.settle(&p, t.0, true);
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn gen_next(&mut self, g: Rc<GcCell<GenState>>) -> VResult {
+        if g.borrow().is_async {
+            return self.gen_next_async(g);
+        }
         if g.borrow().done {
             return Ok(Value::Null);
         }
