@@ -3,6 +3,7 @@
 import { console } from "std:console";
 import { document } from "browser:dom";
 import { Counter, GREETING } from "./lib/counter.mersey";
+import { describe } from "./lib/stdclasses.mersey";
 
 const out = document.getElementById("out") as Element;
 const c = new Counter();
@@ -11,3 +12,5 @@ c.increment();
 c.increment();
 out.textContent = `${GREETING}: counter = ${c.value()}`;
 console.log(`modular: ${GREETING}, count=${c.value()}`);
+// URL/Date/AbortController are pure Mersey: they need no host bridge.
+console.log(`stdclasses: ${describe()}`);

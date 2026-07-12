@@ -1,0 +1,288 @@
+// URLs and query strings — parsing, not fetching.
+//
+// The browser has its own `URL` (import it from `browser:dom`), and that one is a
+// *host* object: it is what you hand to an API that demands one. This one is
+// written in Mersey and is pure computation, so it works in every host — the
+// standalone engine, a worker, an embedder with no web platform at all.
+//
+// It handles the URLs a program actually writes: scheme, host, port, path, query
+// and fragment. It is not a WHATWG-conformant parser, and does not pretend to be
+// one — no IDNA, no percent-decoding of the host, no relative-URL resolution.
+
+import { bytes } from "std:bytes";
+
+/// One `key=value` pair from a query string.
+class Pair {
+    public key: string = "";
+    public value: string = "";
+
+    public constructor(key: string, value: string) {
+        this.key = key;
+        this.value = value;
+    }
+}
+
+/// The query part of a URL, as an ordered list of pairs.
+///
+/// A key may appear more than once — that is what `getAll` is for — so `get`
+/// returns the *first*, and `null` when there is none.
+export class URLSearchParams {
+    private pairs: Pair[] = [];
+
+    public constructor(query: string) {
+        let q = query;
+        if (q.startsWith("?")) {
+            q = q.slice(1);
+        }
+        if (q.length == 0) {
+            return;
+        }
+        for (const part of q.split("&")) {
+            if (part.length == 0) {
+                continue;
+            }
+            const eq = part.indexOf("=");
+            if (eq < 0) {
+                this.pairs.push(new Pair(decode(part), ""));
+            } else {
+                this.pairs.push(new Pair(decode(part.slice(0, eq)), decode(part.slice(eq + 1))));
+            }
+        }
+    }
+
+    /// The first value for `key`, or null. Missing is not "" — those are
+    /// different, and only you know which one matters.
+    public get(key: string): string? {
+        for (const p of this.pairs) {
+            if (p.key == key) {
+                return p.value;
+            }
+        }
+        return null;
+    }
+
+    /// Every value for `key`, in order.
+    public getAll(key: string): string[] {
+        const out: string[] = [];
+        for (const p of this.pairs) {
+            if (p.key == key) {
+                out.push(p.value);
+            }
+        }
+        return out;
+    }
+
+    public has(key: string): bool {
+        return this.get(key) != null;
+    }
+
+    public keys(): string[] {
+        const out: string[] = [];
+        for (const p of this.pairs) {
+            out.push(p.key);
+        }
+        return out;
+    }
+
+    /// Add a value, keeping any that are already there.
+    public append(key: string, value: string): void {
+        this.pairs.push(new Pair(key, value));
+    }
+
+    /// Replace every value for `key` with one. (§1.3: the name says it mutates.)
+    public set(key: string, value: string): void {
+        this.removeAll(key);
+        this.pairs.push(new Pair(key, value));
+    }
+
+    /// Drop every value for `key`. This is what JS spells `delete`.
+    public removeAll(key: string): void {
+        const kept: Pair[] = [];
+        for (const p of this.pairs) {
+            if (p.key != key) {
+                kept.push(p);
+            }
+        }
+        this.pairs = kept;
+    }
+
+    public size(): int32 {
+        return this.pairs.length;
+    }
+
+    /// Back to a query string, percent-encoded. No leading `?`.
+    public toString(): string {
+        const parts: string[] = [];
+        for (const p of this.pairs) {
+            parts.push(`${encode(p.key)}=${encode(p.value)}`);
+        }
+        return parts.join("&");
+    }
+}
+
+/// A parsed URL.
+///
+/// The pieces are read-only: a URL you can half-edit is a URL that can be
+/// half-invalid. Build a new one from the string you want.
+export class URL {
+    public readonly href: string = "";
+    public readonly protocol: string = "";
+    public readonly hostname: string = "";
+    public readonly port: string = "";
+    public readonly pathname: string = "/";
+    public readonly search: string = "";
+    public readonly hash: string = "";
+    public readonly searchParams: URLSearchParams;
+
+    /// Throws on a URL with no scheme — a relative URL is not a URL until you
+    /// say what it is relative *to*, and this class does not do that.
+    public constructor(input: string) {
+        const text = input.trim();
+        const scheme = text.indexOf("://");
+        if (scheme <= 0) {
+            throw new Error(`not an absolute URL: "${input}"`);
+        }
+        this.href = text;
+        this.protocol = `${text.slice(0, scheme)}:`;
+
+        let rest = text.slice(scheme + 3);
+
+        // The fragment first: it may contain anything, including `?` and `/`.
+        const hashAt = rest.indexOf("#");
+        if (hashAt >= 0) {
+            this.hash = rest.slice(hashAt);
+            rest = rest.slice(0, hashAt);
+        }
+
+        const queryAt = rest.indexOf("?");
+        if (queryAt >= 0) {
+            this.search = rest.slice(queryAt);
+            rest = rest.slice(0, queryAt);
+        }
+
+        const slash = rest.indexOf("/");
+        let authority = rest;
+        if (slash >= 0) {
+            authority = rest.slice(0, slash);
+            this.pathname = rest.slice(slash);
+        }
+
+        // `user:pass@host:port` — credentials are dropped, not parsed: a URL
+        // carrying a password is a mistake we decline to make convenient.
+        const at = authority.lastIndexOf("@");
+        if (at >= 0) {
+            authority = authority.slice(at + 1);
+        }
+        const colon = authority.lastIndexOf(":");
+        if (colon >= 0) {
+            this.hostname = authority.slice(0, colon);
+            this.port = authority.slice(colon + 1);
+        } else {
+            this.hostname = authority;
+        }
+
+        this.searchParams = new URLSearchParams(this.search);
+    }
+
+    /// `https://example.com:8443` — scheme, host and port, and nothing else.
+    public origin(): string {
+        if (this.port.length == 0) {
+            return `${this.protocol}//${this.hostname}`;
+        }
+        return `${this.protocol}//${this.hostname}:${this.port}`;
+    }
+
+    /// `example.com:8443` — the authority as written.
+    public host(): string {
+        if (this.port.length == 0) {
+            return this.hostname;
+        }
+        return `${this.hostname}:${this.port}`;
+    }
+
+    public toString(): string {
+        return this.href;
+    }
+}
+
+const HEX: string = "0123456789ABCDEF";
+
+/// Unreserved characters (RFC 3986 §2.3): everything else is percent-encoded.
+function unreserved(cp: int32): bool {
+    const isDigit = cp >= 48 && cp <= 57;
+    const isUpper = cp >= 65 && cp <= 90;
+    const isLower = cp >= 97 && cp <= 122;
+    // - . _ ~
+    const isMark = cp == 45 || cp == 46 || cp == 95 || cp == 126;
+    return isDigit || isUpper || isLower || isMark;
+}
+
+function hexVal(c: string): int32 {
+    const i = "0123456789abcdef".indexOf(c.toLowerCase());
+    return i;
+}
+
+/// Percent-encode. A character's *bytes* are encoded, not its code point, so a
+/// non-ASCII character becomes several `%XX` — which is what UTF-8 means here.
+function encode(s: string): string {
+    let out: string = "";
+    let i: int32 = 0;
+    while (i < s.length) {
+        const cp = s.codePointAt(i);
+        const c = s.charAt(i);
+        if (cp != null && unreserved(cp)) {
+            out = `${out}${c}`;
+        } else {
+            const raw = bytes.encodeUtf8(c);
+            for (let j: int32 = 0; j < raw.length; j++) {
+                const b = raw[j];
+                out = `${out}%${HEX.charAt(b / 16)}${HEX.charAt(b % 16)}`;
+            }
+        }
+        i += 1;
+    }
+    return out;
+}
+
+/// Percent-decode, including `+` for space (which is what a form sends).
+///
+/// The bytes are gathered first and decoded as UTF-8 at the end — decoding each
+/// `%XX` on its own would break every multi-byte character. Invalid UTF-8 gives
+/// the input back unchanged rather than a string of replacement characters.
+function decode(s: string): string {
+    const raw: int32[] = [];
+    let i: int32 = 0;
+    while (i < s.length) {
+        const c = s.charAt(i);
+        if (c == "+") {
+            raw.push(32);
+            i += 1;
+        } else if (c == "%" && i + 2 < s.length) {
+            const hi = hexVal(s.charAt(i + 1));
+            const lo = hexVal(s.charAt(i + 2));
+            if (hi < 0 || lo < 0) {
+                pushUtf8(raw, c);
+                i += 1;
+            } else {
+                raw.push(hi * 16 + lo);
+                i += 3;
+            }
+        } else {
+            pushUtf8(raw, c);
+            i += 1;
+        }
+    }
+    const buf = bytes.alloc(raw.length);
+    for (let j: int32 = 0; j < raw.length; j++) {
+        buf[j] = raw[j];
+    }
+    const text = bytes.decodeUtf8(buf);
+    return text == null ? s : text;
+}
+
+function pushUtf8(out: int32[], c: string): void {
+    const raw = bytes.encodeUtf8(c);
+    for (let j: int32 = 0; j < raw.length; j++) {
+        out.push(raw[j]);
+    }
+}

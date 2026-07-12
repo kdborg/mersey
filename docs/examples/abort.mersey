@@ -1,0 +1,38 @@
+// Cancellation.
+//
+// A controller holds a signal; whoever is doing the work watches it. The *caller*
+// decides to stop, and the work checks. Aborting is one-way — a controller that
+// could un-abort would be a controller nobody could trust.
+//
+// This is a Mersey object, so it is a token for *your own* code. It cannot abort
+// the host's `fetch`, which needs the host's own `AbortSignal` — import that one
+// from `browser:dom` when you want the browser to honour it.
+import { console } from "std:console";
+import { AbortController } from "std:abort";
+
+const c = new AbortController();
+console.log(c.signal.aborted(), c.signal.reason());
+
+c.signal.onAbort(() => {
+    console.log("listener fired");
+});
+
+c.abort("user cancelled");
+console.log(c.signal.aborted(), c.signal.reason());
+
+// A listener registered after the abort still runs — the alternative is a
+// listener that silently never fires.
+c.signal.onAbort(() => {
+    console.log("late listener fired too");
+});
+
+// Aborting again does nothing: the first reason stands.
+c.abort("a different reason");
+console.log(c.signal.reason());
+
+// The one-line way to bail out of a loop.
+try {
+    c.signal.throwIfAborted();
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

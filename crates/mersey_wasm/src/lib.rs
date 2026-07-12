@@ -333,6 +333,28 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 
     let mut parsed_modules: Vec<(String, &'static mersey_front::ast::Module)> = Vec::new();
     let mut failed = false;
+
+    // The `std:` modules written in Mersey (`std:result`, `std:url`, …) are
+    // embedded in the engine, not fetched — the loader has nothing to fetch them
+    // *from*. They have to be in the graph before anything that imports them is
+    // checked, or their exports are unknown and every use of one is a type error
+    // in a file the author never wrote. They come first: nothing they import can
+    // depend on the page's own modules.
+    for spec in mersey_front::stdlib::source_modules() {
+        let Some(text) = mersey_front::stdlib::source(spec) else {
+            continue;
+        };
+        let Ok(decoded) = source::decode(spec, text.as_bytes()) else {
+            continue;
+        };
+        let parsed = parser::parse(&decoded);
+        if !parsed.diagnostics.is_empty() {
+            continue; // the conformance suite would have caught this
+        }
+        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        parsed_modules.push(((*spec).to_string(), module));
+    }
+
     for item in items {
         let (Some(spec), Some(src_text)) = (
             item.get("spec").and_then(|v| v.as_str()),

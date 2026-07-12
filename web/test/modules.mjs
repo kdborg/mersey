@@ -38,6 +38,12 @@ const check = (what, ok, detail = "") => {
 check("modules: no page errors", errors.length === 0, errors.join("; "));
 check("REAL BROWSER · imported class from a sibling .mersey module",
       text === "modules work in the browser: counter = 3", text);
+// The `std:` modules written in Mersey are embedded in the engine, not fetched —
+// the loader has nothing to fetch them from. Before this they were simply absent
+// from the browser's module graph, so every use of one was a type error.
+check("REAL BROWSER · std: modules written in Mersey work in the browser",
+      logs.some((l) => /stdclasses: example\.com:8443\/a q=mersey \| 2025-07-12T08:00:00\.000Z \| aborted=true/.test(l)),
+      logs.join(" | "));
 check("REAL BROWSER · module graph fetched and linked",
       logs.some((l) => /^modular: modules work in the browser, count=3$/.test(l)),
       logs.join(" | "));

@@ -95,8 +95,19 @@ pub fn build(outdir: &str) -> ExitCode {
         // actually printed. A documentation example that is not run is a claim
         // nobody checks; it rots the first time the API changes, and the only
         // person who finds out is the reader.
-        let example = fs::read_to_string(root.join(format!("docs/examples/{}.mersey", g.key)));
-        let output = fs::read_to_string(root.join(format!("docs/examples/{}.expect", g.key)));
+        // A class exported by a `std:` module borrows that module's example: it
+        // is the same code, and writing it twice would only mean maintaining it
+        // twice.
+        let example_key = if root
+            .join(format!("docs/examples/{}.mersey", g.key))
+            .exists()
+        {
+            g.key.clone()
+        } else {
+            g.parent.clone()
+        };
+        let example = fs::read_to_string(root.join(format!("docs/examples/{example_key}.mersey")));
+        let output = fs::read_to_string(root.join(format!("docs/examples/{example_key}.expect")));
         let (about, code) = match &example {
             Ok(src) => split_doc_comment(src),
             Err(_) => (String::new(), String::new()),

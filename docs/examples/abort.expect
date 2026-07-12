@@ -1,0 +1,6 @@
+false null
+listener fired
+true user cancelled
+late listener fired too
+user cancelled
+caught: user cancelled

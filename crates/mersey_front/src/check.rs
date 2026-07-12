@@ -230,6 +230,10 @@ pub struct ApiGroup {
     pub import: String,
     /// Stable name for this group's example file (`docs/examples/<key>.mersey`).
     pub key: String,
+    /// For a class exported by a `std:` module: that module's key. A class does
+    /// not need its own example when the module's example is what shows it being
+    /// used — and writing a second one would only be the first one again.
+    pub parent: String,
     pub members: Vec<ApiMember>,
 }
 
@@ -277,9 +281,92 @@ pub fn api_reference() -> Vec<ApiGroup> {
         out.push(ApiGroup {
             key: title.clone(),
             title,
+            parent: String::new(),
             import: namespace_module(ns).to_string(),
             members,
         });
+    }
+
+    // The `std:` modules written in Mersey. They are checked here and their
+    // exports listed — the same principle as everything else on the page: the
+    // reference cannot name an export that does not exist, because it is asking
+    // the checker rather than keeping a list.
+    for spec in crate::stdlib::source_modules() {
+        let Some(src_text) = crate::stdlib::source(spec) else {
+            continue;
+        };
+        let file = crate::source::SourceFile {
+            name: (*spec).to_string(),
+            text: src_text.to_string(),
+        };
+        let parsed = crate::parser::parse(&file);
+        if !parsed.diagnostics.is_empty() {
+            continue;
+        }
+        let module = parsed.module;
+        let (_, mut mc, _) = check_graph_indexed(&[((*spec).to_string(), &module)], false);
+
+        let exports = mc.module_exports.get(*spec).cloned().unwrap_or_default();
+
+        // Exported functions and constants: the module's own surface.
+        let mut members: Vec<ApiMember> = exports
+            .values
+            .iter()
+            .filter(|(name, _)| !exports.types.contains_key(*name))
+            .map(|(name, ty)| ApiMember {
+                name: name.clone(),
+                signature: mc.show(ty),
+                is_fn: matches!(ty, Type::Fn(_)),
+            })
+            .collect();
+        members.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Exported classes get a group each, with their public members.
+        let mut classes: Vec<(String, Vec<ApiMember>)> = Vec::new();
+        for (name, def) in exports.types.iter() {
+            let TypeDef::Class(id) = def else { continue };
+            let args: Vec<Type> = mc.classes[*id]
+                .tparams
+                .iter()
+                .map(|_| Type::Unknown)
+                .collect();
+            let ty = Type::Class(*id, Rc::new(args));
+            let ms: Vec<ApiMember> = mc.members_of(&ty).into_iter().map(to_api).collect();
+            classes.push((name.clone(), ms));
+            members.push(ApiMember {
+                name: name.clone(),
+                signature: "class".to_string(),
+                is_fn: false,
+            });
+        }
+        members.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let module_key = spec.trim_start_matches("std:").to_string();
+        out.push(ApiGroup {
+            key: module_key.clone(),
+            title: module_key.clone(),
+            parent: String::new(),
+            import: (*spec).to_string(),
+            members,
+        });
+
+        classes.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, ms) in classes {
+            if ms.is_empty() {
+                continue;
+            }
+            let mut key = name.to_lowercase();
+            if out.iter().any(|g| g.key == key) {
+                key.push_str("-class");
+            }
+            out.push(ApiGroup {
+                title: name,
+                key,
+                parent: module_key.clone(),
+                import: (*spec).to_string(),
+                members: ms,
+            });
+        }
     }
 
     // Builtin types: the members you get on a value, not on a module.
@@ -288,6 +375,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
     out.push(ApiGroup {
         title: "string".to_string(),
         key: "string".to_string(),
+        parent: String::new(),
         import: String::new(),
         members: strings.into_iter().map(to_api).collect(),
     });
@@ -310,6 +398,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
     out.push(ApiGroup {
         title: "T[] (array)".to_string(),
         key: "array".to_string(),
+        parent: String::new(),
         import: String::new(),
         members: array_members,
     });
@@ -341,6 +430,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
             out.push(ApiGroup {
                 title: name.to_string(),
                 key,
+                parent: String::new(),
                 import: String::new(),
                 members,
             });

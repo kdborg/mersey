@@ -1,0 +1,28 @@
+// A moment in time, with a calendar attached.
+//
+// UTC and only UTC. A local time zone is a *display* concern — it depends on
+// where the reader is sitting — and a value that means different things in
+// different places is not a value you can store or compare.
+//
+// It is immutable. JS's `Date` can be mutated in place through a dozen setters,
+// which is how a timestamp ends up meaning something different than it did when
+// it was passed in. To change one, make another.
+import { console } from "std:console";
+import { Date } from "std:date";
+
+const d = new Date(1752307200000.0);
+console.log(d.toISOString());
+console.log(d.year(), d.month(), d.day(), d.hour(), d.weekday());
+
+// Arithmetic gives you a *new* Date. The original is untouched.
+const later = d.plusDays(1.0).plusHours(2.0);
+console.log(later.toISOString(), d.toISOString());
+console.log(d.isBefore(later), later.until(d) < 0.0);
+
+// Parsing is ISO-8601 UTC, and null for anything else — never a guess.
+const parsed = Date.parse("2025-07-12T08:00:00.000Z");
+console.log(parsed == null ? "null" : parsed.toISOString());
+console.log(Date.parse("12/07/2025") == null);
+
+console.log(Date.fromParts(2000, 1, 1, 0, 0, 0).toISOString());
+console.log(Date.now().millis > 0.0);

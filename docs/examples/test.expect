@@ -1,0 +1,3 @@
+ok - arithmetic still works
+not ok - a failing case is reported, not fatal -- this one is meant to fail
+ok - the ones after it still run

@@ -1,0 +1,24 @@
+// The test framework, written in Mersey.
+//
+// A test is a function that throws on failure — nothing more. `test` runs it,
+// catches what it throws, and reports one line per case. `mersey test` runs every
+// `*.test.mersey` and reads those lines.
+//
+// There is no privileged test mode: `mersey run` on the same file does exactly
+// the same thing, which is what keeps the framework honest.
+import { test, assert, refute, assertThrows } from "std:test";
+
+test("arithmetic still works", () => {
+    assert(2 + 2 == 4, "2 + 2 should be 4");
+    refute(2 + 2 == 5, "and should not be 5");
+});
+
+test("a failing case is reported, not fatal", () => {
+    assert(1 == 2, "this one is meant to fail");
+});
+
+test("the ones after it still run", () => {
+    assertThrows(() => {
+        throw new Error("boom");
+    }, "should have thrown");
+});

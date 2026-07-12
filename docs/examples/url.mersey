@@ -1,0 +1,26 @@
+// URLs and query strings — parsing, not fetching.
+//
+// The browser has its own `URL` (import it from `browser:dom`), and that one is a
+// *host* object: it is what you hand to an API that demands one. This one is
+// written in Mersey, is pure computation, and therefore works in *every* host —
+// the standalone engine, a worker, an embedder with no web platform at all.
+//
+// It handles the URLs a program actually writes. It is not a WHATWG-conformant
+// parser and does not pretend to be: no IDNA, no relative-URL resolution.
+import { console } from "std:console";
+import { URL, URLSearchParams } from "std:url";
+
+const u = new URL("https://example.com:8443/a/b?q=mersey&x=1#frag");
+console.log(u.protocol, u.hostname, u.port, u.pathname);
+console.log(u.origin(), u.host(), u.hash);
+
+// The query is parsed for you.
+console.log(u.searchParams.get("q"), u.searchParams.get("missing"));
+
+// A relative URL is not a URL until you say what it is relative *to*.
+try {
+    const bad = new URL("/just/a/path");
+    console.log("unreachable", bad.href);
+} catch (e: Error) {
+    console.log("caught:", e.message);
+}

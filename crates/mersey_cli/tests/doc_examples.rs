@@ -85,12 +85,14 @@ fn every_library_example_runs_and_prints_what_the_docs_say() {
 fn every_library_group_has_an_example() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
     for g in mersey_front::check::api_reference() {
-        let f = dir.join(format!("{}.mersey", g.key));
+        let own = dir.join(format!("{}.mersey", g.key));
+        // A class exported by a `std:` module may lean on that module's example.
+        let inherited = dir.join(format!("{}.mersey", g.parent));
         assert!(
-            f.exists(),
+            own.exists() || (!g.parent.is_empty() && inherited.exists()),
             "`{}` is in the library reference but has no example (expected {})",
             g.title,
-            f.display()
+            own.display()
         );
     }
 }

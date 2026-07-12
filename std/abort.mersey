@@ -1,0 +1,98 @@
+// Cancellation.
+//
+// An `AbortController` holds a signal; whoever is doing the work watches the
+// signal. Calling `abort` sets it and runs whatever was waiting on it. That is
+// the whole idea: the *caller* decides to stop, and the work checks.
+//
+// This is a Mersey object, so it is a token for *your own* code — a loop that
+// checks `signal.aborted`, a callback registered with `onAbort`. It cannot abort
+// the host's `fetch`, which needs the host's own `AbortSignal`: import that one
+// from `browser:dom` when you want the browser to honour it.
+//
+// Aborting is one-way. A controller that could un-abort would be a controller
+// nobody could trust.
+
+export class AbortSignal {
+    private stopped: bool = false;
+    private why: string? = null;
+    private listeners: (() => void)[] = [];
+
+    /// A signal hands the *ability to fire it* to whoever constructs it, and to
+    /// nobody else. There is no public `fire`: holding a signal lets you watch
+    /// it, and holding the controller is what lets you abort it.
+    ///
+    /// This is the same idea as the rest of the language's security model —
+    /// authority is *held*, not ambient (§5.4) — expressed in ordinary Mersey.
+    public constructor(arm: (trigger: (reason: string?) => void) => void) {
+        arm((reason: string?) => {
+            this.fire(reason);
+        });
+    }
+
+    public aborted(): bool {
+        return this.stopped;
+    }
+
+    /// Why it was aborted, or null if it was not (or no reason was given).
+    public reason(): string? {
+        return this.why;
+    }
+
+    /// Run `f` when the signal aborts — or right now, if it already has. A
+    /// listener registered too late still runs, because the alternative is a
+    /// listener that silently never fires.
+    public onAbort(f: () => void): void {
+        if (this.stopped) {
+            f();
+            return;
+        }
+        this.listeners.push(f);
+    }
+
+    /// Throws if the signal has aborted. The one-line way to bail out of a loop.
+    public throwIfAborted(): void {
+        if (this.stopped) {
+            const r = this.why;
+            throw new AbortError(r == null ? "aborted" : r);
+        }
+    }
+
+    private fire(reason: string?): void {
+        if (this.stopped) {
+            return;
+        }
+        this.stopped = true;
+        this.why = reason;
+        for (const f of this.listeners) {
+            f();
+        }
+        this.listeners = [];
+    }
+}
+
+/// Thrown by `AbortSignal.throwIfAborted`.
+export class AbortError extends Error {
+    public constructor(message: string) {
+        super(message);
+    }
+}
+
+export class AbortController {
+    public readonly signal: AbortSignal;
+    private trigger: ((reason: string?) => void)? = null;
+
+    public constructor() {
+        // The signal hands its trigger back here, and here only.
+        this.signal = new AbortSignal((t: (reason: string?) => void) => {
+            this.trigger = t;
+        });
+    }
+
+    /// Abort, once. Calling it again does nothing — the first reason stands.
+    public abort(reason: string?): void {
+        const t = this.trigger;
+        if (t != null) {
+            t(reason);
+        }
+    }
+}

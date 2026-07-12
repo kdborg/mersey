@@ -1,0 +1,83 @@
+// A moment in time, with a calendar attached.
+//
+// A `Date` is a timestamp — milliseconds since the Unix epoch — and the calendar
+// arithmetic to read it. It is UTC and only UTC: a local time zone is a *display*
+// concern, it depends on where the reader is sitting, and a value that means
+// different things in different places is not a value you can store or compare.
+//
+// It is immutable. JS's `Date` can be mutated in place through a dozen setters,
+// which is how a timestamp ends up meaning something different than it did when
+// it was passed in. To change one, make another.
+
+import { time } from "std:time";
+
+export class Date {
+    /// Milliseconds since 1970-01-01T00:00:00Z.
+    public readonly millis: float64 = 0.0;
+
+    public constructor(millis: float64) {
+        this.millis = millis;
+    }
+
+    /// Now, by the wall clock.
+    public static now(): Date {
+        return new Date(time.now());
+    }
+
+    /// From ISO-8601 in UTC (`2026-07-12T15:04:05.000Z`), or null.
+    ///
+    /// Null, not a guess: a date parser that guesses is how "01/02/03" becomes
+    /// three different days in three different places.
+    public static parse(text: string): Date? {
+        const ms = time.parse(text);
+        return ms == null ? null : new Date(ms);
+    }
+
+    /// From calendar parts, in UTC.
+    public static fromParts(year: int32, month: int32, day: int32,
+                            hour: int32, minute: int32, second: int32): Date {
+        return new Date(time.fromParts({
+            year: year, month: month, day: day,
+            hour: hour, minute: minute, second: second, millis: 0, weekday: 0,
+        }));
+    }
+
+    public year(): int32 { return time.parts(this.millis).year; }
+    public month(): int32 { return time.parts(this.millis).month; }     // 1–12
+    public day(): int32 { return time.parts(this.millis).day; }         // 1–31
+    public hour(): int32 { return time.parts(this.millis).hour; }
+    public minute(): int32 { return time.parts(this.millis).minute; }
+    public second(): int32 { return time.parts(this.millis).second; }
+    public milli(): int32 { return time.parts(this.millis).millis; }
+
+    /// 0 = Sunday … 6 = Saturday.
+    public weekday(): int32 { return time.parts(this.millis).weekday; }
+
+    /// ISO-8601 in UTC. It round-trips through `parse`, and sorts as text.
+    public toISOString(): string {
+        return time.format(this.millis);
+    }
+
+    public toString(): string {
+        return this.toISOString();
+    }
+
+    /// A new Date, `ms` milliseconds later. Negative goes backwards.
+    public plusMillis(ms: float64): Date {
+        return new Date(this.millis + ms);
+    }
+
+    public plusSeconds(s: float64): Date { return this.plusMillis(s * 1000.0); }
+    public plusMinutes(m: float64): Date { return this.plusMillis(m * 60000.0); }
+    public plusHours(h: float64): Date { return this.plusMillis(h * 3600000.0); }
+    public plusDays(d: float64): Date { return this.plusMillis(d * 86400000.0); }
+
+    /// Milliseconds from this to `other` — negative if `other` is earlier.
+    public until(other: Date): float64 {
+        return other.millis - this.millis;
+    }
+
+    public isBefore(other: Date): bool { return this.millis < other.millis; }
+    public isAfter(other: Date): bool { return this.millis > other.millis; }
+    public equals(other: Date): bool { return this.millis == other.millis; }
+}

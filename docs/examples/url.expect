@@ -1,0 +1,4 @@
+https: example.com 8443 /a/b
+https://example.com:8443 example.com:8443 #frag
+mersey null
+caught: not an absolute URL: "/just/a/path"

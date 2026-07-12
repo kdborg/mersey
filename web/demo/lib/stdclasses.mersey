@@ -1,0 +1,13 @@
+// URL, Date and AbortController — written in Mersey, so they work in the browser
+// engine as well, with no host bridge involved.
+import { URL } from "std:url";
+import { Date } from "std:date";
+import { AbortController } from "std:abort";
+
+export function describe(): string {
+    const u = new URL("https://example.com:8443/a?q=mersey#f");
+    const d = new Date(1752307200000.0);
+    const c = new AbortController();
+    c.abort("done");
+    return `${u.hostname}:${u.port}${u.pathname} q=${u.searchParams.get("q")} | ${d.toISOString()} | aborted=${c.signal.aborted()}`;
+}
