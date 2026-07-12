@@ -33,7 +33,11 @@ pub struct ParseOutput {
 }
 
 pub fn parse(source: &SourceFile) -> ParseOutput {
-    let LexOutput { tokens, diagnostics, .. } = lexer::lex(source);
+    let LexOutput {
+        tokens,
+        diagnostics,
+        ..
+    } = lexer::lex(source);
     let mut p = Parser {
         text: &source.text,
         tokens,
@@ -43,7 +47,10 @@ pub fn parse(source: &SourceFile) -> ParseOutput {
         depth: 0,
     };
     let module = p.parse_module();
-    ParseOutput { module, diagnostics: p.diags }
+    ParseOutput {
+        module,
+        diagnostics: p.diags,
+    }
 }
 
 struct Parser<'s> {
@@ -169,7 +176,10 @@ impl<'s> Parser<'s> {
 
     fn expected<T>(&mut self, what: &str) -> PResult<T> {
         let found = self.describe();
-        self.err(Code::UnexpectedToken, format!("expected {what}, found {found}"))
+        self.err(
+            Code::UnexpectedToken,
+            format!("expected {what}, found {found}"),
+        )
     }
 
     fn expect_punct(&mut self, p: P) -> PResult<()> {
@@ -192,13 +202,18 @@ impl<'s> Parser<'s> {
     fn expect_ident(&mut self, what: &str) -> PResult<Name> {
         match self.kind() {
             TK::Ident => {
-                let name = Name { text: nfc(self.text_of(0)), pos: self.pos() };
+                let name = Name {
+                    text: nfc(self.text_of(0)),
+                    pos: self.pos(),
+                };
                 self.advance();
                 Ok(name)
             }
             TK::Keyword(k) => {
-                let msg =
-                    format!("`{}` is a reserved word and cannot be used as {what}", k.as_str());
+                let msg = format!(
+                    "`{}` is a reserved word and cannot be used as {what}",
+                    k.as_str()
+                );
                 self.err(Code::ReservedBinding, msg)
             }
             _ => self.expected(what),
@@ -352,7 +367,9 @@ impl<'s> Parser<'s> {
     fn string_text(&self) -> String {
         // Error recovery can leave a 1-byte unterminated token; slice safely.
         let raw = self.text_of(0);
-        raw.get(1..raw.len().saturating_sub(1)).unwrap_or("").to_string()
+        raw.get(1..raw.len().saturating_sub(1))
+            .unwrap_or("")
+            .to_string()
     }
 
     fn expect_string(&mut self, what: &str) -> PResult<String> {
@@ -397,7 +414,10 @@ impl<'s> Parser<'s> {
         self.expect_kw(Kw::From)?;
         let from = self.expect_string("a module specifier")?;
         self.expect_punct(P::Semi)?;
-        Ok(ImportDecl { clause: Some(clause), from })
+        Ok(ImportDecl {
+            clause: Some(clause),
+            from,
+        })
     }
 
     fn parse_export(&mut self) -> PResult<ExportDecl> {
@@ -431,15 +451,24 @@ impl<'s> Parser<'s> {
                 None
             };
             self.expect_punct(P::Semi)?;
-            return Ok(ExportDecl { is_extern: false, kind: ExportKind::Named { specs, from } });
+            return Ok(ExportDecl {
+                is_extern: false,
+                kind: ExportKind::Named { specs, from },
+            });
         }
         if matches!(self.kind(), TK::Keyword(Kw::Let | Kw::Const)) {
             let var = self.parse_var_stmt(true)?;
-            return Ok(ExportDecl { is_extern, kind: ExportKind::Var(var) });
+            return Ok(ExportDecl {
+                is_extern,
+                kind: ExportKind::Var(var),
+            });
         }
         if self.at_decl_start() {
             let decl = self.parse_decl()?;
-            return Ok(ExportDecl { is_extern, kind: ExportKind::Decl(decl) });
+            return Ok(ExportDecl {
+                is_extern,
+                kind: ExportKind::Decl(decl),
+            });
         }
         self.expected("a declaration, a variable statement, or `{` after `export`")
     }
@@ -465,9 +494,20 @@ impl<'s> Parser<'s> {
         let name = self.expect_ident("a function name")?;
         let type_params = self.parse_type_params_opt()?;
         let params = self.parse_param_clause()?;
-        let ret = if self.eat_punct(P::Colon) { Some(self.parse_type()?) } else { None };
+        let ret = if self.eat_punct(P::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         let body = self.parse_block()?;
-        Ok(FnDecl { is_async, name, type_params, params, ret, body })
+        Ok(FnDecl {
+            is_async,
+            name,
+            type_params,
+            params,
+            ret,
+            body,
+        })
     }
 
     fn parse_type_params_opt(&mut self) -> PResult<Vec<TypeParam>> {
@@ -477,7 +517,11 @@ impl<'s> Parser<'s> {
         }
         loop {
             let name = self.expect_ident("a type parameter name")?;
-            let constraint = if self.eat_kw(Kw::Extends) { Some(self.parse_type()?) } else { None };
+            let constraint = if self.eat_kw(Kw::Extends) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
             out.push(TypeParam { name, constraint });
             if !self.eat_punct(P::Comma) {
                 break;
@@ -515,9 +559,23 @@ impl<'s> Parser<'s> {
         }
         let target = self.parse_pattern()?;
         let optional = self.eat_punct(P::Question);
-        let ty = if self.eat_punct(P::Colon) { Some(self.parse_type()?) } else { None };
-        let default = if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
-        Ok(Param { rest: false, target, optional, ty, default })
+        let ty = if self.eat_punct(P::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let default = if self.eat_punct(P::Eq) {
+            Some(self.parse_assignment()?)
+        } else {
+            None
+        };
+        Ok(Param {
+            rest: false,
+            target,
+            optional,
+            ty,
+            default,
+        })
     }
 
     fn parse_class_decl(&mut self) -> PResult<ClassDecl> {
@@ -537,7 +595,11 @@ impl<'s> Parser<'s> {
         self.expect_kw(Kw::Class)?;
         let name = self.expect_ident("a class name")?;
         let type_params = self.parse_type_params_opt()?;
-        let extends = if self.eat_kw(Kw::Extends) { Some(self.parse_type_reference()?) } else { None };
+        let extends = if self.eat_kw(Kw::Extends) {
+            Some(self.parse_type_reference()?)
+        } else {
+            None
+        };
         let mut implements = Vec::new();
         if self.eat_kw(Kw::Implements) {
             loop {
@@ -560,7 +622,15 @@ impl<'s> Parser<'s> {
             }
         }
         self.expect_punct(P::RBrace)?;
-        Ok(ClassDecl { is_abstract, is_final, name, type_params, extends, implements, members })
+        Ok(ClassDecl {
+            is_abstract,
+            is_final,
+            name,
+            type_params,
+            extends,
+            implements,
+            members,
+        })
     }
 
     /// A modifier keyword counts as a modifier only when it is not itself
@@ -603,7 +673,11 @@ impl<'s> Parser<'s> {
         } else {
             None
         };
-        MemberMods { access, is_static, virt }
+        MemberMods {
+            access,
+            is_static,
+            virt,
+        }
     }
 
     fn parse_class_member(&mut self) -> PResult<ClassMember> {
@@ -615,20 +689,24 @@ impl<'s> Parser<'s> {
             && self.kind_at(1) == TK::Punct(P::LParen)
         {
             if mods.is_static || mods.virt.is_some() {
-                return self
-                    .err(Code::UnexpectedToken, "a constructor takes only an access modifier");
+                return self.err(
+                    Code::UnexpectedToken,
+                    "a constructor takes only an access modifier",
+                );
             }
             self.advance();
             let params = self.parse_param_clause()?;
             let body = self.parse_block()?;
-            return Ok(ClassMember::Ctor { access: mods.access, params, body });
+            return Ok(ClassMember::Ctor {
+                access: mods.access,
+                params,
+                body,
+            });
         }
 
         // Accessors: `get name(` / `set name(`; `get(` is a method named
         // `get` (§6.9 note 2).
-        if self.at_kw(Kw::Get)
-            && self.at_member_name(1)
-            && self.kind_at(2) == TK::Punct(P::LParen)
+        if self.at_kw(Kw::Get) && self.at_member_name(1) && self.kind_at(2) == TK::Punct(P::LParen)
         {
             self.advance();
             let name = self.expect_member_name()?;
@@ -637,11 +715,14 @@ impl<'s> Parser<'s> {
             self.expect_punct(P::Colon)?;
             let ret = self.parse_type()?;
             let body = self.parse_block()?;
-            return Ok(ClassMember::Getter { mods, name, ret, body });
+            return Ok(ClassMember::Getter {
+                mods,
+                name,
+                ret,
+                body,
+            });
         }
-        if self.at_kw(Kw::Set)
-            && self.at_member_name(1)
-            && self.kind_at(2) == TK::Punct(P::LParen)
+        if self.at_kw(Kw::Set) && self.at_member_name(1) && self.kind_at(2) == TK::Punct(P::LParen)
         {
             self.advance();
             let name = self.expect_member_name()?;
@@ -649,7 +730,12 @@ impl<'s> Parser<'s> {
             let param = self.parse_param()?;
             self.expect_punct(P::RParen)?;
             let body = self.parse_block()?;
-            return Ok(ClassMember::Setter { mods, name, param, body });
+            return Ok(ClassMember::Setter {
+                mods,
+                name,
+                param,
+                body,
+            });
         }
 
         let is_async = self.is_modifier_here(Kw::Async);
@@ -670,17 +756,39 @@ impl<'s> Parser<'s> {
             let params = self.parse_param_clause()?;
             self.expect_punct(P::Colon)?;
             let ret = self.parse_type()?;
-            let body = if self.eat_punct(P::Semi) { None } else { Some(self.parse_block()?) };
-            return Ok(ClassMember::Method { mods, is_async, name, type_params, params, ret, body });
+            let body = if self.eat_punct(P::Semi) {
+                None
+            } else {
+                Some(self.parse_block()?)
+            };
+            return Ok(ClassMember::Method {
+                mods,
+                is_async,
+                name,
+                type_params,
+                params,
+                ret,
+                body,
+            });
         }
         if is_async {
             return self.err(Code::UnexpectedToken, "`async` applies only to methods");
         }
         self.expect_punct(P::Colon)?;
         let ty = self.parse_type()?;
-        let init = if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
+        let init = if self.eat_punct(P::Eq) {
+            Some(self.parse_assignment()?)
+        } else {
+            None
+        };
         self.expect_punct(P::Semi)?;
-        Ok(ClassMember::Field { mods, readonly, name, ty, init })
+        Ok(ClassMember::Field {
+            mods,
+            readonly,
+            name,
+            ty,
+            init,
+        })
     }
 
     fn parse_interface_decl(&mut self) -> PResult<InterfaceDecl> {
@@ -709,19 +817,34 @@ impl<'s> Parser<'s> {
                 let params = self.parse_param_clause()?;
                 self.expect_punct(P::Colon)?;
                 let ret = self.parse_type()?;
-                members.push(InterfaceMember::Method { name, type_params, params, ret });
+                members.push(InterfaceMember::Method {
+                    name,
+                    type_params,
+                    params,
+                    ret,
+                });
             } else {
                 let optional = self.eat_punct(P::Question);
                 self.expect_punct(P::Colon)?;
                 let ty = self.parse_type()?;
-                members.push(InterfaceMember::Prop { readonly, name, optional, ty });
+                members.push(InterfaceMember::Prop {
+                    readonly,
+                    name,
+                    optional,
+                    ty,
+                });
             }
             if !self.eat_punct(P::Semi) && !self.eat_punct(P::Comma) && !self.at_punct(P::RBrace) {
                 return self.expected("`;` or `,` after an interface member");
             }
         }
         self.expect_punct(P::RBrace)?;
-        Ok(InterfaceDecl { name, type_params, extends, members })
+        Ok(InterfaceDecl {
+            name,
+            type_params,
+            extends,
+            members,
+        })
     }
 
     fn parse_enum_decl(&mut self) -> PResult<EnumDecl> {
@@ -732,7 +855,10 @@ impl<'s> Parser<'s> {
                 TK::Keyword(k) => {
                     let pos = self.pos();
                     self.advance();
-                    Some(Name { text: k.as_str().to_string(), pos })
+                    Some(Name {
+                        text: k.as_str().to_string(),
+                        pos,
+                    })
                 }
                 _ => return self.expected("an integer type"),
             }
@@ -743,14 +869,22 @@ impl<'s> Parser<'s> {
         let mut members = Vec::new();
         while !self.at_punct(P::RBrace) {
             let mname = self.expect_ident("an enum member name")?;
-            let value = if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
+            let value = if self.eat_punct(P::Eq) {
+                Some(self.parse_assignment()?)
+            } else {
+                None
+            };
             members.push((mname, value));
             if !self.eat_punct(P::Comma) {
                 break;
             }
         }
         self.expect_punct(P::RBrace)?;
-        Ok(EnumDecl { name, backing, members })
+        Ok(EnumDecl {
+            name,
+            backing,
+            members,
+        })
     }
 
     fn parse_type_alias(&mut self) -> PResult<TypeAliasDecl> {
@@ -760,7 +894,11 @@ impl<'s> Parser<'s> {
         self.expect_punct(P::Eq)?;
         let ty = self.parse_type()?;
         self.expect_punct(P::Semi)?;
-        Ok(TypeAliasDecl { name, type_params, ty })
+        Ok(TypeAliasDecl {
+            name,
+            type_params,
+            ty,
+        })
     }
 
     // ---- statements -----------------------------------------------------------
@@ -828,7 +966,11 @@ impl<'s> Parser<'s> {
             TK::Keyword(Kw::Return) => {
                 let pos = self.pos();
                 self.advance();
-                let value = if self.at_punct(P::Semi) { None } else { Some(self.parse_expr()?) };
+                let value = if self.at_punct(P::Semi) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
                 self.expect_punct(P::Semi)?;
                 Ok(Stmt::Return { value, pos })
             }
@@ -849,21 +991,36 @@ impl<'s> Parser<'s> {
                 Ok(Stmt::Empty)
             }
             TK::Ident if self.kind_at(1) == TK::Punct(P::Colon) => {
-                let label = Name { text: nfc(self.text_of(0)), pos: self.pos() };
+                let label = Name {
+                    text: nfc(self.text_of(0)),
+                    pos: self.pos(),
+                };
                 self.advance();
                 self.advance();
                 let body = self.parse_stmt()?;
                 if !matches!(
                     body,
-                    Stmt::While { .. } | Stmt::DoWhile { .. } | Stmt::For { .. } | Stmt::ForOf { .. }
+                    Stmt::While { .. }
+                        | Stmt::DoWhile { .. }
+                        | Stmt::For { .. }
+                        | Stmt::ForOf { .. }
                 ) {
-                    self.report(Code::InvalidLabel, "a label must be attached to a loop (§6.5)");
+                    self.report(
+                        Code::InvalidLabel,
+                        "a label must be attached to a loop (§6.5)",
+                    );
                 }
-                Ok(Stmt::Labeled { label, body: Box::new(body) })
+                Ok(Stmt::Labeled {
+                    label,
+                    body: Box::new(body),
+                })
             }
             TK::Ident
                 if self.text_of(0) == "var"
-                    && matches!(self.kind_at(1), TK::Ident | TK::Punct(P::LBracket | P::LBrace)) =>
+                    && matches!(
+                        self.kind_at(1),
+                        TK::Ident | TK::Punct(P::LBracket | P::LBrace)
+                    ) =>
             {
                 self.report(
                     Code::UnexpectedToken,
@@ -876,7 +1033,10 @@ impl<'s> Parser<'s> {
                     bindings.push(self.parse_binding()?);
                 }
                 self.expect_punct(P::Semi)?;
-                Ok(Stmt::Var(VarStmt { kind: VarKind::Let, bindings }))
+                Ok(Stmt::Var(VarStmt {
+                    kind: VarKind::Let,
+                    bindings,
+                }))
             }
             TK::Ident
                 if self.text_of(0) == "delete"
@@ -901,7 +1061,10 @@ impl<'s> Parser<'s> {
 
     fn opt_label(&mut self) -> PResult<Option<Name>> {
         if self.kind() == TK::Ident {
-            let name = Name { text: nfc(self.text_of(0)), pos: self.pos() };
+            let name = Name {
+                text: nfc(self.text_of(0)),
+                pos: self.pos(),
+            };
             self.advance();
             Ok(Some(name))
         } else {
@@ -915,7 +1078,11 @@ impl<'s> Parser<'s> {
         let cond = self.parse_expr()?;
         self.expect_punct(P::RParen)?;
         let then = Box::new(self.parse_stmt()?);
-        let els = if self.eat_kw(Kw::Else) { Some(Box::new(self.parse_stmt()?)) } else { None };
+        let els = if self.eat_kw(Kw::Else) {
+            Some(Box::new(self.parse_stmt()?))
+        } else {
+            None
+        };
         Ok(Stmt::If { cond, then, els })
     }
 
@@ -941,8 +1108,16 @@ impl<'s> Parser<'s> {
 
     fn parse_binding(&mut self) -> PResult<Binding> {
         let target = self.parse_pattern()?;
-        let ty = if self.eat_punct(P::Colon) { Some(self.parse_type()?) } else { None };
-        let init = if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
+        let ty = if self.eat_punct(P::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let init = if self.eat_punct(P::Eq) {
+            Some(self.parse_assignment()?)
+        } else {
+            None
+        };
         Ok(Binding { target, ty, init })
     }
 
@@ -958,8 +1133,11 @@ impl<'s> Parser<'s> {
                         break;
                     }
                     let target = self.parse_pattern()?;
-                    let default =
-                        if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
+                    let default = if self.eat_punct(P::Eq) {
+                        Some(self.parse_assignment()?)
+                    } else {
+                        None
+                    };
                     elems.push(PatternElem { target, default });
                     if !self.eat_punct(P::Comma) {
                         break;
@@ -974,7 +1152,10 @@ impl<'s> Parser<'s> {
                 while !self.at_punct(P::RBrace) {
                     let pos = self.pos();
                     let was_kw = matches!(self.kind(), TK::Keyword(_));
-                    let name = Name { text: self.expect_member_name()?, pos };
+                    let name = Name {
+                        text: self.expect_member_name()?,
+                        pos,
+                    };
                     let target = if self.eat_punct(P::Colon) {
                         Some(self.parse_pattern()?)
                     } else {
@@ -990,9 +1171,16 @@ impl<'s> Parser<'s> {
                         }
                         None
                     };
-                    let default =
-                        if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
-                    fields.push(PatternField { name, target, default });
+                    let default = if self.eat_punct(P::Eq) {
+                        Some(self.parse_assignment()?)
+                    } else {
+                        None
+                    };
+                    fields.push(PatternField {
+                        name,
+                        target,
+                        default,
+                    });
                     if !self.eat_punct(P::Comma) {
                         break;
                     }
@@ -1018,12 +1206,23 @@ impl<'s> Parser<'s> {
                 VarKind::Const
             };
             let target = self.parse_pattern()?;
-            let ty = if self.eat_punct(P::Colon) { Some(self.parse_type()?) } else { None };
+            let ty = if self.eat_punct(P::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
             if self.eat_kw(Kw::Of) {
                 let iter = self.parse_assignment()?;
                 self.expect_punct(P::RParen)?;
                 let body = Box::new(self.parse_stmt()?);
-                return Ok(Stmt::ForOf { is_await, kind, target, ty, iter, body });
+                return Ok(Stmt::ForOf {
+                    is_await,
+                    kind,
+                    target,
+                    ty,
+                    iter,
+                    body,
+                });
             }
             if self.at_kw(Kw::In) {
                 self.report(
@@ -1043,8 +1242,16 @@ impl<'s> Parser<'s> {
             }
             // Classic for with declaration init: finish this binding, then
             // any further ones.
-            let init0 = if self.eat_punct(P::Eq) { Some(self.parse_assignment()?) } else { None };
-            let mut bindings = vec![Binding { target, ty, init: init0 }];
+            let init0 = if self.eat_punct(P::Eq) {
+                Some(self.parse_assignment()?)
+            } else {
+                None
+            };
+            let mut bindings = vec![Binding {
+                target,
+                ty,
+                init: init0,
+            }];
             while self.eat_punct(P::Comma) {
                 bindings.push(self.parse_binding()?);
             }
@@ -1063,12 +1270,25 @@ impl<'s> Parser<'s> {
 
     fn parse_for_tail(&mut self, init: Option<ForInit>) -> PResult<Stmt> {
         self.expect_punct(P::Semi)?;
-        let cond = if self.at_punct(P::Semi) { None } else { Some(self.parse_expr()?) };
+        let cond = if self.at_punct(P::Semi) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
         self.expect_punct(P::Semi)?;
-        let step = if self.at_punct(P::RParen) { Vec::new() } else { self.parse_expr_list()? };
+        let step = if self.at_punct(P::RParen) {
+            Vec::new()
+        } else {
+            self.parse_expr_list()?
+        };
         self.expect_punct(P::RParen)?;
         let body = Box::new(self.parse_stmt()?);
-        Ok(Stmt::For { init, cond, step, body })
+        Ok(Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        })
     }
 
     fn parse_expr_list(&mut self) -> PResult<Vec<Expr>> {
@@ -1134,13 +1354,25 @@ impl<'s> Parser<'s> {
             let ty = self.parse_type()?;
             self.expect_punct(P::RParen)?;
             let cblock = self.parse_block()?;
-            catches.push(Catch { name, ty, block: cblock });
+            catches.push(Catch {
+                name,
+                ty,
+                block: cblock,
+            });
         }
-        let finally = if self.eat_kw(Kw::Finally) { Some(self.parse_block()?) } else { None };
+        let finally = if self.eat_kw(Kw::Finally) {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
         if catches.is_empty() && finally.is_none() {
             return self.expected("`catch` or `finally` after `try` block");
         }
-        Ok(Stmt::Try { block, catches, finally })
+        Ok(Stmt::Try {
+            block,
+            catches,
+            finally,
+        })
     }
 
     // ---- expressions -----------------------------------------------------------
@@ -1201,7 +1433,10 @@ impl<'s> Parser<'s> {
         if let Some(op) = self.assign_op() {
             if !matches!(
                 e,
-                Expr::Ident(_) | Expr::Member { .. } | Expr::Index { .. } | Expr::SuperMember { .. }
+                Expr::Ident(_)
+                    | Expr::Member { .. }
+                    | Expr::Index { .. }
+                    | Expr::SuperMember { .. }
             ) {
                 self.report(
                     Code::InvalidAssignmentTarget,
@@ -1210,7 +1445,11 @@ impl<'s> Parser<'s> {
             }
             self.advance();
             let value = self.parse_assignment()?;
-            return Ok(Expr::Assign { op, target: Box::new(e), value: Box::new(value) });
+            return Ok(Expr::Assign {
+                op,
+                target: Box::new(e),
+                value: Box::new(value),
+            });
         }
         Ok(e)
     }
@@ -1253,7 +1492,11 @@ impl<'s> Parser<'s> {
     /// speculatively for plain `(`, directly after `async`.
     fn parse_arrow_header(&mut self) -> PResult<(Vec<Param>, Option<Type>)> {
         let params = self.parse_param_clause()?;
-        let ret = if self.eat_punct(P::Colon) { Some(self.parse_type()?) } else { None };
+        let ret = if self.eat_punct(P::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         self.expect_punct(P::Arrow)?;
         Ok((params, ret))
     }
@@ -1269,7 +1512,12 @@ impl<'s> Parser<'s> {
         } else {
             ArrowBody::Expr(Box::new(self.parse_assignment()?))
         };
-        Ok(Expr::Arrow { is_async, params, ret, body })
+        Ok(Expr::Arrow {
+            is_async,
+            params,
+            ret,
+            body,
+        })
     }
 
     fn parse_conditional(&mut self) -> PResult<Expr> {
@@ -1290,7 +1538,15 @@ impl<'s> Parser<'s> {
     fn parse_coalesce(&mut self) -> PResult<Expr> {
         let mut e = self.parse_logical_or()?;
         while self.at_punct(P::QuestionQuestion) {
-            let bad = |x: &Expr| matches!(x, Expr::Binary { op: BinOp::Or | BinOp::And, .. });
+            let bad = |x: &Expr| {
+                matches!(
+                    x,
+                    Expr::Binary {
+                        op: BinOp::Or | BinOp::And,
+                        ..
+                    }
+                )
+            };
             if bad(&e) {
                 self.report(
                     Code::MixedCoalesce,
@@ -1305,7 +1561,11 @@ impl<'s> Parser<'s> {
                     "`??` cannot be mixed with `&&`/`||` without parentheses (§6.4)",
                 );
             }
-            e = Expr::Binary { op: BinOp::Coalesce, l: Box::new(e), r: Box::new(r) };
+            e = Expr::Binary {
+                op: BinOp::Coalesce,
+                l: Box::new(e),
+                r: Box::new(r),
+            };
         }
         Ok(e)
     }
@@ -1333,7 +1593,11 @@ impl<'s> Parser<'s> {
             };
             self.advance();
             let r = self.parse_shift()?;
-            e = Expr::Binary { op, l: Box::new(e), r: Box::new(r) };
+            e = Expr::Binary {
+                op,
+                l: Box::new(e),
+                r: Box::new(r),
+            };
         }
         Ok(e)
     }
@@ -1341,7 +1605,10 @@ impl<'s> Parser<'s> {
     fn parse_exponent(&mut self) -> PResult<Expr> {
         let base = self.parse_cast()?;
         if self.at_punct(P::StarStar) {
-            if matches!(&base, Expr::Unary { .. } | Expr::Update { prefix: true, .. }) {
+            if matches!(
+                &base,
+                Expr::Unary { .. } | Expr::Update { prefix: true, .. }
+            ) {
                 self.report(
                     Code::AmbiguousExponent,
                     "unary operand of `**` must be parenthesized (§6.4)",
@@ -1349,7 +1616,11 @@ impl<'s> Parser<'s> {
             }
             self.advance();
             let r = self.parse_exponent()?; // right-associative
-            return Ok(Expr::Binary { op: BinOp::Pow, l: Box::new(base), r: Box::new(r) });
+            return Ok(Expr::Binary {
+                op: BinOp::Pow,
+                l: Box::new(base),
+                r: Box::new(r),
+            });
         }
         Ok(base)
     }
@@ -1359,7 +1630,11 @@ impl<'s> Parser<'s> {
         while self.eat_kw(Kw::As) {
             let wrapping = self.eat_kw(Kw::Wrapping);
             let ty = self.parse_type()?;
-            e = Expr::Cast { expr: Box::new(e), wrapping, ty };
+            e = Expr::Cast {
+                expr: Box::new(e),
+                wrapping,
+                ty,
+            };
         }
         Ok(e)
     }
@@ -1377,19 +1652,31 @@ impl<'s> Parser<'s> {
             let pos = self.pos();
             self.advance();
             let e = self.parse_unary()?;
-            return Ok(Expr::Unary { op, pos, expr: Box::new(e) });
+            return Ok(Expr::Unary {
+                op,
+                pos,
+                expr: Box::new(e),
+            });
         }
         if matches!(self.kind(), TK::Punct(P::PlusPlus | P::MinusMinus)) {
             let inc = self.at_punct(P::PlusPlus);
             self.advance();
             let e = self.parse_unary()?;
-            return Ok(Expr::Update { prefix: true, inc, expr: Box::new(e) });
+            return Ok(Expr::Update {
+                prefix: true,
+                inc,
+                expr: Box::new(e),
+            });
         }
         let e = self.parse_lhs()?;
         if matches!(self.kind(), TK::Punct(P::PlusPlus | P::MinusMinus)) {
             let inc = self.at_punct(P::PlusPlus);
             self.advance();
-            return Ok(Expr::Update { prefix: false, inc, expr: Box::new(e) });
+            return Ok(Expr::Update {
+                prefix: false,
+                inc,
+                expr: Box::new(e),
+            });
         }
         Ok(e)
     }
@@ -1401,7 +1688,11 @@ impl<'s> Parser<'s> {
                 TK::Punct(P::Dot) => {
                     self.advance();
                     let name = self.expect_member_name()?;
-                    e = Expr::Member { obj: Box::new(e), name, optional: false };
+                    e = Expr::Member {
+                        obj: Box::new(e),
+                        name,
+                        optional: false,
+                    };
                 }
                 TK::Punct(P::QuestionDot) => {
                     self.advance();
@@ -1427,7 +1718,11 @@ impl<'s> Parser<'s> {
                         }
                         _ => {
                             let name = self.expect_member_name()?;
-                            e = Expr::Member { obj: Box::new(e), name, optional: true };
+                            e = Expr::Member {
+                                obj: Box::new(e),
+                                name,
+                                optional: true,
+                            };
                         }
                     }
                 }
@@ -1435,7 +1730,11 @@ impl<'s> Parser<'s> {
                     self.advance();
                     let index = self.parse_expr()?;
                     self.expect_punct(P::RBracket)?;
-                    e = Expr::Index { obj: Box::new(e), index: Box::new(index), optional: false };
+                    e = Expr::Index {
+                        obj: Box::new(e),
+                        index: Box::new(index),
+                        optional: false,
+                    };
                 }
                 TK::Punct(P::LParen) => {
                     let args = self.parse_args()?;
@@ -1454,7 +1753,12 @@ impl<'s> Parser<'s> {
                     }
                     self.expect_gt()?;
                     let args = self.parse_args()?;
-                    e = Expr::Call { callee: Box::new(e), type_args, args, optional: false };
+                    e = Expr::Call {
+                        callee: Box::new(e),
+                        type_args,
+                        args,
+                        optional: false,
+                    };
                 }
                 _ => break,
             }
@@ -1537,7 +1841,11 @@ impl<'s> Parser<'s> {
 
     fn parse_primary(&mut self) -> PResult<Expr> {
         let pos = self.pos();
-        let lit = move |k: LitKind, text: &str| Expr::Lit { kind: k, text: text.to_string(), pos };
+        let lit = move |k: LitKind, text: &str| Expr::Lit {
+            kind: k,
+            text: text.to_string(),
+            pos,
+        };
         match self.kind() {
             TK::Int { .. } => {
                 let e = lit(LitKind::Int, self.text_of(0));
@@ -1576,7 +1884,11 @@ impl<'s> Parser<'s> {
             }
             TK::Keyword(Kw::Null) => {
                 self.advance();
-                Ok(Expr::Lit { kind: LitKind::Null, text: "null".to_string(), pos })
+                Ok(Expr::Lit {
+                    kind: LitKind::Null,
+                    text: "null".to_string(),
+                    pos,
+                })
             }
             TK::Keyword(Kw::This) => {
                 let pos = self.pos();
@@ -1610,7 +1922,10 @@ impl<'s> Parser<'s> {
                 Ok(Expr::ImportCall(Box::new(e)))
             }
             TK::Ident => {
-                let e = Expr::Ident(Name { text: nfc(self.text_of(0)), pos: self.pos() });
+                let e = Expr::Ident(Name {
+                    text: nfc(self.text_of(0)),
+                    pos: self.pos(),
+                });
                 self.advance();
                 Ok(e)
             }
@@ -1644,7 +1959,10 @@ impl<'s> Parser<'s> {
                     } else {
                         let pos = self.pos();
                         let was_kw = matches!(self.kind(), TK::Keyword(_));
-                        let name = Name { text: self.expect_member_name()?, pos };
+                        let name = Name {
+                            text: self.expect_member_name()?,
+                            pos,
+                        };
                         let value = if self.eat_punct(P::Colon) {
                             Some(self.parse_assignment()?)
                         } else {
@@ -1697,7 +2015,9 @@ impl<'s> Parser<'s> {
         };
         // Unterminated templates from error recovery may be shorter than
         // their delimiters; slice safely.
-        raw.get(a..raw.len().saturating_sub(b)).unwrap_or("").to_string()
+        raw.get(a..raw.len().saturating_sub(b))
+            .unwrap_or("")
+            .to_string()
     }
 
     fn parse_template(&mut self) -> PResult<Expr> {
@@ -1796,7 +2116,11 @@ impl<'s> Parser<'s> {
             TK::Keyword(k) if Self::is_predefined_type_kw(k) => {
                 let pos = self.pos();
                 self.advance();
-                Ok(Type::Named { name: k.as_str().to_string(), pos, args: Vec::new() })
+                Ok(Type::Named {
+                    name: k.as_str().to_string(),
+                    pos,
+                    args: Vec::new(),
+                })
             }
             TK::Ident => self.parse_type_reference(),
             TK::Punct(P::LBracket) => {
@@ -1824,7 +2148,12 @@ impl<'s> Parser<'s> {
                     let optional = self.eat_punct(P::Question);
                     self.expect_punct(P::Colon)?;
                     let ty = self.parse_type()?;
-                    members.push(RecordTypeMember { readonly, name, optional, ty });
+                    members.push(RecordTypeMember {
+                        readonly,
+                        name,
+                        optional,
+                        ty,
+                    });
                     if !self.eat_punct(P::Comma)
                         && !self.eat_punct(P::Semi)
                         && !self.at_punct(P::RBrace)
@@ -1859,7 +2188,12 @@ impl<'s> Parser<'s> {
             let optional = self.eat_punct(P::Question);
             self.expect_punct(P::Colon)?;
             let ty = self.parse_type()?;
-            params.push(FnTypeParam { rest, name: name.text, optional, ty });
+            params.push(FnTypeParam {
+                rest,
+                name: name.text,
+                optional,
+                ty,
+            });
             if !self.eat_punct(P::Comma) {
                 break;
             }
@@ -1867,7 +2201,11 @@ impl<'s> Parser<'s> {
         self.expect_punct(P::RParen)?;
         self.expect_punct(P::Arrow)?;
         let ret = self.parse_type()?;
-        Ok(Type::Function { type_params, params, ret: Box::new(ret) })
+        Ok(Type::Function {
+            type_params,
+            params,
+            ret: Box::new(ret),
+        })
     }
 
     /// TypeReference ::= QualifiedName TypeArguments? (§6.3). Also the type

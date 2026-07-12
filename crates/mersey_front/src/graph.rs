@@ -42,7 +42,12 @@ pub fn resolve_module(referrer: &str, spec: &str) -> String {
 /// Resolve `spec` against the directory of `referrer` (POSIX-style, as URLs
 /// and file paths both behave here).
 pub fn resolve(referrer: &str, spec: &str) -> String {
-    let base: Vec<&str> = referrer.rsplit_once('/').map(|(d, _)| d).unwrap_or("").split('/').collect();
+    let base: Vec<&str> = referrer
+        .rsplit_once('/')
+        .map(|(d, _)| d)
+        .unwrap_or("")
+        .split('/')
+        .collect();
     let mut parts: Vec<String> = base
         .into_iter()
         .filter(|p| !p.is_empty())

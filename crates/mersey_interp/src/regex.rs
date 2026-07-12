@@ -18,14 +18,25 @@ enum Node {
     Empty,
     Char(char),
     Any,
-    Class { negated: bool, items: Vec<ClassItem> },
+    Class {
+        negated: bool,
+        items: Vec<ClassItem>,
+    },
     Start,
     End,
     WordBoundary(bool),
-    Group { index: Option<usize>, inner: Box<Node> },
+    Group {
+        index: Option<usize>,
+        inner: Box<Node>,
+    },
     Concat(Vec<Node>),
     Alt(Vec<Node>),
-    Repeat { inner: Box<Node>, min: u32, max: u32, greedy: bool },
+    Repeat {
+        inner: Box<Node>,
+        min: u32,
+        max: u32,
+        greedy: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -68,16 +79,29 @@ impl Regex {
         if p.i != p.chars.len() {
             return Err(format!("unexpected `{}` in pattern", p.chars[p.i]));
         }
-        Ok(Regex { root, group_count: p.groups, ignore_case })
+        Ok(Regex {
+            root,
+            group_count: p.groups,
+            ignore_case,
+        })
     }
 
     /// First match at or after `from` (a code-point index).
     pub fn find_at(&self, text: &[char], from: usize) -> Option<Match> {
         for start in from..=text.len() {
             let mut caps: Vec<Option<(usize, usize)>> = vec![None; self.group_count];
-            let mut ctx = Ctx { text, caps: &mut caps, ignore_case: self.ignore_case, steps: 0 };
+            let mut ctx = Ctx {
+                text,
+                caps: &mut caps,
+                ignore_case: self.ignore_case,
+                steps: 0,
+            };
             if let Some(end) = match_node(&self.root, &mut ctx, start, &mut |_, pos| Some(pos)) {
-                return Some(Match { start, end, groups: caps });
+                return Some(Match {
+                    start,
+                    end,
+                    groups: caps,
+                });
             }
         }
         None
@@ -114,7 +138,11 @@ impl Parser {
         while self.eat('|') {
             arms.push(self.concat()?);
         }
-        Ok(if arms.len() == 1 { arms.pop().expect("one") } else { Node::Alt(arms) })
+        Ok(if arms.len() == 1 {
+            arms.pop().expect("one")
+        } else {
+            Node::Alt(arms)
+        })
     }
 
     fn concat(&mut self) -> Result<Node, String> {
@@ -162,7 +190,12 @@ impl Parser {
             _ => return Ok(atom),
         };
         let greedy = !self.eat('?');
-        Ok(Node::Repeat { inner: Box::new(atom), min, max, greedy })
+        Ok(Node::Repeat {
+            inner: Box::new(atom),
+            min,
+            max,
+            greedy,
+        })
     }
 
     fn bounds(&mut self) -> Option<(u32, u32)> {
@@ -219,7 +252,10 @@ impl Parser {
                 if !self.eat(')') {
                     return Err("unclosed group".into());
                 }
-                Node::Group { index, inner: Box::new(inner) }
+                Node::Group {
+                    index,
+                    inner: Box::new(inner),
+                }
             }
             '[' => self.class()?,
             '\\' => self.escape()?,
@@ -233,12 +269,30 @@ impl Parser {
         let c = self.peek().ok_or("trailing backslash")?;
         self.i += 1;
         Ok(match c {
-            'd' => Node::Class { negated: false, items: vec![ClassItem::Digit(true)] },
-            'D' => Node::Class { negated: false, items: vec![ClassItem::Digit(false)] },
-            'w' => Node::Class { negated: false, items: vec![ClassItem::Word(true)] },
-            'W' => Node::Class { negated: false, items: vec![ClassItem::Word(false)] },
-            's' => Node::Class { negated: false, items: vec![ClassItem::Space(true)] },
-            'S' => Node::Class { negated: false, items: vec![ClassItem::Space(false)] },
+            'd' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Digit(true)],
+            },
+            'D' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Digit(false)],
+            },
+            'w' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Word(true)],
+            },
+            'W' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Word(false)],
+            },
+            's' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Space(true)],
+            },
+            'S' => Node::Class {
+                negated: false,
+                items: vec![ClassItem::Space(false)],
+            },
             'b' => Node::WordBoundary(true),
             'B' => Node::WordBoundary(false),
             'n' => Node::Char('\n'),
@@ -299,9 +353,7 @@ impl Parser {
                 c
             };
             // A range?
-            if self.peek() == Some('-')
-                && self.chars.get(self.i + 1).is_some_and(|c| *c != ']')
-            {
+            if self.peek() == Some('-') && self.chars.get(self.i + 1).is_some_and(|c| *c != ']') {
                 self.i += 1;
                 let hi = self.peek().ok_or("unclosed character class")?;
                 self.i += 1;
@@ -334,9 +386,7 @@ struct Ctx<'a> {
 const MAX_STEPS: u32 = 2_000_000;
 
 fn eq(a: char, b: char, ignore_case: bool) -> bool {
-    a == b
-        || (ignore_case
-            && a.to_lowercase().eq(b.to_lowercase()))
+    a == b || (ignore_case && a.to_lowercase().eq(b.to_lowercase()))
 }
 
 fn is_word(c: char) -> bool {
@@ -348,8 +398,7 @@ fn class_matches(negated: bool, items: &[ClassItem], c: char, ignore_case: bool)
         ClassItem::Ch(x) => eq(*x, c, ignore_case),
         ClassItem::Range(lo, hi) => {
             (*lo..=*hi).contains(&c)
-                || (ignore_case
-                    && c.to_lowercase().any(|lc| (*lo..=*hi).contains(&lc))
+                || (ignore_case && c.to_lowercase().any(|lc| (*lo..=*hi).contains(&lc))
                     || ignore_case && c.to_uppercase().any(|uc| (*lo..=*hi).contains(&uc)))
         }
         ClassItem::Digit(want) => c.is_ascii_digit() == *want,
@@ -444,9 +493,12 @@ fn match_node(node: &Node, ctx: &mut Ctx, pos: usize, k: &mut Cont) -> Option<us
             }
             None
         }
-        Node::Repeat { inner, min, max, greedy } => {
-            match_repeat(inner, *min, *max, *greedy, ctx, pos, 0, k)
-        }
+        Node::Repeat {
+            inner,
+            min,
+            max,
+            greedy,
+        } => match_repeat(inner, *min, *max, *greedy, ctx, pos, 0, k),
     }
 }
 
@@ -545,7 +597,10 @@ mod tests {
         let g: Vec<String> = hit
             .groups
             .iter()
-            .map(|g| g.map(|(a, b)| chars[a..b].iter().collect()).unwrap_or_default())
+            .map(|g| {
+                g.map(|(a, b)| chars[a..b].iter().collect())
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(g, vec!["ada".to_string(), "example".to_string()]);
     }

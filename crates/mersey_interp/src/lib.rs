@@ -25,11 +25,12 @@ use mersey_front::ast::*;
 
 pub mod bignum;
 pub mod gc;
+use gc::GcCell;
 pub mod regex;
 pub mod vm;
 pub mod webjson;
-use webjson::Json;
 use bignum::{BigDec, BigInt, RoundingMode};
+use webjson::Json;
 
 // ---- host interface ---------------------------------------------------------
 
@@ -152,16 +153,16 @@ pub enum Value {
     Str(Str),
     BigIntV(Rc<BigInt>),
     BigDecV(Rc<BigDec>),
-    Array(Rc<RefCell<Vec<Value>>>),
+    Array(Rc<GcCell<Vec<Value>>>),
     /// Insertion-ordered map; key equality is `values_equal` (O(n) MVP).
-    MapV(Rc<RefCell<Vec<(Value, Value)>>>),
-    SetV(Rc<RefCell<Vec<Value>>>),
+    MapV(Rc<GcCell<Vec<(Value, Value)>>>),
+    SetV(Rc<GcCell<Vec<Value>>>),
     /// Insertion-ordered fields: a record's field order is part of its
     /// observable behaviour (it survives `JSON.stringify` across the bridge).
-    Record(Rc<RefCell<Vec<(String, Value)>>>),
+    Record(Rc<GcCell<Vec<(String, Value)>>>),
     Closure(Rc<Closure>),
     Class(Rc<ClassDef>),
-    Instance(Rc<RefCell<Instance>>),
+    Instance(Rc<GcCell<Instance>>),
     /// `console`, `document`, enum objects: named bags of values.
     Namespace(Rc<Namespace>),
     /// A DOM element handle (Stage A: identified by element id).
@@ -175,26 +176,26 @@ pub enum Value {
     /// A compiled regular expression.
     RegexV(Rc<regex::Regex>),
     /// A generator: a coroutine that produces values (`Iter<T>`).
-    IterV(Rc<RefCell<GenState>>),
+    IterV(Rc<GcCell<GenState>>),
     /// A Mersey promise (§ async/await).
-    PromiseV(Rc<RefCell<PromiseState>>),
+    PromiseV(Rc<GcCell<PromiseState>>),
     /// A callable that settles a promise; handed to host `.then(…)` so JS
     /// promises can resume Mersey coroutines.
-    Resolver(Rc<RefCell<PromiseState>>, bool),
+    Resolver(Rc<GcCell<PromiseState>>, bool),
     /// Internal reaction used by `Promise.all` (slot index, is_reject).
     AllSlot(u32, bool),
     /// Executor handed to `new Promise(…)` on the host side: receives the
     /// host's (resolve, reject) and wires them to a Mersey promise, so a
     /// Mersey promise can cross the bridge as a *real* JS promise.
-    PromiseExec(Rc<RefCell<PromiseState>>),
+    PromiseExec(Rc<GcCell<PromiseState>>),
     Native(&'static str),
 }
 
 /// One input slot of a pending `Promise.all`.
 struct AllCell {
-    results: Rc<RefCell<Vec<Value>>>,
+    results: Rc<GcCell<Vec<Value>>>,
     remaining: Rc<RefCell<usize>>,
-    out: Rc<RefCell<PromiseState>>,
+    out: Rc<GcCell<PromiseState>>,
     idx: usize,
 }
 
@@ -211,7 +212,7 @@ pub struct PromiseState {
     /// Coroutines awaiting this promise.
     waiters: Vec<Coro>,
     /// `then`/`catch` reactions: (on_fulfilled, on_rejected, downstream).
-    reactions: Vec<(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>)>,
+    reactions: Vec<(Option<Value>, Option<Value>, Rc<GcCell<PromiseState>>)>,
 }
 
 impl PromiseState {
@@ -219,19 +220,27 @@ impl PromiseState {
         &self.waiters
     }
     #[allow(clippy::type_complexity)]
-    pub(crate) fn reactions(
-        &self,
-    ) -> &[(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>)] {
+    pub(crate) fn reactions(&self) -> &[(Option<Value>, Option<Value>, Rc<GcCell<PromiseState>>)] {
         &self.reactions
     }
 
-    fn pending() -> Rc<RefCell<PromiseState>> {
-        Rc::new(RefCell::new(PromiseState {
+    /// Sweep: drop every edge out of an unreachable promise. Nothing can
+    /// settle it or observe it, so its waiters and reactions are dead too.
+    pub(crate) fn clear_edges(&mut self) {
+        self.value = Value::Null;
+        self.waiters.clear();
+        self.reactions.clear();
+    }
+
+    fn pending() -> Rc<GcCell<PromiseState>> {
+        let p = Rc::new(GcCell::new(PromiseState {
             status: PromiseStatus::Pending,
             value: Value::Null,
             waiters: Vec::new(),
             reactions: Vec::new(),
-        }))
+        }));
+        gc::track_promise(&p);
+        p
     }
 }
 
@@ -239,6 +248,21 @@ impl PromiseState {
 pub struct GenState {
     coro: Option<Coro>,
     done: bool,
+}
+
+impl GenState {
+    /// The suspended coroutine, if this generator has not finished. Its saved
+    /// operand stack and scopes are GC roots for as long as it can be resumed.
+    pub(crate) fn saved(&self) -> Option<Coro> {
+        self.coro.clone()
+    }
+
+    /// Sweep: an unreachable generator can never be resumed, so drop the
+    /// coroutine it was holding (which is where its cycle runs through).
+    pub(crate) fn discard(&mut self) {
+        self.coro = None;
+        self.done = true;
+    }
 }
 
 /// One entry of the diagnostic call stack.
@@ -250,6 +274,7 @@ pub struct Frame_ {
 
 /// A suspended async function: the VM's whole state is data, so `await`
 /// captures it and resumes later (no CPS transform, no threads).
+#[derive(Clone)]
 pub struct Coro {
     pub chunk: Rc<vm::Chunk>,
     pub pc: usize,
@@ -258,13 +283,19 @@ pub struct Coro {
     pub handlers: Vec<(usize, usize, usize)>,
     pub cls: Option<Rc<ClassDef>>,
     /// The promise this coroutine's completion settles.
-    pub result: Rc<RefCell<PromiseState>>,
+    pub result: Rc<GcCell<PromiseState>>,
 }
 
 /// Work the engine owes itself before returning to the host.
 enum Task {
     Resume(Coro, Value, bool),
-    React(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>, Value, bool),
+    React(
+        Option<Value>,
+        Option<Value>,
+        Rc<GcCell<PromiseState>>,
+        Value,
+        bool,
+    ),
 }
 
 pub struct Namespace {
@@ -294,7 +325,13 @@ struct FnData {
 
 impl FnData {
     fn new(name: String, is_async: bool, params: &'static [Param], body: FnBody) -> FnData {
-        FnData { name, is_async, params, body, chunk: RefCell::new(None) }
+        FnData {
+            name,
+            is_async,
+            params,
+            body,
+            chunk: RefCell::new(None),
+        }
     }
 }
 
@@ -321,7 +358,7 @@ pub struct ClassDef {
     getters: HashMap<String, Rc<FnData>>,
     setters: HashMap<String, Rc<FnData>>,
     ctor: Option<Rc<FnData>>,
-    pub(crate) statics: RefCell<HashMap<String, Value>>,
+    pub(crate) statics: GcCell<HashMap<String, Value>>,
     static_methods: HashMap<String, Rc<FnData>>,
     /// Built-in error classes construct without an AST ctor.
     is_builtin_error: bool,
@@ -343,7 +380,7 @@ pub struct Instance {
 
 // ---- environments ----------------------------------------------------------------
 
-type Env = Rc<RefCell<Scope>>;
+type Env = Rc<GcCell<Scope>>;
 
 pub(crate) struct Scope {
     pub(crate) vars: HashMap<String, Value>,
@@ -351,7 +388,10 @@ pub(crate) struct Scope {
 }
 
 fn child_env(parent: &Env) -> Env {
-    let e = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: Some(parent.clone()) }));
+    let e = Rc::new(GcCell::new(Scope {
+        vars: HashMap::new(),
+        parent: Some(parent.clone()),
+    }));
     gc::track_env(&e);
     e
 }
@@ -484,7 +524,10 @@ pub type JitHook = fn(&vm::Chunk, &[String]) -> Option<JitFn>;
 const JIT_THRESHOLD: u32 = 64;
 
 pub fn new_interp(host: Box<dyn Host>) -> Interp {
-    let root = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: None }));
+    let root = Rc::new(GcCell::new(Scope {
+        vars: HashMap::new(),
+        parent: None,
+    }));
     let globals = child_env(&root);
     let mut error_classes = HashMap::new();
     let base = Rc::new(builtin_error_class("Error", None));
@@ -555,7 +598,7 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
         getters: HashMap::new(),
         setters: HashMap::new(),
         ctor: None,
-        statics: RefCell::new(HashMap::new()),
+        statics: GcCell::new(HashMap::new()),
         static_methods: HashMap::new(),
         is_builtin_error: true,
         host_iface: None,
@@ -577,7 +620,7 @@ impl Interp {
         if slots.len() > 1 {
             slots[1] = Value::Str(Rc::new(stack.chars().collect())); // stack
         }
-        Thrown(Value::Instance(Rc::new(RefCell::new(Instance {
+        Thrown(Value::Instance(Rc::new(GcCell::new(Instance {
             class: cls,
             slots,
             host: None,
@@ -644,10 +687,7 @@ impl Interp {
 
     /// Execute a module graph (dependency-first). Each module gets its own
     /// scope; imports link to the exporting module's evaluated bindings.
-    pub fn run_graph(
-        &mut self,
-        modules: Vec<(String, &'static Module)>,
-    ) -> Result<(), Thrown> {
+    pub fn run_graph(&mut self, modules: Vec<(String, &'static Module)>) -> Result<(), Thrown> {
         for (spec, module) in modules {
             let env = child_env(&self.root);
             let saved_globals = std::mem::replace(&mut self.globals, env.clone());
@@ -698,7 +738,12 @@ impl Interp {
                     &f.params,
                     FnBody::Block(&f.body),
                 ));
-                let c = Closure { data, env: self.globals.clone(), this: None, cls: None };
+                let c = Closure {
+                    data,
+                    env: self.globals.clone(),
+                    this: None,
+                    cls: None,
+                };
                 env_define(&self.globals, &f.name.text, Value::Closure(Rc::new(c)));
             }
         }
@@ -724,9 +769,10 @@ impl Interp {
             pending = still;
             if !pending.is_empty() && !progressed {
                 let name = &pending[0].name.text;
-                return Err(
-                    self.throw("TypeError", format!("cannot resolve base class of `{name}`"))
-                );
+                return Err(self.throw(
+                    "TypeError",
+                    format!("cannot resolve base class of `{name}`"),
+                ));
             }
         }
         for d in &decls {
@@ -753,7 +799,10 @@ impl Interp {
                 Item::Stmt(s) => {
                     self.exec_stmt(s, &self.globals.clone())?;
                 }
-                Item::Export(ExportDecl { kind: ExportKind::Var(v), .. }) => {
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Var(v),
+                    ..
+                }) => {
                     self.exec_var(v, &self.globals.clone())?;
                 }
                 _ => {}
@@ -773,9 +822,10 @@ impl Interp {
         let names: Vec<&Name> = match &im.clause {
             None => return Ok(()),
             Some(ImportClause::Namespace(_)) => Vec::new(),
-            Some(ImportClause::Named(specs)) => {
-                specs.iter().map(|s| s.alias.as_ref().unwrap_or(&s.name)).collect()
-            }
+            Some(ImportClause::Named(specs)) => specs
+                .iter()
+                .map(|s| s.alias.as_ref().unwrap_or(&s.name))
+                .collect(),
         };
         match im.from.as_str() {
             "std:console" => {
@@ -798,8 +848,7 @@ impl Interp {
                 };
                 let mut entries = HashMap::new();
                 for n in natives {
-                    let id: &'static str =
-                        Box::leak(format!("{ns_name}.{n}").into_boxed_str());
+                    let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(id));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
@@ -890,8 +939,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for n in natives {
                     // Native ids are `<ns>.<method>`, leaked once per import.
-                    let id: &'static str =
-                        Box::leak(format!("{ns_name}.{n}").into_boxed_str());
+                    let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(id));
                 }
                 for (n, v) in consts {
@@ -924,10 +972,14 @@ impl Interp {
                     // the Stage A demos and goldens pin it).
                     if n.text == "document" && self.host.web_global("document") < 0 {
                         let mut entries = HashMap::new();
-                        entries
-                            .insert("getElementById".to_string(), Value::Native("dom.getElementById"));
-                        entries
-                            .insert("createElement".to_string(), Value::Native("dom.createElement"));
+                        entries.insert(
+                            "getElementById".to_string(),
+                            Value::Native("dom.getElementById"),
+                        );
+                        entries.insert(
+                            "createElement".to_string(),
+                            Value::Native("dom.createElement"),
+                        );
                         let document = Value::Namespace(Rc::new(Namespace {
                             name: "document".to_string(),
                             entries,
@@ -948,11 +1000,11 @@ impl Interp {
                 Ok(())
             }
             other if crate::graph_is_module(other) => {
-                let target =
-                    mersey_front::graph::resolve_module(&self.current_module, other);
+                let target = mersey_front::graph::resolve_module(&self.current_module, other);
                 let Some(exports) = self.modules.get(&target).cloned() else {
-                    return self
-                        .type_error(format!("module `{other}` was not loaded (resolved to `{target}`)"));
+                    return self.type_error(format!(
+                        "module `{other}` was not loaded (resolved to `{target}`)"
+                    ));
                 };
                 match &im.clause {
                     Some(ImportClause::Named(specs)) => {
@@ -1023,11 +1075,13 @@ impl Interp {
         let mut setters = HashMap::new();
         let mut static_methods = HashMap::new();
         let mut ctor = None;
-        let statics: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+        let statics: GcCell<HashMap<String, Value>> = GcCell::new(HashMap::new());
 
         for m in &c.members {
             match m {
-                ClassMember::Field { mods, name, init, .. } => {
+                ClassMember::Field {
+                    mods, name, init, ..
+                } => {
                     if mods.is_static {
                         let v = match init {
                             Some(e) => self.eval(e, &self.globals.clone())?,
@@ -1038,7 +1092,14 @@ impl Interp {
                         fields.push((name.clone(), init.as_ref()));
                     }
                 }
-                ClassMember::Method { mods, is_async, name, params, body, .. } => {
+                ClassMember::Method {
+                    mods,
+                    is_async,
+                    name,
+                    params,
+                    body,
+                    ..
+                } => {
                     if let Some(body) = body {
                         let data = Rc::new(FnData::new(
                             name.clone(),
@@ -1059,7 +1120,9 @@ impl Interp {
                         Rc::new(FnData::new(name.clone(), false, &[], FnBody::Block(body))),
                     );
                 }
-                ClassMember::Setter { name, param, body, .. } => {
+                ClassMember::Setter {
+                    name, param, body, ..
+                } => {
                     setters.insert(
                         name.clone(),
                         Rc::new(FnData::new(
@@ -1102,6 +1165,7 @@ impl Interp {
             host_iface,
             env: Some(self.globals.clone()),
         });
+        gc::track_class(&def);
         env_define(&self.globals, &c.name.text, Value::Class(def));
         Ok(true)
     }
@@ -1122,7 +1186,10 @@ impl Interp {
             next = v + 1;
             entries.insert(name.text.clone(), Value::I64(v));
         }
-        let ns = Value::Namespace(Rc::new(Namespace { name: e.name.text.clone(), entries }));
+        let ns = Value::Namespace(Rc::new(Namespace {
+            name: e.name.text.clone(),
+            entries,
+        }));
         env_define(&self.globals, &e.name.text, ns);
         Ok(())
     }
@@ -1134,7 +1201,11 @@ impl Interp {
             None => return self.type_error(format!("unknown callback #{id}")),
         };
         self.call_value(&cb, Vec::new())?;
-        self.drain_microtasks()
+        self.drain_microtasks()?;
+        // A finished callback is a host boundary: no VM frame is live, so the
+        // roots really are the roots and it is safe to collect.
+        self.maybe_collect();
+        Ok(())
     }
 
     // ---- statements -----------------------------------------------------------
@@ -1200,7 +1271,12 @@ impl Interp {
                 }
                 Ok(Sig::Normal)
             }
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 let scope = child_env(env);
                 match init {
                     Some(ForInit::Var(v)) => {
@@ -1230,7 +1306,9 @@ impl Interp {
                 }
                 Ok(Sig::Normal)
             }
-            Stmt::ForOf { target, iter, body, .. } => {
+            Stmt::ForOf {
+                target, iter, body, ..
+            } => {
                 let iterable = self.eval(iter, env)?;
                 let items: Vec<Value> = match &iterable {
                     Value::Array(a) => a.borrow().clone(),
@@ -1250,7 +1328,9 @@ impl Interp {
                         }
                         out
                     }
-                    _ => return self.type_error("`for of` needs an array, string, or host iterable"),
+                    _ => {
+                        return self.type_error("`for of` needs an array, string, or host iterable")
+                    }
                 };
                 for item in items {
                     let scope = child_env(env);
@@ -1307,7 +1387,11 @@ impl Interp {
                 let v = self.eval(e, env)?;
                 Err(Thrown(v))
             }
-            Stmt::Try { block, catches, finally } => {
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
                 let result = self.exec_block(block, env);
                 let result = match result {
                     Err(thrown) => {
@@ -1409,7 +1493,9 @@ impl Interp {
             }
             Pattern::Record(fields) => {
                 for f in fields {
-                    let mut v = self.get_member(&value, &f.name.text)?.unwrap_or(Value::Null);
+                    let mut v = self
+                        .get_member(&value, &f.name.text)?
+                        .unwrap_or(Value::Null);
                     if matches!(v, Value::Null) {
                         if let Some(d) = &f.default {
                             v = self.eval(d, env)?;
@@ -1458,10 +1544,12 @@ impl Interp {
                         cls: c.cls.clone(),
                         result: PromiseState::pending(),
                     };
-                    return Ok(Value::IterV(Rc::new(RefCell::new(GenState {
+                    let g = Rc::new(GcCell::new(GenState {
                         coro: Some(coro),
                         done: false,
-                    }))));
+                    }));
+                    gc::track_gen(&g);
+                    return Ok(Value::IterV(g));
                 }
             }
         }
@@ -1480,8 +1568,9 @@ impl Interp {
                 }
             };
             let Some(chunk) = compiled else {
-                return self
-                    .type_error("this async function uses a construct the compiler cannot suspend");
+                return self.type_error(
+                    "this async function uses a construct the compiler cannot suspend",
+                );
             };
             return self.start_coro(c, chunk, scope);
         }
@@ -1609,11 +1698,7 @@ impl Interp {
             self.bind_pattern(&p.target, v, scope)?;
         }
         if let Some(r) = rest_param {
-            self.bind_pattern(
-                &r.target,
-                new_array(rest_args),
-                scope,
-            )?;
+            self.bind_pattern(&r.target, new_array(rest_args), scope)?;
         }
         Ok(())
     }
@@ -1730,12 +1815,16 @@ impl Interp {
                     best = Some(match best {
                         None => a,
                         Some(b) => {
-                            let take_a = match self.numeric_binop(BinOp::Lt, a.clone(), b.clone())?
-                            {
-                                Value::Bool(lt) => lt == (name == "math.min"),
-                                _ => false,
-                            };
-                            if take_a { a } else { b }
+                            let take_a =
+                                match self.numeric_binop(BinOp::Lt, a.clone(), b.clone())? {
+                                    Value::Bool(lt) => lt == (name == "math.min"),
+                                    _ => false,
+                                };
+                            if take_a {
+                                a
+                            } else {
+                                b
+                            }
                         }
                     });
                 }
@@ -1758,8 +1847,11 @@ impl Interp {
                 let text = to_display(args.first().unwrap_or(&Value::Null));
                 let width = args.get(1).and_then(as_i64).unwrap_or(0).max(0) as usize;
                 let n = text.chars().count();
-                let padded =
-                    if n >= width { text } else { format!("{}{text}", " ".repeat(width - n)) };
+                let padded = if n >= width {
+                    text
+                } else {
+                    format!("{}{text}", " ".repeat(width - n))
+                };
                 Ok(Value::Str(Rc::new(padded.chars().collect())))
             }
             "format.fixed" => {
@@ -1812,7 +1904,7 @@ impl Interp {
                     _ => return self.type_error("Promise.all needs an array"),
                 };
                 let out = PromiseState::pending();
-                let results = Rc::new(RefCell::new(vec![Value::Null; items.len()]));
+                let results = Rc::new(GcCell::new(vec![Value::Null; items.len()]));
                 let remaining = Rc::new(RefCell::new(items.len()));
                 if items.is_empty() {
                     let all = new_array(Vec::new());
@@ -1845,9 +1937,10 @@ impl Interp {
                 // Reports only — sweeping here would be unsound (live VM
                 // frames are not roots mid-expression).
                 let stats = gc::stats_only();
-                Ok(new_record(vec![
-                    ("live".to_string(), Value::I32(stats.tracked as i32)),
-                ]))
+                Ok(new_record(vec![(
+                    "live".to_string(),
+                    Value::I32(stats.tracked as i32),
+                )]))
             }
             "regex.compile" => {
                 let pattern = self.want_string(args.first())?;
@@ -1860,8 +1953,7 @@ impl Interp {
                     Err(msg) => Err(self.throw("Error", format!("bad regex: {msg}"))),
                 }
             }
-            "parse.int32" | "parse.int64" | "parse.float64" | "parse.bigint"
-            | "parse.bigdec" => {
+            "parse.int32" | "parse.int64" | "parse.float64" | "parse.bigint" | "parse.bigdec" => {
                 let text = self.want_string(args.first())?;
                 let t = text.trim();
                 // Parsing returns null on failure — no exceptions for input
@@ -1929,7 +2021,8 @@ impl Interp {
                     return self.type_error("time.fromParts needs a record");
                 };
                 let f = r.borrow();
-                let get = |k: &str, dflt: i64| rec_get(&f, k).and_then(|v| as_i64(&v)).unwrap_or(dflt);
+                let get =
+                    |k: &str, dflt: i64| rec_get(&f, k).and_then(|v| as_i64(&v)).unwrap_or(dflt);
                 let days = days_from_civil(get("year", 1970), get("month", 1), get("day", 1));
                 let secs = days * 86_400
                     + get("hour", 0) * 3600
@@ -1984,8 +2077,7 @@ impl Interp {
                     Value::Instance(i) => match i.borrow().host {
                         Some(h) => h,
                         None => {
-                            return self
-                                .type_error("attach: the second value is not a host object")
+                            return self.type_error("attach: the second value is not a host object")
                         }
                     },
                     _ => return self.type_error("attach: the second value is not a host object"),
@@ -2022,7 +2114,7 @@ impl Interp {
             if slots.len() > 1 {
                 slots[1] = Value::Str(Rc::new(self.stack_trace().chars().collect()));
             }
-            let inst = Rc::new(RefCell::new(Instance {
+            let inst = Rc::new(GcCell::new(Instance {
                 class: cls.clone(),
                 slots,
                 host: None,
@@ -2030,7 +2122,7 @@ impl Interp {
             gc::track_instance(&inst);
             return Ok(Value::Instance(inst));
         }
-        let inst = Rc::new(RefCell::new(Instance {
+        let inst = Rc::new(GcCell::new(Instance {
             class: cls.clone(),
             slots: vec![Value::Null; cls.fields.len()],
             host: None,
@@ -2102,7 +2194,11 @@ impl Interp {
             Value::Namespace(ns) => Ok(ns.entries.get(name).cloned()),
             Value::Dom(id) => match name {
                 "textContent" => Ok(Some(Value::Str(Rc::new(
-                    self.host.dom_get_text(id).unwrap_or_default().chars().collect(),
+                    self.host
+                        .dom_get_text(id)
+                        .unwrap_or_default()
+                        .chars()
+                        .collect(),
                 )))),
                 "value" => {
                     let id = id.to_string();
@@ -2308,7 +2404,10 @@ impl Interp {
                             let v = match value {
                                 Some(e) => self.eval(e, env)?,
                                 None => env_get(env, &name.text).ok_or_else(|| {
-                                    self.throw("TypeError", format!("`{}` is not defined", name.text))
+                                    self.throw(
+                                        "TypeError",
+                                        format!("`{}` is not defined", name.text),
+                                    )
                                 })?,
                             };
                             rec_set(&mut out, &name.text, v);
@@ -2329,7 +2428,12 @@ impl Interp {
                 Ok(new_record(out))
             }
             Expr::Paren(e) => self.eval(e, env),
-            Expr::Arrow { is_async, params, body, .. } => {
+            Expr::Arrow {
+                is_async,
+                params,
+                body,
+                ..
+            } => {
                 let data = Rc::new(FnData::new(
                     "<arrow>".to_string(),
                     *is_async,
@@ -2417,14 +2521,26 @@ impl Interp {
                     match *op {
                         "&&=" => {
                             let keep = self.value_truthy(&old)?;
-                            if keep { rhs } else { old }
+                            if keep {
+                                rhs
+                            } else {
+                                old
+                            }
                         }
                         "||=" => {
                             let keep = self.value_truthy(&old)?;
-                            if keep { old } else { rhs }
+                            if keep {
+                                old
+                            } else {
+                                rhs
+                            }
                         }
                         "??=" => {
-                            if matches!(old, Value::Null) { rhs } else { old }
+                            if matches!(old, Value::Null) {
+                                rhs
+                            } else {
+                                old
+                            }
                         }
                         _ => {
                             let bin = match *op {
@@ -2460,10 +2576,20 @@ impl Interp {
                 let v = self.eval(expr, env)?;
                 self.eval_cast(v, *wrapping, ty)
             }
-            Expr::Call { callee, args, optional, .. } => {
+            Expr::Call {
+                callee,
+                args,
+                optional,
+                ..
+            } => {
                 // Receiver/callee evaluates before the arguments; a null
                 // receiver under `?.` skips argument evaluation entirely.
-                if let Expr::Member { obj, name, optional: mopt } = callee.as_ref() {
+                if let Expr::Member {
+                    obj,
+                    name,
+                    optional: mopt,
+                } = callee.as_ref()
+                {
                     let recv = self.eval(obj, env)?;
                     if (*mopt || *optional) && matches!(recv, Value::Null) {
                         return Ok(Value::Null);
@@ -2489,7 +2615,11 @@ impl Interp {
                 let argv = self.eval_args(args, env)?;
                 self.new_named(name, argv, env)
             }
-            Expr::Member { obj, name, optional } => {
+            Expr::Member {
+                obj,
+                name,
+                optional,
+            } => {
                 let o = self.eval(obj, env)?;
                 if *optional && matches!(o, Value::Null) {
                     return Ok(Value::Null);
@@ -2499,7 +2629,11 @@ impl Interp {
                     None => self.type_error(format!("no member `{name}` on {}", kind_of(&o))),
                 }
             }
-            Expr::Index { obj, index, optional } => {
+            Expr::Index {
+                obj,
+                index,
+                optional,
+            } => {
                 let o = self.eval(obj, env)?;
                 if *optional && matches!(o, Value::Null) {
                     return Ok(Value::Null);
@@ -2591,9 +2725,7 @@ impl Interp {
                     }
                     "keys" => {
                         let n = a.borrow().len();
-                        Ok(new_array(
-                            (0..n).map(|i| Value::I32(i as i32)).collect(),
-                        ))
+                        Ok(new_array((0..n).map(|i| Value::I32(i as i32)).collect()))
                     }
                     "join" => {
                         let sep = match args.first() {
@@ -2672,7 +2804,11 @@ impl Interp {
                                 });
                             }
                         }
-                        Ok(if name == "contains" { Value::Bool(false) } else { Value::I32(-1) })
+                        Ok(if name == "contains" {
+                            Value::Bool(false)
+                        } else {
+                            Value::I32(-1)
+                        })
                     }
                     "slice" => {
                         let src = items();
@@ -2680,7 +2816,11 @@ impl Interp {
                         let norm = |v: i64| v.clamp(0, len) as usize;
                         let start = norm(args.first().and_then(as_i64).unwrap_or(0));
                         let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        let out = if start < end { src[start..end].to_vec() } else { Vec::new() };
+                        let out = if start < end {
+                            src[start..end].to_vec()
+                        } else {
+                            Vec::new()
+                        };
                         Ok(new_array(out))
                     }
                     "concat" => {
@@ -2813,9 +2953,8 @@ impl Interp {
                     return self.type_error(format!("regex `{name}` needs a string"));
                 };
                 let chars: Vec<char> = subject.as_ref().clone();
-                let slice = |a: usize, b: usize| -> Value {
-                    Value::Str(Rc::new(chars[a..b].to_vec()))
-                };
+                let slice =
+                    |a: usize, b: usize| -> Value { Value::Str(Rc::new(chars[a..b].to_vec())) };
                 let make_match = |m: &regex::Match| -> Value {
                     let groups: Vec<Value> = m
                         .groups
@@ -2954,8 +3093,14 @@ impl Interp {
                         Ok(Value::Str(Rc::new(out.chars().collect())))
                     }
                     "repeat" => {
-                        let n = args.first().and_then(as_i64).unwrap_or(0).clamp(0, 1_000_000);
-                        Ok(Value::Str(Rc::new(text.repeat(n as usize).chars().collect())))
+                        let n = args
+                            .first()
+                            .and_then(as_i64)
+                            .unwrap_or(0)
+                            .clamp(0, 1_000_000);
+                        Ok(Value::Str(Rc::new(
+                            text.repeat(n as usize).chars().collect(),
+                        )))
                     }
                     "padStart" | "padEnd" => {
                         let width = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
@@ -2980,9 +3125,7 @@ impl Interp {
                     "split" => {
                         let sep = arg0();
                         let parts: Vec<Value> = if sep.is_empty() {
-                            text.chars()
-                                .map(|c| Value::Str(Rc::new(vec![c])))
-                                .collect()
+                            text.chars().map(|c| Value::Str(Rc::new(vec![c]))).collect()
                         } else {
                             text.split(&sep as &str)
                                 .map(|p| Value::Str(Rc::new(p.chars().collect())))
@@ -3022,8 +3165,14 @@ impl Interp {
                     None => Err(self.throw("RangeError", "division by zero")),
                 }
             }
-            Value::Char(_) | Value::I32(_) | Value::I64(_) | Value::U32(_)
-            | Value::U64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_)
+            Value::Char(_)
+            | Value::I32(_)
+            | Value::I64(_)
+            | Value::U32(_)
+            | Value::U64(_)
+            | Value::F32(_)
+            | Value::F64(_)
+            | Value::Bool(_)
                 if name == "toString" =>
             {
                 Ok(Value::Str(Rc::new(to_display(recv).chars().collect())))
@@ -3034,9 +3183,7 @@ impl Interp {
             Value::Dom(_) if name == "appendChild" => {
                 self.call_native("dom.appendChild", Some(recv), args)
             }
-            Value::Dom(_) if name == "remove" => {
-                self.call_native("dom.remove", Some(recv), args)
-            }
+            Value::Dom(_) if name == "remove" => self.call_native("dom.remove", Some(recv), args),
             Value::Namespace(ns) => match ns.entries.get(name) {
                 Some(Value::Native(n)) => {
                     let n = *n;
@@ -3197,7 +3344,7 @@ impl Interp {
     // ---- promises, microtasks, coroutines -------------------------------
 
     /// Settle a promise and queue its reactions/waiters as microtasks.
-    fn settle(&mut self, p: &Rc<RefCell<PromiseState>>, value: Value, rejected: bool) {
+    fn settle(&mut self, p: &Rc<GcCell<PromiseState>>, value: Value, rejected: bool) {
         {
             let st = p.borrow();
             if st.status != PromiseStatus::Pending {
@@ -3228,23 +3375,36 @@ impl Interp {
         }
         let (waiters, reactions) = {
             let mut st = p.borrow_mut();
-            st.status = if rejected { PromiseStatus::Rejected } else { PromiseStatus::Fulfilled };
+            st.status = if rejected {
+                PromiseStatus::Rejected
+            } else {
+                PromiseStatus::Fulfilled
+            };
             st.value = value.clone();
-            (std::mem::take(&mut st.waiters), std::mem::take(&mut st.reactions))
+            (
+                std::mem::take(&mut st.waiters),
+                std::mem::take(&mut st.reactions),
+            )
         };
         for coro in waiters {
-            self.tasks.push_back(Task::Resume(coro, value.clone(), rejected));
+            self.tasks
+                .push_back(Task::Resume(coro, value.clone(), rejected));
         }
         for (on_ok, on_err, downstream) in reactions {
-            self.tasks
-                .push_back(Task::React(on_ok, on_err, downstream, value.clone(), rejected));
+            self.tasks.push_back(Task::React(
+                on_ok,
+                on_err,
+                downstream,
+                value.clone(),
+                rejected,
+            ));
         }
     }
 
     /// Register `then`-style reactions, returning the chained promise.
     fn promise_then(
         &mut self,
-        p: &Rc<RefCell<PromiseState>>,
+        p: &Rc<GcCell<PromiseState>>,
         on_ok: Option<Value>,
         on_err: Option<Value>,
     ) -> Value {
@@ -3252,12 +3412,20 @@ impl Interp {
         let st = p.borrow().status.clone();
         match st {
             PromiseStatus::Pending => {
-                p.borrow_mut().reactions.push((on_ok, on_err, downstream.clone()));
+                p.borrow_mut()
+                    .reactions
+                    .push((on_ok, on_err, downstream.clone()));
             }
             PromiseStatus::Fulfilled | PromiseStatus::Rejected => {
                 let rejected = st == PromiseStatus::Rejected;
                 let value = p.borrow().value.clone();
-                self.tasks.push_back(Task::React(on_ok, on_err, downstream.clone(), value, rejected));
+                self.tasks.push_back(Task::React(
+                    on_ok,
+                    on_err,
+                    downstream.clone(),
+                    value,
+                    rejected,
+                ));
             }
         }
         Value::PromiseV(downstream)
@@ -3265,7 +3433,7 @@ impl Interp {
 
     /// Convert any awaitable into a Mersey promise: a host (JS) promise is
     /// adopted by handing it Resolver callbacks through the bridge.
-    fn as_promise(&mut self, v: Value) -> Result<Rc<RefCell<PromiseState>>, Thrown> {
+    fn as_promise(&mut self, v: Value) -> Result<Rc<GcCell<PromiseState>>, Thrown> {
         match v {
             Value::PromiseV(p) => Ok(p),
             Value::JsRef(h) => {
@@ -3329,14 +3497,26 @@ impl Interp {
     pub fn collect_garbage(&mut self) -> gc::GcStats {
         let roots = self.gc_roots();
         self.gc_pending = false;
+        // An explicit request means "reclaim what you can", including
+        // old-generation cycles, so it gets the full trace.
+        gc::collect_major(&roots)
+    }
+
+    /// The routine collection: generational, so the pause is bounded by how
+    /// much has been allocated since last time rather than by the heap.
+    fn collect_young(&mut self) -> gc::GcStats {
+        let roots = self.gc_roots();
         gc::collect(&roots)
     }
 
     /// Collect if requested or if enough has been allocated. Called only at
     /// host boundaries.
     fn maybe_collect(&mut self) {
-        if self.gc_pending || gc::should_collect() {
+        if self.gc_pending {
+            // Explicit `gc.collect()`: full trace.
             self.collect_garbage();
+        } else if gc::should_collect() {
+            self.collect_young();
         }
     }
 
@@ -3469,7 +3649,12 @@ impl Interp {
             Value::Record(r) => {
                 // Field order is preserved across the bridge.
                 let entries: Vec<(String, Value)> = r.borrow().clone();
-                Json::Obj(entries.into_iter().map(|(k, v)| (k, self.to_web(&v))).collect())
+                Json::Obj(
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| (k, self.to_web(&v)))
+                        .collect(),
+                )
             }
             Value::Closure(_)
             | Value::Native(_)
@@ -3484,9 +3669,7 @@ impl Interp {
             Value::PromiseV(p) => {
                 let exec = Value::PromiseExec(p.clone());
                 match self.web_new("Promise", vec![exec]) {
-                    Ok(Value::JsRef(h)) => {
-                        Json::Obj(vec![("__ref__".into(), Json::Num(h as f64))])
-                    }
+                    Ok(Value::JsRef(h)) => Json::Obj(vec![("__ref__".into(), Json::Num(h as f64))]),
                     _ => Json::Null,
                 }
             }
@@ -3507,15 +3690,15 @@ impl Interp {
                 }
             }
             Json::Str(s) => Value::Str(Rc::new(s.chars().collect())),
-            Json::Arr(items) => new_array(
-                items.iter().map(|i| self.from_web(i)).collect(),
-            ),
+            Json::Arr(items) => new_array(items.iter().map(|i| self.from_web(i)).collect()),
             Json::Obj(fields) => {
                 if let Some(Json::Num(h)) = j.get("__ref__") {
                     return Value::JsRef(*h as i64);
                 }
-                let entries: Vec<(String, Value)> =
-                    fields.iter().map(|(k, v)| (k.clone(), self.from_web(v))).collect();
+                let entries: Vec<(String, Value)> = fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.from_web(v)))
+                    .collect();
                 new_record(entries)
             }
         }
@@ -3703,7 +3886,7 @@ impl Interp {
 
     fn map_find(
         &self,
-        m: &Rc<RefCell<Vec<(Value, Value)>>>,
+        m: &Rc<GcCell<Vec<(Value, Value)>>>,
         k: &Value,
     ) -> Result<Option<usize>, Thrown> {
         let items = m.borrow();
@@ -3715,11 +3898,7 @@ impl Interp {
         Ok(None)
     }
 
-    fn set_find(
-        &self,
-        m: &Rc<RefCell<Vec<Value>>>,
-        v: &Value,
-    ) -> Result<Option<usize>, Thrown> {
+    fn set_find(&self, m: &Rc<GcCell<Vec<Value>>>, v: &Value) -> Result<Option<usize>, Thrown> {
         let items = m.borrow();
         for (i, item) in items.iter().enumerate() {
             if self.values_equal(item, v)? {
@@ -3737,16 +3916,16 @@ impl Interp {
     }
 
     fn super_lookup(&mut self, name: &str, env: &Env) -> VResult {
-        let this = env_get(env, "this")
-            .ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
+        let this =
+            env_get(env, "this").ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
         let cls = self.current_class()?;
         let parent = cls
             .parent
             .clone()
             .ok_or_else(|| self.throw("TypeError", "class has no base class"))?;
-        if let Some((m, defining)) =
-            find_in_chain(&parent, |c| c.methods.get(name).map(|m| (m.clone(), c.clone())))
-        {
+        if let Some((m, defining)) = find_in_chain(&parent, |c| {
+            c.methods.get(name).map(|m| (m.clone(), c.clone()))
+        }) {
             let env2 = defining.env.clone().unwrap_or_else(|| self.globals.clone());
             return Ok(Value::Closure(Rc::new(Closure {
                 data: m,
@@ -3803,7 +3982,7 @@ impl Interp {
     }
 
     /// Resume a generator to its next `yield` (or to completion).
-    fn gen_next(&mut self, g: Rc<RefCell<GenState>>) -> VResult {
+    fn gen_next(&mut self, g: Rc<GcCell<GenState>>) -> VResult {
         if g.borrow().done {
             return Ok(Value::Null);
         }
@@ -3841,8 +4020,8 @@ impl Interp {
     }
 
     fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
-        let this = env_get(env, "this")
-            .ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
+        let this =
+            env_get(env, "this").ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
         let cls = self.current_class()?;
         let parent = cls
             .parent
@@ -3902,15 +4081,20 @@ impl Interp {
         match op {
             UnaryOp::Not => Ok(Value::Bool(!self.value_truthy(&v)?)),
             UnaryOp::Plus => match v {
-                Value::I32(_) | Value::I64(_) | Value::U32(_) | Value::U64(_) | Value::F32(_)
+                Value::I32(_)
+                | Value::I64(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::F32(_)
                 | Value::F64(_) => Ok(v),
                 _ => self.type_error("unary `+` needs a number"),
             },
             UnaryOp::Neg => match v {
                 Value::BigIntV(b) => Ok(Value::BigIntV(Rc::new(b.negate()))),
-                Value::BigDecV(d) => Ok(Value::BigDecV(Rc::new(
-                    BigDec { coef: d.coef.negate(), scale: d.scale },
-                ))),
+                Value::BigDecV(d) => Ok(Value::BigDecV(Rc::new(BigDec {
+                    coef: d.coef.negate(),
+                    scale: d.scale,
+                }))),
                 Value::I32(n) => Ok(Value::I32(n.wrapping_neg())),
                 Value::I64(n) => Ok(Value::I64(n.wrapping_neg())),
                 Value::U32(n) => Ok(Value::U32(n.wrapping_neg())),
@@ -3957,7 +4141,11 @@ impl Interp {
                 }
                 return Err(self.throw(
                     "TypeError",
-                    format!("`==` between {} and {} (no coercion, §3.3)", kind_of(a), kind_of(b)),
+                    format!(
+                        "`==` between {} and {} (no coercion, §3.3)",
+                        kind_of(a),
+                        kind_of(b)
+                    ),
                 ));
             }
         })
@@ -3999,7 +4187,12 @@ impl Interp {
         let (a, b) = promote_pair(&l, &r).ok_or_else(|| {
             self.throw(
                 "TypeError",
-                format!("`{}` needs numeric operands, got {} and {}", op.as_str(), kind_of(&l), kind_of(&r)),
+                format!(
+                    "`{}` needs numeric operands, got {} and {}",
+                    op.as_str(),
+                    kind_of(&l),
+                    kind_of(&r)
+                ),
             )
         })?;
         self.promoted_binop(op, a, b)
@@ -4020,7 +4213,9 @@ impl Interp {
                         }
                         match x.checked_div(y) {
                             Some(q) => $mk(q),
-                            None => return Err(self.throw("RangeError", "integer overflow in division")),
+                            None => {
+                                return Err(self.throw("RangeError", "integer overflow in division"))
+                            }
                         }
                     }
                     Rem => {
@@ -4136,8 +4331,12 @@ impl Interp {
         let Type::Named { name, .. } = ty else {
             return Ok(v); // casts to complex types: checker's concern
         };
-        let out_of_range =
-            || self.throw("RangeError", format!("value does not fit `{name}` (use `as wrapping`)"));
+        let out_of_range = || {
+            self.throw(
+                "RangeError",
+                format!("value does not fit `{name}` (use `as wrapping`)"),
+            )
+        };
         let as_f = match as_num(&v) {
             Some(f) => f,
             None => return Ok(v), // non-numeric cast: reference cast, pass through
@@ -4301,10 +4500,7 @@ impl Drop for Frame<'_> {
 
 // ---- helpers ------------------------------------------------------------------------
 
-fn find_in_chain<T>(
-    class: &Rc<ClassDef>,
-    f: impl Fn(&Rc<ClassDef>) -> Option<T>,
-) -> Option<T> {
+fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>) -> Option<T> {
     let mut cls = Some(class.clone());
     while let Some(c) = cls {
         if let Some(t) = f(&c) {
@@ -4316,37 +4512,43 @@ fn find_in_chain<T>(
 }
 
 fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
-    find_in_chain(class, |c| c.fields.iter().any(|(n, _)| n == name).then_some(())).is_some()
+    find_in_chain(class, |c| {
+        c.fields.iter().any(|(n, _)| n == name).then_some(())
+    })
+    .is_some()
 }
 
 /// Allocate a tracked array (the collector must know about it).
 pub(crate) fn new_array(items: Vec<Value>) -> Value {
-    let a = Rc::new(RefCell::new(items));
+    let a = Rc::new(GcCell::new(items));
     gc::track_array(&a);
     Value::Array(a)
 }
 
 pub(crate) fn new_record(fields: Vec<(String, Value)>) -> Value {
-    let r = Rc::new(RefCell::new(fields));
+    let r = Rc::new(GcCell::new(fields));
     gc::track_record(&r);
     Value::Record(r)
 }
 
 pub(crate) fn new_map(entries: Vec<(Value, Value)>) -> Value {
-    let m = Rc::new(RefCell::new(entries));
+    let m = Rc::new(GcCell::new(entries));
     gc::track_map(&m);
     Value::MapV(m)
 }
 
 pub(crate) fn new_set(items: Vec<Value>) -> Value {
-    let sset = Rc::new(RefCell::new(items));
+    let sset = Rc::new(GcCell::new(items));
     gc::track_set(&sset);
     Value::SetV(sset)
 }
 
 /// Field lookup in an insertion-ordered record (records are small).
 pub(crate) fn rec_get(fields: &[(String, Value)], name: &str) -> Option<Value> {
-    fields.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    fields
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.clone())
 }
 
 /// Set a field, preserving its original position if it already exists.
@@ -4540,7 +4742,9 @@ pub fn to_display(v: &Value) -> String {
         Value::RegexV(_) => "<Regex>".to_string(),
         Value::IterV(_) => "<Iter>".to_string(),
         Value::PromiseV(_) => "<Promise>".to_string(),
-        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "<function>".to_string(),
+        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
+            "<function>".to_string()
+        }
     }
 }
 
@@ -4569,7 +4773,11 @@ pub(crate) fn parse_literal(kind: LitKind, text: &str) -> Result<Value, (&'stati
             let v: f64 = core
                 .parse()
                 .map_err(|_| ("TypeError", format!("bad float literal `{text}`")))?;
-            Ok(if is_f32 { Value::F32(v as f32) } else { Value::F64(v) })
+            Ok(if is_f32 {
+                Value::F32(v as f32)
+            } else {
+                Value::F64(v)
+            })
         }
         LitKind::BigInt => {
             let t = text.replace('_', "");
@@ -4600,9 +4808,14 @@ pub(crate) fn parse_literal(kind: LitKind, text: &str) -> Result<Value, (&'stati
 
 fn parse_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
     let t = text.replace('_', "");
-    const SUFFIXES: &[&str] =
-        &["u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u"];
-    let suffix = SUFFIXES.iter().find(|s| t.ends_with(**s)).copied().unwrap_or("");
+    const SUFFIXES: &[&str] = &[
+        "u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u",
+    ];
+    let suffix = SUFFIXES
+        .iter()
+        .find(|s| t.ends_with(**s))
+        .copied()
+        .unwrap_or("");
     let digits = &t[..t.len() - suffix.len()];
     let (radix, body) = if let Some(b) = digits.strip_prefix("0x") {
         (16, b)
@@ -4615,7 +4828,12 @@ fn parse_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
     };
     let raw = u64::from_str_radix(body, radix)
         .map_err(|_| ("RangeError", format!("integer literal `{text}` overflows")))?;
-    let out_of = || ("RangeError", format!("literal `{text}` does not fit its type"));
+    let out_of = || {
+        (
+            "RangeError",
+            format!("literal `{text}` does not fit its type"),
+        )
+    };
     Ok(match suffix {
         "" | "i32" => Value::I32(i32::try_from(raw).map_err(|_| out_of())?),
         "u" | "u32" => Value::U32(u32::try_from(raw).map_err(|_| out_of())?),

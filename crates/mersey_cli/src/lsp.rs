@@ -14,7 +14,9 @@ pub fn serve() -> std::process::ExitCode {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     loop {
-        let Some(msg) = read_message(&mut reader) else { break };
+        let Some(msg) = read_message(&mut reader) else {
+            break;
+        };
         if let Some(response) = handle(&msg) {
             write_message(&response);
         }

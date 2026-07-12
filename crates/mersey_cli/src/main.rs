@@ -184,7 +184,10 @@ fn decode_utf16(rest: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Result<String, S
     if rest.len() % 2 != 0 {
         return Err("truncated UTF-16 data".into());
     }
-    let units: Vec<u16> = rest.chunks_exact(2).map(|c| from_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = rest
+        .chunks_exact(2)
+        .map(|c| from_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16(&units).map_err(|_| "unpaired surrogate in UTF-16 data".into())
 }
 
@@ -296,7 +299,10 @@ fn load_graph(entry: &str) -> Result<Vec<(String, &'static mersey_front::ast::Mo
             return Err(ExitCode::FAILURE);
         }
     };
-    Ok(order.into_iter().map(|s| (s.clone(), sources[&s])).collect())
+    Ok(order
+        .into_iter()
+        .map(|s| (s.clone(), sources[&s]))
+        .collect())
 }
 
 /// Bind + typecheck the whole graph; returns false if anything failed.
@@ -333,7 +339,10 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     if !check_graph_ok(&modules) {
         return ExitCode::FAILURE;
     }
-    let host = CliHost { dom: std::collections::HashMap::new(), caps };
+    let host = CliHost {
+        dom: std::collections::HashMap::new(),
+        caps,
+    };
     let mut interp = interp::new_interp(Box::new(host));
     // Tier 1: register the Cranelift backend unless disabled (benchmarks
     // compare tiers via MERSEY_JIT=0).
@@ -433,7 +442,9 @@ fn audit(path: &str) -> ExitCode {
     println!("capability surface of {path}:");
     let mut any = false;
     for item in &parsed.module.items {
-        let mersey_front::ast::Item::Import(im) = item else { continue };
+        let mersey_front::ast::Item::Import(im) = item else {
+            continue;
+        };
         any = true;
         let names = match &im.clause {
             None => "(side effects)".to_string(),
@@ -596,8 +607,16 @@ fn sha256_base64(data: &[u8]) -> String {
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(B64[(n >> 18) as usize & 63] as char);
         out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            B64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            B64[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }

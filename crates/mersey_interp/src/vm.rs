@@ -56,7 +56,10 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn pos_at(&self, pc: usize) -> Pos {
-        self.positions.get(pc).copied().unwrap_or(Pos { line: 0, col: 0 })
+        self.positions
+            .get(pc)
+            .copied()
+            .unwrap_or(Pos { line: 0, col: 0 })
     }
 }
 
@@ -175,16 +178,16 @@ pub(crate) fn compile_module_stmts(module: &'static Module) -> Option<Rc<Chunk>>
     compile_module_stmts_in(module, "")
 }
 
-pub(crate) fn compile_module_stmts_in(
-    module: &'static Module,
-    spec: &str,
-) -> Option<Rc<Chunk>> {
+pub(crate) fn compile_module_stmts_in(module: &'static Module, spec: &str) -> Option<Rc<Chunk>> {
     let mut c = C::new();
     c.module = spec.to_string();
     for item in &module.items {
         match item {
             Item::Stmt(s) => c.stmt(s),
-            Item::Export(ExportDecl { kind: ExportKind::Var(v), .. }) => c.var_stmt(v),
+            Item::Export(ExportDecl {
+                kind: ExportKind::Var(v),
+                ..
+            }) => c.var_stmt(v),
             _ => {}
         }
     }
@@ -214,7 +217,11 @@ pub fn listing(module: &'static Module) -> String {
     dump("<top-level>", compile_module_stmts(module));
     for item in &module.items {
         let d = match item {
-            Item::Decl(d) | Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => d,
+            Item::Decl(d)
+            | Item::Export(ExportDecl {
+                kind: ExportKind::Decl(d),
+                ..
+            }) => d,
             _ => continue,
         };
         match d {
@@ -224,8 +231,15 @@ pub fn listing(module: &'static Module) -> String {
             Decl::Class(cl) => {
                 for m in &cl.members {
                     match m {
-                        ClassMember::Method { name, body: Some(b), .. } => {
-                            dump(&format!("{}.{name}", cl.name.text), compile_fn(&FnBody::Block(b)));
+                        ClassMember::Method {
+                            name,
+                            body: Some(b),
+                            ..
+                        } => {
+                            dump(
+                                &format!("{}.{name}", cl.name.text),
+                                compile_fn(&FnBody::Block(b)),
+                            );
                         }
                         ClassMember::Ctor { body, .. } => {
                             dump(
@@ -246,9 +260,17 @@ pub fn listing(module: &'static Module) -> String {
 fn annotate(ch: &Chunk, op: &Op) -> String {
     match op {
         Op::Const(i) => format!("        ; {}", to_display(&ch.consts[*i as usize])),
-        Op::LoadName(i) | Op::StoreName(i) | Op::DeclareName(i) | Op::GetMember(i, _)
-        | Op::SetMember(i, _) | Op::CallMethod(i, _) | Op::CallMethodV(i) | Op::NewNamed(i, _)
-        | Op::NewNamedV(i) | Op::SuperMember(i) | Op::CallSuperMethod(i, _)
+        Op::LoadName(i)
+        | Op::StoreName(i)
+        | Op::DeclareName(i)
+        | Op::GetMember(i, _)
+        | Op::SetMember(i, _)
+        | Op::CallMethod(i, _)
+        | Op::CallMethodV(i)
+        | Op::NewNamed(i, _)
+        | Op::NewNamedV(i)
+        | Op::SuperMember(i)
+        | Op::CallSuperMethod(i, _)
         | Op::RecordSetField(i) => {
             format!("        ; {}", ch.names[*i as usize])
         }
@@ -324,7 +346,9 @@ impl C {
             protos: self.protos,
             positions: self.positions,
             module: self.module,
-            caches: (0..self.n_caches).map(|_| std::cell::Cell::new(ICache::default())).collect(),
+            caches: (0..self.n_caches)
+                .map(|_| std::cell::Cell::new(ICache::default()))
+                .collect(),
         };
         debug_assert!(verify(&chunk).is_ok(), "verifier: {:?}", verify(&chunk));
         Some(Rc::new(chunk))
@@ -451,7 +475,12 @@ impl C {
                 c.emit(Op::JumpIfTrue(start));
                 (usize::MAX, cont, vec![]) // no back-jump needed
             }),
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 self.emit(Op::PushScope);
                 self.scope_depth += 1;
                 match init {
@@ -484,7 +513,13 @@ impl C {
                 self.scope_depth -= 1;
                 self.emit(Op::PopScope);
             }
-            Stmt::ForOf { is_await, target, iter, body, .. } => {
+            Stmt::ForOf {
+                is_await,
+                target,
+                iter,
+                body,
+                ..
+            } => {
                 if *is_await {
                     return self.bail();
                 }
@@ -593,9 +628,13 @@ impl C {
                 self.expr(e);
                 self.emit(Op::Throw);
             }
-            Stmt::Try { block, catches, finally } => {
-                if finally.is_some() && (contains_abrupt(block)
-                    || catches.iter().any(|c| contains_abrupt(&c.block)))
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
+                if finally.is_some()
+                    && (contains_abrupt(block) || catches.iter().any(|c| contains_abrupt(&c.block)))
                 {
                     return self.bail(); // AST tier handles abrupt-through-finally
                 }
@@ -798,7 +837,11 @@ impl C {
                 self.emit(Op::MakeArray);
                 for el in elems {
                     self.expr(&el.expr);
-                    self.emit(if el.spread { Op::ArraySpread } else { Op::ArrayPush1 });
+                    self.emit(if el.spread {
+                        Op::ArraySpread
+                    } else {
+                        Op::ArrayPush1
+                    });
                 }
             }
             Expr::Record(fields) => {
@@ -824,7 +867,12 @@ impl C {
                 }
             }
             Expr::Paren(inner) => self.expr(inner),
-            Expr::Arrow { is_async, params, body, .. } => {
+            Expr::Arrow {
+                is_async,
+                params,
+                body,
+                ..
+            } => {
                 let data = Rc::new(FnData::new(
                     "<arrow>".to_string(),
                     *is_async,
@@ -906,9 +954,16 @@ impl C {
                 self.types.push(ty);
                 self.emit(Op::CastOp(i, *wrapping));
             }
-            Expr::Call { callee, args, optional, .. } => self.call(callee, args, *optional),
+            Expr::Call {
+                callee,
+                args,
+                optional,
+                ..
+            } => self.call(callee, args, *optional),
             Expr::New { ty, args } => {
-                let Type::Named { name, .. } = ty else { return self.bail() };
+                let Type::Named { name, .. } = ty else {
+                    return self.bail();
+                };
                 // Keep the full path: `new geo.Point(…)` resolves through a
                 // namespace import at runtime.
                 let n = self.name(name);
@@ -922,7 +977,11 @@ impl C {
                     }
                 }
             }
-            Expr::Member { obj, name, optional } => {
+            Expr::Member {
+                obj,
+                name,
+                optional,
+            } => {
                 self.expr(obj);
                 let i = self.name(name);
                 if *optional {
@@ -934,7 +993,11 @@ impl C {
                     self.emit_get_member(i);
                 }
             }
-            Expr::Index { obj, index, optional } => {
+            Expr::Index {
+                obj,
+                index,
+                optional,
+            } => {
                 self.expr(obj);
                 if *optional {
                     let j = self.emit(Op::OnNullJump(0));
@@ -985,14 +1048,27 @@ impl C {
         self.emit(Op::MakeArray);
         for a in args {
             self.expr(&a.expr);
-            self.emit(if a.spread { Op::ArraySpread } else { Op::ArrayPush1 });
+            self.emit(if a.spread {
+                Op::ArraySpread
+            } else {
+                Op::ArrayPush1
+            });
         }
     }
 
     fn call(&mut self, callee: &'static Expr, args: &'static [ArrayElem], optional: bool) {
-        if let Expr::Member { obj, name, optional: mopt } = callee {
+        if let Expr::Member {
+            obj,
+            name,
+            optional: mopt,
+        } = callee
+        {
             self.expr(obj);
-            let jnull = if *mopt || optional { Some(self.emit(Op::OnNullJump(0))) } else { None };
+            let jnull = if *mopt || optional {
+                Some(self.emit(Op::OnNullJump(0)))
+            } else {
+                None
+            };
             let n = self.name(name);
             match self.args_fixed(args) {
                 Some(argc) => {
@@ -1020,7 +1096,11 @@ impl C {
             return;
         }
         self.expr(callee);
-        let jnull = if optional { Some(self.emit(Op::OnNullJump(0))) } else { None };
+        let jnull = if optional {
+            Some(self.emit(Op::OnNullJump(0)))
+        } else {
+            None
+        };
         match self.args_fixed(args) {
             Some(argc) => {
                 self.emit(Op::Call(argc));
@@ -1302,10 +1382,17 @@ fn contains_abrupt(stmts: &[Stmt]) -> bool {
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => stmt(body),
             Stmt::For { body, .. } | Stmt::ForOf { body, .. } => stmt(body),
             Stmt::Switch { clauses, .. } => clauses.iter().any(|c| c.body.iter().any(stmt)),
-            Stmt::Try { block, catches, finally } => {
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
                 block.iter().any(stmt)
                     || catches.iter().any(|c| c.block.iter().any(stmt))
-                    || finally.as_ref().map(|f| f.iter().any(stmt)).unwrap_or(false)
+                    || finally
+                        .as_ref()
+                        .map(|f| f.iter().any(stmt))
+                        .unwrap_or(false)
             }
             Stmt::Labeled { body, .. } => stmt(body),
             _ => false,
@@ -1326,9 +1413,7 @@ pub(crate) fn run_chunk(i: &mut Interp, chunk: &Chunk, env: Env) -> VResult {
     };
     match exec(i, chunk, &mut state, None)? {
         Flow::Done(v) => Ok(v),
-        Flow::Await(_) => {
-            Err(i.throw_public("TypeError", "`await` outside an async function"))
-        }
+        Flow::Await(_) => Err(i.throw_public("TypeError", "`await` outside an async function")),
         Flow::Yield(_) => Err(i.throw_public("TypeError", "`yield` outside a generator")),
     }
 }
@@ -1581,7 +1666,10 @@ fn exec(
                         if ic.class == b.class.id {
                             Some(b.slots[ic.slot as usize].clone())
                         } else if let Some(slot) = b.class.slot_of(&chunk.names[ni as usize]) {
-                            chunk.caches[ci as usize].set(ICache { class: b.class.id, slot });
+                            chunk.caches[ci as usize].set(ICache {
+                                class: b.class.id,
+                                slot,
+                            });
                             Some(b.slots[slot as usize].clone())
                         } else {
                             None // a method, a getter, or an error: slow path
@@ -1595,8 +1683,10 @@ fn exec(
                         let name = &chunk.names[ni as usize];
                         throwing!(match i.get_member(&o, name) {
                             Ok(Some(v)) => Ok(v),
-                            Ok(None) => Err(i
-                                .throw("TypeError", format!("no member `{name}` on {}", kind_of(&o)))),
+                            Ok(None) => Err(i.throw(
+                                "TypeError",
+                                format!("no member `{name}` on {}", kind_of(&o))
+                            )),
                             Err(t) => Err(t),
                         })
                     }
@@ -1614,7 +1704,10 @@ fn exec(
                             b.slots[ic.slot as usize] = v.clone();
                             true
                         } else if let Some(slot) = b.class.slot_of(&chunk.names[ni as usize]) {
-                            chunk.caches[ci as usize].set(ICache { class: b.class.id, slot });
+                            chunk.caches[ci as usize].set(ICache {
+                                class: b.class.id,
+                                slot,
+                            });
                             b.slots[slot as usize] = v.clone();
                             true
                         } else {
@@ -1715,9 +1808,9 @@ fn exec(
                     // A generator: drain it.
                     Value::IterV(_) => throwing!(i.drain_iter(&v)),
                     _ => {
-                        throwing!(i.type_error::<()>(
-                            "`for of` needs an array, string, or host iterable"
-                        ));
+                        throwing!(
+                            i.type_error::<()>("`for of` needs an array, string, or host iterable")
+                        );
                         continue;
                     }
                 };

@@ -5,10 +5,7 @@
 use crate::ast::*;
 
 pub fn dump(m: &Module) -> String {
-    let doc = Doc::Node(
-        "module".to_string(),
-        m.items.iter().map(item_doc).collect(),
-    );
+    let doc = Doc::Node("module".to_string(), m.items.iter().map(item_doc).collect());
     let mut out = String::new();
     render(&doc, 0, &mut out);
     out.push('\n');
@@ -71,7 +68,11 @@ fn item_doc(it: &Item) -> Doc {
             Doc::Line(format!("(import \"{}\" {clause})", im.from))
         }
         Item::Export(ex) => {
-            let head = if ex.is_extern { "export extern" } else { "export" };
+            let head = if ex.is_extern {
+                "export extern"
+            } else {
+                "export"
+            };
             match &ex.kind {
                 ExportKind::Decl(d) => Doc::Node(head.to_string(), vec![decl_doc(d)]),
                 ExportKind::Var(v) => Doc::Node(head.to_string(), vec![var_doc(v)]),
@@ -145,19 +146,27 @@ fn decl_doc(d: &Decl) -> Doc {
                 .members
                 .iter()
                 .map(|m| match m {
-                    InterfaceMember::Prop { readonly, name, optional, ty: t } => {
+                    InterfaceMember::Prop {
+                        readonly,
+                        name,
+                        optional,
+                        ty: t,
+                    } => {
                         let ro = if *readonly { "readonly " } else { "" };
                         let opt = if *optional { "?" } else { "" };
                         Doc::Line(format!("(prop {ro}{name}{opt} {})", ty(t)))
                     }
-                    InterfaceMember::Method { name, type_params, params, ret } => Doc::Line(
-                        format!(
-                            "(method {name}{} {} : {})",
-                            tparams(type_params),
-                            params_str(params),
-                            ty(ret)
-                        ),
-                    ),
+                    InterfaceMember::Method {
+                        name,
+                        type_params,
+                        params,
+                        ret,
+                    } => Doc::Line(format!(
+                        "(method {name}{} {} : {})",
+                        tparams(type_params),
+                        params_str(params),
+                        ty(ret)
+                    )),
                 })
                 .collect();
             Doc::Node(head, kids)
@@ -204,15 +213,33 @@ fn mods_str(m: &MemberMods) -> String {
 
 fn member_doc(m: &ClassMember) -> Doc {
     match m {
-        ClassMember::Field { mods, readonly, name, ty: t, init } => {
+        ClassMember::Field {
+            mods,
+            readonly,
+            name,
+            ty: t,
+            init,
+        } => {
             let ro = if *readonly { "readonly " } else { "" };
             let init = match init {
                 Some(e) => format!(" = {}", expr(e)),
                 None => String::new(),
             };
-            Doc::Line(format!("(field {}{ro}{name} {}{init})", mods_str(mods), ty(t)))
+            Doc::Line(format!(
+                "(field {}{ro}{name} {}{init})",
+                mods_str(mods),
+                ty(t)
+            ))
         }
-        ClassMember::Method { mods, is_async, name, type_params, params, ret, body } => {
+        ClassMember::Method {
+            mods,
+            is_async,
+            name,
+            type_params,
+            params,
+            ret,
+            body,
+        } => {
             let a = if *is_async { "async " } else { "" };
             let head = format!(
                 "method {}{a}{name}{} {} : {}",
@@ -226,15 +253,29 @@ fn member_doc(m: &ClassMember) -> Doc {
                 None => Doc::Line(format!("({head} ;)")),
             }
         }
-        ClassMember::Getter { mods, name, ret, body } => Doc::Node(
+        ClassMember::Getter {
+            mods,
+            name,
+            ret,
+            body,
+        } => Doc::Node(
             format!("get {}{name} : {}", mods_str(mods), ty(ret)),
             body.iter().map(stmt_doc).collect(),
         ),
-        ClassMember::Setter { mods, name, param, body } => Doc::Node(
+        ClassMember::Setter {
+            mods,
+            name,
+            param,
+            body,
+        } => Doc::Node(
             format!("set {}{name} {}", mods_str(mods), param_str(param)),
             body.iter().map(stmt_doc).collect(),
         ),
-        ClassMember::Ctor { access, params, body } => {
+        ClassMember::Ctor {
+            access,
+            params,
+            body,
+        } => {
             let a = match access {
                 Some(a) => format!("{} ", a.as_str()),
                 None => String::new(),
@@ -291,26 +332,44 @@ fn stmt_doc(s: &Stmt) -> Doc {
         Stmt::DoWhile { body, cond } => {
             Doc::Node(format!("do-while {}", expr(cond)), vec![stmt_doc(body)])
         }
-        Stmt::For { init, cond, step, body } => {
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
             let init = match init {
                 None => String::new(),
                 Some(ForInit::Var(v)) => var_str(v),
-                Some(ForInit::Exprs(es)) => {
-                    es.iter().map(expr).collect::<Vec<_>>().join(", ")
-                }
+                Some(ForInit::Exprs(es)) => es.iter().map(expr).collect::<Vec<_>>().join(", "),
             };
             let cond = cond.as_ref().map(expr).unwrap_or_default();
             let step = step.iter().map(expr).collect::<Vec<_>>().join(", ");
-            Doc::Node(format!("for [{init} ; {cond} ; {step}]"), vec![stmt_doc(body)])
+            Doc::Node(
+                format!("for [{init} ; {cond} ; {step}]"),
+                vec![stmt_doc(body)],
+            )
         }
-        Stmt::ForOf { is_await, kind, target, ty: t, iter, body } => {
+        Stmt::ForOf {
+            is_await,
+            kind,
+            target,
+            ty: t,
+            iter,
+            body,
+        } => {
             let aw = if *is_await { "await " } else { "" };
             let ann = match t {
                 Some(t) => format!(" {}", ty(t)),
                 None => String::new(),
             };
             Doc::Node(
-                format!("for-of {aw}{} {}{ann} of {}", kind.as_str(), pattern(target), expr(iter)),
+                format!(
+                    "for-of {aw}{} {}{ann} of {}",
+                    kind.as_str(),
+                    pattern(target),
+                    expr(iter)
+                ),
                 vec![stmt_doc(body)],
             )
         }
@@ -340,7 +399,11 @@ fn stmt_doc(s: &Stmt) -> Doc {
             None => "(return)".to_string(),
         }),
         Stmt::Throw(e) => Doc::Line(format!("(throw {})", expr(e))),
-        Stmt::Try { block, catches, finally } => {
+        Stmt::Try {
+            block,
+            catches,
+            finally,
+        } => {
             let mut kids = vec![Doc::Node(
                 "block".to_string(),
                 block.iter().map(stmt_doc).collect(),
@@ -352,7 +415,10 @@ fn stmt_doc(s: &Stmt) -> Doc {
                 ));
             }
             if let Some(f) = finally {
-                kids.push(Doc::Node("finally".to_string(), f.iter().map(stmt_doc).collect()));
+                kids.push(Doc::Node(
+                    "finally".to_string(),
+                    f.iter().map(stmt_doc).collect(),
+                ));
             }
             Doc::Node("try".to_string(), kids)
         }
@@ -384,7 +450,10 @@ fn expr(e: &Expr) -> String {
             let fs: Vec<String> = fields
                 .iter()
                 .map(|f| match f {
-                    RecordField::Named { name, value: Some(v) } => {
+                    RecordField::Named {
+                        name,
+                        value: Some(v),
+                    } => {
                         format!("({} {})", name.text, expr(v))
                     }
                     RecordField::Named { name, value: None } => format!("({})", name.text),
@@ -394,7 +463,12 @@ fn expr(e: &Expr) -> String {
             format!("(record {})", fs.join(" "))
         }
         Expr::Paren(e) => format!("(paren {})", expr(e)),
-        Expr::Arrow { is_async, params, ret, body } => {
+        Expr::Arrow {
+            is_async,
+            params,
+            ret,
+            body,
+        } => {
             let a = if *is_async { "async-" } else { "" };
             let r = match ret {
                 Some(t) => format!(" : {}", ty(t)),
@@ -410,7 +484,11 @@ fn expr(e: &Expr) -> String {
             format!("({a}arrow {}{r} {b})", params_str(params))
         }
         Expr::Unary { op, expr: e, .. } => format!("({} {})", op.as_str(), expr(e)),
-        Expr::Update { prefix, inc, expr: e } => {
+        Expr::Update {
+            prefix,
+            inc,
+            expr: e,
+        } => {
             let op = if *inc { "++" } else { "--" };
             let side = if *prefix { "pre" } else { "post" };
             format!("({op}{side} {})", expr(e))
@@ -422,11 +500,20 @@ fn expr(e: &Expr) -> String {
         Expr::Cond { cond, then, els } => {
             format!("(?: {} {} {})", expr(cond), expr(then), expr(els))
         }
-        Expr::Cast { expr: e, wrapping, ty: t } => {
+        Expr::Cast {
+            expr: e,
+            wrapping,
+            ty: t,
+        } => {
             let kw = if *wrapping { "as-wrapping" } else { "as" };
             format!("({kw} {} {})", expr(e), ty(t))
         }
-        Expr::Call { callee, type_args, args, optional } => {
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            optional,
+        } => {
             let q = if *optional { "?." } else { "" };
             let ta = if type_args.is_empty() {
                 String::new()
@@ -437,11 +524,19 @@ fn expr(e: &Expr) -> String {
             format!("({q}call {}{ta} {})", expr(callee), elems_str(args))
         }
         Expr::New { ty: t, args } => format!("(new {} {})", ty(t), elems_str(args)),
-        Expr::Member { obj, name, optional } => {
+        Expr::Member {
+            obj,
+            name,
+            optional,
+        } => {
             let op = if *optional { "?." } else { "." };
             format!("({op} {} {name})", expr(obj))
         }
-        Expr::Index { obj, index, optional } => {
+        Expr::Index {
+            obj,
+            index,
+            optional,
+        } => {
             let op = if *optional { "?.[]" } else { "[]" };
             format!("({op} {} {})", expr(obj), expr(index))
         }
@@ -575,7 +670,11 @@ fn ty(t: &Type) -> String {
                 .collect();
             format!("{{{}}}", list.join(", "))
         }
-        Type::Function { type_params, params, ret } => {
+        Type::Function {
+            type_params,
+            params,
+            ret,
+        } => {
             let list: Vec<String> = params
                 .iter()
                 .map(|p| {
@@ -584,7 +683,12 @@ fn ty(t: &Type) -> String {
                     format!("{rest}{}{opt}: {}", p.name, ty(&p.ty))
                 })
                 .collect();
-            format!("({}({}) => {})", tparams(type_params), list.join(", "), ty(ret))
+            format!(
+                "({}({}) => {})",
+                tparams(type_params),
+                list.join(", "),
+                ty(ret)
+            )
         }
     }
 }

@@ -66,7 +66,10 @@ fn run_program_with(bytes: &[u8], name: &str, use_vm: bool) -> String {
     }
     let module: &'static _ = Box::leak(Box::new(parsed.module));
     let buffer = Rc::new(RefCell::new(String::new()));
-    let host = Box::new(TestHost { out: buffer.clone(), dom: Default::default() });
+    let host = Box::new(TestHost {
+        out: buffer.clone(),
+        dom: Default::default(),
+    });
     let mut interp = new_interp(host);
     interp.use_vm = use_vm;
     let err = match interp.run_module(module) {
@@ -132,5 +135,10 @@ fn runtime_conformance() {
             ));
         }
     }
-    assert!(failures.is_empty(), "{} failure(s):\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

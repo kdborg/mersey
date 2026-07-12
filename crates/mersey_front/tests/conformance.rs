@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use mersey_front::{astdump, bind, check, lexer, parser, source::{self, SourceFile}};
+use mersey_front::{
+    astdump, bind, check, lexer, parser,
+    source::{self, SourceFile},
+};
 
 fn conformance_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
@@ -85,7 +88,11 @@ fn run_dir(stage: &str, dump: fn(&SourceFile) -> String) {
         .filter(|p| p.extension().is_some_and(|x| x == "mersey"))
         .collect();
     cases.sort();
-    assert!(!cases.is_empty(), "no conformance cases found in {}", dir.display());
+    assert!(
+        !cases.is_empty(),
+        "no conformance cases found in {}",
+        dir.display()
+    );
 
     let mut failures = Vec::new();
     for case in &cases {

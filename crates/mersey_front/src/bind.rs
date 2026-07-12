@@ -27,27 +27,54 @@ pub struct BindOutput {
 
 /// Names every module sees without importing: the built-in error classes
 /// (spec §4.6 — only `Error` subclasses may be thrown).
-const PRELUDE_CLASSES: &[&str] = &["Error", "RangeError", "TypeError", "Map", "Set", "Element", "Bytes", "Regex", "Iter"];
+const PRELUDE_CLASSES: &[&str] = &[
+    "Error",
+    "RangeError",
+    "TypeError",
+    "Map",
+    "Set",
+    "Element",
+    "Bytes",
+    "Regex",
+    "Iter",
+];
 
 pub fn bind(module: &Module) -> BindOutput {
     let mut prelude = Scope::default();
     for name in PRELUDE_CLASSES {
         let pos = Pos { line: 0, col: 0 };
-        prelude.values.insert(name.to_string(), VSym { kind: VKind::Class, tdz: false, pos });
-        prelude.types.insert(name.to_string(), TSym { kind: TKind::Class, pos });
+        prelude.values.insert(
+            name.to_string(),
+            VSym {
+                kind: VKind::Class,
+                tdz: false,
+                pos,
+            },
+        );
+        prelude.types.insert(
+            name.to_string(),
+            TSym {
+                kind: TKind::Class,
+                pos,
+            },
+        );
     }
     // Ambient web-platform TYPE names (spec §5.4: types are ambient,
     // values require an import).
     for name in &crate::webapi::webapi().type_names {
-        prelude
-            .types
-            .entry(name.clone())
-            .or_insert(TSym { kind: TKind::Class, pos: Pos { line: 0, col: 0 } });
+        prelude.types.entry(name.clone()).or_insert(TSym {
+            kind: TKind::Class,
+            pos: Pos { line: 0, col: 0 },
+        });
     }
     let mut b = Binder {
         scopes: vec![prelude, Scope::default()],
         diags: Vec::new(),
-        ctx: Ctx { in_function: false, in_async: false, class: ClassCtx::None },
+        ctx: Ctx {
+            in_function: false,
+            in_async: false,
+            class: ClassCtx::None,
+        },
         labels: Vec::new(),
         loop_depth: 0,
         switch_depth: 0,
@@ -123,8 +150,8 @@ struct Binder {
 }
 
 const PREDEFINED_TYPES: &[&str] = &[
-    "bool", "char", "string", "bigint", "bigdec", "void", "int", "int8", "int16", "int32",
-    "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
+    "bool", "char", "string", "bigint", "bigdec", "void", "int", "int8", "int16", "int32", "int64",
+    "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
 ];
 
 impl Binder {
@@ -153,7 +180,14 @@ impl Binder {
             self.error(Code::DuplicateDeclaration, msg, pos);
             return;
         }
-        scope.values.insert(name.text.clone(), VSym { kind, tdz, pos: name.pos });
+        scope.values.insert(
+            name.text.clone(),
+            VSym {
+                kind,
+                tdz,
+                pos: name.pos,
+            },
+        );
     }
 
     fn declare_type(&mut self, name: &Name, kind: TKind) {
@@ -167,7 +201,13 @@ impl Binder {
             self.error(Code::DuplicateDeclaration, msg, pos);
             return;
         }
-        scope.types.insert(name.text.clone(), TSym { kind, pos: name.pos });
+        scope.types.insert(
+            name.text.clone(),
+            TSym {
+                kind,
+                pos: name.pos,
+            },
+        );
     }
 
     /// Flip a pre-registered `let`/`const` out of its TDZ once its
@@ -195,9 +235,13 @@ impl Binder {
         }
         // Targeted messages for the JS constructs Mersey removed (§1.1).
         let msg = match name.text.as_str() {
-            "undefined" => "there is no `undefined`; the null type is `T?` with `null` (§3.2)".into(),
+            "undefined" => {
+                "there is no `undefined`; the null type is `T?` with `null` (§3.2)".into()
+            }
             "eval" => "there is no `eval`; no string ever becomes code (§5.1)".into(),
-            "arguments" => "there is no `arguments`; use a rest parameter `...args: T[]` (§4.4)".into(),
+            "arguments" => {
+                "there is no `arguments`; use a rest parameter `...args: T[]` (§4.4)".into()
+            }
             "require" => "use `import { … } from \"…\";` (§4.5)".into(),
             "globalThis" | "window" => {
                 "there is no global object; import what you need (§5.4)".into()
@@ -217,7 +261,10 @@ impl Binder {
     }
 
     fn value_exists(&self, text: &str) -> bool {
-        self.scopes.iter().rev().any(|s| s.values.contains_key(text))
+        self.scopes
+            .iter()
+            .rev()
+            .any(|s| s.values.contains_key(text))
     }
 
     // ---- module ------------------------------------------------------------
@@ -362,7 +409,11 @@ impl Binder {
                 &f.params,
                 f.ret.as_ref(),
                 &f.body,
-                Ctx { in_function: true, in_async: f.is_async, class: ClassCtx::None },
+                Ctx {
+                    in_function: true,
+                    in_async: f.is_async,
+                    class: ClassCtx::None,
+                },
             ),
             Decl::Class(c) => self.bind_class(c),
             Decl::Interface(i) => {
@@ -374,7 +425,12 @@ impl Binder {
                 for m in &i.members {
                     match m {
                         InterfaceMember::Prop { ty, .. } => self.bind_type(ty),
-                        InterfaceMember::Method { type_params, params, ret, .. } => {
+                        InterfaceMember::Method {
+                            type_params,
+                            params,
+                            ret,
+                            ..
+                        } => {
                             self.push_scope();
                             self.bind_type_params(type_params);
                             for p in params {
@@ -481,7 +537,14 @@ impl Binder {
                         self.ctx = saved;
                     }
                 }
-                ClassMember::Method { is_async, type_params, params, ret, body, .. } => {
+                ClassMember::Method {
+                    is_async,
+                    type_params,
+                    params,
+                    ret,
+                    body,
+                    ..
+                } => {
                     let mut ctx = in_class(false);
                     ctx.in_async = *is_async;
                     if let Some(body) = body {
@@ -502,7 +565,13 @@ impl Binder {
                     self.bind_fn_body(&[], &[], Some(ret), body, in_class(false));
                 }
                 ClassMember::Setter { param, body, .. } => {
-                    self.bind_fn_body(&[], std::slice::from_ref(param), None, body, in_class(false));
+                    self.bind_fn_body(
+                        &[],
+                        std::slice::from_ref(param),
+                        None,
+                        body,
+                        in_class(false),
+                    );
                 }
                 ClassMember::Ctor { params, body, .. } => {
                     self.bind_fn_body(&[], params, None, body, in_class(true));
@@ -603,7 +672,12 @@ impl Binder {
                 self.loop_depth -= 1;
                 self.bind_expr(cond);
             }
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 self.push_scope();
                 match init {
                     Some(ForInit::Var(v)) => {
@@ -628,7 +702,14 @@ impl Binder {
                 self.loop_depth -= 1;
                 self.pop_scope();
             }
-            Stmt::ForOf { kind, target, ty, iter, body, .. } => {
+            Stmt::ForOf {
+                kind,
+                target,
+                ty,
+                iter,
+                body,
+                ..
+            } => {
                 self.push_scope();
                 // The iterable is evaluated before the binding exists.
                 self.bind_expr(iter);
@@ -701,14 +782,22 @@ impl Binder {
             },
             Stmt::Return { value, pos } => {
                 if !self.ctx.in_function {
-                    self.error(Code::ReturnOutsideFunction, "`return` outside a function", *pos);
+                    self.error(
+                        Code::ReturnOutsideFunction,
+                        "`return` outside a function",
+                        *pos,
+                    );
                 }
                 if let Some(v) = value {
                     self.bind_expr(v);
                 }
             }
             Stmt::Throw(e) => self.bind_expr(e),
-            Stmt::Try { block, catches, finally } => {
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
                 self.bind_block(block);
                 for c in catches {
                     self.bind_type(&c.ty);
@@ -802,7 +891,10 @@ impl Binder {
             Expr::Record(fields) => {
                 for f in fields {
                     match f {
-                        RecordField::Named { name, value: Some(v) } => {
+                        RecordField::Named {
+                            name,
+                            value: Some(v),
+                        } => {
                             let _ = name;
                             self.bind_expr(v);
                         }
@@ -815,7 +907,12 @@ impl Binder {
                 }
             }
             Expr::Paren(e) => self.bind_expr(e),
-            Expr::Arrow { is_async, params, ret, body } => {
+            Expr::Arrow {
+                is_async,
+                params,
+                ret,
+                body,
+            } => {
                 // Arrows inherit `this` (class context survives); they do
                 // not inherit async-ness.
                 let ctx = Ctx {
@@ -888,7 +985,12 @@ impl Binder {
                 self.bind_expr(expr);
                 self.bind_type(ty);
             }
-            Expr::Call { callee, type_args, args, .. } => {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => {
                 self.bind_expr(callee);
                 for t in type_args {
                     self.bind_type(t);
@@ -909,7 +1011,13 @@ impl Binder {
                 self.bind_expr(index);
             }
             Expr::SuperMember { pos, .. } => {
-                if !matches!(self.ctx.class, ClassCtx::InClass { has_super: true, .. }) {
+                if !matches!(
+                    self.ctx.class,
+                    ClassCtx::InClass {
+                        has_super: true,
+                        ..
+                    }
+                ) {
                     self.error(
                         Code::InvalidThisSuper,
                         "`super` requires a class with an `extends` clause",
@@ -920,7 +1028,10 @@ impl Binder {
             Expr::SuperCall { args, pos } => {
                 if !matches!(
                     self.ctx.class,
-                    ClassCtx::InClass { has_super: true, in_ctor: true }
+                    ClassCtx::InClass {
+                        has_super: true,
+                        in_ctor: true
+                    }
                 ) {
                     self.error(
                         Code::InvalidThisSuper,
@@ -1008,7 +1119,11 @@ impl Binder {
                     self.bind_type(&m.ty);
                 }
             }
-            Type::Function { type_params, params, ret } => {
+            Type::Function {
+                type_params,
+                params,
+                ret,
+            } => {
                 self.push_scope();
                 self.bind_type_params(type_params);
                 for p in params {

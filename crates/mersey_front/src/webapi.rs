@@ -24,12 +24,18 @@ pub struct WebApi {
 pub fn webapi() -> &'static WebApi {
     static CELL: OnceLock<WebApi> = OnceLock::new();
     CELL.get_or_init(|| {
-        let src = SourceFile { name: "<webapi>".into(), text: SOURCE.to_string() };
+        let src = SourceFile {
+            name: "<webapi>".into(),
+            text: SOURCE.to_string(),
+        };
         let out = parser::parse(&src);
         debug_assert!(
             out.diagnostics.is_empty(),
             "generated webapi must parse cleanly: {}",
-            out.diagnostics.first().map(|d| d.to_string()).unwrap_or_default()
+            out.diagnostics
+                .first()
+                .map(|d| d.to_string())
+                .unwrap_or_default()
         );
         let module: &'static Module = Box::leak(Box::new(out.module));
         let mut globals = Vec::new();
@@ -55,13 +61,21 @@ pub fn webapi() -> &'static WebApi {
                 _ => {}
             }
         }
-        WebApi { module, globals, type_names }
+        WebApi {
+            module,
+            globals,
+            type_names,
+        }
     })
 }
 
 /// The declared type of an ambient global (for `browser:dom` imports).
 pub fn global_type(name: &str) -> Option<&'static Type> {
-    webapi().globals.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
+    webapi()
+        .globals
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, t)| *t)
 }
 
 /// Is `name` an ambient global at all? (Interface objects included, so

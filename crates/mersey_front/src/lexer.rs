@@ -65,7 +65,11 @@ impl<'s> Lexer<'s> {
             };
             self.scan_token(c);
         }
-        LexOutput { tokens: self.tokens, comments: self.comments, diagnostics: self.diagnostics }
+        LexOutput {
+            tokens: self.tokens,
+            comments: self.comments,
+            diagnostics: self.diagnostics,
+        }
     }
 
     // ---- cursor ----------------------------------------------------------
@@ -85,7 +89,10 @@ impl<'s> Lexer<'s> {
     }
 
     fn pos(&self) -> Pos {
-        Pos { line: self.line, col: self.col }
+        Pos {
+            line: self.line,
+            col: self.col,
+        }
     }
 
     fn bump(&mut self) -> Option<char> {
@@ -134,7 +141,11 @@ impl<'s> Lexer<'s> {
     fn emit(&mut self, kind: TokenKind) {
         self.tokens.push(Token {
             kind,
-            span: Span { start: self.start, end: self.idx, pos: self.start_pos },
+            span: Span {
+                start: self.start,
+                end: self.idx,
+                pos: self.start_pos,
+            },
         });
     }
 
@@ -164,7 +175,11 @@ impl<'s> Lexer<'s> {
                         }
                         self.bump();
                     }
-                    self.comments.push(Span { start, end: self.idx, pos });
+                    self.comments.push(Span {
+                        start,
+                        end: self.idx,
+                        pos,
+                    });
                 }
                 Some('/') if self.peek2() == Some('*') => {
                     let start = self.idx;
@@ -186,7 +201,11 @@ impl<'s> Lexer<'s> {
                             break;
                         }
                     }
-                    self.comments.push(Span { start, end: self.idx, pos: open });
+                    self.comments.push(Span {
+                        start,
+                        end: self.idx,
+                        pos: open,
+                    });
                 }
                 _ => break,
             }
@@ -310,11 +329,7 @@ impl<'s> Lexer<'s> {
                 Some('_') => {
                     let pos = self.pos();
                     if !saw_digit || last_sep_pos.is_some() {
-                        self.error_at(
-                            Code::BadDigitSeparator,
-                            "`_` must separate two digits",
-                            pos,
-                        );
+                        self.error_at(Code::BadDigitSeparator, "`_` must separate two digits", pos);
                     }
                     last_sep_pos = Some(pos);
                     self.bump();
@@ -357,14 +372,18 @@ impl<'s> Lexer<'s> {
             (NumForm::Int { .. }, "n") => TokenKind::BigInt,
             (NumForm::Int { radix: 10 }, "m") => TokenKind::BigDec,
             (NumForm::Int { radix: 10 }, "f") => TokenKind::Float { is_f32: true },
-            (NumForm::Int { .. }, s) if int_suffix(s).is_some() => {
-                TokenKind::Int { suffix: int_suffix(s) }
-            }
+            (NumForm::Int { .. }, s) if int_suffix(s).is_some() => TokenKind::Int {
+                suffix: int_suffix(s),
+            },
             (NumForm::Float | NumForm::FloatExpOnly, "") => TokenKind::Float { is_f32: false },
             (NumForm::Float | NumForm::FloatExpOnly, "f") => TokenKind::Float { is_f32: true },
             (NumForm::Float | NumForm::FloatExpOnly, "m") => TokenKind::BigDec,
             (_, s) => {
-                let what = if s.is_empty() { "here".to_string() } else { format!("`{s}`") };
+                let what = if s.is_empty() {
+                    "here".to_string()
+                } else {
+                    format!("`{s}`")
+                };
                 self.error(
                     Code::InvalidNumericSuffix,
                     format!("invalid suffix {what} on this numeric literal"),
@@ -515,7 +534,11 @@ impl<'s> Lexer<'s> {
                     return;
                 }
                 if digits == 0 {
-                    self.error_at(Code::InvalidEscape, "`\\u{}` needs at least one hex digit", pos);
+                    self.error_at(
+                        Code::InvalidEscape,
+                        "`\\u{}` needs at least one hex digit",
+                        pos,
+                    );
                 } else if overflow || char::from_u32(value).is_none() {
                     // Rejects > U+10FFFF and surrogates (spec §2.1 validity).
                     self.error_at(
@@ -547,13 +570,19 @@ impl<'s> Lexer<'s> {
         use Punct::*;
         // JS-migration: `===`/`!==` don't exist; `==` is already strict.
         if self.rest().starts_with("===") {
-            self.error(Code::UnexpectedChar, "there is no `===`; `==` is already strict (§3.5)");
+            self.error(
+                Code::UnexpectedChar,
+                "there is no `===`; `==` is already strict (§3.5)",
+            );
             self.eat_str("===");
             self.emit(TokenKind::Punct(EqEq));
             return;
         }
         if self.rest().starts_with("!==") {
-            self.error(Code::UnexpectedChar, "there is no `!==`; `!=` is already strict (§3.5)");
+            self.error(
+                Code::UnexpectedChar,
+                "there is no `!==`; `!=` is already strict (§3.5)",
+            );
             self.eat_str("!==");
             self.emit(TokenKind::Punct(NotEq));
             return;
@@ -642,7 +671,9 @@ impl<'s> Lexer<'s> {
 
 #[derive(PartialEq, Clone, Copy)]
 enum NumForm {
-    Int { radix: u32 },
+    Int {
+        radix: u32,
+    },
     Float,
     /// `1e3` — float form, but `m` suffix may still make it a bigdec.
     FloatExpOnly,
@@ -688,7 +719,10 @@ fn is_whitespace(c: char) -> bool {
         c,
         ' ' | '\t' | '\u{000B}' | '\u{000C}' | '\u{00A0}' | '\u{FEFF}'
     ) || is_line_terminator(c)
-        || matches!(c, '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}')
+        || matches!(
+            c,
+            '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+        )
 }
 
 /// Render tokens in the conformance-dump format: one `line:col kind "text"`

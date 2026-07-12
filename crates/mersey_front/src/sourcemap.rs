@@ -120,7 +120,12 @@ pub fn identity_map(source_name: &str, source_text: &str) -> String {
         }
         let l = (i + 1) as u32;
         let c = (indent + 1) as u32;
-        mappings.push(Mapping { gen_line: l, gen_col: c, src_line: l, src_col: c });
+        mappings.push(Mapping {
+            gen_line: l,
+            gen_col: c,
+            src_line: l,
+            src_col: c,
+        });
     }
     encode(source_name, source_text, mappings)
 }
@@ -152,6 +157,9 @@ mod tests {
         assert!(map.contains(r#""sources":["app.mersey"]"#));
         assert!(map.contains("sourcesContent"));
         // line 1 -> line 1, blank line 2, line 3 -> line 3 (+2 line delta = "E")
-        assert!(map.contains(r#""mappings":"AAAA;;AAEA""#), "mappings were: {map}");
+        assert!(
+            map.contains(r#""mappings":"AAAA;;AAEA""#),
+            "mappings were: {map}"
+        );
     }
 }

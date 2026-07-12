@@ -221,7 +221,12 @@ fn compile(
         b.switch_to_block(entry);
 
         // Locals as Cranelift variables.
-        let n_slots = slots.values().copied().max().map(|m| m + 1).unwrap_or(n_params);
+        let n_slots = slots
+            .values()
+            .copied()
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(n_params);
         let n_slots = n_slots.max(n_params);
         for i in 0..n_slots {
             b.declare_var(cranelift_frontend::Variable::from_u32(i as u32), val_ty);
@@ -229,7 +234,9 @@ fn compile(
         let args_ptr = b.block_params(entry)[0];
         let width = if kind == Kind::I32 { 4 } else { 8 };
         for i in 0..n_params {
-            let v = b.ins().load(val_ty, MemFlags::trusted(), args_ptr, (i * width) as i32);
+            let v = b
+                .ins()
+                .load(val_ty, MemFlags::trusted(), args_ptr, (i * width) as i32);
             b.def_var(cranelift_frontend::Variable::from_u32(i as u32), v);
         }
         for i in n_params..n_slots {
@@ -263,9 +270,7 @@ fn compile(
 
         let mut stack: Vec<ClValue> = Vec::new();
         let mut reachable = true;
-        let var = |ni: u16| {
-            cranelift_frontend::Variable::from_u32(slots[&ni] as u32)
-        };
+        let var = |ni: u16| cranelift_frontend::Variable::from_u32(slots[&ni] as u32);
 
         for (pc, op) in chunk.code.iter().enumerate() {
             // Block boundary?
@@ -317,21 +322,17 @@ fn compile(
                         let safe = b.create_block();
                         let trap = b.create_block();
                         // divisor == 0  ||  (l == INT_MIN && r == -1)
-                        let zero = b.ins().icmp_imm(
-                            cranelift_codegen::ir::condcodes::IntCC::Equal,
-                            r,
-                            0,
-                        );
+                        let zero =
+                            b.ins()
+                                .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, r, 0);
                         let min = b.ins().icmp_imm(
                             cranelift_codegen::ir::condcodes::IntCC::Equal,
                             l,
                             i32::MIN as i64,
                         );
-                        let neg1 = b.ins().icmp_imm(
-                            cranelift_codegen::ir::condcodes::IntCC::Equal,
-                            r,
-                            -1,
-                        );
+                        let neg1 =
+                            b.ins()
+                                .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, r, -1);
                         let overflow = b.ins().band(min, neg1);
                         let faulting = b.ins().bor(zero, overflow);
                         b.ins().brif(faulting, trap, &[], safe, &[]);
@@ -498,13 +499,7 @@ fn compile(
     }))
 }
 
-fn lower_bin(
-    b: &mut FunctionBuilder,
-    op: BinOp,
-    l: ClValue,
-    r: ClValue,
-    kind: Kind,
-) -> ClValue {
+fn lower_bin(b: &mut FunctionBuilder, op: BinOp, l: ClValue, r: ClValue, kind: Kind) -> ClValue {
     use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
     if kind == Kind::F64 {
         let fcmp = |b: &mut FunctionBuilder, cc: FloatCC, l, r| {

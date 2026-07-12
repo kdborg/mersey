@@ -158,7 +158,12 @@ impl Host for WasmHost {
     }
     fn web_new(&mut self, ctor: &str, args_json: &str) -> String {
         read_packed(unsafe {
-            host_web_new(ctor.as_ptr(), ctor.len(), args_json.as_ptr(), args_json.len())
+            host_web_new(
+                ctor.as_ptr(),
+                ctor.len(),
+                args_json.as_ptr(),
+                args_json.len(),
+            )
         })
     }
     fn web_intern(&mut self, name: &str) -> u32 {
@@ -169,9 +174,7 @@ impl Host for WasmHost {
         read_packed(unsafe { host_web_get_id(target, name_id) })
     }
     fn web_set_str(&mut self, target: i64, name_id: u32, value: &str) -> String {
-        read_packed(unsafe {
-            host_web_set_str(target, name_id, value.as_ptr(), value.len())
-        })
+        read_packed(unsafe { host_web_set_str(target, name_id, value.as_ptr(), value.len()) })
     }
     fn web_set_num(&mut self, target: i64, name_id: u32, value: f64) -> String {
         read_packed(unsafe { host_web_set_num(target, name_id, value) })
@@ -324,8 +327,10 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
     if failed {
         return 1;
     }
-    let refs: Vec<(String, &mersey_front::ast::Module)> =
-        parsed_modules.iter().map(|(s, m)| (s.clone(), *m)).collect();
+    let refs: Vec<(String, &mersey_front::ast::Module)> = parsed_modules
+        .iter()
+        .map(|(s, m)| (s.clone(), *m))
+        .collect();
     for (spec, out) in check::check_graph(&refs) {
         for d in &out.diagnostics {
             send(host_error, &format!("{spec}: {d}"));

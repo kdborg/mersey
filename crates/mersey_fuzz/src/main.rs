@@ -61,7 +61,9 @@ impl Host for BufHost {
 
 /// Frontend only; returns whether the program is clean.
 fn frontend(bytes: &[u8]) -> bool {
-    let Ok(src) = source::decode("<fuzz>", bytes) else { return false };
+    let Ok(src) = source::decode("<fuzz>", bytes) else {
+        return false;
+    };
     let parsed = parser::parse(&src);
     if !parsed.diagnostics.is_empty() {
         return false;
@@ -93,8 +95,11 @@ fn execute(src_text: &str, use_vm: bool) -> String {
 
 fn corpus() -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    for dir in ["tests/conformance/runtime", "tests/conformance/checker", "tests/conformance/parser"]
-    {
+    for dir in [
+        "tests/conformance/runtime",
+        "tests/conformance/checker",
+        "tests/conformance/parser",
+    ] {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
                 let p = e.path();
@@ -196,8 +201,16 @@ fn gen_program(rng: &mut Rng) -> String {
 
 fn gen_stmt(rng: &mut Rng, s: &mut String, f: usize) {
     match rng.below(5) {
-        0 => s.push_str(&format!("    x = x {} {};\n", gen_binop(rng), gen_expr(rng))),
-        1 => s.push_str(&format!("    y = (y {} x) ^ {};\n", gen_binop(rng), rng.below(97))),
+        0 => s.push_str(&format!(
+            "    x = x {} {};\n",
+            gen_binop(rng),
+            gen_expr(rng)
+        )),
+        1 => s.push_str(&format!(
+            "    y = (y {} x) ^ {};\n",
+            gen_binop(rng),
+            rng.below(97)
+        )),
         2 => s.push_str(&format!(
             "    if (x {} y) {{ x = x + 1; }} else {{ y = y - 1; }}\n",
             ["<", ">", "==", "!=", "<=", ">="][rng.below(6)]

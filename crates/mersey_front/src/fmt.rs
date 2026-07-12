@@ -94,7 +94,9 @@ pub fn format(source: &SourceFile) -> Result<String, Vec<Diagnostic>> {
             depth += 1;
         }
         let is_unary = match tok {
-            Some(TK::Punct(P::Plus | P::Minus)) => !prev.map(|(k, _)| ends_expr(k)).unwrap_or(false),
+            Some(TK::Punct(P::Plus | P::Minus)) => {
+                !prev.map(|(k, _)| ends_expr(k)).unwrap_or(false)
+            }
             Some(TK::Punct(P::Tilde | P::Bang)) => true,
             _ => false,
         };
@@ -105,7 +107,10 @@ pub fn format(source: &SourceFile) -> Result<String, Vec<Diagnostic>> {
     buf.push('\n');
 
     // Safety invariant: identical token stream after formatting.
-    let reformatted = SourceFile { name: source.name.clone(), text: buf.clone() };
+    let reformatted = SourceFile {
+        name: source.name.clone(),
+        text: buf.clone(),
+    };
     let relex = lexer::lex(&reformatted);
     let orig_kinds: Vec<TK> = out.tokens.iter().map(|t| t.kind).collect();
     let new_kinds: Vec<TK> = relex.tokens.iter().map(|t| t.kind).collect();
@@ -213,9 +218,9 @@ fn need_space(prev: TK, prev_unary: bool, cur: TK, had_ws: bool) -> bool {
         match p {
             Semi | Comma | RParen | RBracket | Dot | QuestionDot => return false,
             PlusPlus | MinusMinus if ends_expr(prev) => return false, // postfix
-            Question => return had_ws, // `T?` vs `a ? b`
-            Colon => return had_ws,    // `x: T` vs `a ? b : c`
-            Lt | Gt | Shr => return had_ws, // generics vs comparison
+            Question => return had_ws,                                // `T?` vs `a ? b`
+            Colon => return had_ws,                                   // `x: T` vs `a ? b : c`
+            Lt | Gt | Shr => return had_ws,                           // generics vs comparison
             _ => {}
         }
     }
@@ -229,7 +234,7 @@ fn need_space(prev: TK, prev_unary: bool, cur: TK, had_ws: bool) -> bool {
             Semi | Comma | Colon => return true,
             Question => return had_ws,
             Lt | Shr => return had_ws,
-            Gt => return had_ws, // generics vs comparison: preserve
+            Gt => return had_ws,            // generics vs comparison: preserve
             LBrace | RBrace => return true, // same-line `{ x }`, `} else`
             _ => {}
         }

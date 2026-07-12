@@ -23,7 +23,9 @@ pub struct CheckOutput {
 
 pub fn check(module: &Module) -> CheckOutput {
     let mut out = check_graph(&[("<main>".to_string(), module)]);
-    out.pop().map(|(_, o)| o).unwrap_or(CheckOutput { diagnostics: Vec::new() })
+    out.pop().map(|(_, o)| o).unwrap_or(CheckOutput {
+        diagnostics: Vec::new(),
+    })
 }
 
 /// Check a whole module graph (dependency-first). One `Checker` spans the
@@ -217,7 +219,10 @@ impl IntKind {
         }
     }
     fn signed(self) -> bool {
-        matches!(self, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64)
+        matches!(
+            self,
+            IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64
+        )
     }
     fn bits(self) -> u32 {
         use IntKind::*;
@@ -444,7 +449,10 @@ const PREDEFINED: &[(&str, Ty)] = &[
 ];
 
 fn predefined(name: &str) -> Option<Ty> {
-    PREDEFINED.iter().find(|(n, _)| *n == name).map(|(_, t)| t.clone())
+    PREDEFINED
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, t)| t.clone())
 }
 
 impl Checker {
@@ -481,7 +489,11 @@ impl Checker {
     }
 
     fn install_builtins(&mut self) {
-        let str_param = ParamTy { ty: Ty::Str, optional: true, rest: false };
+        let str_param = ParamTy {
+            ty: Ty::Str,
+            optional: true,
+            rest: false,
+        };
         // Error hierarchy (spec §4.6).
         let error_id = self.classes.len();
         self.error_id = error_id;
@@ -514,7 +526,8 @@ impl Checker {
             is_abstract: false,
             is_final: false,
         });
-        self.type_defs.insert("Error".into(), TypeDef::Class(error_id));
+        self.type_defs
+            .insert("Error".into(), TypeDef::Class(error_id));
         for name in ["RangeError", "TypeError"] {
             let id = self.classes.len();
             self.classes.push(ClassInfo {
@@ -563,7 +576,11 @@ impl Checker {
                 sig: FnTy {
                     tparams: vec![],
                     params: vec![
-                        ParamTy { ty: Ty::Str, optional: false, rest: false },
+                        ParamTy {
+                            ty: Ty::Str,
+                            optional: false,
+                            rest: false,
+                        },
                         ParamTy {
                             ty: Ty::Fn(Rc::new(FnTy {
                                 tparams: vec![],
@@ -593,14 +610,22 @@ impl Checker {
         for (name, params, ret) in [
             (
                 "appendChild",
-                vec![ParamTy { ty: elem_ty.clone(), optional: false, rest: false }],
+                vec![ParamTy {
+                    ty: elem_ty.clone(),
+                    optional: false,
+                    rest: false,
+                }],
                 Ty::Void,
             ),
             ("remove", vec![], Ty::Void),
         ] {
             self.classes[element_id].methods.push(MethodInfo {
                 name: name.into(),
-                sig: FnTy { tparams: vec![], params, ret },
+                sig: FnTy {
+                    tparams: vec![],
+                    params,
+                    ret,
+                },
                 access: Access::Public,
                 is_static: false,
                 is_abstract: false,
@@ -608,12 +633,20 @@ impl Checker {
                 has_override: false,
             });
         }
-        self.type_defs.insert("Element".into(), TypeDef::Class(element_id));
+        self.type_defs
+            .insert("Element".into(), TypeDef::Class(element_id));
 
         for name in ["Error", "RangeError", "TypeError"] {
-            let TypeDef::Class(id) = self.type_defs[name] else { unreachable!() };
-            self.scopes[0]
-                .insert(name.to_string(), VarInfo { ty: Ty::ClassMeta(id), is_const: true });
+            let TypeDef::Class(id) = self.type_defs[name] else {
+                unreachable!()
+            };
+            self.scopes[0].insert(
+                name.to_string(),
+                VarInfo {
+                    ty: Ty::ClassMeta(id),
+                    is_const: true,
+                },
+            );
         }
         self.install_collections();
         self.install_bytes();
@@ -636,7 +669,11 @@ impl Checker {
             methods: vec![
                 MethodInfo {
                     name: "next".into(),
-                    sig: FnTy { tparams: vec![], params: vec![], ret: nullable(tv.clone()) },
+                    sig: FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret: nullable(tv.clone()),
+                    },
                     access: Access::Public,
                     is_static: false,
                     is_abstract: false,
@@ -687,19 +724,39 @@ impl Checker {
     fn install_regex(&mut self) {
         let i32t = Ty::Int(IntKind::I32);
         let match_ty = Ty::Record(Rc::new(vec![
-            RecField { name: "text".into(), ty: Ty::Str, optional: false },
-            RecField { name: "start".into(), ty: i32t.clone(), optional: false },
-            RecField { name: "end".into(), ty: i32t.clone(), optional: false },
+            RecField {
+                name: "text".into(),
+                ty: Ty::Str,
+                optional: false,
+            },
+            RecField {
+                name: "start".into(),
+                ty: i32t.clone(),
+                optional: false,
+            },
+            RecField {
+                name: "end".into(),
+                ty: i32t.clone(),
+                optional: false,
+            },
             RecField {
                 name: "groups".into(),
                 ty: Ty::Array(Rc::new(nullable(Ty::Str))),
                 optional: false,
             },
         ]));
-        let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+        let p = |ty: Ty| ParamTy {
+            ty,
+            optional: false,
+            rest: false,
+        };
         let m = |name: &str, params: Vec<ParamTy>, ret: Ty| MethodInfo {
             name: name.into(),
-            sig: FnTy { tparams: vec![], params, ret },
+            sig: FnTy {
+                tparams: vec![],
+                params,
+                ret,
+            },
             access: Access::Public,
             is_static: false,
             is_abstract: false,
@@ -766,14 +823,22 @@ impl Checker {
         let kv = (self.fresh_tv("K"), self.fresh_tv("V"));
         let m = |tparams: Vec<TvId>, params: Vec<ParamTy>, ret: Ty| MethodInfo {
             name: String::new(),
-            sig: FnTy { tparams, params, ret },
+            sig: FnTy {
+                tparams,
+                params,
+                ret,
+            },
             access: Access::Public,
             is_static: false,
             is_abstract: false,
             is_final: false,
             has_override: false,
         };
-        let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+        let p = |ty: Ty| ParamTy {
+            ty,
+            optional: false,
+            rest: false,
+        };
         let (k, v) = (Ty::Var(kv.0), Ty::Var(kv.1));
 
         let mut map_methods = Vec::new();
@@ -817,8 +882,13 @@ impl Checker {
             is_final: true,
         });
         self.type_defs.insert("Map".into(), TypeDef::Class(map_id));
-        self.scopes[0]
-            .insert("Map".into(), VarInfo { ty: Ty::ClassMeta(map_id), is_const: true });
+        self.scopes[0].insert(
+            "Map".into(),
+            VarInfo {
+                ty: Ty::ClassMeta(map_id),
+                is_const: true,
+            },
+        );
 
         let t = self.fresh_tv("T");
         let tv = Ty::Var(t);
@@ -856,8 +926,13 @@ impl Checker {
             is_final: true,
         });
         self.type_defs.insert("Set".into(), TypeDef::Class(set_id));
-        self.scopes[0]
-            .insert("Set".into(), VarInfo { ty: Ty::ClassMeta(set_id), is_const: true });
+        self.scopes[0].insert(
+            "Set".into(),
+            VarInfo {
+                ty: Ty::ClassMeta(set_id),
+                is_const: true,
+            },
+        );
     }
 
     fn error(&mut self, code: Code, msg: impl Into<String>, pos: Pos) {
@@ -890,7 +965,13 @@ impl Checker {
             Ty::Nullable(t) => format!("{}?", self.show(t)),
             Ty::Array(t) => format!("{}[]", self.show(t)),
             Ty::Tuple(ts) => {
-                format!("[{}]", ts.iter().map(|t| self.show(t)).collect::<Vec<_>>().join(", "))
+                format!(
+                    "[{}]",
+                    ts.iter()
+                        .map(|t| self.show(t))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
             Ty::Record(fs) => format!(
                 "{{{}}}",
@@ -901,7 +982,11 @@ impl Checker {
             ),
             Ty::Fn(f) => format!(
                 "({}) => {}",
-                f.params.iter().map(|p| self.show(&p.ty)).collect::<Vec<_>>().join(", "),
+                f.params
+                    .iter()
+                    .map(|p| self.show(&p.ty))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 self.show(&f.ret)
             ),
             Ty::Class(id, args) | Ty::Iface(id, args) => {
@@ -914,7 +999,10 @@ impl Checker {
                 } else {
                     format!(
                         "{name}<{}>",
-                        args.iter().map(|a| self.show(a)).collect::<Vec<_>>().join(", ")
+                        args.iter()
+                            .map(|a| self.show(a))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )
                 }
             }
@@ -924,9 +1012,11 @@ impl Checker {
             Ty::EnumMeta(id) => format!("enum {}", self.enums[*id].name),
             Ty::Namespace(_) => "namespace".into(),
             Ty::Var(tv) => self.tv_names[*tv].clone(),
-            Ty::Union(arms) => {
-                arms.iter().map(|a| self.show(a)).collect::<Vec<_>>().join(" | ")
-            }
+            Ty::Union(arms) => arms
+                .iter()
+                .map(|a| self.show(a))
+                .collect::<Vec<_>>()
+                .join(" | "),
         }
     }
 
@@ -984,7 +1074,10 @@ impl Checker {
         for item in &module.items {
             let d = match item {
                 Item::Decl(d) => d,
-                Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => d,
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => d,
                 _ => continue,
             };
             match d {
@@ -1004,7 +1097,8 @@ impl Checker {
                         is_abstract: c.is_abstract,
                         is_final: c.is_final,
                     });
-                    self.type_defs.insert(c.name.text.clone(), TypeDef::Class(id));
+                    self.type_defs
+                        .insert(c.name.text.clone(), TypeDef::Class(id));
                 }
                 Decl::Interface(i) => {
                     let id = self.ifaces.len();
@@ -1014,7 +1108,8 @@ impl Checker {
                         extends: vec![],
                         members: vec![],
                     });
-                    self.type_defs.insert(i.name.text.clone(), TypeDef::Iface(id));
+                    self.type_defs
+                        .insert(i.name.text.clone(), TypeDef::Iface(id));
                 }
                 Decl::Enum(e) => {
                     let id = self.enums.len();
@@ -1022,12 +1117,17 @@ impl Checker {
                         name: e.name.text.clone(),
                         members: e.members.iter().map(|(n, _)| n.text.clone()).collect(),
                     });
-                    self.type_defs.insert(e.name.text.clone(), TypeDef::Enum(id));
+                    self.type_defs
+                        .insert(e.name.text.clone(), TypeDef::Enum(id));
                 }
                 Decl::TypeAlias(t) => {
                     let id = self.aliases.len();
-                    self.aliases.push(AliasInfo { tparams: vec![], target: Ty::Any });
-                    self.type_defs.insert(t.name.text.clone(), TypeDef::Alias(id));
+                    self.aliases.push(AliasInfo {
+                        tparams: vec![],
+                        target: Ty::Any,
+                    });
+                    self.type_defs
+                        .insert(t.name.text.clone(), TypeDef::Alias(id));
                 }
                 Decl::Function(_) => {}
             }
@@ -1043,27 +1143,39 @@ impl Checker {
         for item in &module.items {
             let d = match item {
                 Item::Decl(d) => d,
-                Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => d,
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => d,
                 _ => continue,
             };
             match d {
                 Decl::Class(c) => {
-                    let tvs: Vec<TvId> =
-                        c.type_params.iter().map(|tp| self.fresh_tv(&tp.name.text)).collect();
+                    let tvs: Vec<TvId> = c
+                        .type_params
+                        .iter()
+                        .map(|tp| self.fresh_tv(&tp.name.text))
+                        .collect();
                     if let TypeDef::Class(id) = self.type_defs[&c.name.text] {
                         self.classes[id].tparams = tvs;
                     }
                 }
                 Decl::Interface(i) => {
-                    let tvs: Vec<TvId> =
-                        i.type_params.iter().map(|tp| self.fresh_tv(&tp.name.text)).collect();
+                    let tvs: Vec<TvId> = i
+                        .type_params
+                        .iter()
+                        .map(|tp| self.fresh_tv(&tp.name.text))
+                        .collect();
                     if let TypeDef::Iface(id) = self.type_defs[&i.name.text] {
                         self.ifaces[id].tparams = tvs;
                     }
                 }
                 Decl::TypeAlias(t) => {
-                    let tvs: Vec<TvId> =
-                        t.type_params.iter().map(|tp| self.fresh_tv(&tp.name.text)).collect();
+                    let tvs: Vec<TvId> = t
+                        .type_params
+                        .iter()
+                        .map(|tp| self.fresh_tv(&tp.name.text))
+                        .collect();
                     if let TypeDef::Alias(id) = self.type_defs[&t.name.text] {
                         self.aliases[id].tparams = tvs;
                     }
@@ -1075,7 +1187,10 @@ impl Checker {
         for item in &module.items {
             let d = match item {
                 Item::Decl(d) => d,
-                Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => d,
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => d,
                 _ => continue,
             };
             self.collect_decl_header(d);
@@ -1189,11 +1304,17 @@ impl Checker {
                 } else {
                     ret
                 };
-                let fnty = Ty::Fn(Rc::new(FnTy { tparams: tvs, params, ret }));
+                let fnty = Ty::Fn(Rc::new(FnTy {
+                    tparams: tvs,
+                    params,
+                    ret,
+                }));
                 self.define(&f.name.text, fnty, true);
             }
             Decl::Class(c) => {
-                let TypeDef::Class(id) = self.type_defs[&c.name.text] else { return };
+                let TypeDef::Class(id) = self.type_defs[&c.name.text] else {
+                    return;
+                };
                 let tvs = self.classes[id].tparams.clone();
                 self.push_tp_scope(&c.type_params, &tvs);
 
@@ -1258,7 +1379,9 @@ impl Checker {
                 self.tp_scopes.pop();
             }
             Decl::Interface(i) => {
-                let TypeDef::Iface(id) = self.type_defs[&i.name.text] else { return };
+                let TypeDef::Iface(id) = self.type_defs[&i.name.text] else {
+                    return;
+                };
                 let tvs = self.ifaces[id].tparams.clone();
                 self.push_tp_scope(&i.type_params, &tvs);
                 let mut extends = Vec::new();
@@ -1277,7 +1400,9 @@ impl Checker {
                 let mut members = Vec::new();
                 for m in &i.members {
                     match m {
-                        InterfaceMember::Prop { name, optional, ty, .. } => {
+                        InterfaceMember::Prop {
+                            name, optional, ty, ..
+                        } => {
                             let t = self.resolve_type(ty);
                             members.push(IfaceMember {
                                 name: name.clone(),
@@ -1285,14 +1410,23 @@ impl Checker {
                                 optional: *optional,
                             });
                         }
-                        InterfaceMember::Method { name, type_params, params, ret } => {
+                        InterfaceMember::Method {
+                            name,
+                            type_params,
+                            params,
+                            ret,
+                        } => {
                             let tvs = self.bind_tparams(type_params);
                             let params = self.resolve_params(params);
                             let ret = self.resolve_type(ret);
                             self.tp_scopes.pop();
                             members.push(IfaceMember {
                                 name: name.clone(),
-                                ty: Ty::Fn(Rc::new(FnTy { tparams: tvs, params, ret })),
+                                ty: Ty::Fn(Rc::new(FnTy {
+                                    tparams: tvs,
+                                    params,
+                                    ret,
+                                })),
                                 optional: false,
                             });
                         }
@@ -1301,11 +1435,15 @@ impl Checker {
                 self.ifaces[id].members = members;
             }
             Decl::Enum(e) => {
-                let TypeDef::Enum(id) = self.type_defs[&e.name.text] else { return };
+                let TypeDef::Enum(id) = self.type_defs[&e.name.text] else {
+                    return;
+                };
                 self.define(&e.name.text, Ty::EnumMeta(id), true);
             }
             Decl::TypeAlias(t) => {
-                let TypeDef::Alias(id) = self.type_defs[&t.name.text] else { return };
+                let TypeDef::Alias(id) = self.type_defs[&t.name.text] else {
+                    return;
+                };
                 let tvs = self.aliases[id].tparams.clone();
                 self.push_tp_scope(&t.type_params, &tvs);
                 let target = self.resolve_type(&t.ty);
@@ -1323,7 +1461,13 @@ impl Checker {
 
     fn collect_member(&mut self, id: ClassId, m: &ClassMember, class_pos: Pos) {
         match m {
-            ClassMember::Field { mods, readonly, name, ty, .. } => {
+            ClassMember::Field {
+                mods,
+                readonly,
+                name,
+                ty,
+                ..
+            } => {
                 let t = self.resolve_type(ty);
                 self.classes[id].fields.push(FieldInfo {
                     name: name.clone(),
@@ -1333,7 +1477,15 @@ impl Checker {
                     readonly: *readonly,
                 });
             }
-            ClassMember::Method { mods, is_async, name, type_params, params, ret, body } => {
+            ClassMember::Method {
+                mods,
+                is_async,
+                name,
+                type_params,
+                params,
+                ret,
+                body,
+            } => {
                 let tvs = self.bind_tparams(type_params);
                 let params = self.resolve_params(params);
                 let ret = self.resolve_type(ret);
@@ -1353,7 +1505,11 @@ impl Checker {
                 }
                 self.classes[id].methods.push(MethodInfo {
                     name: name.clone(),
-                    sig: FnTy { tparams: tvs, params, ret },
+                    sig: FnTy {
+                        tparams: tvs,
+                        params,
+                        ret,
+                    },
                     access: mods.access.unwrap_or(Access::Private),
                     is_static: mods.is_static,
                     is_abstract,
@@ -1361,7 +1517,9 @@ impl Checker {
                     has_override: mods.virt == Some(Virt::Override),
                 });
             }
-            ClassMember::Getter { mods, name, ret, .. } => {
+            ClassMember::Getter {
+                mods, name, ret, ..
+            } => {
                 let t = self.resolve_type(ret);
                 self.classes[id].getters.push(AccessorInfo {
                     name: name.clone(),
@@ -1369,8 +1527,14 @@ impl Checker {
                     access: mods.access.unwrap_or(Access::Private),
                 });
             }
-            ClassMember::Setter { mods, name, param, .. } => {
-                let t = param.ty.as_ref().map(|t| self.resolve_type(t)).unwrap_or(Ty::Any);
+            ClassMember::Setter {
+                mods, name, param, ..
+            } => {
+                let t = param
+                    .ty
+                    .as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or(Ty::Any);
                 self.classes[id].setters.push(AccessorInfo {
                     name: name.clone(),
                     ty: t,
@@ -1388,7 +1552,10 @@ impl Checker {
         params
             .iter()
             .map(|p| {
-                let mut ty = p.ty.as_ref().map(|t| self.resolve_type(t)).unwrap_or(Ty::Any);
+                let mut ty =
+                    p.ty.as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or(Ty::Any);
                 if p.rest {
                     // `...xs: int32[]` — the per-argument type is the element.
                     ty = match ty {
@@ -1410,7 +1577,11 @@ impl Checker {
                 if p.optional {
                     ty = nullable(ty);
                 }
-                ParamTy { ty, optional: p.optional || p.default.is_some(), rest: p.rest }
+                ParamTy {
+                    ty,
+                    optional: p.optional || p.default.is_some(),
+                    rest: p.rest,
+                }
             })
             .collect()
     }
@@ -1450,7 +1621,11 @@ impl Checker {
                     })
                     .collect();
                 let ret = self.resolve_type(ret);
-                Ty::Fn(Rc::new(FnTy { tparams: vec![], params, ret }))
+                Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params,
+                    ret,
+                }))
             }
         }
     }
@@ -1525,9 +1700,7 @@ impl Checker {
             _ => None,
         })?;
         match strip_null(t) {
-            Ty::Iface(id, args) if id == pid => {
-                Some(args.first().cloned().unwrap_or(Ty::Any))
-            }
+            Ty::Iface(id, args) if id == pid => Some(args.first().cloned().unwrap_or(Ty::Any)),
             _ => None,
         }
     }
@@ -1544,10 +1717,11 @@ impl Checker {
 
     /// `<T extends Comparable<T>>` — a type argument must satisfy its bound.
     fn check_bounds(&mut self, tvs: &[TvId], args: &[Ty], what: &str, pos: Pos) {
-        let map: HashMap<TvId, Ty> =
-            tvs.iter().copied().zip(args.iter().cloned()).collect();
+        let map: HashMap<TvId, Ty> = tvs.iter().copied().zip(args.iter().cloned()).collect();
         for (tv, arg) in tvs.iter().zip(args) {
-            let Some(bound) = self.tv_bounds.get(tv).cloned() else { continue };
+            let Some(bound) = self.tv_bounds.get(tv).cloned() else {
+                continue;
+            };
             // The bound may itself mention the parameters (F-bounded).
             let bound = subst(&bound, &map);
             if !self.assignable(arg, &bound) {
@@ -1570,9 +1744,11 @@ impl Checker {
         // Module vars first (types available to bodies), then bodies.
         for item in &module.items {
             match item {
-                Item::Stmt(Stmt::Var(v)) | Item::Export(ExportDecl { kind: ExportKind::Var(v), .. }) => {
-                    self.check_var(v)
-                }
+                Item::Stmt(Stmt::Var(v))
+                | Item::Export(ExportDecl {
+                    kind: ExportKind::Var(v),
+                    ..
+                }) => self.check_var(v),
                 Item::Stmt(_) => {}
                 _ => {}
             }
@@ -1583,9 +1759,11 @@ impl Checker {
                 Item::Stmt(s) => {
                     self.check_stmt(s);
                 }
-                Item::Decl(d) | Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => {
-                    self.check_decl_body(d)
-                }
+                Item::Decl(d)
+                | Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => self.check_decl_body(d),
                 _ => {}
             }
         }
@@ -1594,7 +1772,10 @@ impl Checker {
     fn check_decl_body(&mut self, d: &Decl) {
         match d {
             Decl::Function(f) => {
-                let Some(VarInfo { ty: Ty::Fn(sig), .. }) = self.lookup(&f.name.text) else {
+                let Some(VarInfo {
+                    ty: Ty::Fn(sig), ..
+                }) = self.lookup(&f.name.text)
+                else {
                     return;
                 };
                 self.check_fn_body_async(&f.type_params, &f.params, &sig, &f.body, f.is_async);
@@ -1631,8 +1812,11 @@ impl Checker {
     ) {
         if is_async {
             if let Some(inner) = self.unwrap_promise(&sig.ret) {
-                let unwrapped =
-                    FnTy { tparams: sig.tparams.clone(), params: sig.params.clone(), ret: inner };
+                let unwrapped = FnTy {
+                    tparams: sig.tparams.clone(),
+                    params: sig.params.clone(),
+                    ret: inner,
+                };
                 return self.check_fn_body(tps, params, &unwrapped, body);
             }
         }
@@ -1653,13 +1837,7 @@ impl Checker {
         self.check_fn_body(tps, params, sig, body)
     }
 
-    fn check_fn_body(
-        &mut self,
-        tps: &[TypeParam],
-        params: &[Param],
-        sig: &FnTy,
-        body: &[Stmt],
-    ) {
+    fn check_fn_body(&mut self, tps: &[TypeParam], params: &[Param], sig: &FnTy, body: &[Stmt]) {
         let mut scope = HashMap::new();
         for (tp, tv) in tps.iter().zip(&sig.tparams) {
             scope.insert(tp.name.text.clone(), *tv);
@@ -1667,7 +1845,11 @@ impl Checker {
         self.tp_scopes.push(scope);
         self.push_scope();
         for (p, pt) in params.iter().zip(&sig.params) {
-            let ty = if p.rest { Ty::Array(Rc::new(pt.ty.clone())) } else { pt.ty.clone() };
+            let ty = if p.rest {
+                Ty::Array(Rc::new(pt.ty.clone()))
+            } else {
+                pt.ty.clone()
+            };
             self.bind_pattern_ty(&p.target, &ty, false);
             if let Some(d) = &p.default {
                 let dt = self.check_expr(d, Some(&pt.ty));
@@ -1684,12 +1866,18 @@ impl Checker {
     }
 
     fn class_self_type(&self, id: ClassId) -> Ty {
-        let args: Vec<Ty> = self.classes[id].tparams.iter().map(|tv| Ty::Var(*tv)).collect();
+        let args: Vec<Ty> = self.classes[id]
+            .tparams
+            .iter()
+            .map(|tv| Ty::Var(*tv))
+            .collect();
         Ty::Class(id, Rc::new(args))
     }
 
     fn check_class_body(&mut self, c: &ClassDecl) {
-        let TypeDef::Class(id) = self.type_defs[&c.name.text] else { return };
+        let TypeDef::Class(id) = self.type_defs[&c.name.text] else {
+            return;
+        };
         let mut scope = HashMap::new();
         let tvs = self.classes[id].tparams.clone();
         for (tp, tv) in c.type_params.iter().zip(&tvs) {
@@ -1704,12 +1892,11 @@ impl Checker {
         let self_ty = self.class_self_type(id);
         for m in &c.members {
             match m {
-                ClassMember::Field { name, init, mods, .. } => {
+                ClassMember::Field {
+                    name, init, mods, ..
+                } => {
                     if let Some(init) = init {
-                        let want = self
-                            .field_info(id, name)
-                            .map(|f| f.0)
-                            .unwrap_or(Ty::Err);
+                        let want = self.field_info(id, name).map(|f| f.0).unwrap_or(Ty::Err);
                         self.push_scope();
                         self.in_static = mods.is_static;
                         if !mods.is_static {
@@ -1721,7 +1908,15 @@ impl Checker {
                         self.pop_scope();
                     }
                 }
-                ClassMember::Method { name, type_params, params, body, mods, is_async, .. } => {
+                ClassMember::Method {
+                    name,
+                    type_params,
+                    params,
+                    body,
+                    mods,
+                    is_async,
+                    ..
+                } => {
                     if let Some(body) = body {
                         let sig = self
                             .method_sig(id, name, mods.is_static)
@@ -1737,22 +1932,26 @@ impl Checker {
                     }
                 }
                 ClassMember::Getter { name, body, .. } => {
-                    let ret = self
-                        .classes[id]
+                    let ret = self.classes[id]
                         .getters
                         .iter()
                         .find(|g| g.name == *name)
                         .map(|g| g.ty.clone())
                         .unwrap_or(Ty::Err);
-                    let sig = FnTy { tparams: vec![], params: vec![], ret };
+                    let sig = FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret,
+                    };
                     self.push_scope();
                     self.define("this", self_ty.clone(), true);
                     self.check_fn_body(&[], &[], &sig, body);
                     self.pop_scope();
                 }
-                ClassMember::Setter { name, param, body, .. } => {
-                    let pt = self
-                        .classes[id]
+                ClassMember::Setter {
+                    name, param, body, ..
+                } => {
+                    let pt = self.classes[id]
                         .setters
                         .iter()
                         .find(|s| s.name == *name)
@@ -1760,7 +1959,11 @@ impl Checker {
                         .unwrap_or(Ty::Err);
                     let sig = FnTy {
                         tparams: vec![],
-                        params: vec![ParamTy { ty: pt, optional: false, rest: false }],
+                        params: vec![ParamTy {
+                            ty: pt,
+                            optional: false,
+                            rest: false,
+                        }],
                         ret: Ty::Void,
                     };
                     self.push_scope();
@@ -1769,8 +1972,16 @@ impl Checker {
                     self.pop_scope();
                 }
                 ClassMember::Ctor { params, body, .. } => {
-                    let ptys = self.classes[id].ctor.clone().map(|(p, _)| p).unwrap_or_default();
-                    let sig = FnTy { tparams: vec![], params: ptys, ret: Ty::Void };
+                    let ptys = self.classes[id]
+                        .ctor
+                        .clone()
+                        .map(|(p, _)| p)
+                        .unwrap_or_default();
+                    let sig = FnTy {
+                        tparams: vec![],
+                        params: ptys,
+                        ret: Ty::Void,
+                    };
                     self.push_scope();
                     self.define("this", self_ty.clone(), true);
                     self.in_ctor = true;
@@ -1791,7 +2002,8 @@ impl Checker {
                 if m.has_override {
                     let msg = format!("`{}` is marked override but there is no base class", m.name);
                     let (name_pos, msg) = (pos, msg);
-                    self.diags.push(Diagnostic::error(Code::BadOverride, msg, name_pos));
+                    self.diags
+                        .push(Diagnostic::error(Code::BadOverride, msg, name_pos));
                 }
             }
             return;
@@ -1818,8 +2030,7 @@ impl Checker {
                     }
                     // The override must be usable wherever the base is:
                     // parameters contravariant, return type covariant.
-                    let Some(own) = self
-                        .classes[id]
+                    let Some(own) = self.classes[id]
                         .methods
                         .iter()
                         .find(|m| m.name == name && !m.is_static)
@@ -1832,7 +2043,10 @@ impl Checker {
                         params: base_sig
                             .params
                             .iter()
-                            .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p.clone() })
+                            .map(|p| ParamTy {
+                                ty: subst(&p.ty, &map),
+                                ..p.clone()
+                            })
                             .collect(),
                         ret: subst(&base_sig.ret, &map),
                     };
@@ -1847,8 +2061,7 @@ impl Checker {
                             pos,
                         );
                     } else {
-                        for (i, (o, b)) in
-                            own.params.iter().zip(base_sig.params.iter()).enumerate()
+                        for (i, (o, b)) in own.params.iter().zip(base_sig.params.iter()).enumerate()
                         {
                             // Contravariance: the override must accept at
                             // least what the base accepted.
@@ -1907,8 +2120,7 @@ impl Checker {
                     .collect();
                 for name in abstracts {
                     if self.method_sig(id, &name, false).map(|s| s.ret).is_none()
-                        || self
-                            .classes[id]
+                        || self.classes[id]
                             .methods
                             .iter()
                             .all(|m| m.name != name || m.is_abstract)
@@ -1957,8 +2169,12 @@ impl Checker {
     fn check_implements(&mut self, id: ClassId, pos: Pos) {
         let ifaces = self.classes[id].ifaces.clone();
         for (iid, args) in ifaces {
-            let imap: HashMap<TvId, Ty> =
-                self.ifaces[iid].tparams.iter().copied().zip(args.iter().cloned()).collect();
+            let imap: HashMap<TvId, Ty> = self.ifaces[iid]
+                .tparams
+                .iter()
+                .copied()
+                .zip(args.iter().cloned())
+                .collect();
             let members: Vec<(String, Ty, bool)> = self.ifaces[iid]
                 .members
                 .iter()
@@ -1967,8 +2183,10 @@ impl Checker {
             for (name, want, optional) in members {
                 let has = match &want {
                     Ty::Fn(_) => self.method_sig(id, &name, false).is_some(),
-                    _ => self.field_info(id, &name).is_some()
-                        || self.classes[id].getters.iter().any(|g| g.name == name),
+                    _ => {
+                        self.field_info(id, &name).is_some()
+                            || self.classes[id].getters.iter().any(|g| g.name == name)
+                    }
                 };
                 if !has && !optional {
                     self.error(
@@ -1987,7 +2205,10 @@ impl Checker {
     fn check_var(&mut self, v: &VarStmt) {
         for b in &v.bindings {
             let declared = b.ty.as_ref().map(|t| self.resolve_type(t));
-            let init_ty = b.init.as_ref().map(|e| self.check_expr(e, declared.as_ref()));
+            let init_ty = b
+                .init
+                .as_ref()
+                .map(|e| self.check_expr(e, declared.as_ref()));
             let ty = match (&declared, init_ty) {
                 (Some(d), Some(i)) => {
                     self.require_assignable(&i, d, pos_of(b.init.as_ref().unwrap()), "initializer");
@@ -2044,7 +2265,11 @@ impl Checker {
                         _ => elem.clone(),
                     };
                     // A default value removes nullability.
-                    let et = if e.default.is_some() { strip_null(&et) } else { et };
+                    let et = if e.default.is_some() {
+                        strip_null(&et)
+                    } else {
+                        et
+                    };
                     self.bind_pattern_ty(&e.target, &et, is_const);
                 }
                 if let Some(r) = rest {
@@ -2056,7 +2281,11 @@ impl Checker {
                     let ft = self
                         .member_type_quiet(&strip_null(ty), &f.name.text)
                         .unwrap_or(Ty::Any);
-                    let ft = if f.default.is_some() { strip_null(&ft) } else { ft };
+                    let ft = if f.default.is_some() {
+                        strip_null(&ft)
+                    } else {
+                        ft
+                    };
                     match &f.target {
                         Some(t) => self.bind_pattern_ty(t, &ft, is_const),
                         None => self.define(&f.name.text, ft, is_const),
@@ -2103,7 +2332,12 @@ impl Checker {
                 self.check_stmt(body);
                 self.check_condition(cond);
             }
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 self.push_scope();
                 match init {
                     Some(ForInit::Var(v)) => self.check_var(v),
@@ -2123,7 +2357,14 @@ impl Checker {
                 self.check_stmt(body);
                 self.pop_scope();
             }
-            Stmt::ForOf { kind, target, ty, iter, body, .. } => {
+            Stmt::ForOf {
+                kind,
+                target,
+                ty,
+                iter,
+                body,
+                ..
+            } => {
                 self.push_scope();
                 let it = self.check_expr(iter, None);
                 let elem = match strip_null(&it) {
@@ -2134,9 +2375,7 @@ impl Checker {
                     // element type isn't tracked, so annotate to refine.
                     Ty::Iface(..) => Ty::Any,
                     // A generator / iterator.
-                    ref t if self.unwrap_iter(t).is_some() => {
-                        self.unwrap_iter(t).expect("checked")
-                    }
+                    ref t if self.unwrap_iter(t).is_some() => self.unwrap_iter(t).expect("checked"),
                     other => {
                         self.error(
                             Code::TypeMismatch,
@@ -2217,12 +2456,19 @@ impl Checker {
                 if !self.is_error_class(&t) {
                     self.error(
                         Code::BadThrow,
-                        format!("only `Error` subclasses may be thrown, got `{}`", self.show(&t)),
+                        format!(
+                            "only `Error` subclasses may be thrown, got `{}`",
+                            self.show(&t)
+                        ),
                         pos_of(e),
                     );
                 }
             }
-            Stmt::Try { block, catches, finally } => {
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
                 self.push_scope();
                 for s in block {
                     self.check_stmt(s);
@@ -2233,7 +2479,10 @@ impl Checker {
                     if !self.is_error_class(&ct) {
                         self.error(
                             Code::BadThrow,
-                            format!("catch type must be an `Error` subclass, got `{}`", self.show(&ct)),
+                            format!(
+                                "catch type must be an `Error` subclass, got `{}`",
+                                self.show(&ct)
+                            ),
                             c.name.pos,
                         );
                     }
@@ -2293,7 +2542,11 @@ impl Checker {
         match e {
             Expr::Ident(n) => Some(n.text.clone()),
             Expr::This(_) => Some("this".to_string()),
-            Expr::Member { obj, name, optional: false } => {
+            Expr::Member {
+                obj,
+                name,
+                optional: false,
+            } => {
                 let base = Self::narrow_path(obj)?;
                 Some(format!("{base}.{name}"))
             }
@@ -2311,9 +2564,18 @@ impl Checker {
         }
         // `a && b`: the then-branch gets both narrowings (b is checked with
         // a's already applied). `a || b`: the else-branch gets both.
-        if let Expr::Binary { op: op @ (BinOp::And | BinOp::Or), l, r } = cond {
+        if let Expr::Binary {
+            op: op @ (BinOp::And | BinOp::Or),
+            l,
+            r,
+        } = cond
+        {
             let (lt, le) = self.narrow_from(l);
-            let carry = if *op == BinOp::And { lt.clone() } else { le.clone() };
+            let carry = if *op == BinOp::And {
+                lt.clone()
+            } else {
+                le.clone()
+            };
             self.narrows.push(carry);
             let (rt, re) = self.narrow_from(r);
             self.narrows.pop();
@@ -2327,7 +2589,12 @@ impl Checker {
             return (then, els);
         }
         // `if (x instanceof Foo)` narrows x to Foo in the then-branch.
-        if let Expr::Binary { op: BinOp::Instanceof, l, r } = cond {
+        if let Expr::Binary {
+            op: BinOp::Instanceof,
+            l,
+            r,
+        } = cond
+        {
             if let Expr::Ident(n) = l.as_ref() {
                 let narrowed = match self.check_expr(r, None) {
                     Ty::ClassMeta(id) => {
@@ -2350,8 +2617,20 @@ impl Checker {
         }
         if let Expr::Binary { op, l, r } = cond {
             let (path_expr, other) = match (l.as_ref(), r.as_ref()) {
-                (e, Expr::Lit { kind: LitKind::Null, .. }) => (Some(e), r.as_ref()),
-                (Expr::Lit { kind: LitKind::Null, .. }, e) => (Some(e), l.as_ref()),
+                (
+                    e,
+                    Expr::Lit {
+                        kind: LitKind::Null,
+                        ..
+                    },
+                ) => (Some(e), r.as_ref()),
+                (
+                    Expr::Lit {
+                        kind: LitKind::Null,
+                        ..
+                    },
+                    e,
+                ) => (Some(e), l.as_ref()),
                 _ => (None, l.as_ref()),
             };
             let _ = other;
@@ -2446,11 +2725,7 @@ impl Checker {
                     if let TplPart::Expr(e) = p {
                         let t = self.check_expr(e, None);
                         if matches!(t, Ty::Void) {
-                            self.error(
-                                Code::TypeMismatch,
-                                "cannot interpolate `void`",
-                                pos_of(e),
-                            );
+                            self.error(Code::TypeMismatch, "cannot interpolate `void`", pos_of(e));
                         }
                     }
                 }
@@ -2507,17 +2782,18 @@ impl Checker {
                 for f in fields {
                     match f {
                         RecordField::Named { name, value } => {
-                            let want = expected.map(strip_null).and_then(|t| {
-                                self.member_type_quiet(&t, &name.text)
-                            });
+                            let want = expected
+                                .map(strip_null)
+                                .and_then(|t| self.member_type_quiet(&t, &name.text));
                             let t = match value {
                                 Some(v) => self.check_expr(v, want.as_ref()),
-                                None => self
-                                    .lookup(&name.text)
-                                    .map(|v| v.ty)
-                                    .unwrap_or(Ty::Err),
+                                None => self.lookup(&name.text).map(|v| v.ty).unwrap_or(Ty::Err),
                             };
-                            fs.push(RecField { name: name.text.clone(), ty: t, optional: false });
+                            fs.push(RecField {
+                                name: name.text.clone(),
+                                ty: t,
+                                optional: false,
+                            });
                         }
                         RecordField::Spread(v) => {
                             let t = self.check_expr(v, None);
@@ -2534,7 +2810,12 @@ impl Checker {
                 Ty::Record(Rc::new(fs))
             }
             Expr::Paren(inner) => self.check_expr(inner, expected),
-            Expr::Arrow { params, ret, body, is_async: is_async_arrow } => {
+            Expr::Arrow {
+                params,
+                ret,
+                body,
+                is_async: is_async_arrow,
+            } => {
                 let ctx_fn = expected.map(strip_null).and_then(|t| match t {
                     Ty::Fn(f) => Some(f.clone()),
                     _ => None,
@@ -2550,14 +2831,22 @@ impl Checker {
                             .map(|pt| pt.ty.clone())
                             .unwrap_or(Ty::Any),
                     };
-                    let bind_ty =
-                        if p.rest { Ty::Array(Rc::new(ty.clone())) } else { ty.clone() };
+                    let bind_ty = if p.rest {
+                        Ty::Array(Rc::new(ty.clone()))
+                    } else {
+                        ty.clone()
+                    };
                     self.bind_pattern_ty(&p.target, &bind_ty, false);
-                    ptys.push(ParamTy { ty, optional: p.optional, rest: p.rest });
+                    ptys.push(ParamTy {
+                        ty,
+                        optional: p.optional,
+                        rest: p.rest,
+                    });
                 }
                 let declared_ret = ret.as_ref().map(|t| self.resolve_type(t));
-                let want_ret =
-                    declared_ret.clone().or_else(|| ctx_fn.as_ref().map(|f| f.ret.clone()));
+                let want_ret = declared_ret
+                    .clone()
+                    .or_else(|| ctx_fn.as_ref().map(|f| f.ret.clone()));
                 let actual_ret = match body {
                     ArrowBody::Expr(e) => self.check_expr(e, want_ret.as_ref()),
                     ArrowBody::Block(stmts) => {
@@ -2583,7 +2872,11 @@ impl Checker {
                 } else {
                     ret
                 };
-                Ty::Fn(Rc::new(FnTy { tparams: vec![], params: ptys, ret }))
+                Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: ptys,
+                    ret,
+                }))
             }
             Expr::Unary { op, expr, pos } => {
                 let t = self.check_expr(expr, None);
@@ -2655,9 +2948,7 @@ impl Checker {
                 // Assignment targets check against the *declared* type, not
                 // a narrowed one (the assignment may widen back).
                 let tt = match target.as_ref() {
-                    Expr::Ident(n) => {
-                        self.lookup_scope(&n.text).map(|v| v.ty).unwrap_or(Ty::Err)
-                    }
+                    Expr::Ident(n) => self.lookup_scope(&n.text).map(|v| v.ty).unwrap_or(Ty::Err),
                     _ => self.check_expr(target, None),
                 };
                 self.check_assignable_target(target);
@@ -2698,11 +2989,18 @@ impl Checker {
                 self.check_cast(&from, &to, *wrapping, pos_of(expr));
                 to
             }
-            Expr::Call { callee, type_args, args, optional } => {
-                self.check_call(callee, type_args, args, *optional)
-            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                optional,
+            } => self.check_call(callee, type_args, args, *optional),
             Expr::New { ty, args } => self.check_new(ty, args),
-            Expr::Member { obj, name, optional } => {
+            Expr::Member {
+                obj,
+                name,
+                optional,
+            } => {
                 // A narrowed path wins: `if (a.b != null) { a.b.c }`.
                 if !*optional {
                     if let Some(path) = Self::narrow_path(e) {
@@ -2716,10 +3014,18 @@ impl Checker {
                 let ot = self.check_expr(obj, None);
                 self.member_access(&ot, name, *optional, pos_of(obj))
             }
-            Expr::Index { obj, index, optional } => {
+            Expr::Index {
+                obj,
+                index,
+                optional,
+            } => {
                 let ot = self.check_expr(obj, None);
                 let it = self.check_expr(index, None);
-                let base = if *optional { strip_null(&ot) } else { ot.clone() };
+                let base = if *optional {
+                    strip_null(&ot)
+                } else {
+                    ot.clone()
+                };
                 let host_obj = matches!(base, Ty::Iface(..));
                 if !matches!(strip_narrow_helpers(&it), Ty::Int(_) | Ty::Any | Ty::Err)
                     && !(host_obj && matches!(strip_narrow_helpers(&it), Ty::Str))
@@ -2763,7 +3069,9 @@ impl Checker {
                 }
             }
             Expr::SuperMember { name, pos } => {
-                let Some(id) = self.current_class else { return Ty::Err };
+                let Some(id) = self.current_class else {
+                    return Ty::Err;
+                };
                 if let Some((pid, pargs)) = self.classes[id].parent.clone() {
                     let parent_ty = Ty::Class(pid, Rc::new(pargs));
                     return self.member_access(&parent_ty, name, false, *pos);
@@ -2776,12 +3084,12 @@ impl Checker {
                 Ty::Err
             }
             Expr::SuperCall { args, pos } => {
-                let Some(id) = self.current_class else { return Ty::Err };
+                let Some(id) = self.current_class else {
+                    return Ty::Err;
+                };
                 // Host-backed with no Mersey base: `super(…)` constructs the
                 // host object (arguments are the interface constructor's).
-                if self.classes[id].parent.is_none()
-                    && self.classes[id].host_parent.is_some()
-                {
+                if self.classes[id].parent.is_none() && self.classes[id].host_parent.is_some() {
                     for a in args {
                         self.check_expr(&a.expr, None);
                     }
@@ -2794,9 +3102,16 @@ impl Checker {
                 let params = self
                     .ctor_params(pid)
                     .into_iter()
-                    .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p })
+                    .map(|p| ParamTy {
+                        ty: subst(&p.ty, &map),
+                        ..p
+                    })
                     .collect();
-                let sig = FnTy { tparams: vec![], params, ret: Ty::Void };
+                let sig = FnTy {
+                    tparams: vec![],
+                    params,
+                    ret: Ty::Void,
+                };
                 self.check_args_against(&sig, &[], args, *pos);
                 Ty::Void
             }
@@ -3116,7 +3431,11 @@ impl Checker {
         let mut candidates: Vec<Ty> = Vec::new();
         let n = self.diags.len();
         for i in 0.. {
-            let probe = if i == 0 { name.to_string() } else { format!("{name}${i}") };
+            let probe = if i == 0 {
+                name.to_string()
+            } else {
+                format!("{name}${i}")
+            };
             let ty = self.member_access(recv, &probe, optional, pos);
             if matches!(ty, Ty::Err) {
                 break;
@@ -3151,7 +3470,11 @@ impl Checker {
         pos: Pos,
         optional: bool,
     ) -> Ty {
-        let base = if optional { strip_null(fty) } else { fty.clone() };
+        let base = if optional {
+            strip_null(fty)
+        } else {
+            fty.clone()
+        };
         match &base {
             Ty::Fn(f) => {
                 let f = f.clone();
@@ -3218,7 +3541,11 @@ impl Checker {
         let rest = f.params.iter().find(|p| p.rest).cloned();
         let positional: Vec<&ParamTy> = f.params.iter().filter(|p| !p.rest).collect();
         let required = positional.iter().filter(|p| !p.optional).count();
-        let max = if rest.is_some() { usize::MAX } else { positional.len() };
+        let max = if rest.is_some() {
+            usize::MAX
+        } else {
+            positional.len()
+        };
         if args.len() < required || args.len() > max {
             self.error(
                 Code::BadCall,
@@ -3246,7 +3573,11 @@ impl Checker {
                 .map(|p| p.ty.clone())
                 .or_else(|| rest.as_ref().map(|r| r.ty.clone()))
                 .unwrap_or(Ty::Any);
-            let want_spread = if a.spread { Ty::Array(Rc::new(want_raw.clone())) } else { want_raw };
+            let want_spread = if a.spread {
+                Ty::Array(Rc::new(want_raw.clone()))
+            } else {
+                want_raw
+            };
             // Infer type params not yet fixed, from this argument.
             let hint = subst(&want_spread, &map);
             let at = self.check_expr(&a.expr, Some(&hint));
@@ -3266,8 +3597,7 @@ impl Checker {
         }
         // Every inferred/explicit type argument must satisfy its bound.
         if !f.tparams.is_empty() {
-            let inferred: Vec<Ty> =
-                f.tparams.iter().map(|tv| map[tv].clone()).collect();
+            let inferred: Vec<Ty> = f.tparams.iter().map(|tv| map[tv].clone()).collect();
             let tvs = f.tparams.clone();
             self.check_bounds(&tvs, &inferred, "this call", pos);
         }
@@ -3304,7 +3634,10 @@ impl Checker {
         if self.classes[id].is_abstract {
             self.error(
                 Code::BadCall,
-                format!("cannot instantiate abstract class `{}`", self.classes[id].name),
+                format!(
+                    "cannot instantiate abstract class `{}`",
+                    self.classes[id].name
+                ),
                 type_pos(ty),
             );
         }
@@ -3316,9 +3649,16 @@ impl Checker {
         let params = self
             .ctor_params(id)
             .into_iter()
-            .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p })
+            .map(|p| ParamTy {
+                ty: subst(&p.ty, &map),
+                ..p
+            })
             .collect();
-        let sig = FnTy { tparams: vec![], params, ret: Ty::Void };
+        let sig = FnTy {
+            tparams: vec![],
+            params,
+            ret: Ty::Void,
+        };
         self.check_args_against(&sig, &[], args, type_pos(ty));
         t
     }
@@ -3326,7 +3666,12 @@ impl Checker {
     // ---- members & access control -----------------------------------------------------
 
     fn subst_map(&self, id: ClassId, args: &[Ty]) -> HashMap<TvId, Ty> {
-        self.classes[id].tparams.iter().copied().zip(args.iter().cloned()).collect()
+        self.classes[id]
+            .tparams
+            .iter()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect()
     }
 
     fn field_info(&self, id: ClassId, name: &str) -> Option<(Ty, Access, bool, ClassId)> {
@@ -3338,8 +3683,7 @@ impl Checker {
             }
             match &self.classes[cid].parent {
                 Some((pid, pargs)) => {
-                    let substituted: Vec<Ty> =
-                        pargs.iter().map(|t| subst(t, &acc_map)).collect();
+                    let substituted: Vec<Ty> = pargs.iter().map(|t| subst(t, &acc_map)).collect();
                     acc_map = self.subst_map(*pid, &substituted);
                     cur = Some((*pid, substituted));
                 }
@@ -3359,14 +3703,17 @@ impl Checker {
         let mut cur = Some(id);
         let mut acc_map: HashMap<TvId, Ty> = HashMap::new();
         while let Some(cid) = cur {
-            let list = if setter { &self.classes[cid].setters } else { &self.classes[cid].getters };
+            let list = if setter {
+                &self.classes[cid].setters
+            } else {
+                &self.classes[cid].getters
+            };
             if let Some(a) = list.iter().find(|a| a.name == name) {
                 return Some((subst(&a.ty, &acc_map), a.access, cid));
             }
             match &self.classes[cid].parent {
                 Some((pid, pargs)) => {
-                    let substituted: Vec<Ty> =
-                        pargs.iter().map(|t| subst(t, &acc_map)).collect();
+                    let substituted: Vec<Ty> = pargs.iter().map(|t| subst(t, &acc_map)).collect();
                     acc_map = self.subst_map(*pid, &substituted);
                     cur = Some(*pid);
                 }
@@ -3391,15 +3738,17 @@ impl Checker {
                         .sig
                         .params
                         .iter()
-                        .map(|p| ParamTy { ty: subst(&p.ty, &acc_map), ..p.clone() })
+                        .map(|p| ParamTy {
+                            ty: subst(&p.ty, &acc_map),
+                            ..p.clone()
+                        })
                         .collect(),
                     ret: subst(&m.sig.ret, &acc_map),
                 });
             }
             match &self.classes[cid].parent {
                 Some((pid, pargs)) => {
-                    let substituted: Vec<Ty> =
-                        pargs.iter().map(|t| subst(t, &acc_map)).collect();
+                    let substituted: Vec<Ty> = pargs.iter().map(|t| subst(t, &acc_map)).collect();
                     acc_map = self.subst_map(*pid, &substituted);
                     cur = Some(*pid);
                 }
@@ -3448,16 +3797,20 @@ impl Checker {
                 self.field_info(*id, name)
                     .map(|(t, ..)| subst(&t, &map))
                     .or_else(|| {
-                        self.method_sig(*id, name, false)
-                            .map(|s| Ty::Fn(Rc::new(FnTy {
+                        self.method_sig(*id, name, false).map(|s| {
+                            Ty::Fn(Rc::new(FnTy {
                                 tparams: s.tparams.clone(),
                                 params: s
                                     .params
                                     .iter()
-                                    .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p.clone() })
+                                    .map(|p| ParamTy {
+                                        ty: subst(&p.ty, &map),
+                                        ..p.clone()
+                                    })
                                     .collect(),
                                 ret: subst(&s.ret, &map),
-                            })))
+                            }))
+                        })
                     })
             }
             Ty::Any | Ty::Err => Some(Ty::Any),
@@ -3482,9 +3835,17 @@ impl Checker {
             }
             Ty::Any | Ty::Err => Ty::Any,
             Ty::Str => {
-                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
                 let f = |params: Vec<ParamTy>, ret: Ty| {
-                    Ty::Fn(Rc::new(FnTy { tparams: vec![], params, ret }))
+                    Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params,
+                        ret,
+                    }))
                 };
                 match name {
                     "length" => Ty::Int(IntKind::I32),
@@ -3495,7 +3856,11 @@ impl Checker {
                     "slice" => f(
                         vec![
                             p(Ty::Int(IntKind::I32)),
-                            ParamTy { ty: Ty::Int(IntKind::I32), optional: true, rest: false },
+                            ParamTy {
+                                ty: Ty::Int(IntKind::I32),
+                                optional: true,
+                                rest: false,
+                            },
                         ],
                         Ty::Str,
                     ),
@@ -3506,7 +3871,11 @@ impl Checker {
                     "padStart" | "padEnd" => f(
                         vec![
                             p(Ty::Int(IntKind::I32)),
-                            ParamTy { ty: Ty::Str, optional: true, rest: false },
+                            ParamTy {
+                                ty: Ty::Str,
+                                optional: true,
+                                rest: false,
+                            },
                         ],
                         Ty::Str,
                     ),
@@ -3516,7 +3885,11 @@ impl Checker {
             Ty::BigDec if name == "divide" => Ty::Fn(Rc::new(FnTy {
                 tparams: vec![],
                 params: vec![
-                    ParamTy { ty: Ty::BigDec, optional: false, rest: false },
+                    ParamTy {
+                        ty: Ty::BigDec,
+                        optional: false,
+                        rest: false,
+                    },
                     ParamTy {
                         ty: Ty::Record(Rc::new(vec![
                             RecField {
@@ -3524,7 +3897,11 @@ impl Checker {
                                 ty: Ty::Int(IntKind::I32),
                                 optional: false,
                             },
-                            RecField { name: "mode".into(), ty: Ty::Str, optional: true },
+                            RecField {
+                                name: "mode".into(),
+                                ty: Ty::Str,
+                                optional: true,
+                            },
                         ])),
                         optional: false,
                         rest: false,
@@ -3532,7 +3909,13 @@ impl Checker {
                 ],
                 ret: Ty::BigDec,
             })),
-            Ty::Char | Ty::Bool | Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::BigInt | Ty::BigDec
+            Ty::Char
+            | Ty::Bool
+            | Ty::Int(_)
+            | Ty::F32
+            | Ty::F64
+            | Ty::BigInt
+            | Ty::BigDec
             | Ty::Enum(_) => match name {
                 "toString" => to_string_fn(),
                 _ => self.no_member(&self.show(&base), name, pos),
@@ -3541,10 +3924,22 @@ impl Checker {
                 let e = elem.as_ref().clone();
                 let arr = Ty::Array(Rc::new(e.clone()));
                 let i32t = Ty::Int(IntKind::I32);
-                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
-                let opt = |ty: Ty| ParamTy { ty, optional: true, rest: false };
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
+                let opt = |ty: Ty| ParamTy {
+                    ty,
+                    optional: true,
+                    rest: false,
+                };
                 let f = |tparams: Vec<TvId>, params: Vec<ParamTy>, ret: Ty| {
-                    Ty::Fn(Rc::new(FnTy { tparams, params, ret }))
+                    Ty::Fn(Rc::new(FnTy {
+                        tparams,
+                        params,
+                        ret,
+                    }))
                 };
                 // Callback shapes.
                 let pred = Ty::Fn(Rc::new(FnTy {
@@ -3567,7 +3962,11 @@ impl Checker {
                     // §1.3: mutation is explicit in the name; mutators return void.
                     "push" => f(
                         vec![],
-                        vec![ParamTy { ty: e.clone(), optional: false, rest: true }],
+                        vec![ParamTy {
+                            ty: e.clone(),
+                            optional: false,
+                            rest: true,
+                        }],
                         Ty::Void,
                     ),
                     "pop" => f(vec![], vec![], nullable(e.clone())),
@@ -3637,7 +4036,10 @@ impl Checker {
                         params: sig
                             .params
                             .iter()
-                            .map(|p| ParamTy { ty: subst(&p.ty, &map), ..p.clone() })
+                            .map(|p| ParamTy {
+                                ty: subst(&p.ty, &map),
+                                ..p.clone()
+                            })
                             .collect(),
                         ret: subst(&sig.ret, &map),
                     }))
@@ -3686,8 +4088,10 @@ impl Checker {
             }
             Ty::ClassMeta(id) => {
                 let id = *id;
-                if let Some(f) =
-                    self.classes[id].fields.iter().find(|f| f.name == name && f.is_static)
+                if let Some(f) = self.classes[id]
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name && f.is_static)
                 {
                     let (t, access) = (f.ty.clone(), f.access);
                     self.check_access(access, id, pos, &format!("static field `{name}`"));
@@ -3726,7 +4130,11 @@ impl Checker {
                     Some(id) => Ty::Class(id, Rc::new(vec![])),
                     None => Ty::Any,
                 };
-                let p = |ty: Ty| ParamTy { ty, optional: false, rest: false };
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
                 match name {
                     "alloc" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
@@ -3760,8 +4168,16 @@ impl Checker {
                     "compile" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
                         params: vec![
-                            ParamTy { ty: Ty::Str, optional: false, rest: false },
-                            ParamTy { ty: Ty::Str, optional: true, rest: false },
+                            ParamTy {
+                                ty: Ty::Str,
+                                optional: false,
+                                rest: false,
+                            },
+                            ParamTy {
+                                ty: Ty::Str,
+                                optional: true,
+                                rest: false,
+                            },
                         ],
                         ret: regex_ty,
                     })),
@@ -3770,14 +4186,22 @@ impl Checker {
             }
             Ty::Namespace(Ns::Parse) => {
                 // Parsing returns null on failure (§1.3: no sentinels).
-                let s = ParamTy { ty: Ty::Str, optional: false, rest: false };
+                let s = ParamTy {
+                    ty: Ty::Str,
+                    optional: false,
+                    rest: false,
+                };
                 let radix = ParamTy {
                     ty: Ty::Int(IntKind::I32),
                     optional: true,
                     rest: false,
                 };
                 let f = |params: Vec<ParamTy>, ret: Ty| {
-                    Ty::Fn(Rc::new(FnTy { tparams: vec![], params, ret }))
+                    Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params,
+                        ret,
+                    }))
                 };
                 match name {
                     "int32" => f(vec![s, radix], nullable(Ty::Int(IntKind::I32))),
@@ -3808,14 +4232,16 @@ impl Checker {
             Ty::Namespace(Ns::Time) => {
                 let i32t = Ty::Int(IntKind::I32);
                 let parts = Ty::Record(Rc::new(
-                    ["year", "month", "day", "hour", "minute", "second", "millis", "weekday"]
-                        .iter()
-                        .map(|n| RecField {
-                            name: (*n).into(),
-                            ty: i32t.clone(),
-                            optional: false,
-                        })
-                        .collect::<Vec<_>>(),
+                    [
+                        "year", "month", "day", "hour", "minute", "second", "millis", "weekday",
+                    ]
+                    .iter()
+                    .map(|n| RecField {
+                        name: (*n).into(),
+                        ty: i32t.clone(),
+                        optional: false,
+                    })
+                    .collect::<Vec<_>>(),
                 ));
                 match name {
                     "now" | "monotonic" => Ty::Fn(Rc::new(FnTy {
@@ -3825,12 +4251,20 @@ impl Checker {
                     })),
                     "parts" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
-                        params: vec![ParamTy { ty: Ty::F64, optional: false, rest: false }],
+                        params: vec![ParamTy {
+                            ty: Ty::F64,
+                            optional: false,
+                            rest: false,
+                        }],
                         ret: parts,
                     })),
                     "fromParts" => Ty::Fn(Rc::new(FnTy {
                         tparams: vec![],
-                        params: vec![ParamTy { ty: parts, optional: false, rest: false }],
+                        params: vec![ParamTy {
+                            ty: parts,
+                            optional: false,
+                            rest: false,
+                        }],
                         ret: Ty::F64,
                     })),
                     _ => self.no_member("time", name, pos),
@@ -3839,7 +4273,11 @@ impl Checker {
             Ty::Namespace(Ns::Console) => match name {
                 "log" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
-                    params: vec![ParamTy { ty: Ty::Any, optional: false, rest: true }],
+                    params: vec![ParamTy {
+                        ty: Ty::Any,
+                        optional: false,
+                        rest: true,
+                    }],
                     ret: Ty::Void,
                 })),
                 _ => self.no_member("console", name, pos),
@@ -3847,7 +4285,11 @@ impl Checker {
             Ty::Namespace(Ns::Document) => match name {
                 "getElementById" | "createElement" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],
-                    params: vec![ParamTy { ty: Ty::Str, optional: false, rest: false }],
+                    params: vec![ParamTy {
+                        ty: Ty::Str,
+                        optional: false,
+                        rest: false,
+                    }],
                     ret: Ty::Class(self.element_id, Rc::new(vec![])),
                 })),
                 _ => self.no_member("document", name, pos),
@@ -3935,8 +4377,7 @@ impl Checker {
                                     pos_of(obj),
                                 );
                             }
-                        } else if let Some((_, access, owner)) =
-                            self.accessor_info(id, name, true)
+                        } else if let Some((_, access, owner)) = self.accessor_info(id, name, true)
                         {
                             self.check_access(
                                 access,
@@ -3970,8 +4411,7 @@ impl Checker {
             (f, _) => f,
         };
         let t = strip_narrow_helpers(to);
-        let numeric =
-            |x: &Ty| matches!(x, Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Char);
+        let numeric = |x: &Ty| matches!(x, Ty::Int(_) | Ty::F32 | Ty::F64 | Ty::Char);
         if matches!(f, Ty::Any | Ty::Err) || matches!(t, Ty::Any | Ty::Err) {
             return;
         }
@@ -4005,7 +4445,11 @@ impl Checker {
         if !self.assignable(from, to) {
             self.error(
                 Code::TypeMismatch,
-                format!("{what}: `{}` is not assignable to `{}`", self.show(from), self.show(to)),
+                format!(
+                    "{what}: `{}` is not assignable to `{}`",
+                    self.show(from),
+                    self.show(to)
+                ),
                 pos,
             );
         }
@@ -4019,30 +4463,28 @@ impl Checker {
             (Null, Null | Nullable(_)) => true,
             (Nullable(a), Nullable(b)) => self.assignable(a, b),
             (t, Nullable(b)) => self.assignable(t, b),
-            (Bool, Bool) | (Char, Char) | (Str, Str) | (BigInt, BigInt) | (BigDec, BigDec) => {
-                true
-            }
+            (Bool, Bool) | (Char, Char) | (Str, Str) | (BigInt, BigInt) | (BigDec, BigDec) => true,
             (Int(a), Int(b)) =>
-
-                // Implicit widening only (§3.3 rule 3): same signedness and
-                // wider, or signed-to-wider-signed from unsigned.
-                {
-                    a == b
-                        || (a.signed() == b.signed() && a.bits() < b.bits())
-                        || (!a.signed() && b.signed() && a.bits() < b.bits())
-                }
+            // Implicit widening only (§3.3 rule 3): same signedness and
+            // wider, or signed-to-wider-signed from unsigned.
+            {
+                a == b
+                    || (a.signed() == b.signed() && a.bits() < b.bits())
+                    || (!a.signed() && b.signed() && a.bits() < b.bits())
+            }
             (Int(_), F32 | F64) => true,
             (F32, F32) | (F64, F64) | (F32, F64) => true,
             (Array(a), Array(b)) => self.ty_eq(a, b) || matches!(b.as_ref(), Ty::Any),
             (Tuple(a), Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| self.assignable(x, y))
             }
-            (Record(a), Record(b)) => b.iter().all(|bf| {
-                match a.iter().find(|af| af.name == bf.name) {
-                    Some(af) => self.assignable(&af.ty, &bf.ty),
-                    None => bf.optional,
-                }
-            }),
+            (Record(a), Record(b)) => {
+                b.iter()
+                    .all(|bf| match a.iter().find(|af| af.name == bf.name) {
+                        Some(af) => self.assignable(&af.ty, &bf.ty),
+                        None => bf.optional,
+                    })
+            }
             (Class(a, aargs), Record(b)) => {
                 // Classes satisfy record types structurally via public fields.
                 let _ = aargs;
@@ -4069,7 +4511,10 @@ impl Checker {
                 while let Some((cid, cargs)) = cur {
                     if cid == *b {
                         return cargs.len() == bargs.len()
-                            && cargs.iter().zip(bargs.iter()).all(|(x, y)| self.ty_eq(x, y));
+                            && cargs
+                                .iter()
+                                .zip(bargs.iter())
+                                .all(|(x, y)| self.ty_eq(x, y));
                     }
                     let map = self.subst_map(cid, &cargs);
                     cur = self.classes[cid]
@@ -4115,10 +4560,17 @@ impl Checker {
     fn iface_extends(&self, a: IfaceId, aargs: &[Ty], b: IfaceId, bargs: &[Ty]) -> bool {
         if a == b {
             return aargs.len() == bargs.len()
-                && aargs.iter().zip(bargs.iter()).all(|(x, y)| self.ty_eq(x, y));
+                && aargs
+                    .iter()
+                    .zip(bargs.iter())
+                    .all(|(x, y)| self.ty_eq(x, y));
         }
-        let map: HashMap<TvId, Ty> =
-            self.ifaces[a].tparams.iter().copied().zip(aargs.iter().cloned()).collect();
+        let map: HashMap<TvId, Ty> = self.ifaces[a]
+            .tparams
+            .iter()
+            .copied()
+            .zip(aargs.iter().cloned())
+            .collect();
         for (pid, pargs) in &self.ifaces[a].extends {
             let pa: Vec<Ty> = pargs.iter().map(|t| subst(t, &map)).collect();
             if self.iface_extends(*pid, &pa, b, bargs) {
@@ -4157,7 +4609,11 @@ impl Checker {
 /// Value of an unsuffixed integer literal (possibly negated/parenthesized).
 fn unsuffixed_int_value(e: &Expr) -> Option<i128> {
     match e {
-        Expr::Lit { kind: LitKind::Int, text, .. } => {
+        Expr::Lit {
+            kind: LitKind::Int,
+            text,
+            ..
+        } => {
             let t = text.replace('_', "");
             if t.ends_with(|c: char| c.is_ascii_alphabetic()) && !t.starts_with("0x") {
                 return None; // suffixed: keeps its own type
@@ -4177,7 +4633,11 @@ fn unsuffixed_int_value(e: &Expr) -> Option<i128> {
             i128::from_str_radix(body, radix).ok()
         }
         Expr::Paren(inner) => unsuffixed_int_value(inner),
-        Expr::Unary { op: UnaryOp::Neg, expr, .. } => unsuffixed_int_value(expr).map(|v| -v),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => unsuffixed_int_value(expr).map(|v| -v),
         _ => None,
     }
 }
@@ -4203,11 +4663,17 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
         match e {
             Expr::Yield { .. } => true,
             Expr::Arrow { .. } => false, // its own function
-            Expr::Paren(i) | Expr::Unary { expr: i, .. } | Expr::Update { expr: i, .. }
-            | Expr::Cast { expr: i, .. } | Expr::ImportCall(i) => in_expr(i),
-            Expr::Binary { l, r, .. } | Expr::Assign { target: l, value: r, .. } => {
-                in_expr(l) || in_expr(r)
-            }
+            Expr::Paren(i)
+            | Expr::Unary { expr: i, .. }
+            | Expr::Update { expr: i, .. }
+            | Expr::Cast { expr: i, .. }
+            | Expr::ImportCall(i) => in_expr(i),
+            Expr::Binary { l, r, .. }
+            | Expr::Assign {
+                target: l,
+                value: r,
+                ..
+            } => in_expr(l) || in_expr(r),
             Expr::Cond { cond, then, els } => in_expr(cond) || in_expr(then) || in_expr(els),
             Expr::Call { callee, args, .. } => {
                 in_expr(callee) || args.iter().any(|a| in_expr(&a.expr))
@@ -4234,7 +4700,10 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
         match s {
             Stmt::Expr(e) | Stmt::Throw(e) => in_expr(e),
             Stmt::Return { value: Some(e), .. } => in_expr(e),
-            Stmt::Var(v) => v.bindings.iter().any(|b| b.init.as_ref().is_some_and(in_expr)),
+            Stmt::Var(v) => v
+                .bindings
+                .iter()
+                .any(|b| b.init.as_ref().is_some_and(in_expr)),
             Stmt::Block(b) => b.iter().any(in_stmt),
             Stmt::If { cond, then, els } => {
                 in_expr(cond) || in_stmt(then) || els.as_ref().is_some_and(|e| in_stmt(e))
@@ -4242,7 +4711,12 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
             Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
                 in_expr(cond) || in_stmt(body)
             }
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 cond.as_ref().is_some_and(in_expr)
                     || step.iter().any(in_expr)
                     || in_stmt(body)
@@ -4252,7 +4726,11 @@ pub(crate) fn body_yields(body: &[Stmt]) -> bool {
             Stmt::Switch { scrutinee, clauses } => {
                 in_expr(scrutinee) || clauses.iter().any(|c| c.body.iter().any(in_stmt))
             }
-            Stmt::Try { block, catches, finally } => {
+            Stmt::Try {
+                block,
+                catches,
+                finally,
+            } => {
                 block.iter().any(in_stmt)
                     || catches.iter().any(|c| c.block.iter().any(in_stmt))
                     || finally.as_ref().is_some_and(|f| f.iter().any(in_stmt))
@@ -4295,7 +4773,11 @@ fn fold_union(tys: Vec<Ty>) -> Ty {
             other => arms.push(other),
         }
     }
-    let base = if arms.len() == 1 { arms.pop().unwrap() } else { Ty::Union(Rc::new(arms)) };
+    let base = if arms.len() == 1 {
+        arms.pop().unwrap()
+    } else {
+        Ty::Union(Rc::new(arms))
+    };
     if has_null {
         nullable(base)
     } else {
@@ -4304,7 +4786,11 @@ fn fold_union(tys: Vec<Ty>) -> Ty {
 }
 
 fn to_string_fn() -> Ty {
-    Ty::Fn(Rc::new(FnTy { tparams: vec![], params: vec![], ret: Ty::Str }))
+    Ty::Fn(Rc::new(FnTy {
+        tparams: vec![],
+        params: vec![],
+        ret: Ty::Str,
+    }))
 }
 
 fn subst(t: &Ty, map: &HashMap<TvId, Ty>) -> Ty {
@@ -4318,7 +4804,11 @@ fn subst(t: &Ty, map: &HashMap<TvId, Ty>) -> Ty {
         Ty::Tuple(ts) => Ty::Tuple(Rc::new(ts.iter().map(|t| subst(t, map)).collect())),
         Ty::Record(fs) => Ty::Record(Rc::new(
             fs.iter()
-                .map(|f| RecField { name: f.name.clone(), ty: subst(&f.ty, map), optional: f.optional })
+                .map(|f| RecField {
+                    name: f.name.clone(),
+                    ty: subst(&f.ty, map),
+                    optional: f.optional,
+                })
                 .collect(),
         )),
         Ty::Fn(f) => Ty::Fn(Rc::new(FnTy {
@@ -4326,7 +4816,10 @@ fn subst(t: &Ty, map: &HashMap<TvId, Ty>) -> Ty {
             params: f
                 .params
                 .iter()
-                .map(|p| ParamTy { ty: subst(&p.ty, map), ..p.clone() })
+                .map(|p| ParamTy {
+                    ty: subst(&p.ty, map),
+                    ..p.clone()
+                })
                 .collect(),
             ret: subst(&f.ret, map),
         })),
@@ -4389,18 +4882,17 @@ fn pos_of(e: &Expr) -> Pos {
         Expr::Call { callee, .. } => pos_of(callee),
         Expr::Member { obj, .. } | Expr::Index { obj, .. } => pos_of(obj),
         Expr::New { ty, .. } => type_pos(ty),
-        Expr::Template(parts) =>
-
-            parts
-                .iter()
-                .find_map(|p| match p {
-                    TplPart::Expr(e) => Some(pos_of(e)),
-                    _ => None,
-                })
-                .unwrap_or(Pos { line: 0, col: 0 }),
-        Expr::Array(elems) => {
-            elems.first().map(|e| pos_of(&e.expr)).unwrap_or(Pos { line: 0, col: 0 })
-        }
+        Expr::Template(parts) => parts
+            .iter()
+            .find_map(|p| match p {
+                TplPart::Expr(e) => Some(pos_of(e)),
+                _ => None,
+            })
+            .unwrap_or(Pos { line: 0, col: 0 }),
+        Expr::Array(elems) => elems
+            .first()
+            .map(|e| pos_of(&e.expr))
+            .unwrap_or(Pos { line: 0, col: 0 }),
         Expr::Record(fs) => fs
             .iter()
             .find_map(|f| match f {
@@ -4425,7 +4917,10 @@ fn pattern_pos(p: &Pattern) -> Pos {
             .map(|e| pattern_pos(&e.target))
             .or_else(|| rest.as_ref().map(|r| pattern_pos(r)))
             .unwrap_or(Pos { line: 0, col: 0 }),
-        Pattern::Record(fs) => fs.first().map(|f| f.name.pos).unwrap_or(Pos { line: 0, col: 0 }),
+        Pattern::Record(fs) => fs
+            .first()
+            .map(|f| f.name.pos)
+            .unwrap_or(Pos { line: 0, col: 0 }),
     }
 }
 
@@ -4433,7 +4928,10 @@ fn type_pos(t: &ast::Type) -> Pos {
     match t {
         ast::Type::Named { pos, .. } => *pos,
         ast::Type::Nullable(inner) | ast::Type::ArrayOf(inner) => type_pos(inner),
-        ast::Type::Union(arms) => arms.first().map(type_pos).unwrap_or(Pos { line: 0, col: 0 }),
+        ast::Type::Union(arms) => arms
+            .first()
+            .map(type_pos)
+            .unwrap_or(Pos { line: 0, col: 0 }),
         ast::Type::Tuple(ts) => ts.first().map(type_pos).unwrap_or(Pos { line: 0, col: 0 }),
         ast::Type::Record(_) => Pos { line: 0, col: 0 },
         ast::Type::Function { ret, .. } => type_pos(ret),

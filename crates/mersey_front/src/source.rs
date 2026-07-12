@@ -32,7 +32,10 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<SourceFile, Diagnostic> {
 
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match std::str::from_utf8(bytes) {
-        Ok(text) => Ok(SourceFile { name: name.to_string(), text: text.to_string() }),
+        Ok(text) => Ok(SourceFile {
+            name: name.to_string(),
+            text: text.to_string(),
+        }),
         Err(e) => {
             // Report the line/column of the offending byte, counting the
             // valid prefix; the prefix is guaranteed valid UTF-8.
@@ -42,7 +45,10 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<SourceFile, Diagnostic> {
             let pos = end_pos(prefix);
             Err(Diagnostic::error(
                 Code::InvalidUtf8,
-                format!("{name}: invalid UTF-8 byte sequence at offset {}", e.valid_up_to()),
+                format!(
+                    "{name}: invalid UTF-8 byte sequence at offset {}",
+                    e.valid_up_to()
+                ),
                 pos,
             ))
         }

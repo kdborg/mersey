@@ -25,9 +25,19 @@ impl Host for BufHost {
 fn run(src_text: &str, use_vm: bool, jit: bool) -> String {
     let src = source::decode("<test>", src_text.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
-    assert!(parsed.diagnostics.is_empty(), "parse: {:?}", parsed.diagnostics[0].message);
-    assert!(bind::bind(&parsed.module).diagnostics.is_empty(), "bind errors");
-    assert!(check::check(&parsed.module).diagnostics.is_empty(), "check errors");
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics[0].message
+    );
+    assert!(
+        bind::bind(&parsed.module).diagnostics.is_empty(),
+        "bind errors"
+    );
+    assert!(
+        check::check(&parsed.module).diagnostics.is_empty(),
+        "check errors"
+    );
     let module: &'static _ = Box::leak(Box::new(parsed.module));
     let buf = Rc::new(RefCell::new(String::new()));
     let mut i = new_interp(Box::new(BufHost(buf.clone())));
@@ -35,7 +45,8 @@ fn run(src_text: &str, use_vm: bool, jit: bool) -> String {
     if jit {
         i.jit = Some(mersey_jit::hook);
     }
-    i.run_module(module).unwrap_or_else(|t| panic!("runtime: {}", i.describe_thrown(&t)));
+    i.run_module(module)
+        .unwrap_or_else(|t| panic!("runtime: {}", i.describe_thrown(&t)));
     let out = buf.borrow().clone();
     out
 }
@@ -147,7 +158,10 @@ fn float_kernels_and_trapping_division() {
     assert_eq!(jit_out, vm_out, "JIT vs VM divergence on floats/division");
     assert_eq!(vm_out, tree_out, "VM vs tree divergence");
     // The trap must surface as a real Mersey error, not a wrong answer.
-    assert!(jit_out.contains("trapped: division by zero"), "output was:\n{jit_out}");
+    assert!(
+        jit_out.contains("trapped: division by zero"),
+        "output was:\n{jit_out}"
+    );
 }
 
 #[test]
@@ -173,9 +187,18 @@ fn float_kernels_actually_compile() {
             compiled.push(f.name.text.clone());
         }
     }
-    assert!(compiled.contains(&"mandelIters".to_string()), "float kernel not compiled: {compiled:?}");
-    assert!(compiled.contains(&"harmonic".to_string()), "float division kernel not compiled: {compiled:?}");
-    assert!(compiled.contains(&"safeDiv".to_string()), "integer division kernel not compiled: {compiled:?}");
+    assert!(
+        compiled.contains(&"mandelIters".to_string()),
+        "float kernel not compiled: {compiled:?}"
+    );
+    assert!(
+        compiled.contains(&"harmonic".to_string()),
+        "float division kernel not compiled: {compiled:?}"
+    );
+    assert!(
+        compiled.contains(&"safeDiv".to_string()),
+        "integer division kernel not compiled: {compiled:?}"
+    );
 }
 
 #[test]
@@ -210,7 +233,11 @@ fn jit_actually_compiles_the_kernels() {
             })
             .collect();
         let jitted = mersey_jit::hook(&chunk, &params);
-        assert!(jitted.is_some(), "kernel `{}` fell out of the JIT subset", f.name.text);
+        assert!(
+            jitted.is_some(),
+            "kernel `{}` fell out of the JIT subset",
+            f.name.text
+        );
         compiled += 1;
     }
     assert_eq!(compiled, 3);

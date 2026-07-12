@@ -164,7 +164,12 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     pub fn error(code: Code, message: impl Into<String>, pos: Pos) -> Self {
-        Diagnostic { severity: Severity::Error, code, message: message.into(), pos }
+        Diagnostic {
+            severity: Severity::Error,
+            code,
+            message: message.into(),
+            pos,
+        }
     }
 }
 

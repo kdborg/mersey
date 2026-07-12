@@ -88,7 +88,10 @@ pub fn write_str(out: &mut String, s: &str) {
 }
 
 pub fn parse(text: &str) -> Option<Json> {
-    let mut p = P { chars: text.chars().collect(), i: 0 };
+    let mut p = P {
+        chars: text.chars().collect(),
+        i: 0,
+    };
     let v = p.value()?;
     p.ws();
     if p.i == p.chars.len() {
@@ -198,8 +201,7 @@ impl P {
                         'b' => out.push('\u{8}'),
                         'f' => out.push('\u{c}'),
                         'u' => {
-                            let hex: String =
-                                self.chars.get(self.i..self.i + 4)?.iter().collect();
+                            let hex: String = self.chars.get(self.i..self.i + 4)?.iter().collect();
                             self.i += 4;
                             let n = u32::from_str_radix(&hex, 16).ok()?;
                             // Surrogate pairs from JS strings.
@@ -212,8 +214,7 @@ impl P {
                                     let n2 = u32::from_str_radix(&hex2, 16).ok()?;
                                     if (0xDC00..0xE000).contains(&n2) {
                                         self.i += 6;
-                                        let cp =
-                                            0x10000 + ((n - 0xD800) << 10) + (n2 - 0xDC00);
+                                        let cp = 0x10000 + ((n - 0xD800) << 10) + (n2 - 0xDC00);
                                         out.push(char::from_u32(cp)?);
                                         continue;
                                     }

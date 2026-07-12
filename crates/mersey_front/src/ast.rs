@@ -50,7 +50,10 @@ pub struct ExportDecl {
 pub enum ExportKind {
     Decl(Decl),
     Var(VarStmt),
-    Named { specs: Vec<NameAlias>, from: Option<String> },
+    Named {
+        specs: Vec<NameAlias>,
+        from: Option<String>,
+    },
 }
 
 pub enum Decl {
@@ -151,9 +154,23 @@ pub enum ClassMember {
         /// `None` = `;` body (abstract)
         body: Option<Vec<Stmt>>,
     },
-    Getter { mods: MemberMods, name: String, ret: Type, body: Vec<Stmt> },
-    Setter { mods: MemberMods, name: String, param: Param, body: Vec<Stmt> },
-    Ctor { access: Option<Access>, params: Vec<Param>, body: Vec<Stmt> },
+    Getter {
+        mods: MemberMods,
+        name: String,
+        ret: Type,
+        body: Vec<Stmt>,
+    },
+    Setter {
+        mods: MemberMods,
+        name: String,
+        param: Param,
+        body: Vec<Stmt>,
+    },
+    Ctor {
+        access: Option<Access>,
+        params: Vec<Param>,
+        body: Vec<Stmt>,
+    },
 }
 
 pub struct InterfaceDecl {
@@ -164,8 +181,18 @@ pub struct InterfaceDecl {
 }
 
 pub enum InterfaceMember {
-    Prop { readonly: bool, name: String, optional: bool, ty: Type },
-    Method { name: String, type_params: Vec<TypeParam>, params: Vec<Param>, ret: Type },
+    Prop {
+        readonly: bool,
+        name: String,
+        optional: bool,
+        ty: Type,
+    },
+    Method {
+        name: String,
+        type_params: Vec<TypeParam>,
+        params: Vec<Param>,
+        ret: Type,
+    },
 }
 
 pub struct EnumDecl {
@@ -187,10 +214,25 @@ pub enum Stmt {
     Var(VarStmt),
     Expr(Expr),
     Empty,
-    If { cond: Expr, then: Box<Stmt>, els: Option<Box<Stmt>> },
-    While { cond: Expr, body: Box<Stmt> },
-    DoWhile { body: Box<Stmt>, cond: Expr },
-    For { init: Option<ForInit>, cond: Option<Expr>, step: Vec<Expr>, body: Box<Stmt> },
+    If {
+        cond: Expr,
+        then: Box<Stmt>,
+        els: Option<Box<Stmt>>,
+    },
+    While {
+        cond: Expr,
+        body: Box<Stmt>,
+    },
+    DoWhile {
+        body: Box<Stmt>,
+        cond: Expr,
+    },
+    For {
+        init: Option<ForInit>,
+        cond: Option<Expr>,
+        step: Vec<Expr>,
+        body: Box<Stmt>,
+    },
     ForOf {
         is_await: bool,
         kind: VarKind,
@@ -199,13 +241,32 @@ pub enum Stmt {
         iter: Expr,
         body: Box<Stmt>,
     },
-    Switch { scrutinee: Expr, clauses: Vec<SwitchClause> },
-    Break { label: Option<Name>, pos: Pos },
-    Continue { label: Option<Name>, pos: Pos },
-    Return { value: Option<Expr>, pos: Pos },
+    Switch {
+        scrutinee: Expr,
+        clauses: Vec<SwitchClause>,
+    },
+    Break {
+        label: Option<Name>,
+        pos: Pos,
+    },
+    Continue {
+        label: Option<Name>,
+        pos: Pos,
+    },
+    Return {
+        value: Option<Expr>,
+        pos: Pos,
+    },
     Throw(Expr),
-    Try { block: Vec<Stmt>, catches: Vec<Catch>, finally: Option<Vec<Stmt>> },
-    Labeled { label: Name, body: Box<Stmt> },
+    Try {
+        block: Vec<Stmt>,
+        catches: Vec<Catch>,
+        finally: Option<Vec<Stmt>>,
+    },
+    Labeled {
+        label: Name,
+        body: Box<Stmt>,
+    },
 }
 
 pub enum ForInit {
@@ -253,7 +314,10 @@ pub struct Catch {
 
 pub enum Pattern {
     Name(Name),
-    Array { elems: Vec<PatternElem>, rest: Option<Box<Pattern>> },
+    Array {
+        elems: Vec<PatternElem>,
+        rest: Option<Box<Pattern>>,
+    },
     Record(Vec<PatternField>),
 }
 
@@ -273,28 +337,86 @@ pub struct PatternField {
 pub enum Expr {
     Ident(Name),
     This(Pos),
-    Lit { kind: LitKind, text: String, pos: Pos },
+    Lit {
+        kind: LitKind,
+        text: String,
+        pos: Pos,
+    },
     Template(Vec<TplPart>),
     Array(Vec<ArrayElem>),
     Record(Vec<RecordField>),
     /// Preserved so the `??`-mixing rule can see explicit parentheses.
     Paren(Box<Expr>),
-    Arrow { is_async: bool, params: Vec<Param>, ret: Option<Type>, body: ArrowBody },
-    Unary { op: UnaryOp, pos: Pos, expr: Box<Expr> },
-    Update { prefix: bool, inc: bool, expr: Box<Expr> },
-    Binary { op: BinOp, l: Box<Expr>, r: Box<Expr> },
-    Assign { op: &'static str, target: Box<Expr>, value: Box<Expr> },
-    Cond { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
-    Cast { expr: Box<Expr>, wrapping: bool, ty: Type },
-    Call { callee: Box<Expr>, type_args: Vec<Type>, args: Vec<ArrayElem>, optional: bool },
-    New { ty: Type, args: Vec<ArrayElem> },
-    Member { obj: Box<Expr>, name: String, optional: bool },
-    Index { obj: Box<Expr>, index: Box<Expr>, optional: bool },
-    SuperMember { name: String, pos: Pos },
-    SuperCall { args: Vec<ArrayElem>, pos: Pos },
+    Arrow {
+        is_async: bool,
+        params: Vec<Param>,
+        ret: Option<Type>,
+        body: ArrowBody,
+    },
+    Unary {
+        op: UnaryOp,
+        pos: Pos,
+        expr: Box<Expr>,
+    },
+    Update {
+        prefix: bool,
+        inc: bool,
+        expr: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        l: Box<Expr>,
+        r: Box<Expr>,
+    },
+    Assign {
+        op: &'static str,
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
+    Cond {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+    },
+    Cast {
+        expr: Box<Expr>,
+        wrapping: bool,
+        ty: Type,
+    },
+    Call {
+        callee: Box<Expr>,
+        type_args: Vec<Type>,
+        args: Vec<ArrayElem>,
+        optional: bool,
+    },
+    New {
+        ty: Type,
+        args: Vec<ArrayElem>,
+    },
+    Member {
+        obj: Box<Expr>,
+        name: String,
+        optional: bool,
+    },
+    Index {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+        optional: bool,
+    },
+    SuperMember {
+        name: String,
+        pos: Pos,
+    },
+    SuperCall {
+        args: Vec<ArrayElem>,
+        pos: Pos,
+    },
     ImportCall(Box<Expr>),
     /// `yield expr` — suspends a generator, handing the value to the caller.
-    Yield { value: Option<Box<Expr>>, pos: Pos },
+    Yield {
+        value: Option<Box<Expr>>,
+        pos: Pos,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -353,23 +475,54 @@ impl UnaryOp {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinOp {
-    Coalesce, Or, And,
-    BitOr, BitXor, BitAnd,
-    Eq, Ne, Lt, Gt, Le, Ge, Instanceof,
-    Shl, Shr,
-    Add, Sub, Mul, Div, Rem, Pow,
+    Coalesce,
+    Or,
+    And,
+    BitOr,
+    BitXor,
+    BitAnd,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Instanceof,
+    Shl,
+    Shr,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Pow,
 }
 
 impl BinOp {
     pub fn as_str(self) -> &'static str {
         use BinOp::*;
         match self {
-            Coalesce => "??", Or => "||", And => "&&",
-            BitOr => "|", BitXor => "^", BitAnd => "&",
-            Eq => "==", Ne => "!=", Lt => "<", Gt => ">", Le => "<=", Ge => ">=",
+            Coalesce => "??",
+            Or => "||",
+            And => "&&",
+            BitOr => "|",
+            BitXor => "^",
+            BitAnd => "&",
+            Eq => "==",
+            Ne => "!=",
+            Lt => "<",
+            Gt => ">",
+            Le => "<=",
+            Ge => ">=",
             Instanceof => "instanceof",
-            Shl => "<<", Shr => ">>",
-            Add => "+", Sub => "-", Mul => "*", Div => "/", Rem => "%", Pow => "**",
+            Shl => "<<",
+            Shr => ">>",
+            Add => "+",
+            Sub => "-",
+            Mul => "*",
+            Div => "/",
+            Rem => "%",
+            Pow => "**",
         }
     }
 }
@@ -379,13 +532,21 @@ impl BinOp {
 pub enum Type {
     /// Qualified name (`a.B`) with optional type arguments; predefined
     /// type names and `void` land here too.
-    Named { name: String, pos: Pos, args: Vec<Type> },
+    Named {
+        name: String,
+        pos: Pos,
+        args: Vec<Type>,
+    },
     Nullable(Box<Type>),
     ArrayOf(Box<Type>),
     Union(Vec<Type>),
     Tuple(Vec<Type>),
     Record(Vec<RecordTypeMember>),
-    Function { type_params: Vec<TypeParam>, params: Vec<FnTypeParam>, ret: Box<Type> },
+    Function {
+        type_params: Vec<TypeParam>,
+        params: Vec<FnTypeParam>,
+        ret: Box<Type>,
+    },
 }
 
 pub struct RecordTypeMember {
