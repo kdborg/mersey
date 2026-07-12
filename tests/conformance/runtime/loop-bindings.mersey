@@ -1,0 +1,39 @@
+import { console } from "std:console";
+
+// `for (let i = …)` gives each iteration its own `i` (§3.2). Without that, all
+// three closures below would report 3 — the classic capture bug that `let`
+// exists to prevent. The update runs in the *next* iteration's binding, so a
+// closure made in the body sees the value the body saw.
+const fns: (() => int32)[] = [];
+for (let i = 0; i < 3; i++) {
+    fns.push(() => i);
+}
+console.log(fns[0](), fns[1](), fns[2]());
+
+// `continue` still runs the update, in the next iteration's binding.
+const kept: (() => int32)[] = [];
+for (let j = 0; j < 5; j++) {
+    if (j % 2 == 0) { continue; }
+    kept.push(() => j);
+}
+console.log(kept.length, kept[0](), kept[1]());
+
+// `break` leaves the loop with the binding intact for whoever captured it.
+const early: (() => int32)[] = [];
+for (let k = 0; k < 10; k++) {
+    early.push(() => k);
+    if (k == 1) { break; }
+}
+console.log(early[0](), early[1]());
+
+// A loop that captures nothing is still an ordinary counted loop.
+let sum: int32 = 0;
+for (let n = 1; n <= 100; n++) {
+    sum += n;
+}
+console.log(sum);
+
+// -2147483648 is a valid int32: the sign is part of the literal, because the
+// positive half of the range does not reach 2147483648.
+const min: int32 = -2147483648;
+console.log(min, min - 1); // wraps to int32::MAX

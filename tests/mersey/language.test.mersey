@@ -1,0 +1,111 @@
+// The language, tested in itself.
+//
+// `mersey test` runs every *.test.mersey; this file is also a plain module, so
+// `mersey run tests/mersey/language.test.mersey` does exactly the same thing.
+// Declarations are module-level (§6.7), so the classes under test live here
+// rather than inside the cases.
+
+import { test, assert, refute, assertThrows } from "std:test";
+
+class Counter {
+    private n: int32 = 0;
+    public bump(): int32 {
+        this.n += 1;
+        return this.n;
+    }
+}
+
+class Safe {
+    private secret: int32 = 42;
+    public reveal(): int32 {
+        return this.secret;
+    }
+}
+
+class Custom extends Error {
+    public constructor(m: string) {
+        super(m);
+    }
+}
+
+function counter(start: int32, to: int32): int32 {
+    let i = start;
+    while (i <= to) {
+        yield i;
+        i += 1;
+    }
+}
+
+test("C-style coercion widens, and integer division truncates", () => {
+    const a: int32 = 7;
+    const b: int64 = a; // widening is implicit (§3.3)
+    assert(b == 7, "int32 widened to int64");
+    assert(7 / 2 == 3, "integer division truncates");
+    assert(7.0 / 2.0 == 3.5, "float division does not");
+});
+
+test("integers wrap at their declared width, not at 2^53", () => {
+    const big: int32 = 2147483647;
+    assert(big + 1 == -2147483648, "int32 wraps");
+});
+
+test("strings are sequences of code points, not UTF-16 units", () => {
+    const s = "héllo";
+    assert(s.length == 5, "length counts code points");
+});
+
+test("classes are sealed: no prototypes, fixed layout", () => {
+    const c = new Counter();
+    c.bump();
+    assert(c.bump() == 2, "per-instance state");
+});
+
+test("private members are private", () => {
+    assert(new Safe().reveal() == 42, "reachable from inside");
+    // `new Safe().secret` does not compile — that is the point, and the
+    // checker enforces it (E0404) rather than the runtime.
+});
+
+test("null is not a value you can ignore", () => {
+    const xs: int32[] = [1, 2, 3];
+    const found = xs.find((x: int32) => x > 10); // int32?
+    assert(found == null, "no match yields null");
+});
+
+test("errors carry a message through super()", () => {
+    try {
+        throw new Custom("carried");
+    } catch (e: Error) {
+        assert(e.message == "carried", "message survived the super() call");
+    }
+});
+
+test("only Errors can be thrown", () => {
+    assertThrows(() => {
+        throw new Error("x");
+    }, "an Error throws");
+    // `throw 42` does not compile (E0412).
+});
+
+test("generators suspend and resume", () => {
+    let total: int32 = 0;
+    for (const n of counter(1, 5)) {
+        total += n;
+    }
+    assert(total == 15, "1+2+3+4+5");
+});
+
+test("closures capture the binding, and each iteration gets its own", () => {
+    const fns: (() => int32)[] = [];
+    for (let i = 0; i < 3; i++) {
+        fns.push(() => i);
+    }
+    assert(fns[0]() == 0 && fns[2]() == 2, "each closure kept its own i");
+});
+
+test("refute and assertThrows do what they say", () => {
+    refute(false, "false is not true");
+    assertThrows(() => {
+        assert(false, "inner");
+    }, "a failed assert throws");
+});

@@ -21,6 +21,217 @@ pub struct CheckOutput {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// What an editor asks for: what is this, where is it declared, what can I
+/// type here. The checker already computes all of it — this just records it
+/// instead of throwing it away.
+#[derive(Default)]
+pub struct IndexData {
+    /// Type of every expression, keyed by its start position. Nested
+    /// expressions share a start (`a`, `a.b`, `a.b.c` all start at `a`), and
+    /// the checker visits inner ones first, so the *last* entry at a position
+    /// is the outermost — the one worth hovering.
+    types: Vec<(Pos, String)>,
+    /// Use → declaration.
+    uses: Vec<(Pos, Pos)>,
+    /// Everything declared, for scope completion.
+    syms: Vec<Sym>,
+}
+
+struct Sym {
+    name: String,
+    detail: String,
+    pos: Pos,
+}
+
+/// One completion item.
+pub struct Completion {
+    pub label: String,
+    pub detail: String,
+    /// LSP CompletionItemKind.
+    pub kind: u32,
+}
+
+const KIND_FIELD: u32 = 5;
+const KIND_METHOD: u32 = 2;
+const KIND_VARIABLE: u32 = 6;
+
+/// A checked module, kept alive so an editor can ask questions of it.
+pub struct Analysis {
+    checker: Checker,
+    index: IndexData,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Check a module and keep everything the checker learned.
+pub fn analyze(module: &Module) -> Analysis {
+    let mut c = Checker::new();
+    let n = c.diags.len();
+    c.collect(crate::webapi::webapi().module);
+    c.diags.truncate(n);
+    c.index = Some(IndexData::default());
+    c.module_spec = "<main>".to_string();
+    c.collect(module);
+    c.check_module(module);
+    let index = c.index.take().unwrap_or_default();
+    let diagnostics = std::mem::take(&mut c.diags);
+    Analysis {
+        checker: c,
+        index,
+        diagnostics,
+    }
+}
+
+impl Analysis {
+    /// The type of the thing at `pos` — the outermost expression starting
+    /// there, which is what a cursor on `a.b.c` should report.
+    pub fn hover(&self, pos: Pos) -> Option<String> {
+        self.index
+            .types
+            .iter()
+            .filter(|(p, _)| p.line == pos.line && p.col == pos.col)
+            .next_back()
+            .map(|(_, t)| t.clone())
+    }
+
+    /// Where the name at `pos` was declared.
+    pub fn definition(&self, pos: Pos) -> Option<Pos> {
+        self.index
+            .uses
+            .iter()
+            .find(|(u, _)| u.line == pos.line && u.col == pos.col)
+            .map(|(_, d)| *d)
+    }
+
+    /// Names in scope at `pos`: everything declared at the top level, plus
+    /// locals declared before the cursor.
+    pub fn scope_completions(&self, pos: Pos) -> Vec<Completion> {
+        let mut out: Vec<Completion> = Vec::new();
+        for sym in &self.index.syms {
+            let before = (sym.pos.line, sym.pos.col) <= (pos.line, pos.col);
+            if !before {
+                continue;
+            }
+            if out.iter().any(|c| c.label == sym.name) {
+                continue;
+            }
+            out.push(Completion {
+                label: sym.name.clone(),
+                detail: sym.detail.clone(),
+                kind: KIND_VARIABLE,
+            });
+        }
+        out
+    }
+}
+
+/// The sentinel an editor's completion request stands in for: the client
+/// rewrites `foo.<cursor>` to `foo.MERSEY_COMPLETION_MARKER`, and the checker
+/// records what `foo` turned out to be. Positions would not do — a member name
+/// in the AST does not carry one — and a marker also survives the parser.
+pub const COMPLETION_MARKER: &str = "MERSEY__COMPLETE";
+
+/// Member names probed against the builtin types. The checker owns the truth
+/// about what an array or a string has; this is just the list of questions.
+const BUILTIN_MEMBERS: &[&str] = &[
+    "length",
+    "size",
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "slice",
+    "splice",
+    "concat",
+    "join",
+    "reverse",
+    "sort",
+    "indexOf",
+    "lastIndexOf",
+    "includes",
+    "find",
+    "findIndex",
+    "filter",
+    "map",
+    "reduce",
+    "forEach",
+    "some",
+    "every",
+    "at",
+    "fill",
+    "flat",
+    "keys",
+    "values",
+    "entries",
+    "get",
+    "set",
+    "has",
+    "delete",
+    "clear",
+    "add",
+    "next",
+    "toArray",
+    "toString",
+    "toUpperCase",
+    "toLowerCase",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "split",
+    "charAt",
+    "codePointAt",
+    "startsWith",
+    "endsWith",
+    "replace",
+    "replaceAll",
+    "repeat",
+    "padStart",
+    "padEnd",
+    "substring",
+    "test",
+    "exec",
+    "match",
+    "then",
+    "catch",
+    "finally",
+    "log",
+    "warn",
+    "error",
+    "info",
+    "abs",
+    "min",
+    "max",
+    "floor",
+    "ceil",
+    "round",
+    "sqrt",
+    "pow",
+    "random",
+];
+
+fn add_all(out: &mut Vec<Completion>, items: Vec<Completion>) {
+    for c in items {
+        if !out.iter().any(|e| e.label == c.label) {
+            out.push(c);
+        }
+    }
+}
+
+/// Members available on the receiver of `x.MERSEY__COMPLETE` in `module`.
+pub fn member_completions(module: &Module) -> Vec<Completion> {
+    let mut c = Checker::new();
+    let n = c.diags.len();
+    c.collect(crate::webapi::webapi().module);
+    c.diags.truncate(n);
+    c.module_spec = "<main>".to_string();
+    c.want_marker = true;
+    c.collect(module);
+    c.check_module(module);
+    let Some(t) = c.marker_recv.clone() else {
+        return Vec::new();
+    };
+    c.members_of(&t)
+}
+
 pub fn check(module: &Module) -> CheckOutput {
     let mut out = check_graph(&[("<main>".to_string(), module)]);
     out.pop().map(|(_, o)| o).unwrap_or(CheckOutput {
@@ -387,10 +598,17 @@ enum TypeDef {
 struct VarInfo {
     ty: Ty,
     is_const: bool,
+    /// Where this name was declared — what "go to definition" jumps to.
+    def: Option<Pos>,
 }
 
 struct Checker {
     diags: Vec<Diagnostic>,
+    /// Editor index; `None` during ordinary compilation, so it costs nothing.
+    index: Option<IndexData>,
+    /// Completion: capture the receiver type of `x.MERSEY__COMPLETE`.
+    want_marker: bool,
+    marker_recv: Option<Ty>,
     /// Declared bound for each type parameter (`<T extends Comparable<T>>`).
     tv_bounds: HashMap<TvId, Ty>,
     classes: Vec<ClassInfo>,
@@ -459,6 +677,9 @@ impl Checker {
     fn new() -> Checker {
         let mut c = Checker {
             diags: Vec::new(),
+            index: None,
+            want_marker: false,
+            marker_recv: None,
             tv_bounds: HashMap::new(),
             classes: Vec::new(),
             ifaces: Vec::new(),
@@ -645,6 +866,7 @@ impl Checker {
                 VarInfo {
                     ty: Ty::ClassMeta(id),
                     is_const: true,
+                    def: None,
                 },
             );
         }
@@ -887,6 +1109,7 @@ impl Checker {
             VarInfo {
                 ty: Ty::ClassMeta(map_id),
                 is_const: true,
+                def: None,
             },
         );
 
@@ -931,6 +1154,7 @@ impl Checker {
             VarInfo {
                 ty: Ty::ClassMeta(set_id),
                 is_const: true,
+                def: None,
             },
         );
     }
@@ -1031,10 +1255,43 @@ impl Checker {
     }
 
     fn define(&mut self, name: &str, ty: Ty, is_const: bool) {
-        self.scopes
-            .last_mut()
-            .unwrap()
-            .insert(name.to_string(), VarInfo { ty, is_const });
+        self.scopes.last_mut().unwrap().insert(
+            name.to_string(),
+            VarInfo {
+                ty,
+                is_const,
+                def: None,
+            },
+        );
+    }
+
+    /// Define a name and remember where it was written, for the editor.
+    fn define_at(&mut self, name: &str, ty: Ty, is_const: bool, pos: Pos) {
+        if let Some(ix) = &mut self.index {
+            ix.syms.push(Sym {
+                name: name.to_string(),
+                detail: String::new(), // filled in below (needs &self)
+                pos,
+            });
+        }
+        let detail = self.show(&ty);
+        if let Some(ix) = &mut self.index {
+            if let Some(last) = ix.syms.last_mut() {
+                last.detail = detail.clone();
+            }
+            // A declaration is not an expression, so nothing else would record
+            // a type here — but hovering the name you are declaring is the
+            // most natural thing an editor user does.
+            ix.types.push((pos, detail));
+        }
+        self.scopes.last_mut().unwrap().insert(
+            name.to_string(),
+            VarInfo {
+                ty,
+                is_const,
+                def: Some(pos),
+            },
+        );
     }
 
     fn lookup(&self, name: &str) -> Option<VarInfo> {
@@ -1042,9 +1299,11 @@ impl Checker {
             if let Some(t) = n.get(name) {
                 // Narrow overlays refine the type; const-ness from scope.
                 let base = self.lookup_scope(name);
+                let base = base.clone();
                 return Some(VarInfo {
                     ty: t.clone(),
-                    is_const: base.map(|b| b.is_const).unwrap_or(false),
+                    is_const: base.as_ref().map(|b| b.is_const).unwrap_or(false),
+                    def: base.and_then(|b| b.def),
                 });
             }
         }
@@ -1232,7 +1491,7 @@ impl Checker {
                         }
                         _ => Ty::Any,
                     };
-                    self.define(&local.text, ty, true);
+                    self.define_at(&local.text, ty, true, local.pos);
                     self.type_defs.insert(local.text.clone(), TypeDef::Imported);
                 }
             }
@@ -1309,7 +1568,7 @@ impl Checker {
                     params,
                     ret,
                 }));
-                self.define(&f.name.text, fnty, true);
+                self.define_at(&f.name.text, fnty, true, f.name.pos);
             }
             Decl::Class(c) => {
                 let TypeDef::Class(id) = self.type_defs[&c.name.text] else {
@@ -1438,7 +1697,7 @@ impl Checker {
                 let TypeDef::Enum(id) = self.type_defs[&e.name.text] else {
                     return;
                 };
-                self.define(&e.name.text, Ty::EnumMeta(id), true);
+                self.define_at(&e.name.text, Ty::EnumMeta(id), true, e.name.pos);
             }
             Decl::TypeAlias(t) => {
                 let TypeDef::Alias(id) = self.type_defs[&t.name.text] else {
@@ -1454,7 +1713,7 @@ impl Checker {
         // Class values (constructors as values / statics).
         if let Decl::Class(c) = d {
             if let TypeDef::Class(id) = self.type_defs[&c.name.text] {
-                self.define(&c.name.text, Ty::ClassMeta(id), true);
+                self.define_at(&c.name.text, Ty::ClassMeta(id), true, c.name.pos);
             }
         }
     }
@@ -2155,6 +2414,137 @@ impl Checker {
         false
     }
 
+    /// Everything you can write after a `.` on this type. Only public members:
+    /// completion must not suggest what the checker will then reject (§4.2).
+    fn members_of(&mut self, t: &Ty) -> Vec<Completion> {
+        let mut out: Vec<Completion> = Vec::new();
+        match strip_null(t) {
+            Ty::Class(id, _) | Ty::ClassMeta(id) => {
+                let statics = matches!(strip_null(t), Ty::ClassMeta(_));
+                let mut cur = Some(id);
+                let mut hosts: Vec<Ty> = Vec::new();
+                while let Some(id) = cur {
+                    let ci = &self.classes[id];
+                    let mut found: Vec<Completion> = Vec::new();
+                    for f in &ci.fields {
+                        if f.access == Access::Public && f.is_static == statics {
+                            found.push(Completion {
+                                label: f.name.clone(),
+                                detail: self.show(&f.ty),
+                                kind: KIND_FIELD,
+                            });
+                        }
+                    }
+                    for m in &ci.methods {
+                        if m.access == Access::Public && m.is_static == statics {
+                            found.push(Completion {
+                                label: m.name.clone(),
+                                detail: self.show(&Ty::Fn(Rc::new(m.sig.clone()))),
+                                kind: KIND_METHOD,
+                            });
+                        }
+                    }
+                    if !statics {
+                        for g in &ci.getters {
+                            if g.access == Access::Public {
+                                found.push(Completion {
+                                    label: g.name.clone(),
+                                    detail: self.show(&g.ty),
+                                    kind: KIND_FIELD,
+                                });
+                            }
+                        }
+                    }
+                    // A host-backed class (`extends HTMLElement`) also offers
+                    // everything the host interface does.
+                    if let Some((iface, args)) = &ci.host_parent {
+                        hosts.push(Ty::Iface(*iface, Rc::new(args.to_vec())));
+                    }
+                    cur = ci.parent.as_ref().map(|(p, _)| *p);
+                    add_all(&mut out, found);
+                }
+                for h in hosts {
+                    let more = self.members_of(&h);
+                    add_all(&mut out, more);
+                }
+            }
+            Ty::Iface(id, _) => {
+                let mut stack = vec![id];
+                while let Some(id) = stack.pop() {
+                    let ii = &self.ifaces[id];
+                    let found: Vec<Completion> = ii
+                        .members
+                        .iter()
+                        .map(|m| Completion {
+                            label: m.name.clone(),
+                            detail: self.show(&m.ty),
+                            kind: if matches!(m.ty, Ty::Fn(_)) {
+                                KIND_METHOD
+                            } else {
+                                KIND_FIELD
+                            },
+                        })
+                        .collect();
+                    for (parent, _) in &self.ifaces[id].extends {
+                        stack.push(*parent);
+                    }
+                    add_all(&mut out, found);
+                }
+            }
+            Ty::Record(fields) => {
+                let found: Vec<Completion> = fields
+                    .iter()
+                    .map(|f| Completion {
+                        label: f.name.clone(),
+                        detail: self.show(&f.ty),
+                        kind: KIND_FIELD,
+                    })
+                    .collect();
+                add_all(&mut out, found);
+            }
+            Ty::EnumMeta(id) => {
+                let name = self.enums[id].name.clone();
+                let found: Vec<Completion> = self.enums[id]
+                    .members
+                    .clone()
+                    .into_iter()
+                    .map(|m| Completion {
+                        label: m,
+                        detail: name.clone(),
+                        kind: KIND_FIELD,
+                    })
+                    .collect();
+                add_all(&mut out, found);
+            }
+            // Arrays, strings, maps, sets, namespaces: rather than keep a
+            // second copy of what they offer, ask the checker the same
+            // question it asks itself — so completion cannot suggest a member
+            // that checking would then reject.
+            other => {
+                for name in BUILTIN_MEMBERS {
+                    if let Some(ty) = self.member_type_quiet(&other, name) {
+                        let kind = if matches!(ty, Ty::Fn(_)) {
+                            KIND_METHOD
+                        } else {
+                            KIND_FIELD
+                        };
+                        let detail = self.show(&ty);
+                        add_all(
+                            &mut out,
+                            vec![Completion {
+                                label: name.to_string(),
+                                detail,
+                                kind,
+                            }],
+                        );
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.label.cmp(&b.label));
+        out
+    }
+
     fn find_method_in_chain(&self, id: ClassId, name: &str) -> Option<(bool, FnTy)> {
         let mut cur = Some(id);
         while let Some(cid) = cur {
@@ -2243,7 +2633,7 @@ impl Checker {
     fn bind_pattern_ty(&mut self, p: &Pattern, ty: &Ty, is_const: bool) {
         match p {
             Pattern::Name(n) => {
-                self.define(&n.text, ty.clone(), is_const);
+                self.define_at(&n.text, ty.clone(), is_const, n.pos);
             }
             Pattern::Array { elems, rest } => {
                 let elem = match strip_null(ty) {
@@ -2288,7 +2678,7 @@ impl Checker {
                     };
                     match &f.target {
                         Some(t) => self.bind_pattern_ty(t, &ft, is_const),
-                        None => self.define(&f.name.text, ft, is_const),
+                        None => self.define_at(&f.name.text, ft, is_const, f.name.pos),
                     }
                 }
             }
@@ -2487,7 +2877,7 @@ impl Checker {
                         );
                     }
                     self.push_scope();
-                    self.define(&c.name.text, ct, false);
+                    self.define_at(&c.name.text, ct, false, c.name.pos);
                     for s in &c.block {
                         self.check_stmt(s);
                     }
@@ -2680,6 +3070,21 @@ impl Checker {
 
     fn check_expr(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         let t = self.check_expr_inner(e, expected);
+        if self.index.is_some() {
+            let shown = self.show(&t);
+            let pos = pos_of(e);
+            if let Some(ix) = &mut self.index {
+                ix.types.push((pos, shown));
+            }
+            // An identifier use points back at where the name was declared.
+            if let Expr::Ident(n) = e {
+                if let Some(def) = self.lookup(&n.text).and_then(|v| v.def) {
+                    if let Some(ix) = &mut self.index {
+                        ix.uses.push((n.pos, def));
+                    }
+                }
+            }
+        }
         // Unsuffixed integer literals adapt to the expected integer type
         // when the value fits (spec §2.6); overflow is E0110, not a
         // mismatch.
@@ -3012,6 +3417,13 @@ impl Checker {
                     }
                 }
                 let ot = self.check_expr(obj, None);
+                // The editor's cursor: `foo.<here>` arrives as
+                // `foo.MERSEY__COMPLETE`, and what it wants to know is what
+                // `foo` turned out to be.
+                if self.want_marker && name == COMPLETION_MARKER {
+                    self.marker_recv = Some(ot.clone());
+                    return Ty::Err;
+                }
                 self.member_access(&ot, name, *optional, pos_of(obj))
             }
             Expr::Index {
@@ -4658,6 +5070,112 @@ fn int_fits(v: i128, k: IntKind) -> bool {
 
 /// Does this body contain a `yield`? Nested arrows are separate functions,
 /// so a `yield` inside one belongs to *that* function.
+/// Does anything here create a closure?
+///
+/// A `for (let i = …)` loop is specified to give each iteration its own `i`,
+/// but that is only *observable* if something captures it — an arrow function
+/// is the only construct that can (declarations are module-level, §6.7). When
+/// nothing does, the engines skip the per-iteration scope entirely, which
+/// keeps an ordinary counted loop a counted loop: no scope allocation per
+/// iteration, and still inside the JIT's subset.
+pub fn makes_closure(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_makes_closure)
+}
+
+/// Does this expression create a closure?
+pub fn expr_makes_closure(e: &Expr) -> bool {
+    match e {
+        Expr::Arrow { .. } => true,
+        Expr::Paren(i)
+        | Expr::Unary { expr: i, .. }
+        | Expr::Update { expr: i, .. }
+        | Expr::Cast { expr: i, .. }
+        | Expr::ImportCall(i) => expr_makes_closure(i),
+        Expr::Binary { l, r, .. }
+        | Expr::Assign {
+            target: l,
+            value: r,
+            ..
+        } => expr_makes_closure(l) || expr_makes_closure(r),
+        Expr::Cond { cond, then, els } => {
+            expr_makes_closure(cond) || expr_makes_closure(then) || expr_makes_closure(els)
+        }
+        Expr::Call { callee, args, .. } => {
+            expr_makes_closure(callee) || args.iter().any(|a| expr_makes_closure(&a.expr))
+        }
+        Expr::New { args, .. } | Expr::SuperCall { args, .. } => {
+            args.iter().any(|a| expr_makes_closure(&a.expr))
+        }
+        Expr::Member { obj, .. } => expr_makes_closure(obj),
+        Expr::Index { obj, index, .. } => expr_makes_closure(obj) || expr_makes_closure(index),
+        Expr::Array(items) => items.iter().any(|a| expr_makes_closure(&a.expr)),
+        Expr::Record(fields) => fields.iter().any(|f| match f {
+            RecordField::Named { value: Some(v), .. } => expr_makes_closure(v),
+            RecordField::Spread(v) => expr_makes_closure(v),
+            _ => false,
+        }),
+        Expr::Template(parts) => parts.iter().any(|p| match p {
+            TplPart::Expr(e) => expr_makes_closure(e),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+/// Does this statement create a closure?
+pub fn stmt_makes_closure(s: &Stmt) -> bool {
+    match s {
+        Stmt::Expr(e) | Stmt::Throw(e) => expr_makes_closure(e),
+        Stmt::Return { value: Some(e), .. } => expr_makes_closure(e),
+        Stmt::Var(v) => v
+            .bindings
+            .iter()
+            .any(|b| b.init.as_ref().is_some_and(expr_makes_closure)),
+        Stmt::Block(b) => b.iter().any(stmt_makes_closure),
+        Stmt::If { cond, then, els } => {
+            expr_makes_closure(cond)
+                || stmt_makes_closure(then)
+                || els.as_ref().is_some_and(|e| stmt_makes_closure(e))
+        }
+        Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
+            expr_makes_closure(cond) || stmt_makes_closure(body)
+        }
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            cond.as_ref().is_some_and(expr_makes_closure)
+                || step.iter().any(expr_makes_closure)
+                || stmt_makes_closure(body)
+                || matches!(init, Some(ForInit::Exprs(es)) if es.iter().any(expr_makes_closure))
+        }
+        Stmt::ForOf { iter, body, .. } => expr_makes_closure(iter) || stmt_makes_closure(body),
+        Stmt::Switch { scrutinee, clauses } => {
+            expr_makes_closure(scrutinee)
+                || clauses
+                    .iter()
+                    .any(|c| c.body.iter().any(stmt_makes_closure))
+        }
+        Stmt::Try {
+            block,
+            catches,
+            finally,
+        } => {
+            block.iter().any(stmt_makes_closure)
+                || catches
+                    .iter()
+                    .any(|c| c.block.iter().any(stmt_makes_closure))
+                || finally
+                    .as_ref()
+                    .is_some_and(|f| f.iter().any(stmt_makes_closure))
+        }
+        Stmt::Labeled { body, .. } => stmt_makes_closure(body),
+        _ => false,
+    }
+}
+
 pub(crate) fn body_yields(body: &[Stmt]) -> bool {
     fn in_expr(e: &Expr) -> bool {
         match e {

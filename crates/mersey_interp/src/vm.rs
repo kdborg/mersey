@@ -163,6 +163,16 @@ pub(crate) fn compile_fn_in(body: &FnBody, module: &str) -> Option<Rc<Chunk>> {
 
 /// Does this compiled body contain a `yield`? (Generators must run on the
 /// VM: only it can suspend.)
+/// Can anything in this loop see its per-iteration binding? Only a closure can
+/// (declarations are module-level, §6.7), so if the loop makes none, the fresh
+/// binding is unobservable and both tiers skip it.
+pub(crate) fn loop_captures(cond: &Option<Expr>, step: &[Expr], body: &Stmt) -> bool {
+    use mersey_front::check::{expr_makes_closure, stmt_makes_closure};
+    stmt_makes_closure(body)
+        || cond.as_ref().is_some_and(expr_makes_closure)
+        || step.iter().any(expr_makes_closure)
+}
+
 pub(crate) fn chunk_yields(chunk: &Chunk) -> bool {
     chunk.code.iter().any(|op| matches!(op, Op::YieldOp))
 }
@@ -483,8 +493,31 @@ impl C {
             } => {
                 self.emit(Op::PushScope);
                 self.scope_depth += 1;
+                // `for (let i = …)` gives every iteration its own `i`, so a
+                // closure made in the body captures the value it saw rather
+                // than the one the loop finished with — the reason `let` exists
+                // in a loop head at all.
+                //
+                // The update runs in the *next* iteration's scope, not this
+                // one: otherwise the closure just made would see the
+                // incremented value, which is the bug this feature exists to
+                // prevent.
+                let mut per_iteration: Vec<u16> = Vec::new();
                 match init {
-                    Some(ForInit::Var(v)) => self.var_stmt(v),
+                    Some(ForInit::Var(v)) => {
+                        self.var_stmt(v);
+                        // Only when something can actually capture the
+                        // binding: otherwise this is an ordinary counted loop
+                        // and should stay one (no scope per iteration, and it
+                        // stays inside the JIT's subset).
+                        if v.kind == VarKind::Let && loop_captures(cond, step, body) {
+                            let mut names: Vec<String> = Vec::new();
+                            for b in &v.bindings {
+                                crate::pattern_names_of(&b.target, &mut names);
+                            }
+                            per_iteration = names.iter().map(|n| self.name(n)).collect();
+                        }
+                    }
                     Some(ForInit::Exprs(es)) => {
                         for e in es {
                             self.expr(e);
@@ -492,6 +525,16 @@ impl C {
                         }
                     }
                     None => {}
+                }
+                let fresh = !per_iteration.is_empty();
+                if fresh {
+                    // The first iteration's scope, seeded from the loop head.
+                    self.emit(Op::PushScope);
+                    self.scope_depth += 1;
+                    for n in &per_iteration {
+                        self.emit(Op::LoadName(*n));
+                        self.emit(Op::DeclareName(*n));
+                    }
                 }
                 self.compile_loop(None, |c| {
                     let start = c.here();
@@ -504,12 +547,30 @@ impl C {
                     };
                     c.stmt(body);
                     let cont = c.here();
+                    if fresh {
+                        // Hand this iteration's values to the next scope: they
+                        // ride the operand stack across the scope swap.
+                        for n in &per_iteration {
+                            c.emit(Op::LoadName(*n));
+                        }
+                        c.emit(Op::PopScope);
+                        c.emit(Op::PushScope);
+                        for n in per_iteration.iter().rev() {
+                            c.emit(Op::DeclareName(*n));
+                        }
+                    }
                     for e in step {
                         c.expr(e);
                         c.emit(Op::Pop);
                     }
                     (start, cont, jf)
                 });
+                if fresh {
+                    // Every exit — falling out, `break`, a false condition —
+                    // leaves the current iteration scope to pop.
+                    self.emit(Op::PopScope);
+                    self.scope_depth -= 1;
+                }
                 self.scope_depth -= 1;
                 self.emit(Op::PopScope);
             }
@@ -887,6 +948,32 @@ impl C {
                 self.emit(Op::MakeClosure(i));
             }
             Expr::Unary { op, expr, .. } => {
+                // `-2147483648` is one literal, not a negation of one — the
+                // positive half does not fit int32, so folding is the only way
+                // to write the minimum.
+                if let (
+                    UnaryOp::Neg,
+                    Expr::Lit {
+                        kind: LitKind::Int,
+                        text,
+                        ..
+                    },
+                ) = (op, &**expr)
+                {
+                    match crate::negated_int_literal(text) {
+                        Ok(v) => {
+                            let i = self.konst(v);
+                            self.emit(Op::Const(i));
+                            return;
+                        }
+                        Err(_) => {
+                            // Out of range: let the ordinary path throw it at
+                            // runtime, with the position it happened at.
+                            self.bail();
+                            return;
+                        }
+                    }
+                }
                 self.expr(expr);
                 if *op == UnaryOp::Await {
                     self.emit(Op::Await);

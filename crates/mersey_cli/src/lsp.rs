@@ -1,14 +1,38 @@
 //! Language server (LSP over JSON-RPC on stdin/stdout).
 //!
-//! Scope: the diagnostics an editor most wants — full decode → lex → parse →
-//! bind → typecheck on open/change, published as LSP diagnostics with exact
-//! ranges and our stable error codes. Completion and hover are future work;
-//! diagnostics are what turn "run the compiler in a terminal" into "the
-//! editor tells me".
+//! Diagnostics on open/change (full decode → lex → parse → bind → typecheck,
+//! with exact ranges and our stable error codes), plus hover, go-to-definition
+//! and completion.
+//!
+//! All four answers come from the checker itself rather than from a parallel
+//! model of the language — `check::analyze` records what it already worked out
+//! (the type of every expression, where every name was declared), and
+//! completion asks the checker what a member access would resolve to. An
+//! editor that suggests a member the compiler rejects is worse than one that
+//! suggests nothing, so the two cannot be allowed to drift apart.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
+use std::sync::Mutex;
 
+use mersey_front::check::COMPLETION_MARKER;
+use mersey_front::diag::Pos;
 use mersey_front::{bind, check, parser, source};
+
+/// Open documents, so hover/definition/completion can be answered against the
+/// buffer the editor actually has (they carry a position, not the text).
+static DOCS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn put_doc(uri: &str, text: &str) {
+    let mut docs = DOCS.lock().unwrap();
+    docs.get_or_insert_with(HashMap::new)
+        .insert(uri.to_string(), text.to_string());
+}
+
+fn get_doc(uri: &str) -> Option<String> {
+    let docs = DOCS.lock().unwrap();
+    docs.as_ref()?.get(uri).cloned()
+}
 
 pub fn serve() -> std::process::ExitCode {
     let stdin = io::stdin();
@@ -130,14 +154,75 @@ fn handle(msg: &str) -> Option<String> {
         "initialize" => {
             let id = field(msg, "id").unwrap_or("1");
             Some(format!(
-                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":1}},"serverInfo":{{"name":"mersey-lsp","version":"0.1.0"}}}}}}"#
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"capabilities":{{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"completionProvider":{{"triggerCharacters":["."]}}}},"serverInfo":{{"name":"mersey-lsp","version":"0.1.0"}}}}}}"#
             ))
         }
         "textDocument/didOpen" | "textDocument/didChange" => {
             let uri = field(msg, "uri")?;
             // didOpen carries "text"; didChange carries it in the change.
             let text = unescape(field(msg, "text")?);
+            put_doc(uri, &text);
             Some(diagnostics_notification(uri, &text))
+        }
+        "textDocument/hover" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let result = get_doc(uri)
+                .and_then(|text| hover(&text, pos))
+                .map(|h| {
+                    format!(
+                        r#"{{"contents":{{"kind":"markdown","value":"```mersey\n{}\n```"}}}}"#,
+                        escape(&h)
+                    )
+                })
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#
+            ))
+        }
+        "textDocument/definition" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let result = get_doc(uri)
+                .and_then(|text| definition(&text, pos))
+                .map(|d| {
+                    // LSP is 0-based; our positions are 1-based code points.
+                    let line = d.line.saturating_sub(1);
+                    let col = d.col.saturating_sub(1);
+                    format!(
+                        r#"{{"uri":"{}","range":{{"start":{{"line":{line},"character":{col}}},"end":{{"line":{line},"character":{col}}}}}}}"#,
+                        escape(uri)
+                    )
+                })
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#
+            ))
+        }
+        "textDocument/completion" => {
+            let id = field(msg, "id").unwrap_or("1");
+            let uri = field(msg, "uri")?;
+            let pos = request_pos(msg)?;
+            let items = get_doc(uri)
+                .map(|text| complete(&text, pos))
+                .unwrap_or_default();
+            let items: Vec<String> = items
+                .iter()
+                .map(|c| {
+                    format!(
+                        r#"{{"label":"{}","kind":{},"detail":"{}"}}"#,
+                        escape(&c.label),
+                        c.kind,
+                        escape(&c.detail)
+                    )
+                })
+                .collect();
+            Some(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"isIncomplete":false,"items":[{}]}}}}"#,
+                items.join(",")
+            ))
         }
         "shutdown" => {
             let id = field(msg, "id").unwrap_or("1");
@@ -183,4 +268,127 @@ fn lsp_diagnostic(d: &mersey_front::diag::Diagnostic) -> String {
         d.code.as_str(),
         escape(&d.message)
     )
+}
+
+/// The `position` of a request, as our 1-based code-point Pos.
+fn request_pos(msg: &str) -> Option<Pos> {
+    let line: u32 = field(msg, "line")?.parse().ok()?;
+    let col: u32 = field(msg, "character")?.parse().ok()?;
+    Some(Pos {
+        line: line + 1,
+        col: col + 1,
+    })
+}
+
+/// The checked module, or None if it does not even parse.
+fn analyze(text: &str) -> Option<check::Analysis> {
+    let src = source::decode("<buffer>", text.as_bytes()).ok()?;
+    let parsed = parser::parse(&src);
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    // The AST must outlive the analysis; an editor session is short and this
+    // is bounded by keystrokes that produce a *parsing* buffer.
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    Some(check::analyze(module))
+}
+
+fn hover(text: &str, pos: Pos) -> Option<String> {
+    let a = analyze(text)?;
+    // The cursor is rarely on the first character of the name it is in, so
+    // hover asks about the token under it, not the exact column.
+    let start = token_start(text, pos)?;
+    a.hover(start)
+}
+
+fn definition(text: &str, pos: Pos) -> Option<Pos> {
+    let a = analyze(text)?;
+    let start = token_start(text, pos)?;
+    a.definition(start)
+}
+
+/// Completion. After a `.` this is a *member* completion, which needs the
+/// receiver's type — so the buffer is repaired into something that parses
+/// (`foo.` → `foo.MERSEY__COMPLETE`) and the checker reports what the receiver
+/// turned out to be. Otherwise it is the names in scope.
+fn complete(text: &str, pos: Pos) -> Vec<check::Completion> {
+    if let Some(repaired) = repair_member_access(text, pos) {
+        if let Ok(src) = source::decode("<buffer>", repaired.as_bytes()) {
+            let parsed = parser::parse(&src);
+            if parsed.diagnostics.is_empty() {
+                let module: &'static _ = Box::leak(Box::new(parsed.module));
+                let items = check::member_completions(module);
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+        // A dot with no resolvable receiver: suggesting locals here would be
+        // wrong (they are not valid after a `.`), so suggest nothing.
+        return Vec::new();
+    }
+    match analyze(text) {
+        Some(a) => a.scope_completions(pos),
+        None => Vec::new(),
+    }
+}
+
+/// If the cursor sits just after a `.` (possibly with a partial member name
+/// typed), rewrite that member name to the completion marker.
+fn repair_member_access(text: &str, pos: Pos) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line = *lines.get(pos.line.checked_sub(1)? as usize)?;
+    let chars: Vec<char> = line.chars().collect();
+    let cursor = (pos.col.checked_sub(1)? as usize).min(chars.len());
+
+    // Walk back over the partial member name the user has typed so far.
+    let mut i = cursor;
+    while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+        i -= 1;
+    }
+    if i == 0 || chars[i - 1] != '.' {
+        return None;
+    }
+    // Also drop the rest of the identifier to the right of the cursor.
+    let mut j = cursor;
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+        j += 1;
+    }
+
+    let mut repaired_line: String = chars[..i].iter().collect();
+    repaired_line.push_str(COMPLETION_MARKER);
+    let rest: String = chars[j..].iter().collect();
+    // Mid-keystroke, the statement the user is typing has no terminator yet,
+    // and the parser rightly insists on one.
+    if rest.trim().is_empty() {
+        repaired_line.push(';');
+    }
+    repaired_line.push_str(&rest);
+
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out[pos.line as usize - 1] = repaired_line;
+    Some(out.join("\n"))
+}
+
+/// The start of the identifier the cursor is inside (or on the edge of), which
+/// is the position the checker recorded a type against.
+fn token_start(text: &str, pos: Pos) -> Option<Pos> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line = *lines.get(pos.line.checked_sub(1)? as usize)?;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = (pos.col.checked_sub(1)? as usize).min(chars.len());
+    // A cursor just past the end of a name still means that name.
+    if i > 0 && i == chars.len() {
+        i -= 1;
+    }
+    if i < chars.len() && !(chars[i].is_alphanumeric() || chars[i] == '_') && i > 0 {
+        i -= 1;
+    }
+    while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+        i -= 1;
+    }
+    Some(Pos {
+        line: pos.line,
+        col: i as u32 + 1,
+    })
 }

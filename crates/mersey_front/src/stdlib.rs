@@ -9,6 +9,7 @@
 pub fn source(spec: &str) -> Option<&'static str> {
     Some(match spec {
         "std:result" => include_str!("../../../std/result.mersey"),
+        "std:test" => include_str!("../../../std/test.mersey"),
         _ => return None,
     })
 }

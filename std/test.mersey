@@ -1,0 +1,61 @@
+// The test framework, written in Mersey.
+//
+// A test is a function that throws on failure — nothing more. `test` runs it,
+// catches what it throws, and reports one line per case in TAP form, which is
+// what `mersey test` reads:
+//
+//     import { test, assert } from "std:test";
+//
+//     test("addition", () => {
+//         assert(2 + 2 == 4, "arithmetic still works");
+//     });
+//
+// Run it with `mersey test` (any file named `*.test.mersey`), or just
+// `mersey run` the file — it is an ordinary module, so it needs no runner.
+
+import { console } from "std:console";
+
+/// Thrown by a failed assertion. Catchable like any other error (§4.6), which
+/// is how `assertThrows` checks that failing code fails.
+export class AssertionError extends Error {
+    public constructor(message: string) {
+        super(message);
+    }
+}
+
+/// Run one test case. Reports `ok` or `not ok` and never rethrows: one failing
+/// test must not hide the ones after it.
+export function test(name: string, body: () => void): void {
+    try {
+        body();
+        console.log("ok -", name);
+    } catch (e: Error) {
+        console.log("not ok -", name, "--", e.message);
+    }
+}
+
+/// Fail unless `cond` holds.
+export function assert(cond: bool, message: string): void {
+    if (!cond) {
+        throw new AssertionError(message);
+    }
+}
+
+/// Fail if `cond` holds.
+export function refute(cond: bool, message: string): void {
+    assert(!cond, message);
+}
+
+/// Fail unless `body` throws — the assertion you cannot write with `assert`
+/// alone, because the code under test aborts the case before you can check it.
+export function assertThrows(body: () => void, message: string): void {
+    let threw = false;
+    try {
+        body();
+    } catch (e: Error) {
+        threw = true;
+    }
+    if (!threw) {
+        throw new AssertionError(message);
+    }
+}

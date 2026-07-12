@@ -1277,18 +1277,44 @@ impl Interp {
                 step,
                 body,
             } => {
-                let scope = child_env(env);
+                let outer = child_env(env);
+                let mut per_iteration: Vec<String> = Vec::new();
                 match init {
                     Some(ForInit::Var(v)) => {
-                        self.exec_var(v, &scope)?;
+                        self.exec_var(v, &outer)?;
+                        // `for (let i = 0; …)` gives each iteration its own
+                        // `i`, so a closure made in the body captures the value
+                        // it saw rather than the one the loop finished with —
+                        // the reason `let` exists in a loop head at all.
+                        // Only when something can actually capture it:
+                        // otherwise this is an ordinary counted loop and stays
+                        // one, with no scope allocated per iteration.
+                        if v.kind == VarKind::Let && vm::loop_captures(cond, step, body) {
+                            for b in &v.bindings {
+                                pattern_names_of(&b.target, &mut per_iteration);
+                            }
+                        }
                     }
                     Some(ForInit::Exprs(es)) => {
                         for e in es {
-                            self.eval(e, &scope)?;
+                            self.eval(e, &outer)?;
                         }
                     }
                     None => {}
                 }
+                let fresh = |from: &Env, names: &[String]| -> Env {
+                    let it = child_env(from);
+                    for name in names {
+                        let v = env_get(from, name).unwrap_or(Value::Null);
+                        env_define(&it, name, v);
+                    }
+                    it
+                };
+                let mut scope = if per_iteration.is_empty() {
+                    outer.clone()
+                } else {
+                    fresh(&outer, &per_iteration)
+                };
                 loop {
                     if let Some(c) = cond {
                         if !self.truthy(c, &scope)? {
@@ -1299,6 +1325,13 @@ impl Interp {
                         LoopCtl::BreakLoop => break,
                         LoopCtl::NextIter => {}
                         LoopCtl::Out(sig) => return Ok(sig),
+                    }
+                    // The update runs in the *next* iteration's scope: if it
+                    // ran in this one, the closure just created in the body
+                    // would see the incremented value — exactly the bug that
+                    // per-iteration bindings exist to prevent.
+                    if !per_iteration.is_empty() {
+                        scope = fresh(&scope, &per_iteration);
                     }
                     for e in step {
                         self.eval(e, &scope)?;
@@ -2455,6 +2488,19 @@ impl Interp {
             Expr::Unary { op, expr, .. } => {
                 if *op == UnaryOp::Await {
                     return self.type_error("`await` is not in the MVP");
+                }
+                // `-2147483648` is one literal, not a negation of one.
+                if let (
+                    UnaryOp::Neg,
+                    Expr::Lit {
+                        kind: LitKind::Int,
+                        text,
+                        ..
+                    },
+                ) = (op, &**expr)
+                {
+                    return negated_int_literal(text)
+                        .map_err(|(class, msg)| self.throw(class, msg));
                 }
                 let v = self.eval(expr, env)?;
                 self.eval_unary(*op, v)
@@ -4029,6 +4075,23 @@ impl Interp {
             .ok_or_else(|| self.throw("TypeError", "class has no base class"))?;
         let mut search = Some(parent);
         while let Some(c) = search {
+            // The builtin errors are constructed by the engine, not by a
+            // Mersey constructor — so `super(msg)` in `class X extends Error`
+            // would otherwise walk past them and quietly drop the message.
+            if c.is_builtin_error {
+                if let Value::Instance(inst) = &this {
+                    let msg = argv.into_iter().next().unwrap_or(Value::Null);
+                    let stack = Value::Str(Rc::new(self.stack_trace().chars().collect()));
+                    let mut i = inst.borrow_mut();
+                    if let Some(slot) = i.class.slot_of("message") {
+                        i.slots[slot as usize] = msg;
+                    }
+                    if let Some(slot) = i.class.slot_of("stack") {
+                        i.slots[slot as usize] = stack;
+                    }
+                }
+                return Ok(Value::Null);
+            }
             if let Some(ctor) = &c.ctor {
                 let env2 = c.env.clone().unwrap_or_else(|| self.globals.clone());
                 let closure = Closure {
@@ -4511,6 +4574,29 @@ fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>
     None
 }
 
+/// Every name a pattern binds (`let [a, b] = …`, `let {x} = …`).
+pub(crate) fn pattern_names_of(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Name(n) => out.push(n.text.clone()),
+        Pattern::Array { elems, rest } => {
+            for e in elems {
+                pattern_names_of(&e.target, out);
+            }
+            if let Some(r) = rest {
+                pattern_names_of(r, out);
+            }
+        }
+        Pattern::Record(fields) => {
+            for f in fields {
+                match &f.target {
+                    Some(p) => pattern_names_of(p, out),
+                    None => out.push(f.name.text.clone()),
+                }
+            }
+        }
+    }
+}
+
 fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
     find_in_chain(class, |c| {
         c.fields.iter().any(|(n, _)| n == name).then_some(())
@@ -4806,7 +4892,18 @@ pub(crate) fn parse_literal(kind: LitKind, text: &str) -> Result<Value, (&'stati
     }
 }
 
+/// `-2147483648` is a perfectly good int32, but `2147483648` is not — so a
+/// minus sign in front of an integer literal has to be *part of the literal*,
+/// not an operation applied to it afterwards. Both tiers fold it here.
+pub(crate) fn negated_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
+    parse_int_literal_signed(text, true)
+}
+
 fn parse_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
+    parse_int_literal_signed(text, false)
+}
+
+fn parse_int_literal_signed(text: &str, neg: bool) -> Result<Value, (&'static str, String)> {
     let t = text.replace('_', "");
     const SUFFIXES: &[&str] = &[
         "u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u",
@@ -4828,22 +4925,33 @@ fn parse_int_literal(text: &str) -> Result<Value, (&'static str, String)> {
     };
     let raw = u64::from_str_radix(body, radix)
         .map_err(|_| ("RangeError", format!("integer literal `{text}` overflows")))?;
+    let sign = if neg { "-" } else { "" };
     let out_of = || {
         (
             "RangeError",
-            format!("literal `{text}` does not fit its type"),
+            format!("literal `{sign}{text}` does not fit its type"),
         )
     };
+    // Widen before applying the sign, so `-2147483648` is representable even
+    // though `2147483648` is not.
+    let v: i128 = if neg { -(raw as i128) } else { raw as i128 };
+    let fit = |lo: i128, hi: i128| -> Result<i128, (&'static str, String)> {
+        if v >= lo && v <= hi {
+            Ok(v)
+        } else {
+            Err(out_of())
+        }
+    };
     Ok(match suffix {
-        "" | "i32" => Value::I32(i32::try_from(raw).map_err(|_| out_of())?),
-        "u" | "u32" => Value::U32(u32::try_from(raw).map_err(|_| out_of())?),
-        "l" | "i64" => Value::I64(i64::try_from(raw).map_err(|_| out_of())?),
-        "ul" | "u64" => Value::U64(raw),
+        "" | "i32" => Value::I32(fit(i32::MIN as i128, i32::MAX as i128)? as i32),
+        "u" | "u32" => Value::U32(fit(0, u32::MAX as i128)? as u32),
+        "l" | "i64" => Value::I64(fit(i64::MIN as i128, i64::MAX as i128)? as i64),
+        "ul" | "u64" => Value::U64(fit(0, u64::MAX as i128)? as u64),
         // Small types promote to int32 immediately (§3.3 rule 1).
-        "i8" => Value::I32(i8::try_from(raw).map_err(|_| out_of())? as i32),
-        "i16" => Value::I32(i16::try_from(raw).map_err(|_| out_of())? as i32),
-        "u8" => Value::I32(u8::try_from(raw).map_err(|_| out_of())? as i32),
-        "u16" => Value::I32(u16::try_from(raw).map_err(|_| out_of())? as i32),
+        "i8" => Value::I32(fit(i8::MIN as i128, i8::MAX as i128)? as i32),
+        "i16" => Value::I32(fit(i16::MIN as i128, i16::MAX as i128)? as i32),
+        "u8" => Value::I32(fit(0, u8::MAX as i128)? as i32),
+        "u16" => Value::I32(fit(0, u16::MAX as i128)? as i32),
         _ => return Err(("TypeError", format!("unsupported suffix on `{text}`"))),
     })
 }

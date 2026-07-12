@@ -27,6 +27,7 @@ commands:
   lsp                     language server on stdin/stdout (LSP over JSON-RPC)
   check <file.mersey>     report diagnostics (currently: encoding + syntax)
   parse <file.mersey>     dump the AST (debugging / conformance)
+  test [path]             run every *.test.mersey (default: ./)
   lex <file.mersey>       dump the token stream (debugging / conformance)
   convert <file>          transcode UTF-16/UTF-32 source to UTF-8 on stdout
 ";
@@ -64,6 +65,10 @@ fn main() -> ExitCode {
                     ExitCode::from(2)
                 }
             }
+        }
+        ("test", rest) => {
+            let path = rest.first().map(|s| s.as_str()).unwrap_or(".");
+            test_cmd(path)
         }
         ("audit", [file]) => audit(file),
         ("lock", [file]) => lock_cmd(file, false),
@@ -619,4 +624,120 @@ fn sha256_base64(data: &[u8]) -> String {
         });
     }
     out
+}
+
+// ---- mersey test --------------------------------------------------------------
+
+/// Run every `*.test.mersey` under `path`.
+///
+/// A test file is an ordinary module: `std:test`'s `test()` runs a case,
+/// catches what it throws, and prints one TAP line per result. So the runner
+/// does not need a hook into the engine — it runs the file and reads what it
+/// said. `mersey run` on the same file does exactly the same thing, which is
+/// what keeps the framework honest: there is no privileged test mode.
+fn test_cmd(path: &str) -> ExitCode {
+    let mut files = Vec::new();
+    collect_tests(std::path::Path::new(path), &mut files);
+    files.sort();
+    if files.is_empty() {
+        eprintln!("mersey: no *.test.mersey files under `{path}`");
+        return ExitCode::from(2);
+    }
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut broken: Vec<String> = Vec::new();
+
+    for file in &files {
+        let name = file.display().to_string();
+        let modules = match load_graph(&name) {
+            Ok(m) => m,
+            Err(_) => {
+                broken.push(format!("{name}: does not load"));
+                continue;
+            }
+        };
+        if !check_graph_ok(&modules) {
+            broken.push(format!("{name}: does not typecheck"));
+            continue;
+        }
+
+        let lines = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut interp = interp::new_interp(Box::new(TapHost {
+            lines: lines.clone(),
+        }));
+        if std::env::var("MERSEY_JIT").as_deref() != Ok("0") {
+            interp.jit = Some(mersey_jit::hook);
+        }
+        let outcome = interp.run_graph(modules);
+
+        // The host kept what the module printed.
+        let lines = lines.borrow().clone();
+        println!("# {name}");
+        for line in &lines {
+            println!("{line}");
+            if line.starts_with("ok -") {
+                passed += 1;
+            } else if line.starts_with("not ok -") {
+                failed += 1;
+            }
+        }
+        if let Err(t) = outcome {
+            // A throw that escaped every test case: the file itself is broken.
+            broken.push(format!("{name}: {}", interp.describe_thrown(&t)));
+        }
+    }
+
+    println!();
+    println!("{passed} passed, {failed} failed");
+    for b in &broken {
+        println!("error: {b}");
+    }
+    if failed == 0 && broken.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn collect_tests(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    if dir.is_file() {
+        out.push(dir.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            // Skip the places that are never source.
+            let skip = matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("target") | Some("node_modules") | Some(".git")
+            );
+            if !skip {
+                collect_tests(&p, out);
+            }
+        } else if p.to_str().is_some_and(|s| s.ends_with(".test.mersey")) {
+            out.push(p);
+        }
+    }
+}
+
+/// A host that keeps what the module printed, so the runner can read the TAP
+/// lines back.
+struct TapHost {
+    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl interp::Host for TapHost {
+    fn print(&mut self, s: &str) {
+        self.lines.borrow_mut().push(s.to_string());
+    }
+    fn dom_set_text(&mut self, _: &str, _: &str) {}
+    fn dom_get_text(&mut self, _: &str) -> Option<String> {
+        None
+    }
+    fn dom_on_click(&mut self, _: &str, _: u32) {}
 }
