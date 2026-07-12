@@ -24,12 +24,15 @@
 //! the operand stack across edges (depths from the bytecode verifier).
 //!
 //! Code memory is W^X: cranelift-jit maps pages writable, then flips them
-//! to read-execute at finalize (spec §5.2).
+//! to read-execute at finalize (spec §5.2), and the code we ask it to emit is
+//! hardened — see `hardened_isa`.
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Value as ClValue};
+use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -188,15 +191,7 @@ fn compile(
     depths: &[Option<i32>],
     kind: Kind,
 ) -> Option<JitFn> {
-    // Non-PIC, no colocated libcalls: required for JIT on aarch64 (no PLT).
-    let mut flags = settings::builder();
-    flags.set("use_colocated_libcalls", "false").ok()?;
-    flags.set("is_pic", "false").ok()?;
-    flags.set("opt_level", "speed").ok()?;
-    let isa = cranelift_native::builder()
-        .ok()?
-        .finish(settings::Flags::new(flags))
-        .ok()?;
+    let isa = hardened_isa()?;
     let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     let mut module = JITModule::new(builder);
 
@@ -543,4 +538,77 @@ fn lower_bin(b: &mut FunctionBuilder, op: BinOp, l: ClValue, r: ClValue, kind: K
         BinOp::Ne => cmp(b, IntCC::NotEqual, l, r),
         _ => unreachable!("plan_slots filtered"),
     }
+}
+
+/// The ISA the JIT compiles for, with the hardening spec §5.2 asks for.
+///
+/// A JIT is the softest target an engine has: it turns attacker-influenced
+/// input into executable memory. W^X (cranelift-jit maps pages writable, then
+/// flips them to read-execute at finalize) stops the pages from being rewritten
+/// after the fact; these settings harden the code that lands in them.
+///
+/// * **Stack probes.** A function with a large frame otherwise moves the stack
+///   pointer past the guard page in one step and writes *beyond* it, turning a
+///   clean fault into memory corruption. Probing touches each page in turn, so
+///   the guard page is always the first thing hit. This is what makes a guard
+///   page a guarantee rather than a hope.
+/// * **Pointer authentication (aarch64).** Return addresses are signed on entry
+///   and authenticated on return, so an overwritten return address faults
+///   instead of transferring control — backward-edge CFI, the ROP defence.
+/// * **Branch Target Identification (aarch64).** An indirect branch may only
+///   land on a `bti` instruction, so a corrupted pointer cannot jump into the
+///   middle of a function and use its tail as a gadget — forward-edge CFI.
+///
+/// Both PAC and BTI live in ARM's hint space: on a CPU without them the
+/// instructions are NOPs, so this is safe to enable unconditionally and costs
+/// nothing where it is not supported.
+///
+/// On x86-64 the equivalent (CET/`endbr64`) is not exposed as a Cranelift
+/// setting in the version we build against, so forward-edge CFI there is
+/// honestly *not* in place yet — see SECURITY-REVIEW.md rather than assume it.
+fn hardened_isa() -> Option<Arc<dyn TargetIsa>> {
+    // Non-PIC, no colocated libcalls: required for JIT on aarch64 (no PLT).
+    let mut flags = settings::builder();
+    flags.set("use_colocated_libcalls", "false").ok()?;
+    flags.set("is_pic", "false").ok()?;
+    flags.set("opt_level", "speed").ok()?;
+
+    // Guard pages: never step over one.
+    flags.set("enable_probestack", "true").ok()?;
+    flags.set("probestack_strategy", "inline").ok()?;
+
+    let mut isa = cranelift_native::builder().ok()?;
+    if cfg!(target_arch = "aarch64") {
+        // Backward-edge CFI (PAC) and forward-edge CFI (BTI).
+        let _ = isa.set("sign_return_address", "true");
+        let _ = isa.set("sign_return_address_all", "true");
+        let _ = isa.set("use_bti", "true");
+    }
+    isa.finish(settings::Flags::new(flags)).ok()
+}
+
+/// Which hardening is actually on, for the security review and its test.
+pub fn hardening() -> Vec<(&'static str, bool)> {
+    let Some(isa) = hardened_isa() else {
+        return Vec::new();
+    };
+    let flags = isa.flags();
+    let mut out = vec![
+        ("W^X code pages", true), // cranelift-jit flips at finalize
+        ("stack probes (guard pages)", flags.enable_probestack()),
+    ];
+    // The ISA-specific ones are reported by name in the ISA's flag list.
+    let isa_flags: Vec<String> = isa.isa_flags().iter().map(|f| f.to_string()).collect();
+    let on = |name: &str| isa_flags.iter().any(|f| f == &format!("{name}=1"));
+    if cfg!(target_arch = "aarch64") {
+        out.push((
+            "pointer authentication (backward-edge CFI)",
+            on("sign_return_address"),
+        ));
+        out.push((
+            "branch target identification (forward-edge CFI)",
+            on("use_bti"),
+        ));
+    }
+    out
 }

@@ -242,3 +242,26 @@ fn jit_actually_compiles_the_kernels() {
     }
     assert_eq!(compiled, 3);
 }
+
+/// §5.2 asks for guard pages and CFI-compatible codegen. A JIT turns
+/// attacker-influenced input into executable memory, so this is the claim most
+/// worth checking rather than assuming — and the differential tests above
+/// already prove the hardened code still computes the right answers.
+#[test]
+fn jit_codegen_is_hardened() {
+    let hardening = mersey_jit::hardening();
+    assert!(!hardening.is_empty(), "no ISA: cannot report hardening");
+
+    for (name, on) in &hardening {
+        assert!(on, "hardening is off: {name}");
+    }
+
+    let names: Vec<&str> = hardening.iter().map(|(n, _)| *n).collect();
+    assert!(names.iter().any(|n| n.contains("W^X")));
+    assert!(names.iter().any(|n| n.contains("guard pages")));
+    if cfg!(target_arch = "aarch64") {
+        // Pointer authentication (backward edge) and BTI (forward edge).
+        assert!(names.iter().any(|n| n.contains("backward-edge CFI")));
+        assert!(names.iter().any(|n| n.contains("forward-edge CFI")));
+    }
+}

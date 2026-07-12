@@ -21,7 +21,60 @@ engine. ✅ = implemented and tested, 🟡 = implemented at documented scale,
 | W^X JIT | ✅ | cranelift-jit maps pages writable, flips to read-execute at `finalize_definitions`; no page is ever W+X |
 | Sandbox-friendly (no engine syscalls) | ✅ | All I/O flows through the `Host` trait / `msy_host_table`; the WASM build imports only host functions |
 | Heap isolation per context | ✅ | One `Interp` per context (`msy_context`, WASM instance); no cross-context references are constructible |
-| Pointer compression, guard pages, CFI | ⏳ | Belongs to the precise-GC native engine (deferred with Phase 2's scale note) |
+| Guard pages (stack) | ✅ | JIT codegen emits inline stack probes (`enable_probestack`), so a large frame touches each page in order and cannot step *over* a guard page into memory beyond it |
+| CFI-compatible codegen | ✅ aarch64 / ⏳ x86-64 | aarch64: pointer authentication of return addresses (backward edge, anti-ROP) and BTI landing pads (forward edge). Both are ARM hint-space instructions, so they are NOPs on hardware without them and cost nothing there. x86-64: CET/`endbr64` is not exposed as a setting in the Cranelift we build against — **not in place**, do not assume it. Asserted by `jit_codegen_is_hardened` |
+| Pointer compression + heap-base randomization | ❌ by construction | See below |
+
+### Pointer compression: what it would take, and why it is not here
+
+Pointer compression means the engine owns its heap: one contiguous reservation,
+objects addressed as 32-bit offsets from a randomized base, so a corrupted or
+forged pointer cannot name memory outside the cage. That requires a custom
+allocator over a mapped region, raw pointers, and unsafe code. This engine sets
+`unsafe_code = "forbid"` at the workspace root and allocates through `Rc` on the
+system allocator. **The two are mutually exclusive**, and the trade was made
+deliberately: `forbid(unsafe_code)` removes the class of bug that pointer
+compression exists to *contain*.
+
+It is worth being precise about what is lost, because "we forbid unsafe" is not
+an answer to a hardening requirement:
+
+* Pointer compression's security value is *containment of memory corruption* —
+  it narrows what an attacker who already has a write primitive can reach. In
+  this engine, a write primitive would have to come from a bug in safe Rust, in
+  `unsafe` inside a dependency, or in the JIT's generated code. The first is what
+  the language rules out; the third is the real exposure, and it is why the JIT
+  is restricted to a verified non-faulting subset and its output is fuzzed
+  differentially against the interpreter.
+* Its *performance* value (halved pointer width, better cache density) is simply
+  not collected here.
+* Mersey the language has no pointers, no pointer arithmetic, and no way to
+  observe or fabricate an address, so nothing in a Mersey program can name a
+  heap address to begin with — the forging step that compression contains has no
+  entry point from the language.
+
+If the native-GC track (Stage B) replaces the `Rc` heap with an owned,
+precisely-collected heap, that heap can and should be a randomized cage with
+guard pages and compressed pointers, and `unsafe_code` would then be allowed in
+that crate alone. Until that heap exists, this row is honestly **not done**
+rather than approximated.
+
+### Engine aborts reachable from ordinary Mersey code (found and fixed, 2026-07-12)
+
+A stack overflow is not an exception a program can catch: it is `SIGABRT`. In a
+renderer, an abort reachable from a web page is a crash on hostile input, so
+these were §5.2 failures even though none of them is a memory-safety bug.
+
+| Case | Was | Now |
+|---|---|---|
+| Runaway recursion (`function f() { return f(); }`) | Overflowed the Rust stack, aborted the process | `MAX_CALL_DEPTH` (3,000): a catchable `RangeError` |
+| The stack trace of a runaway recursion | 3,000 identical frames, a 363 KB error message — a denial of service in its own right | Truncated to head + tail with an elided count |
+| Dropping a long chain (500k links, built with an *ordinary loop*) | `Rc` frees a linked structure by recursion; 500k links = 500k Rust frames, aborted | `Drop for GcCell` moves children onto a queue; the outermost drop drains it in a loop. 3M links verified |
+| Marking a deep object graph | The collector recursed over user data and aborted | The marker is a worklist; scopes, promises and values are all deferred, never recursed |
+
+The call-depth budget alone would not have caught the last two: those graphs are
+built with a loop, not with recursion. Regression tests run the engine in a
+subprocess and fail on exit code 134 (`tests/hardening.rs`).
 
 ## §5.3 Standalone runtime capabilities
 

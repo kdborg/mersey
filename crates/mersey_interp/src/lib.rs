@@ -227,9 +227,21 @@ impl PromiseState {
     /// Sweep: drop every edge out of an unreachable promise. Nothing can
     /// settle it or observe it, so its waiters and reactions are dead too.
     pub(crate) fn clear_edges(&mut self) {
+        let mut sink = Vec::new();
         self.value = Value::Null;
-        self.waiters.clear();
-        self.reactions.clear();
+        self.take_edges(&mut sink);
+    }
+
+    /// Move every value this promise holds into `out` — its own result, and
+    /// whatever its waiting coroutines and reactions were holding.
+    pub(crate) fn take_edges(&mut self, out: &mut Vec<Value>) {
+        for coro in std::mem::take(&mut self.waiters) {
+            out.extend(coro.stack);
+        }
+        for (ok, err, _) in std::mem::take(&mut self.reactions) {
+            out.extend(ok);
+            out.extend(err);
+        }
     }
 
     fn pending() -> Rc<GcCell<PromiseState>> {
@@ -260,7 +272,15 @@ impl GenState {
     /// Sweep: an unreachable generator can never be resumed, so drop the
     /// coroutine it was holding (which is where its cycle runs through).
     pub(crate) fn discard(&mut self) {
-        self.coro = None;
+        let mut sink = Vec::new();
+        self.take_coro(&mut sink);
+    }
+
+    /// Move the suspended coroutine's values into `out`.
+    pub(crate) fn take_coro(&mut self, out: &mut Vec<Value>) {
+        if let Some(coro) = self.coro.take() {
+            out.extend(coro.stack);
+        }
         self.done = true;
     }
 }
@@ -470,6 +490,11 @@ pub struct Interp {
     /// Call stack for diagnostics: (function name, module, position of the
     /// instruction currently executing in that frame).
     frames: Vec<Frame_>,
+    /// Mersey call depth. See `MAX_CALL_DEPTH`.
+    depth: usize,
+    /// Stack address at the last host boundary — the base the budget measures
+    /// growth from. See `STACK_BUDGET`.
+    stack_base: usize,
     /// Execute compiled bytecode where available (Tier 0); AST fallback
     /// otherwise. Off = pure tree-walking (differential-test oracle).
     pub use_vm: bool,
@@ -547,6 +572,8 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         error_classes,
         class_stack: Vec::new(),
         frames: Vec::new(),
+        depth: 0,
+        stack_base: stack_here(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
@@ -628,15 +655,32 @@ impl Interp {
     }
 
     /// `at fn (module:line:col)` per frame, innermost first.
+    ///
+    /// Deep traces are truncated: a runaway recursion has thousands of
+    /// identical frames, and a multi-megabyte error message is its own denial
+    /// of service — the frames that say something are the ones at each end.
     pub fn stack_trace(&self) -> String {
+        const HEAD: usize = 12;
+        const TAIL: usize = 4;
+        let n = self.frames.len();
         let mut out = String::new();
-        for f in self.frames.iter().rev() {
+        let frame_line = |f: &Frame_| {
             let loc = if f.pos.line > 0 {
                 format!("{}:{}:{}", f.module, f.pos.line, f.pos.col)
             } else {
                 f.module.clone()
             };
-            out.push_str(&format!("\n    at {} ({loc})", f.name));
+            format!("\n    at {} ({loc})", f.name)
+        };
+        for (i, f) in self.frames.iter().rev().enumerate() {
+            if n > HEAD + TAIL + 1 && i == HEAD {
+                let hidden = n - HEAD - TAIL;
+                out.push_str(&format!("\n    ... {hidden} more frames"));
+            }
+            if n > HEAD + TAIL + 1 && i >= HEAD && i < n - TAIL {
+                continue;
+            }
+            out.push_str(&frame_line(f));
         }
         out
     }
@@ -688,6 +732,8 @@ impl Interp {
     /// Execute a module graph (dependency-first). Each module gets its own
     /// scope; imports link to the exporting module's evaluated bindings.
     pub fn run_graph(&mut self, modules: Vec<(String, &'static Module)>) -> Result<(), Thrown> {
+        // The host may call in at any stack depth: measure growth from here.
+        self.stack_base = stack_here();
         for (spec, module) in modules {
             let env = child_env(&self.root);
             let saved_globals = std::mem::replace(&mut self.globals, env.clone());
@@ -709,6 +755,8 @@ impl Interp {
     }
 
     pub fn run_module(&mut self, module: &'static Module) -> Result<(), Thrown> {
+        // The host may call in at any stack depth: measure growth from here.
+        self.stack_base = stack_here();
         self.run_module_inner(module)
     }
 
@@ -1196,6 +1244,8 @@ impl Interp {
 
     /// Driver entry point for host event callbacks (Stage A DOM events).
     pub fn invoke_callback(&mut self, id: u32) -> Result<(), Thrown> {
+        // The host may call in at any stack depth: measure growth from here.
+        self.stack_base = stack_here();
         let cb = match self.callbacks.get(id as usize) {
             Some(v) => v.clone(),
             None => return self.type_error(format!("unknown callback #{id}")),
@@ -1547,6 +1597,21 @@ impl Interp {
     // ---- calls --------------------------------------------------------------------
 
     fn call_closure(&mut self, c: &Closure, args: Vec<Value>) -> VResult {
+        // Both tiers recurse on the Rust stack for a Mersey call, so unbounded
+        // Mersey recursion would overflow it — and a stack overflow is a
+        // process abort, not an exception a program can handle. In a renderer
+        // that is a crash on hostile input (§5.2), so the depth is a budget the
+        // engine enforces: past it, an ordinary catchable error.
+        if self.depth >= MAX_CALL_DEPTH || self.stack_base.abs_diff(stack_here()) > STACK_BUDGET {
+            return Err(self.throw("RangeError", "maximum call depth exceeded"));
+        }
+        self.depth += 1;
+        let out = self.call_closure_inner(c, args);
+        self.depth -= 1;
+        out
+    }
+
+    fn call_closure_inner(&mut self, c: &Closure, args: Vec<Value>) -> VResult {
         let scope = child_env(&c.env);
         self.bind_params(c.data.params, args, &scope)?;
         if let Some(this) = &c.this {
@@ -3890,6 +3955,8 @@ impl Interp {
 
     /// Fire a callback with host-supplied arguments (event objects etc.).
     pub fn invoke_callback_json(&mut self, id: u32, args_json: &str) -> Result<(), Thrown> {
+        // The host may call in at any stack depth: measure growth from here.
+        self.stack_base = stack_here();
         let args = match webjson::parse(args_json) {
             Some(Json::Arr(items)) => items.iter().map(|i| self.from_web(i)).collect(),
             _ => Vec::new(),
@@ -4575,6 +4642,31 @@ fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>
 }
 
 /// Every name a pattern binds (`let [a, b] = …`, `let {x} = …`).
+/// A hard cap on Mersey call depth, as a backstop to the stack-usage guard
+/// below. It exists so the limit is *deterministic* — the same program throws
+/// at the same depth regardless of build or platform.
+const MAX_CALL_DEPTH: usize = 3_000;
+
+/// How much Rust stack the engine will let a Mersey program consume before it
+/// throws.
+///
+/// Counting frames is the obvious guard and the wrong one: a debug build's
+/// interpreter frames are several times fatter than a release build's, and a
+/// browser worker's stack is a fraction of a native thread's — so any fixed
+/// frame count is either uselessly small somewhere or fatally large somewhere
+/// else. What actually matters is bytes, so the engine measures them: it notes
+/// the stack address at the host boundary and compares against it on every
+/// call. 512 KB fits inside the smallest stack the engine runs on (a browser
+/// worker's, once the host has taken its share) with room for the deepest
+/// single frame to complete.
+const STACK_BUDGET: usize = 512 * 1024;
+
+/// The current stack address, near enough for a budget check.
+fn stack_here() -> usize {
+    let probe = 0u8;
+    std::hint::black_box(&probe) as *const u8 as usize
+}
+
 pub(crate) fn pattern_names_of(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Name(n) => out.push(n.text.clone()),

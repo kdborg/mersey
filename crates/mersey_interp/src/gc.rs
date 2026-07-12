@@ -55,11 +55,11 @@ use crate::{ClassDef, Coro, Env, GenState, Instance, PromiseState, Scope, Value}
 /// `Rc<GcCell<T>>::as_ptr()` is the address of the `GcCell` itself, which is
 /// the identity the collector marks with — so the barrier can name the object
 /// it is recording from `&self` alone.
-pub struct GcCell<T> {
+pub struct GcCell<T: GcContents> {
     inner: RefCell<T>,
 }
 
-impl<T> GcCell<T> {
+impl<T: GcContents> GcCell<T> {
     pub fn new(value: T) -> GcCell<T> {
         GcCell {
             inner: RefCell::new(value),
@@ -76,12 +76,35 @@ impl<T> GcCell<T> {
     }
 }
 
-impl<T> Drop for GcCell<T> {
-    /// Refcounting frees objects behind the collector's back, so this is where
-    /// the old generation learns that one of its members is gone. It matters
-    /// for more than tidiness: a stale address left in `OLD` would be reused
-    /// by a later allocation, and that new object would then be treated as
-    /// old — skipped by every minor trace, and eventually swept while live.
+/// An object holding values the collector must see — and, just as importantly,
+/// that *dropping* must not recurse through.
+pub trait GcContents {
+    /// Move every value out of this object.
+    fn take_children(&mut self, out: &mut Vec<Value>);
+}
+
+thread_local! {
+    /// Values whose drop has been deferred (see `Drop for GcCell`).
+    static DRAIN: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+    /// Is a drop-drain already running on this thread?
+    static DRAINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl<T: GcContents> Drop for GcCell<T> {
+    /// Two jobs, both about what refcounting does behind the collector's back.
+    ///
+    /// **Keeping the old generation exact.** A stale address left in `OLD` would
+    /// be reused by a later allocation, and that new object would then be
+    /// treated as old: skipped by every minor trace, and eventually swept while
+    /// live.
+    ///
+    /// **Not overflowing the stack.** `Rc` frees a linked structure by
+    /// recursion — dropping the head drops the next, which drops the next. A
+    /// list of 300,000 nodes is an ordinary thing to build with an ordinary
+    /// loop, and it would become 300,000 Rust frames and abort the process.
+    /// Hostile input must not be able to crash the engine (§5.2), so a drop does
+    /// not recurse: it moves its children onto a queue, and the outermost drop
+    /// drains that queue in a loop.
     fn drop(&mut self) {
         let ptr = self as *const GcCell<T> as usize;
         // try_with: a GcCell can outlive the thread_locals at shutdown.
@@ -91,11 +114,90 @@ impl<T> Drop for GcCell<T> {
         let _ = REMEMBERED.try_with(|r| {
             r.borrow_mut().remove(&ptr);
         });
+
+        let mut children = Vec::new();
+        self.inner.get_mut().take_children(&mut children);
+        if children.is_empty() {
+            return;
+        }
+        let Ok(already_draining) = DRAINING.try_with(|d| d.get()) else {
+            return; // thread shutdown: let the ordinary drop run
+        };
+        if DRAIN.try_with(|q| q.borrow_mut().extend(children)).is_err() {
+            return;
+        }
+        if already_draining {
+            return; // an outer drop is already draining; it will take these
+        }
+        let _ = DRAINING.try_with(|d| d.set(true));
+        loop {
+            let next = DRAIN.with(|q| q.borrow_mut().pop());
+            match next {
+                // Dropping this may free more objects, whose children land on
+                // the queue rather than on the Rust stack.
+                Some(v) => drop(v),
+                None => break,
+            }
+        }
+        let _ = DRAINING.try_with(|d| d.set(false));
     }
 }
 
-/// Record a write into an old object. Young objects are traced in full
-/// anyway, so only the old generation needs remembering.
+impl GcContents for Vec<Value> {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.append(self);
+    }
+}
+
+impl GcContents for Vec<(String, Value)> {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.extend(std::mem::take(self).into_iter().map(|(_, v)| v));
+    }
+}
+
+impl GcContents for Vec<(Value, Value)> {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        for (k, v) in std::mem::take(self) {
+            out.push(k);
+            out.push(v);
+        }
+    }
+}
+
+impl GcContents for HashMap<String, Value> {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.extend(std::mem::take(self).into_values());
+    }
+}
+
+impl GcContents for Scope {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.extend(std::mem::take(&mut self.vars).into_values());
+        self.parent = None;
+    }
+}
+
+impl GcContents for Instance {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.append(&mut self.slots);
+    }
+}
+
+impl GcContents for PromiseState {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.push(std::mem::replace(&mut self.value, Value::Null));
+        self.take_edges(out);
+    }
+}
+
+impl GcContents for GenState {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        self.take_coro(out);
+    }
+}
+
+/// Record a write into an old object. Young objects are traced in full anyway,
+/// so only the old generation needs remembering.
 fn note_write(ptr: usize) {
     let is_old = OLD
         .try_with(|old| old.borrow().contains_key(&ptr))
@@ -122,7 +224,7 @@ pub(crate) enum GcObj {
 impl GcObj {
     /// The object's identity, or `None` if refcounting already freed it.
     fn ptr(&self) -> Option<usize> {
-        fn p<T>(w: &Weak<GcCell<T>>) -> Option<usize> {
+        fn p<T: GcContents>(w: &Weak<GcCell<T>>) -> Option<usize> {
             w.upgrade().map(|rc| Rc::as_ptr(&rc) as usize)
         }
         match self {
@@ -471,6 +573,7 @@ fn mark(roots: &Roots, minor: bool) -> HashSet<usize> {
             let mut m = Marker {
                 marked: HashSet::new(),
                 envs: Vec::new(),
+                proms: Vec::new(),
                 minor,
                 old: &old,
                 remembered: &remembered,
@@ -517,8 +620,18 @@ fn mark(roots: &Roots, minor: bool) -> HashSet<usize> {
                 }
             }
 
-            while let Some(e) = m.envs.pop() {
-                m.env_contents(&e);
+            // Drain both worklists: scanning a scope can find a promise, and
+            // scanning a promise can find a scope.
+            loop {
+                if let Some(e) = m.envs.pop() {
+                    m.env_contents(&e);
+                    continue;
+                }
+                if let Some(p) = m.proms.pop() {
+                    m.promise_contents(&p);
+                    continue;
+                }
+                break;
             }
             m.marked
         })
@@ -545,6 +658,9 @@ struct Marker<'a> {
     marked: HashSet<usize>,
     /// Scopes still to scan (kept off the Rust stack: scope chains are deep).
     envs: Vec<Env>,
+    /// Promises still to scan. A `.then` chain is user data and can be as long
+    /// as the program likes, so it is not allowed to become Rust recursion.
+    proms: Vec<Rc<GcCell<PromiseState>>>,
     minor: bool,
     old: &'a HashMap<usize, GcObj>,
     remembered: &'a HashSet<usize>,
@@ -662,7 +778,7 @@ impl Marker<'_> {
 
     fn promise(&mut self, p: &Rc<GcCell<PromiseState>>) {
         if self.enter(Rc::as_ptr(p) as usize) {
-            self.promise_contents(p);
+            self.proms.push(p.clone());
         }
     }
 
@@ -712,30 +828,37 @@ impl Marker<'_> {
         }
     }
 
+    /// Mark a value and everything it reaches.
+    ///
+    /// Iterative, not recursive: an object graph is user data, and a chain half
+    /// a million links long is built with an ordinary loop. Recursing over it
+    /// would overflow the Rust stack *inside the collector*, which is a process
+    /// abort — the crash a program cannot catch (§5.2).
     fn value(&mut self, v: &Value) {
+        let mut work: Vec<Value> = vec![v.clone()];
+        while let Some(v) = work.pop() {
+            self.value_step(&v, &mut work);
+        }
+    }
+
+    /// Mark `v` itself and push its children onto `work`.
+    fn value_step(&mut self, v: &Value, work: &mut Vec<Value>) {
         match v {
             Value::Array(a) | Value::SetV(a) => {
                 if self.enter(Rc::as_ptr(a) as usize) {
-                    let items = a.borrow().clone();
-                    for item in &items {
-                        self.value(item);
-                    }
+                    work.extend(a.borrow().iter().cloned());
                 }
             }
             Value::Record(r) => {
                 if self.enter(Rc::as_ptr(r) as usize) {
-                    let items = r.borrow().clone();
-                    for (_, item) in &items {
-                        self.value(item);
-                    }
+                    work.extend(r.borrow().iter().map(|(_, v)| v.clone()));
                 }
             }
             Value::MapV(m) => {
                 if self.enter(Rc::as_ptr(m) as usize) {
-                    let items = m.borrow().clone();
-                    for (k, val) in &items {
-                        self.value(k);
-                        self.value(val);
+                    for (k, val) in m.borrow().iter() {
+                        work.push(k.clone());
+                        work.push(val.clone());
                     }
                 }
             }
@@ -745,9 +868,7 @@ impl Marker<'_> {
                         let inst = i.borrow();
                         (inst.slots.clone(), inst.class.clone())
                     };
-                    for f in &slots {
-                        self.value(f);
-                    }
+                    work.extend(slots);
                     self.class(&class);
                 }
             }
@@ -757,7 +878,7 @@ impl Marker<'_> {
                 if self.marked.insert(Rc::as_ptr(c) as usize) {
                     self.env(&c.env);
                     if let Some(t) = &c.this {
-                        self.value(t);
+                        work.push(t.clone());
                     }
                     if let Some(cl) = &c.cls {
                         self.class(cl);
@@ -767,10 +888,7 @@ impl Marker<'_> {
             Value::Class(c) => self.class(c),
             Value::Namespace(ns) => {
                 if self.marked.insert(Rc::as_ptr(ns) as usize) {
-                    let entries: Vec<Value> = ns.entries.values().cloned().collect();
-                    for v in &entries {
-                        self.value(v);
-                    }
+                    work.extend(ns.entries.values().cloned());
                 }
             }
             // A suspended generator holds a whole coroutine: its saved operand
