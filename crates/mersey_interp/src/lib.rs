@@ -1174,9 +1174,10 @@ impl Interp {
                 }
                 Ok(())
             }
-            "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" => {
+            "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" | "std:json" => {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
+                        "std:json" => ("json", &["stringify", "parse"], &[]),
                         "std:math" => (
                             "math",
                             &["abs", "min", "max", "floor", "ceil", "sqrt", "pow"],
@@ -2191,6 +2192,20 @@ impl Interp {
                 let d = args.get(1).and_then(as_i64).unwrap_or(0).clamp(0, 17) as usize;
                 Ok(Value::Str(Rc::new(format!("{x:.d$}").chars().collect())))
             }
+            "json.stringify" => {
+                let v = args.first().cloned().unwrap_or(Value::Null);
+                let j = self.to_web(&v);
+                let mut out = String::new();
+                webjson::write(&mut out, &j);
+                Ok(Value::Str(Rc::new(out.chars().collect())))
+            }
+            "json.parse" => {
+                let text = self.want_string(args.first())?;
+                match webjson::parse(&text) {
+                    Some(j) => Ok(self.from_web(&j)),
+                    None => Err(self.throw("Error", "invalid JSON")),
+                }
+            }
             "fs.readText" => {
                 let path = self.want_string(args.first())?;
                 match self.host.read_text(&path) {
@@ -3166,6 +3181,65 @@ impl Interp {
                             Value::I32(-1)
                         })
                     }
+                    "lastIndexOf" => {
+                        let want = args.first().cloned().unwrap_or(Value::Null);
+                        let src = items();
+                        for (i, item) in src.iter().enumerate().rev() {
+                            if self.values_equal(item, &want)? {
+                                return Ok(Value::I32(i as i32));
+                            }
+                        }
+                        Ok(Value::I32(-1))
+                    }
+                    // Indexing that admits it can miss, and counts from the end
+                    // for a negative index.
+                    "at" => {
+                        let src = items();
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(resolve_at(i, src.len())
+                            .and_then(|i| src.get(i).cloned())
+                            .unwrap_or(Value::Null))
+                    }
+                    "insertAt" => {
+                        let n = a.borrow().len();
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        let v = args.get(1).cloned().unwrap_or(Value::Null);
+                        // Inserting *at* the end is meaningful, so the index may
+                        // be one past the last element.
+                        let Some(i) = resolve_at(i, n + 1) else {
+                            return Err(self.throw(
+                                "RangeError",
+                                format!("insertAt: index {i} is outside 0..={n}"),
+                            ));
+                        };
+                        a.borrow_mut().insert(i, v);
+                        Ok(Value::Null)
+                    }
+                    "removeAt" => {
+                        let n = a.borrow().len();
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(match resolve_at(i, n) {
+                            Some(i) => a.borrow_mut().remove(i),
+                            None => Value::Null,
+                        })
+                    }
+                    "fillInPlace" => {
+                        let v = args.first().cloned().unwrap_or(Value::Null);
+                        for item in a.borrow_mut().iter_mut() {
+                            *item = v.clone();
+                        }
+                        Ok(Value::Null)
+                    }
+                    "flat" => {
+                        let mut out = Vec::new();
+                        for item in items() {
+                            match item {
+                                Value::Array(inner) => out.extend(inner.borrow().iter().cloned()),
+                                other => out.push(other),
+                            }
+                        }
+                        Ok(new_array(out))
+                    }
                     "slice" => {
                         let src = items();
                         let len = src.len() as i64;
@@ -3417,6 +3491,23 @@ impl Interp {
                         }))
                     }
                     "contains" => Ok(Value::Bool(text.contains(&arg0()))),
+                    "lastIndexOf" => {
+                        let needle = arg0();
+                        // Code-point index, not byte index (§3.4).
+                        Ok(Value::I32(match text.rfind(&needle) {
+                            Some(b) => text[..b].chars().count() as i32,
+                            None => -1,
+                        }))
+                    }
+                    "trimStart" => Ok(Value::Str(Rc::new(text.trim_start().chars().collect()))),
+                    "trimEnd" => Ok(Value::Str(Rc::new(text.trim_end().chars().collect()))),
+                    "at" => {
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(resolve_at(i, s.len())
+                            .and_then(|i| s.get(i).copied())
+                            .map(Value::Char)
+                            .unwrap_or(Value::Null))
+                    }
                     "startsWith" => Ok(Value::Bool(text.starts_with(&arg0()))),
                     "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
                     "toUpperCase" => Ok(Value::Str(Rc::new(text.to_uppercase().chars().collect()))),
@@ -5021,6 +5112,13 @@ const STACK_BUDGET: usize = 512 * 1024;
 fn stack_here() -> usize {
     let probe = 0u8;
     std::hint::black_box(&probe) as *const u8 as usize
+}
+
+/// Resolve an `at`-style index against a length: negative counts from the end,
+/// and anything outside the range is `None` rather than a panic or a wrap.
+fn resolve_at(i: i64, len: usize) -> Option<usize> {
+    let i = if i < 0 { i + len as i64 } else { i };
+    (i >= 0 && (i as usize) < len).then_some(i as usize)
 }
 
 pub(crate) fn pattern_names_of(p: &Pattern, out: &mut Vec<String>) {

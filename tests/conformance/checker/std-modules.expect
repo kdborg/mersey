@@ -1,0 +1,5 @@
+error[E0308] @ 7:10: unknown module `std:consoel`
+error[E0308] @ 8:10: unknown module `std:completely-made-up`
+error[E0401] @ 12:19: initializer: `float64` is not assignable to `string`
+error[E0403] @ 13:1: no member `nonsenseMethod` on `math`
+error[E0403] @ 14:1: no member `deleteEverything` on `fs`

@@ -618,6 +618,15 @@ pub enum Ns {
     Gc,
     Regex,
     Parse,
+    Math,
+    Format,
+    Fs,
+    Env,
+    Caps,
+    Json,
+    /// The `Promise` value from `std:async` (`resolve`/`reject`/`all`), as
+    /// distinct from the `Promise<T>` *type*.
+    PromiseNs,
     Opaque,
 }
 
@@ -1660,12 +1669,19 @@ impl Checker {
                 for s in specs {
                     let local = s.alias.as_ref().unwrap_or(&s.name);
                     let ty = match (im.from.as_str(), s.name.text.as_str()) {
-                        ("std:console", "console") => Ty::Namespace(Ns::Console),
+                        ("std:console", _) => Ty::Namespace(Ns::Console),
                         ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
                         ("std:time", _) => Ty::Namespace(Ns::Time),
                         ("std:gc", _) => Ty::Namespace(Ns::Gc),
                         ("std:regex", _) => Ty::Namespace(Ns::Regex),
                         ("std:parse", _) => Ty::Namespace(Ns::Parse),
+                        ("std:math", _) => Ty::Namespace(Ns::Math),
+                        ("std:format", _) => Ty::Namespace(Ns::Format),
+                        ("std:fs", _) => Ty::Namespace(Ns::Fs),
+                        ("std:env", _) => Ty::Namespace(Ns::Env),
+                        ("std:caps", _) => Ty::Namespace(Ns::Caps),
+                        ("std:json", _) => Ty::Namespace(Ns::Json),
+                        ("std:async", _) => Ty::Namespace(Ns::PromiseNs),
                         ("browser:dom", global) => {
                             // An interface NAME imported as a value is the
                             // interface object: `x instanceof HTMLElement`.
@@ -1678,7 +1694,21 @@ impl Checker {
                                 }
                             }
                         }
-                        _ => Ty::Any,
+                        // A module nobody has heard of. This used to fall
+                        // through to `any`, which meant a typo — `std:consoel` —
+                        // compiled clean, bound every name it imported to `any`,
+                        // and turned type checking off for all of them until it
+                        // finally died at runtime. In a language whose whole
+                        // premise is that mistakes are compile errors, that is
+                        // the one thing the import must not do.
+                        (other, _) => {
+                            self.error(
+                                Code::UnknownTypeName,
+                                format!("unknown module `{other}`"),
+                                s.name.pos,
+                            );
+                            Ty::Err
+                        }
                     };
                     self.define_at(&local.text, ty, true, local.pos);
                     self.type_defs.insert(local.text.clone(), TypeDef::Imported);
@@ -4589,6 +4619,12 @@ impl Checker {
                     ),
                     "split" => f(vec![p(Ty::Str)], Ty::Array(Rc::new(Ty::Str))),
                     "toUpperCase" | "toLowerCase" | "trim" => f(vec![], Ty::Str),
+                    "trimStart" | "trimEnd" => f(vec![], Ty::Str),
+                    "lastIndexOf" => f(vec![p(Ty::Str)], Ty::Int(IntKind::I32)),
+                    // A string is a sequence of code points, so `s[i]` is a
+                    // `char`; `at` is the form that admits it can miss, and
+                    // counts from the end for a negative index.
+                    "at" => f(vec![p(Ty::Int(IntKind::I32))], nullable(Ty::Char)),
                     "replace" | "replaceAll" => f(vec![p(Ty::Str), p(Ty::Str)], Ty::Str),
                     "repeat" => f(vec![p(Ty::Int(IntKind::I32))], Ty::Str),
                     "padStart" | "padEnd" => f(
@@ -4728,6 +4764,36 @@ impl Checker {
                     "concat" => f(vec![], vec![p(arr.clone())], arr),
                     "keys" => f(vec![], vec![], Ty::Array(Rc::new(Ty::Int(IntKind::I32)))),
                     "join" => f(vec![], vec![opt(Ty::Str)], Ty::Str),
+                    // Indexing that admits it can miss: `xs[i]` is `T`, but
+                    // `xs.at(i)` is `T?` — and it counts from the end for a
+                    // negative index.
+                    "at" => f(vec![], vec![p(i32t.clone())], nullable(e.clone())),
+                    "lastIndexOf" => f(vec![], vec![p(e.clone())], i32t.clone()),
+                    // §1.3: mutation is explicit in the name, and mutators
+                    // return void. These are what JS spells `unshift`, `shift`
+                    // and `splice`.
+                    "insertAt" => f(vec![], vec![p(i32t.clone()), p(e.clone())], Ty::Void),
+                    "removeAt" => f(vec![], vec![p(i32t.clone())], nullable(e.clone())),
+                    "fillInPlace" => f(vec![], vec![p(e.clone())], Ty::Void),
+                    // `T[][]` -> `T[]`. Only one level: a deeper flatten cannot
+                    // be given a type without a variadic depth, so it is not
+                    // pretended to.
+                    "flat" => match &e {
+                        Ty::Array(inner) => {
+                            f(vec![], vec![], Ty::Array(Rc::new(inner.as_ref().clone())))
+                        }
+                        other => {
+                            self.error(
+                                Code::BadOperand,
+                                format!(
+                                    "`flat` needs an array of arrays, this is `{}[]`",
+                                    self.show(other)
+                                ),
+                                pos,
+                            );
+                            Ty::Err
+                        }
+                    },
                     "toString" => to_string_fn(),
                     _ => self.no_member("array", name, pos),
                 }
@@ -4991,6 +5057,174 @@ impl Checker {
                         ret: Ty::F64,
                     })),
                     _ => self.no_member("time", name, pos),
+                }
+            }
+            // These namespaces used to be `any`, which meant
+            // `const s: string = math.sqrt(16.0);` compiled, and so did
+            // `fs.deleteEverything()`.
+            Ty::Namespace(Ns::Math) => {
+                let num = Ty::F64;
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
+                let f = |params: Vec<ParamTy>, ret: Ty| {
+                    Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params,
+                        ret,
+                    }))
+                };
+                match name {
+                    // `abs` keeps the width it was given (§3.3), so it is the
+                    // one member here that is not simply float64 in, float64 out.
+                    "abs" => f(vec![p(Ty::Any)], Ty::Any),
+                    "floor" | "ceil" | "sqrt" => f(vec![p(num.clone())], num),
+                    "pow" => f(vec![p(num.clone()), p(num.clone())], num),
+                    "min" | "max" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy {
+                            ty: Ty::Any,
+                            optional: false,
+                            rest: true,
+                        }],
+                        ret: Ty::Any,
+                    })),
+                    "PI" | "E" => num,
+                    _ => self.no_member("math", name, pos),
+                }
+            }
+            Ty::Namespace(Ns::Format) => {
+                let p = |ty: Ty| ParamTy {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
+                let i32t = Ty::Int(IntKind::I32);
+                match name {
+                    "pad" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::Any), p(i32t)],
+                        ret: Ty::Str,
+                    })),
+                    "fixed" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![p(Ty::F64), p(i32t)],
+                        ret: Ty::Str,
+                    })),
+                    _ => self.no_member("format", name, pos),
+                }
+            }
+            Ty::Namespace(Ns::Fs) => match name {
+                "readText" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![ParamTy {
+                        ty: Ty::Str,
+                        optional: false,
+                        rest: false,
+                    }],
+                    ret: Ty::Str,
+                })),
+                _ => self.no_member("fs", name, pos),
+            },
+            Ty::Namespace(Ns::Env) => match name {
+                // Absent variables are `null`, not `""` — the caller has to say
+                // what to do about that (§3.2).
+                "get" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![ParamTy {
+                        ty: Ty::Str,
+                        optional: false,
+                        rest: false,
+                    }],
+                    ret: nullable(Ty::Str),
+                })),
+                _ => self.no_member("env", name, pos),
+            },
+            Ty::Namespace(Ns::Caps) => {
+                let str_p = ParamTy {
+                    ty: Ty::Str,
+                    optional: false,
+                    rest: false,
+                };
+                match name {
+                    "has" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![str_p],
+                        ret: Ty::Bool,
+                    })),
+                    "list" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![],
+                        ret: Ty::Array(Rc::new(Ty::Str)),
+                    })),
+                    "drop" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![str_p],
+                        ret: Ty::Void,
+                    })),
+                    _ => self.no_member("caps", name, pos),
+                }
+            }
+            Ty::Namespace(Ns::Json) => match name {
+                "stringify" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![ParamTy {
+                        ty: Ty::Any,
+                        optional: false,
+                        rest: false,
+                    }],
+                    ret: Ty::Str,
+                })),
+                // Parsing gives back `any`: the shape of a JSON document is not
+                // known until it is read, and pretending otherwise would be a
+                // lie the checker cannot back up.
+                "parse" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![ParamTy {
+                        ty: Ty::Str,
+                        optional: false,
+                        rest: false,
+                    }],
+                    ret: Ty::Any,
+                })),
+                _ => self.no_member("JSON", name, pos),
+            },
+            Ty::Namespace(Ns::PromiseNs) => {
+                let tv = self.fresh_tv("T");
+                let t = Ty::Var(tv);
+                match name {
+                    "resolve" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![tv],
+                        params: vec![ParamTy {
+                            ty: t.clone(),
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: self.promise_of(t),
+                    })),
+                    "reject" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy {
+                            ty: Ty::Any,
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: self.promise_of(Ty::Any),
+                    })),
+                    // `Promise.all([…])` — the element type is not tracked
+                    // through the array of promises yet.
+                    "all" => Ty::Fn(Rc::new(FnTy {
+                        tparams: vec![],
+                        params: vec![ParamTy {
+                            ty: Ty::Array(Rc::new(Ty::Any)),
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: self.promise_of(Ty::Array(Rc::new(Ty::Any))),
+                    })),
+                    _ => self.no_member("Promise", name, pos),
                 }
             }
             Ty::Namespace(Ns::Console) => match name {

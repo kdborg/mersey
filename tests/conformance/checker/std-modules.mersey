@@ -1,0 +1,14 @@
+// Every `std:` module is named, and an unknown one is an error.
+//
+// This used to fall through to `any`, so a typo compiled clean, bound every name
+// it imported to `any` — turning type checking *off* for all of them — and only
+// died at runtime. `std:math` and friends were `any` too, so
+// `const s: string = math.sqrt(16.0);` compiled.
+import { console } from "std:consoel";
+import { anything } from "std:completely-made-up";
+import { math } from "std:math";
+import { fs } from "std:fs";
+
+const s: string = math.sqrt(16.0);
+math.nonsenseMethod(1, 2, 3);
+fs.deleteEverything();

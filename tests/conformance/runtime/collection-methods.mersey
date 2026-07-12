@@ -1,0 +1,32 @@
+import { console } from "std:console";
+
+// §1.3: mutation is always explicit in the name, and mutators return void. So
+// there is no `sort`/`reverse` (they are `sortInPlace`/`toSorted`), no
+// `includes` (it is `contains`), and JS's `unshift`/`shift`/`splice` are spelled
+// as what they do.
+
+const xs: int32[] = [10, 20, 30, 20];
+
+// `xs[i]` is a `T`. `xs.at(i)` is a `T?` — it admits it can miss, and counts
+// from the end for a negative index.
+console.log(xs.at(0), xs.at(-1), xs.at(99));
+console.log(xs.indexOf(20), xs.lastIndexOf(20));
+
+xs.insertAt(0, 5);              // JS `unshift`
+console.log(xs.join(","));
+const first = xs.removeAt(0);   // JS `shift`
+const middle = xs.removeAt(1);  // JS `splice(1, 1)`
+console.log(first, middle, xs.join(","));
+
+const nested: int32[][] = [[1, 2], [3], [4, 5]];
+console.log(nested.flat().join("-"));
+
+const grid: int32[] = [1, 2, 3];
+grid.fillInPlace(0);
+console.log(grid.join(","));
+
+// Strings are sequences of code points, so `s[i]` is a `char` and every index
+// here counts code points, not bytes.
+const s: string = "  héllo  ";
+console.log(`[${s.trimStart()}]`, `[${s.trimEnd()}]`);
+console.log("banana".lastIndexOf("an"), "héllo".at(-1), "abc".at(9));
