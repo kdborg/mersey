@@ -4484,7 +4484,7 @@ impl Interp {
         }
     }
 
-    fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
+    pub(crate) fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
         let this =
             env_get(env, "this").ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
         let cls = self.current_class()?;

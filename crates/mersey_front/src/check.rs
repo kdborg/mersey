@@ -4163,6 +4163,37 @@ impl Checker {
         } else {
             positional.len()
         };
+
+        // A spread argument has a length nobody knows until it runs, so a call
+        // that uses one is only checkable if the callee takes a rest parameter —
+        // then any number of arguments is fine and the element type still is
+        // not. Otherwise the arity of the call could not be checked at all, and
+        // reporting "expected 2, got 1" would be describing the spread rather
+        // than the mistake.
+        if args.iter().any(|a| a.spread) {
+            if rest.is_none() {
+                self.error(
+                    Code::BadCall,
+                    "a spread argument needs a function with a rest parameter \
+                     (`...xs: T[]`): otherwise the number of arguments cannot be checked"
+                        .to_string(),
+                    pos,
+                );
+                return f.ret.clone();
+            }
+            let rest_elem = rest.as_ref().map(|p| p.ty.clone()).unwrap_or(Ty::Any);
+            for a in args {
+                let t = self.check_expr(&a.expr, None);
+                if a.spread {
+                    let want = Ty::Array(Rc::new(rest_elem.clone()));
+                    self.require_assignable(&t, &want, pos_of(&a.expr), "spread argument");
+                } else {
+                    self.require_assignable(&t, &rest_elem, pos_of(&a.expr), "argument");
+                }
+            }
+            return f.ret.clone();
+        }
+
         if args.len() < required || args.len() > max {
             self.error(
                 Code::BadCall,

@@ -19,7 +19,7 @@ impl Host for BufHost {
     fn dom_get_text(&mut self, _id: &str) -> Option<String> {
         None
     }
-    fn dom_on_click(&mut self, _id: &str, _cb: u32) {}
+    fn dom_add_listener(&mut self, _id: &str, _event: &str, _cb: u32) {}
 }
 
 fn run(src_text: &str, use_vm: bool, jit: bool) -> String {

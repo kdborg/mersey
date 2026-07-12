@@ -1,0 +1,41 @@
+import { console } from "std:console";
+
+// A spread argument has a length nobody knows until it runs, so a call using one
+// is only checkable if the callee takes a rest parameter — then any number of
+// arguments is fine, and the element type still is not. `f(...xs)` on a
+// fixed-arity function is E0402, with an error that says why.
+
+function sum(...xs: int32[]): int32 {
+    let total: int32 = 0;
+    for (const x of xs) {
+        total += x;
+    }
+    return total;
+}
+
+const nums: int32[] = [1, 2, 3, 4];
+console.log(sum(...nums), sum(5, 6), sum(1, ...nums));
+
+// The same through `super`, which used to drop the whole function to the AST
+// tree-walker because the bytecode compiler had no spread form of a super call.
+class Base {
+    public total: int32 = 0;
+    public constructor(...xs: int32[]) {
+        this.total = sum(...xs);
+    }
+    public combine(...xs: int32[]): int32 {
+        return sum(...xs);
+    }
+}
+
+class Sub extends Base {
+    public constructor(xs: int32[]) {
+        super(...xs);
+    }
+    public override combine(...xs: int32[]): int32 {
+        return super.combine(...xs) * 2;
+    }
+}
+
+const s = new Sub([3, 4, 5]);
+console.log(s.total, s.combine(1, 2));

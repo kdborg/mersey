@@ -100,6 +100,10 @@ pub enum Op {
     SuperCall(u8),
     SuperMember(u16),
     CallSuperMethod(u16, u8),
+    /// `super(...args)` / `super.m(...args)`: the argument list arrives as an
+    /// array, so a spread does not force the whole function to the slow tier.
+    SuperCallV,
+    CallSuperMethodV(u16),
     /// Dynamic `import(spec)`: pushes a promise of the module's exports.
     ImportCall(u16),
     GetMember(u16, u16),
@@ -281,6 +285,7 @@ fn annotate(ch: &Chunk, op: &Op) -> String {
         Op::LoadName(i)
         | Op::StoreName(i)
         | Op::DeclareName(i)
+        | Op::CallSuperMethodV(i)
         | Op::GetMember(i, _)
         | Op::SetMember(i, _)
         | Op::CallMethod(i, _)
@@ -1230,7 +1235,12 @@ impl C {
                 Some(argc) => {
                     self.emit(Op::SuperCall(argc));
                 }
-                None => self.bail(),
+                // A spread argument list arrives as an array, so `super(...xs)`
+                // no longer drops the whole function to the AST tier.
+                None => {
+                    self.args_array(args);
+                    self.emit(Op::SuperCallV);
+                }
             },
             Expr::ImportCall(inner) => {
                 // The specifier is a literal (the checker enforces it, §4.5), so
@@ -1853,6 +1863,18 @@ fn exec(
                 let v = throwing!(i.call_super_method(&chunk.names[ni as usize], args, &env));
                 stack.push(v);
             }
+            Op::SuperCallV => {
+                let args = pop_array(stack);
+                let env = cur!().clone();
+                let v = throwing!(i.super_call(args, &env));
+                stack.push(v);
+            }
+            Op::CallSuperMethodV(ni) => {
+                let args = pop_array(stack);
+                let env = cur!().clone();
+                let v = throwing!(i.call_super_method(&chunk.names[ni as usize], args, &env));
+                stack.push(v);
+            }
             Op::ImportCall(ni) => {
                 let spec = chunk.names[ni as usize].clone();
                 let v = throwing!(i.dynamic_import(&spec));
@@ -2176,6 +2198,11 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
                 (1, 1)
             }
             Op::SuperCall(a) => (a as i32, 1),
+            Op::SuperCallV => (1, 1),
+            Op::CallSuperMethodV(i) => {
+                bounds(i, chunk.names.len(), "name")?;
+                (1, 1)
+            }
             Op::CallSuperMethod(i, a) => {
                 bounds(i, chunk.names.len(), "name")?;
                 (a as i32, 1)

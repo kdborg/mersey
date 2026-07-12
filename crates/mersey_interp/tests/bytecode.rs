@@ -84,3 +84,46 @@ function f(): int32 {
         "`return` out of a catch through a finally fell back to the AST tier"
     );
 }
+
+/// `super(...args)` and `super.m(...args)`: a spread argument list used to drop
+/// the whole function to the AST tier.
+#[test]
+fn super_calls_with_spread_compile() {
+    fn compiles_method(src: &str) -> bool {
+        let decoded = source::decode("<t>", src.as_bytes()).expect("decode");
+        let parsed = parser::parse(&decoded);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{:?}",
+            parsed.diagnostics.first().map(|d| d.to_string())
+        );
+        let module: &'static Module = Box::leak(Box::new(parsed.module));
+        for item in &module.items {
+            if let Item::Decl(Decl::Class(c)) = item {
+                for m in &c.members {
+                    if let mersey_front::ast::ClassMember::Method { body: Some(b), .. } = m {
+                        return mersey_interp::vm::compile_fn_public(b).is_some();
+                    }
+                }
+            }
+        }
+        panic!("no method in source");
+    }
+
+    assert!(
+        compiles_method(
+            r#"
+class Base {
+    public greet(a: int32, b: int32): int32 { return a + b; }
+}
+class Sub extends Base {
+    public override greet(a: int32, b: int32): int32 {
+        const xs: int32[] = [a, b];
+        return super.greet(...xs);
+    }
+}
+"#
+        ),
+        "`super.m(...xs)` fell back to the AST tier"
+    );
+}
