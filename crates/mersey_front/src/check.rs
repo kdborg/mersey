@@ -262,6 +262,7 @@ pub enum Ns {
     Document,
     Bytes,
     Time,
+    Gc,
     Opaque,
 }
 
@@ -963,6 +964,7 @@ impl Checker {
                         ("std:console", "console") => Ty::Namespace(Ns::Console),
                         ("std:bytes", _) => Ty::Namespace(Ns::Bytes),
                         ("std:time", _) => Ty::Namespace(Ns::Time),
+                        ("std:gc", _) => Ty::Namespace(Ns::Gc),
                         ("browser:dom", global) => {
                             // An interface NAME imported as a value is the
                             // interface object: `x instanceof HTMLElement`.
@@ -3321,6 +3323,23 @@ impl Checker {
                     _ => self.no_member("bytes", name, pos),
                 }
             }
+            Ty::Namespace(Ns::Gc) => match name {
+                "collect" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: Ty::Void,
+                })),
+                "stats" => Ty::Fn(Rc::new(FnTy {
+                    tparams: vec![],
+                    params: vec![],
+                    ret: Ty::Record(Rc::new(vec![RecField {
+                        name: "live".into(),
+                        ty: Ty::Int(IntKind::I32),
+                        optional: false,
+                    }])),
+                })),
+                _ => self.no_member("gc", name, pos),
+            },
             Ty::Namespace(Ns::Time) => match name {
                 "now" | "monotonic" => Ty::Fn(Rc::new(FnTy {
                     tparams: vec![],

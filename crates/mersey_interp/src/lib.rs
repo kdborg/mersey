@@ -24,6 +24,7 @@ use std::rc::Rc;
 use mersey_front::ast::*;
 
 pub mod bignum;
+pub mod gc;
 pub mod vm;
 pub mod webjson;
 use webjson::Json;
@@ -209,6 +210,16 @@ pub struct PromiseState {
 }
 
 impl PromiseState {
+    pub(crate) fn waiters(&self) -> &[Coro] {
+        &self.waiters
+    }
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn reactions(
+        &self,
+    ) -> &[(Option<Value>, Option<Value>, Rc<RefCell<PromiseState>>)] {
+        &self.reactions
+    }
+
     fn pending() -> Rc<RefCell<PromiseState>> {
         Rc::new(RefCell::new(PromiseState {
             status: PromiseStatus::Pending,
@@ -252,10 +263,10 @@ pub struct Namespace {
 
 pub struct Closure {
     data: Rc<FnData>,
-    env: Env,
-    this: Option<Value>,
+    pub(crate) env: Env,
+    pub(crate) this: Option<Value>,
     /// Class that lexically contains the function (for `super`).
-    cls: Option<Rc<ClassDef>>,
+    pub(crate) cls: Option<Rc<ClassDef>>,
 }
 
 struct FnData {
@@ -283,25 +294,25 @@ enum FnBody {
 
 pub struct ClassDef {
     name: String,
-    parent: Option<Rc<ClassDef>>,
+    pub(crate) parent: Option<Rc<ClassDef>>,
     /// Instance fields in initialization order (base-class fields first).
     fields: Vec<(String, Option<&'static Expr>)>,
     methods: HashMap<String, Rc<FnData>>,
     getters: HashMap<String, Rc<FnData>>,
     setters: HashMap<String, Rc<FnData>>,
     ctor: Option<Rc<FnData>>,
-    statics: RefCell<HashMap<String, Value>>,
+    pub(crate) statics: RefCell<HashMap<String, Value>>,
     static_methods: HashMap<String, Rc<FnData>>,
     /// Built-in error classes construct without an AST ctor.
     is_builtin_error: bool,
     /// Host interface this class extends, if any (`extends HTMLElement`).
     host_iface: Option<String>,
-    env: Option<Env>,
+    pub(crate) env: Option<Env>,
 }
 
 pub struct Instance {
-    class: Rc<ClassDef>,
-    fields: HashMap<String, Value>,
+    pub(crate) class: Rc<ClassDef>,
+    pub(crate) fields: HashMap<String, Value>,
     /// Host object backing this instance (`class X extends HTMLElement`):
     /// members not declared in Mersey resolve against it, and the instance
     /// crosses the bridge AS that object.
@@ -312,13 +323,15 @@ pub struct Instance {
 
 type Env = Rc<RefCell<Scope>>;
 
-struct Scope {
-    vars: HashMap<String, Value>,
-    parent: Option<Env>,
+pub(crate) struct Scope {
+    pub(crate) vars: HashMap<String, Value>,
+    pub(crate) parent: Option<Env>,
 }
 
 fn child_env(parent: &Env) -> Env {
-    Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: Some(parent.clone()) }))
+    let e = Rc::new(RefCell::new(Scope { vars: HashMap::new(), parent: Some(parent.clone()) }));
+    gc::track_env(&e);
+    e
 }
 
 fn env_get(env: &Env, name: &str) -> Option<Value> {
@@ -408,6 +421,8 @@ pub struct Interp {
     /// Mersey classes declared in the module being defined but not yet
     /// created, so `extends` can tell a late Mersey base from a host one.
     pending_class_names: std::collections::HashSet<String>,
+    /// A `gc.collect()` request from Mersey: honoured at the next safe point.
+    gc_pending: bool,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
     jit_cache: HashMap<usize, Option<JitFn>>,
@@ -451,6 +466,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         modules: HashMap::new(),
         current_module: String::new(),
         pending_class_names: std::collections::HashSet::new(),
+        gc_pending: false,
         jit: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
@@ -572,6 +588,7 @@ impl Interp {
             result?;
             self.modules.insert(spec, exports);
         }
+        self.maybe_collect();
         Ok(())
     }
 
@@ -690,6 +707,21 @@ impl Interp {
                 }));
                 for n in names {
                     env_define(&self.globals, &n.text, console.clone());
+                }
+                Ok(())
+            }
+            "std:gc" => {
+                let mut entries = HashMap::new();
+                for n in ["collect", "stats"] {
+                    let id: &'static str = Box::leak(format!("gc.{n}").into_boxed_str());
+                    entries.insert(n.to_string(), Value::Native(id));
+                }
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: "gc".to_string(),
+                    entries,
+                }));
+                for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())
             }
@@ -1251,7 +1283,7 @@ impl Interp {
                 }
                 if let Some(r) = rest {
                     let tail: Vec<Value> = items.iter().skip(elems.len()).cloned().collect();
-                    self.bind_pattern(r, Value::Array(Rc::new(RefCell::new(tail))), env)?;
+                    self.bind_pattern(r, new_array(tail), env)?;
                 }
                 Ok(())
             }
@@ -1422,7 +1454,7 @@ impl Interp {
         if let Some(r) = rest_param {
             self.bind_pattern(
                 &r.target,
-                Value::Array(Rc::new(RefCell::new(rest_args))),
+                new_array(rest_args),
                 scope,
             )?;
         }
@@ -1456,7 +1488,7 @@ impl Interp {
                         *r
                     };
                     if left == 0 {
-                        let all = Value::Array(Rc::new(RefCell::new(results.borrow().clone())));
+                        let all = new_array(results.borrow().clone());
                         self.settle(&out, all, false);
                     }
                 }
@@ -1596,13 +1628,15 @@ impl Interp {
                 let cap = self.want_string(args.first())?;
                 Ok(Value::Bool(self.host.caps().contains(&cap)))
             }
-            "caps.list" => Ok(Value::Array(Rc::new(RefCell::new(
-                self.host
+            "caps.list" => {
+                let caps: Vec<Value> = self
+                    .host
                     .caps()
                     .into_iter()
                     .map(|c| Value::Str(Rc::new(c.chars().collect())))
-                    .collect(),
-            )))),
+                    .collect();
+                Ok(new_array(caps))
+            }
             "promise.resolve" => {
                 let p = PromiseState::pending();
                 let v = args.into_iter().next().unwrap_or(Value::Null);
@@ -1624,7 +1658,7 @@ impl Interp {
                 let results = Rc::new(RefCell::new(vec![Value::Null; items.len()]));
                 let remaining = Rc::new(RefCell::new(items.len()));
                 if items.is_empty() {
-                    let all = Value::Array(Rc::new(RefCell::new(Vec::new())));
+                    let all = new_array(Vec::new());
                     self.settle(&out, all, false);
                     return Ok(Value::PromiseV(out));
                 }
@@ -1643,6 +1677,20 @@ impl Interp {
                     self.promise_then(&p, Some(on_ok), Some(on_err));
                 }
                 Ok(Value::PromiseV(out))
+            }
+            // A collection cannot run mid-expression (live VM frames are not
+            // roots), so this *requests* one for the next safe point.
+            "gc.collect" => {
+                self.gc_pending = true;
+                Ok(Value::Null)
+            }
+            "gc.stats" => {
+                // Reports only — sweeping here would be unsound (live VM
+                // frames are not roots mid-expression).
+                let stats = gc::stats_only();
+                Ok(new_record(vec![
+                    ("live".to_string(), Value::I32(stats.tracked as i32)),
+                ]))
             }
             "time.now" | "time.monotonic" => Ok(Value::F64(self.host.time_ms(name == "time.now"))),
             "bytes.alloc" => {
@@ -1729,17 +1777,20 @@ impl Interp {
                 "message".to_string(),
                 args.into_iter().next().unwrap_or(Value::Null),
             );
-            return Ok(Value::Instance(Rc::new(RefCell::new(Instance {
+            let inst = Rc::new(RefCell::new(Instance {
                 class: cls.clone(),
                 fields,
                 host: None,
-            }))));
+            }));
+            gc::track_instance(&inst);
+            return Ok(Value::Instance(inst));
         }
         let inst = Rc::new(RefCell::new(Instance {
             class: cls.clone(),
             fields: HashMap::new(),
             host: None,
         }));
+        gc::track_instance(&inst);
         let this = Value::Instance(inst.clone());
         let env = cls.env.clone().unwrap_or_else(|| self.globals.clone());
 
@@ -1998,7 +2049,7 @@ impl Interp {
                         items.push(v);
                     }
                 }
-                Ok(Value::Array(Rc::new(RefCell::new(items))))
+                Ok(new_array(items))
             }
             Expr::Record(fields) => {
                 let mut out: Vec<(String, Value)> = Vec::new();
@@ -2026,7 +2077,7 @@ impl Interp {
                         }
                     }
                 }
-                Ok(Value::Record(Rc::new(RefCell::new(out))))
+                Ok(new_record(out))
             }
             Expr::Paren(e) => self.eval(e, env),
             Expr::Arrow { is_async, params, body, .. } => {
@@ -2275,9 +2326,9 @@ impl Interp {
                     }
                     "keys" => {
                         let n = a.borrow().len();
-                        Ok(Value::Array(Rc::new(RefCell::new(
+                        Ok(new_array(
                             (0..n).map(|i| Value::I32(i as i32)).collect(),
-                        ))))
+                        ))
                     }
                     "join" => {
                         let sep = match args.first() {
@@ -2293,7 +2344,7 @@ impl Interp {
                         for item in items() {
                             out.push(self.call_value(&f, vec![item])?);
                         }
-                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                        Ok(new_array(out))
                     }
                     "filter" => {
                         let f = args.first().cloned().unwrap_or(Value::Null);
@@ -2304,7 +2355,7 @@ impl Interp {
                                 out.push(item);
                             }
                         }
-                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                        Ok(new_array(out))
                     }
                     "reduce" => {
                         let f = args.first().cloned().unwrap_or(Value::Null);
@@ -2365,14 +2416,14 @@ impl Interp {
                         let start = norm(args.first().and_then(as_i64).unwrap_or(0));
                         let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
                         let out = if start < end { src[start..end].to_vec() } else { Vec::new() };
-                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                        Ok(new_array(out))
                     }
                     "concat" => {
                         let mut out = items();
                         if let Some(Value::Array(b)) = args.first() {
                             out.extend(b.borrow().iter().cloned());
                         }
-                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                        Ok(new_array(out))
                     }
                     "reverseInPlace" => {
                         a.borrow_mut().reverse();
@@ -2381,7 +2432,7 @@ impl Interp {
                     "toReversed" => {
                         let mut out = items();
                         out.reverse();
-                        Ok(Value::Array(Rc::new(RefCell::new(out))))
+                        Ok(new_array(out))
                     }
                     // Comparator-driven sort: merge sort so the comparator is
                     // called a predictable number of times and the sort is
@@ -2393,7 +2444,7 @@ impl Interp {
                             *a.borrow_mut() = sorted;
                             Ok(Value::Null)
                         } else {
-                            Ok(Value::Array(Rc::new(RefCell::new(sorted))))
+                            Ok(new_array(sorted))
                         }
                     }
                     "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
@@ -2436,20 +2487,20 @@ impl Interp {
                             None => Value::Bool(false),
                         })
                     }
-                    "keys" => Ok(Value::Array(Rc::new(RefCell::new(
+                    "keys" => Ok(new_array(
                         m.borrow().iter().map(|(k, _)| k.clone()).collect(),
-                    )))),
-                    "values" => Ok(Value::Array(Rc::new(RefCell::new(
+                    )),
+                    "values" => Ok(new_array(
                         m.borrow().iter().map(|(_, v)| v.clone()).collect(),
-                    )))),
-                    "entries" => Ok(Value::Array(Rc::new(RefCell::new(
-                        m.borrow()
+                    )),
+                    "entries" => {
+                        let pairs: Vec<Value> = m
+                            .borrow()
                             .iter()
-                            .map(|(k, v)| {
-                                Value::Array(Rc::new(RefCell::new(vec![k.clone(), v.clone()])))
-                            })
-                            .collect(),
-                    )))),
+                            .map(|(k, v)| new_array(vec![k.clone(), v.clone()]))
+                            .collect();
+                        Ok(new_array(pairs))
+                    }
                     "clear" => {
                         m.borrow_mut().clear();
                         Ok(Value::Null)
@@ -2482,7 +2533,7 @@ impl Interp {
                             None => Value::Bool(false),
                         })
                     }
-                    "values" => Ok(Value::Array(Rc::new(RefCell::new(m.borrow().clone())))),
+                    "values" => Ok(new_array(m.borrow().clone())),
                     "clear" => {
                         m.borrow_mut().clear();
                         Ok(Value::Null)
@@ -2577,7 +2628,7 @@ impl Interp {
                                 .map(|p| Value::Str(Rc::new(p.chars().collect())))
                                 .collect()
                         };
-                        Ok(Value::Array(Rc::new(RefCell::new(parts))))
+                        Ok(new_array(parts))
                     }
                     _ => self.type_error(format!("no method `{name}` on string")),
                 }
@@ -2874,6 +2925,61 @@ impl Interp {
         }
     }
 
+    /// The engine's live set at a safe point (no VM frames on the Rust
+    /// stack), for the cycle collector.
+    fn gc_roots(&self) -> gc::Roots {
+        let mut roots = gc::Roots {
+            envs: vec![self.root.clone(), self.globals.clone()],
+            classes: self.class_stack.clone(),
+            ..Default::default()
+        };
+        for cls in self.error_classes.values() {
+            roots.classes.push(cls.clone());
+        }
+        for exports in self.modules.values() {
+            roots.values.extend(exports.values().cloned());
+        }
+        roots.values.extend(self.callbacks.iter().cloned());
+        for task in &self.tasks {
+            match task {
+                Task::Resume(coro, v, _) => {
+                    roots.values.push(v.clone());
+                    roots.coros.push(coro.result.clone());
+                    for e in &coro.scopes {
+                        roots.envs.push(e.clone());
+                    }
+                    roots.values.extend(coro.stack.iter().cloned());
+                }
+                Task::React(ok, err, down, v, _) => {
+                    roots.values.extend(ok.iter().cloned());
+                    roots.values.extend(err.iter().cloned());
+                    roots.values.push(v.clone());
+                    roots.coros.push(down.clone());
+                }
+            }
+        }
+        for cell in &self.all_cells {
+            roots.coros.push(cell.out.clone());
+            roots.values.extend(cell.results.borrow().iter().cloned());
+        }
+        roots
+    }
+
+    /// Collect cycles. Only safe at a host boundary — see gc.rs.
+    pub fn collect_garbage(&mut self) -> gc::GcStats {
+        let roots = self.gc_roots();
+        self.gc_pending = false;
+        gc::collect(&roots)
+    }
+
+    /// Collect if requested or if enough has been allocated. Called only at
+    /// host boundaries.
+    fn maybe_collect(&mut self) {
+        if self.gc_pending || gc::should_collect() {
+            self.collect_garbage();
+        }
+    }
+
     /// Run microtasks to completion. Called before control returns to the
     /// host, so a turn always leaves the queue empty.
     pub fn drain_microtasks(&mut self) -> Result<(), Thrown> {
@@ -3036,16 +3142,16 @@ impl Interp {
                 }
             }
             Json::Str(s) => Value::Str(Rc::new(s.chars().collect())),
-            Json::Arr(items) => Value::Array(Rc::new(RefCell::new(
+            Json::Arr(items) => new_array(
                 items.iter().map(|i| self.from_web(i)).collect(),
-            ))),
+            ),
             Json::Obj(fields) => {
                 if let Some(Json::Num(h)) = j.get("__ref__") {
                     return Value::JsRef(*h as i64);
                 }
                 let entries: Vec<(String, Value)> =
                     fields.iter().map(|(k, v)| (k.clone(), self.from_web(v))).collect();
-                Value::Record(Rc::new(RefCell::new(entries)))
+                new_record(entries)
             }
         }
     }
@@ -3174,7 +3280,9 @@ impl Interp {
             None => return self.type_error(format!("unknown callback #{id}")),
         };
         self.call_value(&cb, args)?;
-        self.drain_microtasks()
+        self.drain_microtasks()?;
+        self.maybe_collect();
+        Ok(())
     }
 
     /// Stable merge sort driven by a Mersey comparator (which may throw).
@@ -3262,10 +3370,10 @@ impl Interp {
 
     fn new_named(&mut self, head: &str, argv: Vec<Value>, env: &Env) -> VResult {
         if head == "Map" && env_get(env, "Map").is_none() {
-            return Ok(Value::MapV(Rc::new(RefCell::new(Vec::new()))));
+            return Ok(new_map(Vec::new()));
         }
         if head == "Set" && env_get(env, "Set").is_none() {
-            return Ok(Value::SetV(Rc::new(RefCell::new(Vec::new()))));
+            return Ok(new_set(Vec::new()));
         }
         match env_get(env, head) {
             Some(Value::Class(cls)) => self.instantiate(&cls, argv),
@@ -3753,6 +3861,31 @@ fn find_in_chain<T>(
 
 fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
     find_in_chain(class, |c| c.fields.iter().any(|(n, _)| n == name).then_some(())).is_some()
+}
+
+/// Allocate a tracked array (the collector must know about it).
+pub(crate) fn new_array(items: Vec<Value>) -> Value {
+    let a = Rc::new(RefCell::new(items));
+    gc::track_array(&a);
+    Value::Array(a)
+}
+
+pub(crate) fn new_record(fields: Vec<(String, Value)>) -> Value {
+    let r = Rc::new(RefCell::new(fields));
+    gc::track_record(&r);
+    Value::Record(r)
+}
+
+pub(crate) fn new_map(entries: Vec<(Value, Value)>) -> Value {
+    let m = Rc::new(RefCell::new(entries));
+    gc::track_map(&m);
+    Value::MapV(m)
+}
+
+pub(crate) fn new_set(items: Vec<Value>) -> Value {
+    let sset = Rc::new(RefCell::new(items));
+    gc::track_set(&sset);
+    Value::SetV(sset)
 }
 
 /// Field lookup in an insertion-ordered record (records are small).

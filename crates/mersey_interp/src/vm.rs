@@ -1545,7 +1545,7 @@ fn exec(
                 throwing!(i.index_set(&o, &idx, v.clone()));
                 stack.push(v);
             }
-            Op::MakeArray => stack.push(Value::Array(Rc::new(RefCell::new(Vec::new())))),
+            Op::MakeArray => stack.push(crate::new_array(Vec::new())),
             Op::ArrayPush1 => {
                 let v = stack.pop().expect("elem");
                 if let Some(Value::Array(a)) = stack.last() {
@@ -1565,7 +1565,7 @@ fn exec(
                     a.borrow_mut().extend(items);
                 }
             }
-            Op::MakeRecord => stack.push(Value::Record(Rc::new(RefCell::new(Vec::new())))),
+            Op::MakeRecord => stack.push(crate::new_record(Vec::new())),
             Op::RecordSetField(ni) => {
                 let v = stack.pop().expect("field");
                 if let Some(Value::Record(r)) = stack.last() {
@@ -1623,7 +1623,7 @@ fn exec(
                         continue;
                     }
                 };
-                stack.push(Value::Array(Rc::new(RefCell::new(items))));
+                stack.push(crate::new_array(items));
             }
             Op::PushHandler(t) => handlers.push((t, scopes.len(), stack.len())),
             Op::PopHandler => {

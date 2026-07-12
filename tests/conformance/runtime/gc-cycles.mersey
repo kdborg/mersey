@@ -1,0 +1,32 @@
+import { console } from "std:console";
+import { gc } from "std:gc";
+
+// The canonical leak: an object holds a closure, the closure holds the scope,
+// the scope holds the object. Refcounting alone can never free this.
+class Node2 {
+    public onTick: (() => int32)? = null;
+    private ticks: int32 = 0;
+    public arm(): void {
+        // This closure captures `this` — the cycle.
+        this.onTick = () => {
+            this.ticks += 1;
+            return this.ticks;
+        };
+    }
+}
+
+function churn(n: int32): void {
+    for (let i = 0; i < n; i++) {
+        const node = new Node2();
+        node.arm();                 // cyclic, and dropped immediately
+    }
+}
+
+const before = gc.stats();
+churn(2000);
+const after = gc.stats();
+console.log(`live objects grew: ${after.live > before.live}`);
+
+// gc.collect() requests a collection at the next safe point (a collection
+// mid-expression could sweep objects held only by live frames).
+gc.collect();
