@@ -22,7 +22,7 @@ engine. ✅ = implemented and tested, 🟡 = implemented at documented scale,
 | Sandbox-friendly (no engine syscalls) | ✅ | All I/O flows through the `Host` trait / `msy_host_table`; the WASM build imports only host functions |
 | Heap isolation per context | ✅ | One `Interp` per context (`msy_context`, WASM instance); no cross-context references are constructible |
 | Guard pages (stack) | ✅ | JIT codegen emits inline stack probes (`enable_probestack`), so a large frame touches each page in order and cannot step *over* a guard page into memory beyond it |
-| CFI-compatible codegen | ✅ aarch64 / ⏳ x86-64 | aarch64: pointer authentication of return addresses (backward edge, anti-ROP) and BTI landing pads (forward edge). Both are ARM hint-space instructions, so they are NOPs on hardware without them and cost nothing there. x86-64: CET/`endbr64` is not exposed as a setting in the Cranelift we build against — **not in place**, do not assume it. Asserted by `jit_codegen_is_hardened` |
+| CFI-compatible codegen | ✅ aarch64 / ❌ x86-64 | aarch64: pointer authentication of return addresses (backward edge, anti-ROP) and BTI landing pads (forward edge). Both are ARM hint-space instructions, so they are NOPs on hardware without them and cost nothing there. x86-64: Cranelift exposes no CET/`endbr64` setting (checked against 0.116 and 0.123) — **not in place**, and not a version we can upgrade our way out of. `mersey_jit::hardening()` reports it as a row that is *off* rather than leaving it out, and `KNOWN_GAPS` records why: a gap that nothing mentions is indistinguishable from a gap nobody noticed. `jit_codegen_is_hardened` fails if anything is off that is *not* in that list |
 | Pointer compression + heap-base randomization | ❌ by construction | See below |
 
 ### Pointer compression: what it would take, and why it is not here
@@ -75,6 +75,25 @@ these were §5.2 failures even though none of them is a memory-safety bug.
 The call-depth budget alone would not have caught the last two: those graphs are
 built with a loop, not with recursion. Regression tests run the engine in a
 subprocess and fail on exit code 134 (`tests/hardening.rs`).
+
+### Fuzzing (the wall-clock criterion)
+
+The roadmap asks for "30 days of continuous fuzzing", which is a statement about
+calendar time, not a build step. What is actually in the repository:
+
+* `mersey-fuzz` — mutation fuzzing over the conformance corpus, plus *differential*
+  fuzzing (generated well-typed programs run on both engines and compared). It is
+  deterministic: a failure prints the seed and reproduces exactly.
+* `scripts/fuzz-soak.sh <minutes>` — batched long runs, each batch on its own seed,
+  printing the command to reproduce a failing batch.
+* CI (`.github/workflows/ci.yml`) runs a 20k-iteration fuzz on every push, seeded by
+  the run number so coverage accumulates across pushes rather than repeating; the
+  whole suite under `MERSEY_GC_VERIFY=1`; the browser suite in headless Chromium; and
+  a stale-golden check, because a conformance diff is a behaviour change rather than
+  a formatting one. The soak job runs on a schedule.
+
+The harness and the gate are here. The 30 days are calendar time on someone's CI, and
+this document should not pretend otherwise.
 
 ## §5.3 Standalone runtime capabilities
 
