@@ -354,9 +354,14 @@ pub unsafe extern "C" fn msy_context_new_ex(
     let mut interp = new_interp(Box::new(CHost::new(table)));
     // Native contexts get Tier 1 unless the embedder's sandbox forbids
     // executable pages — then MSY_FLAG_NO_JIT keeps everything on Tier 0.
+    #[cfg(feature = "jit")]
     if flags & MSY_FLAG_NO_JIT == 0 {
         interp.jit = Some(mersey_jit::hook);
     }
+    // Without the `jit` feature there is no Tier 1 to install; every context is
+    // interpreter-only, and MSY_FLAG_NO_JIT is redundant but harmless.
+    #[cfg(not(feature = "jit"))]
+    let _ = flags;
     Box::into_raw(Box::new(MsyContext {
         interp: UnsafeCell::new(interp),
         error_cb: table.error,

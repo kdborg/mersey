@@ -14,4 +14,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 mersey_front = { path = "../mersey_front" }
 mersey_interp = { path = "../mersey_interp" }
-mersey_jit = { path = "../mersey_jit" }
+mersey_jit = { path = "../mersey_jit", optional = true }
+
+[features]
+# Tier 1 on by default: the standalone engine and the Chromium fork want it.
+# A host that turns it off — the Gecko development fork does — gets the
+# bytecode interpreter alone and, with it, an external dependency tree of four
+# trivial crates instead of thirty (the thirty are Cranelift). The runtime
+# MSY_FLAG_NO_JIT already exists; this is the compile-time counterpart that
+# actually removes the code and the deps.
+default = ["jit"]
+jit = ["dep:mersey_jit"]

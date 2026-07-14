@@ -1049,6 +1049,63 @@ external scripts through `ScriptResource`; and building the crate graph with GN'
 Rust rules instead of a prebuilt staticlib — which is what turns "arm64 Linux
 works" into all six platform/arch targets.
 
+## The Firefox development fork (2026-07-14)
+
+**`<script type="text/mersey">` runs in Firefox too** — a page whose only script
+is Mersey renders `Clicks: 0` from the engine, type-checked and interpreted, and
+a click drives a Mersey closure through `nsIDOMEventListener`. SpiderMonkey never
+touches it. Verified by screenshot; the fork is `~/gecko`, branch `mersey`.
+
+This is the **development** host, and the reason is speed. Chromium's arm64
+bring-up took three full rebuilds and a week of toolchain archaeology; a fix to
+the integration there is hours. Here, **an incremental rebuild after an engine
+edit is ~23 seconds** — because Firefox uses rustup Rust and its own clang *by
+design*, and compiles all its Rust into one `gkrust` staticlib sharing one
+`std`. The engine is a plain crate of that graph (`dom/mersey/rust`), so none of
+the Chromium saga — the duplicate `rust_eh_personality`, the allocator/DSO
+problem, the soname/rpath/sysroot dance — can occur. `dom/mersey/refresh.sh` does
+*no* `cargo build`; `mach build` compiles the engine from source.
+
+### `mersey_jit` is now an optional feature
+
+The dev fork is **interpreter-only**, and that is what made the crate integration
+tractable: with the JIT, the engine pulls in ~30 Cranelift crates, several of
+which Gecko already vendors at other versions for its own WASM engine. So
+`mersey_jit` became an optional Cargo feature (`default = ["jit"]`), and the
+Gecko crate takes the engine with `default-features = false`. That collapses the
+external dependency tree to **three trivial crates** (`tinyvec`,
+`tinyvec_macros`, `unicode-normalization`). The standalone engine and the
+Chromium fork keep Tier 1; `MSY_FLAG_NO_JIT` was always the runtime lever, and
+this is its compile-time counterpart that removes the code and the deps entirely.
+
+### The three routing fixes the first build needed
+
+Gecko's script pipeline is not Blink's, and three things had to be got right — the
+last one is the kind of bug only a real end-to-end run finds:
+
+1. **The type gate.** `ScriptElement::MaybeProcessScript` rejects any type that is
+   not JavaScript/module/importmap/speculationrules *before* determining the kind
+   — an unknown type is a data block. `text/mersey` had to be allowed through.
+2. **`GetScriptIsMersey()`.** `ProcessScriptElement` computes its kind from
+   accessor methods, not from the enum directly, so `ScriptKind::eMersey` alone
+   left it defaulting to `eClassic` — and SpiderMonkey choked on the Mersey
+   `import`. It needed the accessor and a branch.
+3. **The void source text.** A *trusted inline script* arrives at
+   `ProcessInlineScript` with an **empty** source (Gecko fetches it lazily for
+   performance, bug 1376651). The `eMersey` branch was running that empty string
+   — so every script parsed to an empty module, ran, returned 0, and did nothing,
+   with no error to show for it. The fix is one line: `aElement->GetScriptText()`,
+   exactly as the speculation-rules path does. This is why the engine's own
+   `MSY-DBG: Run source len=0` was the diagnostic that cracked it — Rust's stderr
+   is swallowed in Gecko's content-process sandbox, so the trace had to be routed
+   back out through the host's `print` hook.
+
+### Develop here, ship there
+
+The plan is now concrete: the language work happens against Firefox (seconds per
+iteration), and the same engine, behind the same C ABI, ships in the Chromium
+fork. One `mersey_interp::embed` loader, one conformance suite, two browsers.
+
 ## Language completeness, engine debt, tooling (2026-07-12)
 
 **Two bugs found while auditing.** `mersey run /abs/path.mersey` could not find its
