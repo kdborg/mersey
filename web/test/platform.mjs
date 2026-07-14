@@ -33,6 +33,11 @@ const makeElement = (tag) => {
     addEventListener(type, fn) {
       (this.listeners[type] ??= []).push(fn);
     },
+    click() {
+      // A real Event object, delivered to the listeners a Mersey closure registered.
+      const ev = new globalThis.Event("click");
+      for (const fn of this.listeners.click ?? []) fn(ev);
+    },
     className: "",
     style: {},
     getContext(kind) {
@@ -51,7 +56,38 @@ const makeElement = (tag) => {
 const byId = new Map([
   ["out", makeElement("div")],
 ]);
-const store = new Map();
+
+// Web Storage, per the spec's own semantics: values are stringified, missing
+// keys are null. Two independent instances, exactly as a browser has.
+const makeStorage = () => {
+  const store = new Map();
+  return {
+    setItem: (k, v) => store.set(k, String(v)),
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    removeItem: (k) => store.delete(k),
+    get length() {
+      return store.size;
+    },
+  };
+};
+
+// A WebSocket that does not dial: the demo asserts the *binding* reaches JS
+// (constructor, url, readyState), and a real connection to a real peer is not
+// something a unit test should depend on.
+class FakeWebSocket {
+  constructor(url) {
+    this.url = url;
+    this.readyState = 0; // CONNECTING
+    this.listeners = {};
+  }
+  addEventListener(type, fn) {
+    (this.listeners[type] ??= []).push(fn);
+  }
+  send() {}
+  close() {
+    this.readyState = 3;
+  }
+}
 
 const paras = [makeElement("p"), makeElement("p")];
 const realm = {
@@ -64,20 +100,23 @@ const realm = {
     querySelectorAll: () => paras,
     title: "test realm",
   },
-  localStorage: {
-    setItem: (k, v) => store.set(k, String(v)),
-    getItem: (k) => (store.has(k) ? store.get(k) : null),
-    get length() {
-      return store.size;
-    },
-  },
+  localStorage: makeStorage(),
+  sessionStorage: makeStorage(),
   crypto: globalThis.crypto, // Node's real Web Crypto
   URL: globalThis.URL, // Node's real URL
   JSON: globalThis.JSON, // the real JSON
+  Intl: globalThis.Intl, // the real ECMA-402 implementation
+  Event: globalThis.Event, // the real Event
   Uint8Array: globalThis.Uint8Array, // the real typed array
+  WebSocket: FakeWebSocket,
+  navigator: { userAgent: "Mersey/1.0 (test realm)", language: "en-GB", onLine: true },
   setTimeout: globalThis.setTimeout,
   fetch: async (url) => ({ status: 200, ok: true, url, text: async () => "hi" }),
 };
+// `window` is the global object itself — as it is in a browser, where
+// `window.window === window`.
+realm.window = realm;
+realm.location = { protocol: "https:", host: "example.com", href: "https://example.com/" };
 
 // ---- engine + bridge ---------------------------------------------------------
 const logs = [];
@@ -187,6 +226,17 @@ check("interface constants (Node.ELEMENT_NODE)", logged(/^constants: ELEMENT_NOD
 check("indexed collections (querySelectorAll[0])", logged(/^nodelist: 2 <p>, first tag=P$/),
       logs.join(" | "));
 check("CSS / CSSOM", logged(/^style: color=rebeccapurple class=generated$/), logs.join(" | "));
+check("window (global object, window.location)",
+      logged(/^window: https:\/\/example\.com$/), logs.join(" | "));
+check("navigator", logged(/^navigator: ua=true lang=true$/), logs.join(" | "));
+check("sessionStorage (independent of localStorage)",
+      logged(/^sessionStorage: session-value$/), logs.join(" | "));
+check("Intl.NumberFormat (a NAMESPACED constructor reached through the bridge)",
+      logged(/^intl: 1,234,567\.891$/), logs.join(" | "));
+check("Intl.Collator", logged(/^collator: true$/), logs.join(" | "));
+check("Event (dispatched to a Mersey listener)", logged(/^event: type=click$/), logs.join(" | "));
+check("WebSocket (constructed through the bridge)",
+      logged(/^websocket: url=true state=true$/), logs.join(" | "));
 check("DOM render (textContent aggregated)",
       byId.get("out").textContent.split("\n").length >= 6,
       JSON.stringify(byId.get("out").textContent));

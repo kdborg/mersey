@@ -1,0 +1,60 @@
+// A declaration without an initializer starts at its type's zero.
+//
+// It used to start at `null` — from a field the type system called a `float64` —
+// and that was the type system lying. It was not hypothetical: compiled code
+// believed the declared type, there is no `null` in an `f64`, and the two tiers
+// produced *different errors* for the same program. The first fix was to refuse
+// compiling that shape; the real fix is this rule, which removes the shape from
+// the language: numbers default to 0, `string` to `""`, `char` to `'\0'`, `bool`
+// to `false`, and containers to empty. There is no longer a number-typed cell
+// with no number in it, so there is nothing left to refuse.
+//
+// Every tier must agree — including compiled code reading a default it never saw
+// written.
+
+import { console } from "std:console";
+
+type Meters = float64; // defaults must resolve through an alias
+
+class C {
+    public x: float64;      // no initializer: 0, not null
+    public m: Meters;       // ditto, through the alias
+    public i: int32;
+    public l: int64;
+    public flag: bool;
+    public label: string;
+    public xs: int32[];     // a fresh empty array per instance
+    public n: int32;
+
+    public sum(): float64 {
+        return this.x + this.m;
+    }
+
+    // Writes a field, then reads defaulted ones. Before the rule, this exact
+    // shape — a heap write followed by a read of an unset numeric field — was
+    // the one Tier 1 had to refuse. Now the field holds a number from birth,
+    // and this compiles.
+    public bump(): void {
+        this.n = this.n + 1;
+        this.x = this.x + 1.0;
+        this.l = this.l + 2l;
+        this.flag = !this.flag;
+    }
+}
+
+const c = new C();
+console.log("zeros:", c.x, c.m, c.i, c.l, c.flag, c.label.length, c.xs.length);
+
+// Hot, so `sum` and `bump` are compiled — reading and writing defaults natively.
+let t = 0.0;
+for (let k = 0; k < 300; k++) {
+    t = t + c.sum();
+    c.bump();
+}
+console.log("hot:", t, c.x, c.l, c.flag, c.n);
+
+// Containers are fresh per instance, not shared.
+const a = new C();
+const b = new C();
+a.xs.push(7);
+console.log("not shared:", a.xs.length, b.xs.length);

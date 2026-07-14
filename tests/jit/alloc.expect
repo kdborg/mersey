@@ -1,0 +1,5 @@
+run: 10005000
+churn: 8095000
+returned: 21 42
+borrowed return: 2 1
+trap: division by zero

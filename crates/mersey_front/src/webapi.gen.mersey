@@ -27,6 +27,21 @@ interface __JSON {
     parse(p0: string): JsAny;
 }
 let JSON: __JSON;
+interface IntlNumberFormat {
+    format(p0: float64): string;
+}
+interface IntlDateTimeFormat {
+    format(p0: float64): string;
+}
+interface IntlCollator {
+    compare(p0: string, p1: string): int32;
+}
+interface __Intl {
+    readonly NumberFormat: JsAny;
+    readonly DateTimeFormat: JsAny;
+    readonly Collator: JsAny;
+}
+let Intl: __Intl;
 interface __Math {
     readonly PI: float64;
     random(): float64;

@@ -5,6 +5,7 @@
  *
  * Build & run: ./native/build-and-test.sh
  */
+#define _GNU_SOURCE /* memmem */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +100,14 @@ static char *read_file(const char *path, size_t *len) {
 }
 
 int main(void) {
+    /* The first thing any embedder does: refuse a mismatched engine. */
+    if (msy_abi_version() != MSY_ABI_VERSION) {
+        printf("FAIL  ABI version: header %u, engine %u\n", MSY_ABI_VERSION,
+               msy_abi_version());
+        return 1;
+    }
+    printf("PASS  ABI version %u\n", MSY_ABI_VERSION);
+
     Dom dom = {0};
     msy_host_table table = {
         .data = &dom,
@@ -150,6 +159,57 @@ int main(void) {
     if (!strstr(dom2.errors, "E0401")) failures++;
 
     msy_context_free(ctx2);
+
+    /* The module-graph loader: scan tells the host what to fetch; the host
+     * hands the assembled graph back. Same payload the browser loader builds. */
+    Dom dom3 = {0};
+    msy_host_table t3 = table;
+    t3.data = &dom3;
+    msy_context *ctx3 = msy_context_new(&t3);
+    const char *entry =
+        "import { console } from \"std:console\";\n"
+        "import { triple } from \"./lib.mersey\";\n"
+        "console.log(\"tripled:\", triple(14));";
+    size_t scan_len = 0;
+    const char *scan =
+        msy_context_scan_imports(ctx3, entry, strlen(entry), &scan_len);
+    printf("%s  scan finds the import\n",
+           scan && memmem(scan, scan_len, "lib.mersey", 10) ? "PASS" : "FAIL");
+    if (!(scan && memmem(scan, scan_len, "lib.mersey", 10))) failures++;
+
+    const char *payload =
+        "{\"entry\":\"main.mersey\",\"modules\":["
+        "{\"spec\":\"lib.mersey\",\"source\":\"export function triple(x: "
+        "int32): int32 { return x * 3; }\"},"
+        "{\"spec\":\"main.mersey\",\"source\":\"import { console } from "
+        "\\\"std:console\\\";\\nimport { triple } from "
+        "\\\"./lib.mersey\\\";\\nconsole.log(\\\"tripled:\\\", "
+        "triple(14));\"}]}";
+    uint32_t g = msy_context_run_graph(ctx3, payload, strlen(payload));
+    printf("%s  graph status (%u)\n", g == 0 ? "PASS" : "FAIL", g);
+    if (g != 0) {
+        printf("      errors: %s\n", dom3.errors);
+        failures++;
+    }
+    expect_str("graph output", dom3.log, "tripled: 42\n");
+    msy_context_free(ctx3);
+
+    /* The jitless configuration a locked-down sandbox needs. */
+    Dom dom4 = {0};
+    msy_host_table t4 = table;
+    t4.data = &dom4;
+    msy_context *ctx4 = msy_context_new_ex(&t4, MSY_FLAG_NO_JIT);
+    const char *hot =
+        "import { console } from \"std:console\";\n"
+        "function fib(n: int32): int32 { if (n < 2) { return n; } return "
+        "fib(n - 1) + fib(n - 2); }\n"
+        "console.log(\"fib:\", fib(18));";
+    uint32_t j = msy_context_run(ctx4, hot, strlen(hot));
+    printf("%s  jitless status (%u)\n", j == 0 ? "PASS" : "FAIL", j);
+    if (j != 0) failures++;
+    expect_str("jitless output", dom4.log, "fib: 2584\n");
+    msy_context_free(ctx4);
+
     msy_context_free(ctx);
 
     if (failures) {

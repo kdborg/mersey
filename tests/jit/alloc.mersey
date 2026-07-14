@@ -1,0 +1,126 @@
+// Allocation in compiled code: `new`, owned locals, and the arena.
+//
+// Compiled code used to be forbidden the one thing object code does constantly —
+// make an object. Now `new` is a shim call (the instance, its folded fields, its
+// fresh containers, its GC registration) plus a compiled constructor, and every
+// object compiled code creates is owned by an **arena** the interpreter clears
+// when the call ends. Overwriting an object local releases the old object's
+// arena reference, which is what keeps a loop that allocates three million times
+// from holding three million objects.
+//
+// This file is run on all tiers by the harness, and it deliberately includes the
+// shape that was a real use-after-free while this was being built: an assignment
+// `acc = acc.add(v)` compiles to Dup/Store/Pop, and the first version stored a
+// borrowed copy while releasing the owned original — the store kept a pointer to
+// a freed object. The fix makes `Dup` of an owned object clone its ownership.
+// The `churn` allocation between the store and the read is what forces a freed
+// box to be reused, so a regression here produces wrong *numbers*, loudly, not
+// intact bytes by luck.
+
+import { console } from "std:console";
+
+class Vec2 {
+    public x: float64 = 0.0;
+    public y: float64 = 0.0;
+
+    public constructor(x: float64, y: float64) {
+        this.x = x;
+        this.y = y;
+    }
+
+    public add(o: Vec2): Vec2 {
+        return new Vec2(this.x + o.x, this.y + o.y);
+    }
+
+    public dot(o: Vec2): float64 {
+        return this.x * o.x + this.y * o.y;
+    }
+}
+
+// The oop benchmark's exact shape: allocate, call, store-over an owned local,
+// read it back — every iteration.
+function run(n: int32): float64 {
+    let acc = new Vec2(0.0, 0.0);
+    let total = 0.0;
+    for (let i = 0; i < n; i++) {
+        const v = new Vec2(1.0, 2.0);
+        acc = acc.add(v);
+        total = total + acc.dot(v);
+    }
+    return total;
+}
+
+console.log("run:", run(2000));
+
+// The use-after-free shape, with allocation churn between store and read.
+class Cell {
+    public a: int32 = 0;
+    public constructor(a: int32) {
+        this.a = a;
+    }
+    public get(): int32 {
+        return this.a;
+    }
+}
+
+function mk(a: int32): Cell {
+    return new Cell(a);
+}
+
+function churny(n: int32): int32 {
+    let acc = 0;
+    let own = new Cell(7);
+    for (let i = 0; i < n; i++) {
+        own = mk((own.get() + 13) % 97);
+        const churn = new Cell(i * 31 + 1);
+        acc = (acc + own.get() + churn.get()) | 0;
+    }
+    return (acc + own.get()) | 0;
+}
+
+let out = 0;
+for (let k = 0; k < 200; k++) {
+    out = (out + churny(50)) | 0;
+}
+console.log("churn:", out);
+
+// A returned object crosses back to the interpreter, owned.
+function make(x: float64): Vec2 {
+    return new Vec2(x, x * 2.0);
+}
+for (let k = 0; k < 200; k++) {
+    make(1.0);
+}
+const m = make(21.0);
+console.log("returned:", m.x, m.y);
+
+// …and a returned *borrow* is cloned at the return site, so it survives the
+// arena sweep: `pick` returns one of its parameters.
+function pick(a: Vec2, b: Vec2, first: bool): Vec2 {
+    if (first) {
+        return a;
+    }
+    return b;
+}
+const p1 = new Vec2(1.0, 0.0);
+const p2 = new Vec2(2.0, 0.0);
+let got = 0.0;
+for (let k = 0; k < 300; k++) {
+    got = pick(p1, p2, k % 2 == 0).x;
+}
+console.log("borrowed return:", got, pick(p1, p2, true).x);
+
+// A trap after allocations: the arena is swept on the trap path too, and the
+// error is the interpreter's own.
+function allocThenDie(n: int32, d: int32): int32 {
+    const t = new Cell(n);
+    return t.get() / d;
+}
+for (let k = 0; k < 300; k++) {
+    allocThenDie(10, 2);
+}
+try {
+    allocThenDie(10, 0);
+} catch (e: RangeError) {
+    console.log("trap:", e.message);
+}

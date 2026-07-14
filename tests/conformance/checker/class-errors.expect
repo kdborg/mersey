@@ -1,0 +1,6 @@
+error[E0409] @ 30:7: method `m` shadows a base method; add `override`
+error[E0409] @ 42:7: `draw` is `() => int32` on class `Icon`, but interface `Drawable` requires `() => string`
+error[E0404] @ 48:17: field `pin` is private in class `Vault`
+error[E0408] @ 51:1: `id` is readonly; it can only be assigned in the constructor of `Account`
+error[E0402] @ 53:15: cannot instantiate abstract class `Shape`
+error[E0412] @ 55:7: only `Error` subclasses may be thrown, got `int32`

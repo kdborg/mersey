@@ -11,6 +11,7 @@
 //! - Generic inference at call sites is one-pass unification of parameter
 //!   types against argument types; explicit type arguments always win.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -19,6 +20,174 @@ use crate::diag::{Code, Diagnostic, Pos};
 
 pub struct CheckOutput {
     pub diagnostics: Vec<Diagnostic>,
+    /// Numeric conversions the engine must perform. See [`Coercions`].
+    pub coercions: Coercions,
+}
+
+/// A runtime numeric conversion the checker decided is needed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Num {
+    Int(IntKind),
+    F32,
+    F64,
+}
+
+/// The conversions a program needs, keyed by the **address of the AST
+/// expression** that produces the value.
+///
+/// The type system says `let x: float64 = 7` widens the `7` (§3.3, C-style
+/// coercion) — but only the *checker* knows that, because only the checker knows
+/// what `x` was declared to be. The engine erases types: it sees an `i32` going
+/// into a slot, stores an `i32`, and then `x / 2` dispatches on the value it
+/// finds and does integer division. The answer was 3.
+///
+/// So the conversion has to be written down where it is decided. This is that
+/// record: the checker fills it in at every place a value crosses into a context
+/// with a different numeric type, and the compiler turns each entry into a
+/// `Convert` op. It is what makes the bytecode *typed* — not by carrying a type
+/// on every value, but by carrying the one thing the untyped form threw away.
+///
+/// The key is the node's address. The AST is allocated once, leaked, and shared
+/// by the checker and the engine — the same nodes, at the same addresses — so it
+/// is a stable identity that costs nothing and cannot go stale.
+pub type Coercions = std::collections::HashMap<usize, Num>;
+
+/// The identity of an AST expression: where it lives.
+pub fn node_id(e: &Expr) -> usize {
+    e as *const Expr as usize
+}
+
+thread_local! {
+    /// Every conversion the checker has decided on, for every program it has
+    /// checked on this thread.
+    ///
+    /// A global, deliberately. The alternative — handing the table to the engine
+    /// and asking it to install it — has one failure mode, and it is the worst
+    /// one there is: an embedder that forgets produces a program that *runs*,
+    /// with silently wrong arithmetic, because the values fall back to whatever
+    /// type they happened to have. That is precisely the bug this whole mechanism
+    /// exists to remove, and it must not be reintroduced as a way to hold it.
+    ///
+    /// Checking a program is what makes its conversions available; nothing else
+    /// has to be remembered. The table is keyed by AST node address, so entries
+    /// from different programs cannot collide, and it only ever grows — which is
+    /// what the leaked AST does too.
+    static COERCIONS: RefCell<Coercions> = RefCell::new(Coercions::new());
+    /// Conversions applied to the *result* of a compound assignment, keyed by
+    /// the assignment node rather than by any expression inside it.
+    static RESULT_COERCIONS: RefCell<Coercions> = RefCell::new(Coercions::new());
+    /// The numeric type both operands of a binary operator have.
+    static OP_TYPES: RefCell<Coercions> = RefCell::new(Coercions::new());
+    /// The numeric type of each local, keyed by its declaring name.
+    static LOCAL_TYPES: RefCell<Coercions> = RefCell::new(Coercions::new());
+    /// The default an *uninitialized* binding or field starts with, keyed by the
+    /// address of its declared `TypeExpr`. See [`DefaultVal`].
+    static DEFAULTS: RefCell<std::collections::HashMap<usize, DefaultVal>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// What an uninitialized binding holds the moment it exists.
+///
+/// `let x: int32;` and `public x: float64;` used to hold `null` — from a binding
+/// the type system said was a number. That is the type system lying, and it was
+/// not hypothetical: it produced a real Tier 0/Tier 1 divergence, because
+/// compiled code believed the declared type and there is no `null` in an `f64`.
+///
+/// Now a declaration without an initializer starts at its type's zero: numbers
+/// at 0, `string` at `""`, `char` at `'\0'`, `bool` at `false`, containers
+/// empty. The *checker* decides which, because only the checker can see through
+/// a type alias — `type Meters = float64` must default the same way `float64`
+/// does — and the engine reads the answer from this table.
+///
+/// A type with no constructible default — a class, an interface, a function — is
+/// absent from the table and still starts as `null`. For a nullable type that is
+/// the honest answer; for a non-nullable class it is the one remaining place the
+/// declared type can disagree with the value, tracked in the ROADMAP under
+/// definite assignment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DefaultVal {
+    Num(Num),
+    BigInt,
+    BigDec,
+    Str,
+    Char,
+    Bool,
+    Array,
+    Map,
+    Set,
+    Bytes,
+}
+
+/// The default for the binding or field declared with this type, if its type
+/// has one.
+pub fn default_for_ty(t: &TypeExpr) -> Option<DefaultVal> {
+    let id = t as *const TypeExpr as usize;
+    DEFAULTS.with(|m| m.borrow().get(&id).copied())
+}
+
+/// The conversion this expression's value needs, if any (§3.3).
+pub fn coercion_for(e: &Expr) -> Option<Num> {
+    let id = node_id(e);
+    COERCIONS.with(|m| m.borrow().get(&id).copied())
+}
+
+/// The conversion the `{ x }` record shorthand's value needs (§3.3).
+///
+/// The shorthand has no expression of its own to hang a conversion on — the
+/// value comes straight from the binding `x` names — so the checker keys it on
+/// the field name instead.
+pub fn coercion_for_name(n: &Name) -> Option<Num> {
+    let id = n as *const Name as usize;
+    COERCIONS.with(|m| m.borrow().get(&id).copied())
+}
+
+/// For a compound assignment (`a op= b`): the type its result converts back to
+/// before it is stored (§3.3 rule 6).
+pub fn result_coercion_for(e: &Expr) -> Option<Num> {
+    let id = node_id(e);
+    RESULT_COERCIONS.with(|m| m.borrow().get(&id).copied())
+}
+
+/// The numeric type both operands of this binary operator have, if it is a
+/// numeric operator. The engine emits a typed instruction for it, instead of
+/// working the types out from the values it happens to find.
+pub fn op_type_for(e: &Expr) -> Option<Num> {
+    let id = node_id(e);
+    OP_TYPES.with(|m| m.borrow().get(&id).copied())
+}
+
+/// The numeric type of the local this name declares. A frame slot with a type is
+/// a *register*: the JIT can hold it in a machine register of the right width,
+/// and a function mixing `int32` and `float64` is no longer a mixed-up one.
+pub fn local_type_for(n: &Name) -> Option<Num> {
+    let id = n as *const Name as usize;
+    LOCAL_TYPES.with(|m| m.borrow().get(&id).copied())
+}
+
+fn publish(
+    c: &Coercions,
+    results: &Coercions,
+    ops: &Coercions,
+    locals: &Coercions,
+    defaults: &std::collections::HashMap<usize, DefaultVal>,
+) {
+    COERCIONS.with(|m| m.borrow_mut().extend(c.iter().map(|(k, v)| (*k, *v))));
+    RESULT_COERCIONS.with(|m| m.borrow_mut().extend(results.iter().map(|(k, v)| (*k, *v))));
+    OP_TYPES.with(|m| m.borrow_mut().extend(ops.iter().map(|(k, v)| (*k, *v))));
+    LOCAL_TYPES.with(|m| m.borrow_mut().extend(locals.iter().map(|(k, v)| (*k, *v))));
+    DEFAULTS.with(|m| m.borrow_mut().extend(defaults.iter().map(|(k, v)| (*k, *v))));
+}
+
+/// The numeric kind of a type, if it has one. `bigint`/`bigdec` are absent on
+/// purpose: they never mix implicitly with the fixed-width numerics (§3.7), so
+/// there is no conversion to record.
+fn num_of(t: &Type) -> Option<Num> {
+    match t {
+        Type::Int(k) => Some(Num::Int(*k)),
+        Type::F32 => Some(Num::F32),
+        Type::F64 => Some(Num::F64),
+        _ => None,
+    }
 }
 
 /// What an editor asks for: what is this, where is it declared, what can I
@@ -223,6 +392,72 @@ pub struct ApiMember {
     pub is_fn: bool,
 }
 
+/// Depth-first post-order over the alias dependency graph: an alias lands in
+/// `order` only after everything it names. A back edge (a cycle) is left alone —
+/// there is no order that satisfies it, and `resolve_type` reports it.
+fn alias_visit(
+    i: usize,
+    aliases: &[&crate::ast::TypeAliasDecl],
+    by_name: &HashMap<&str, usize>,
+    state: &mut [u8],
+    order: &mut Vec<usize>,
+    circular: &mut Vec<usize>,
+) {
+    if state[i] != 0 {
+        return;
+    }
+    state[i] = 1;
+    let mut deps: Vec<usize> = Vec::new();
+    let mut self_ref = false;
+    type_names(&aliases[i].ty, &mut |name| {
+        if let Some(&j) = by_name.get(name) {
+            if j == i || state[j] == 1 {
+                // Itself, or something still on the stack: a back edge.
+                self_ref = true;
+            } else if state[j] == 0 {
+                deps.push(j);
+            }
+        }
+    });
+    if self_ref {
+        circular.push(i);
+    }
+    for j in deps {
+        alias_visit(j, aliases, by_name, state, order, circular);
+    }
+    state[i] = 2;
+    order.push(i);
+}
+
+/// Every type name written inside a `TypeExpr`.
+fn type_names(t: &TypeExpr, f: &mut impl FnMut(&str)) {
+    match t {
+        TypeExpr::Named { name, args, .. } => {
+            f(name);
+            for a in args {
+                type_names(a, f);
+            }
+        }
+        TypeExpr::Nullable(inner) | TypeExpr::ArrayOf(inner) => type_names(inner, f),
+        TypeExpr::Union(parts) | TypeExpr::Tuple(parts) => {
+            for p in parts {
+                type_names(p, f);
+            }
+        }
+        TypeExpr::Record(members) => {
+            for m in members {
+                type_names(&m.ty, f);
+            }
+        }
+        TypeExpr::Function { params, ret, .. } => {
+            for p in params {
+                type_names(&p.ty, f);
+            }
+            type_names(ret, f);
+        }
+    }
+}
+
 /// A documented group: a `std:` module, or a builtin type.
 pub struct ApiGroup {
     pub title: String,
@@ -367,6 +602,103 @@ pub fn api_reference() -> Vec<ApiGroup> {
                 members: ms,
             });
         }
+    }
+
+    // The web platform (`browser:dom`). The generated surface declares 1391
+    // globals and 1122 interfaces — a list of all of them would be a copy of the
+    // IDL, not documentation. What the page carries instead is the surface people
+    // actually reach for, typed by the same checker as everything else; the rest
+    // is still importable, and the editor knows it.
+    const DOM_GLOBALS: &[&str] = &[
+        "window",
+        "document",
+        "navigator",
+        "location",
+        "localStorage",
+        "sessionStorage",
+        "fetch",
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "requestAnimationFrame",
+        "crypto",
+        "JSON",
+        "Intl",
+        "URL",
+        "URLSearchParams",
+        "WebSocket",
+        "AbortController",
+        "Headers",
+        "Request",
+        "Response",
+        "FormData",
+        "Blob",
+        "Node",
+        "Element",
+        "HTMLElement",
+        "Event",
+        "CustomEvent",
+        "EventTarget",
+    ];
+    let mut dom_members: Vec<ApiMember> = Vec::new();
+    for name in DOM_GLOBALS {
+        // An interface name imported as a value is the interface object
+        // (`Node.ELEMENT_NODE`, `x is Element`) — the same rule the importer uses.
+        let ty = if let Some(TypeDef::Iface(iid)) = c.type_defs.get(*name).cloned() {
+            Type::IfaceMeta(iid)
+        } else {
+            match crate::webapi::global_type(name) {
+                Some(ast_ty) => c.resolve_type(ast_ty),
+                None => continue,
+            }
+        };
+        let signature = c.show(&ty);
+        dom_members.push(ApiMember {
+            is_fn: matches!(ty, Type::Fn(..)),
+            name: (*name).to_string(),
+            signature,
+        });
+    }
+    dom_members.sort_by(|a, b| a.name.cmp(&b.name));
+    out.push(ApiGroup {
+        title: "browser:dom".to_string(),
+        key: "dom".to_string(),
+        parent: String::new(),
+        import: "browser:dom".to_string(),
+        members: dom_members,
+    });
+
+    // The interfaces those globals hand you. Listed as children of `browser:dom`:
+    // one example shows the platform being used, and nine copies of it would not
+    // show anything more.
+    for name in [
+        "Window",
+        "Document",
+        "Element",
+        "Node",
+        "Event",
+        "Navigator",
+        "Storage",
+        "Location",
+        "WebSocket",
+    ] {
+        let Some(TypeDef::Iface(iid)) = c.type_defs.get(name).cloned() else {
+            continue;
+        };
+        let mut members: Vec<ApiMember> = c
+            .members_of(&Type::Iface(iid, Rc::new(Vec::new())))
+            .into_iter()
+            .map(to_api)
+            .collect();
+        members.sort_by(|a, b| a.name.cmp(&b.name));
+        out.push(ApiGroup {
+            title: name.to_string(),
+            key: format!("dom-{}", name.to_lowercase()),
+            parent: "dom".to_string(),
+            import: "browser:dom".to_string(),
+            members,
+        });
     }
 
     // Builtin types: the members you get on a value, not on a module.
@@ -607,18 +939,35 @@ pub fn member_completions_graph(modules: &[(String, &Module)]) -> Vec<Completion
     c.members_of(&t)
 }
 
-pub fn check(module: &Module) -> CheckOutput {
+/// Typecheck a module.
+///
+/// **`&'static` is load-bearing, not decoration.** The conversions the checker
+/// records are keyed by the address of the AST node they belong to, so an AST
+/// that is checked and then *freed* would leave entries describing addresses the
+/// allocator is free to hand to something else — and the next program parsed
+/// into that memory would inherit conversions that were never about it. Nothing
+/// catches that: the program runs, with arithmetic quietly done at the wrong
+/// width. (The differential fuzzer caught exactly this, which is what it is for.)
+///
+/// Requiring the module to live forever makes the hazard unrepresentable: an
+/// address that is never freed is never reused. Every engine leaks its AST
+/// already — it has to, since closures outlive the call that made them — so this
+/// costs nothing. The editor, which re-parses on every keystroke and *does* free,
+/// goes through `analyze_graph` instead, and publishes nothing.
+pub fn check(module: &'static Module) -> CheckOutput {
     let mut out = check_graph(&[("<main>".to_string(), module)]);
     out.pop().map(|(_, o)| o).unwrap_or(CheckOutput {
         diagnostics: Vec::new(),
+        coercions: Coercions::new(),
     })
 }
 
 /// Check a whole module graph (dependency-first). One `Checker` spans the
 /// graph so a class declared in one module is the *same* type when imported
 /// into another; scopes and type namespaces are per-module.
-pub fn check_graph(modules: &[(String, &Module)]) -> Vec<(String, CheckOutput)> {
-    check_graph_indexed(modules, false).0
+pub fn check_graph(modules: &[(String, &'static Module)]) -> Vec<(String, CheckOutput)> {
+    let refs: Vec<(String, &Module)> = modules.iter().map(|(s, m)| (s.clone(), *m)).collect();
+    check_graph_indexed(&refs, false).0
 }
 
 /// The one checking pass, optionally recording an editor index for the *last*
@@ -771,7 +1120,34 @@ fn check_graph_indexed_with(
 
         let mut diagnostics = std::mem::take(&mut c.diags);
         diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
-        results.push((spec.clone(), CheckOutput { diagnostics }));
+        // The coercions are keyed by node address, so they are unique across the
+        // whole graph and each module's output can carry the whole table so far.
+        let coercions = std::mem::take(&mut c.coercions);
+        let result_coercions = std::mem::take(&mut c.result_coercions);
+        let op_types = std::mem::take(&mut c.op_types);
+        let local_types = std::mem::take(&mut c.local_types);
+        let defaults = std::mem::take(&mut c.defaults);
+        // The editor does not publish. It re-checks on every keystroke, dropping
+        // the AST each time, and an address that has been freed can be handed to
+        // the *next* allocation — so its entries would both pile up forever and
+        // come to describe nodes they were never about. Nothing the editor checks
+        // is ever executed, so it has no conversions to contribute.
+        if !index_last {
+            publish(
+                &coercions,
+                &result_coercions,
+                &op_types,
+                &local_types,
+                &defaults,
+            );
+        }
+        results.push((
+            spec.clone(),
+            CheckOutput {
+                diagnostics,
+                coercions,
+            },
+        ));
         if index_last && i == last {
             index = c.index.take().unwrap_or_default();
         }
@@ -1013,6 +1389,9 @@ struct IfaceMember {
     name: String,
     ty: Type, // property type or Fn
     optional: bool,
+    /// A `readonly` property, or one declared with only a `get` accessor: it can
+    /// be read through the interface and not written.
+    readonly: bool,
 }
 
 struct IfaceInfo {
@@ -1063,6 +1442,20 @@ struct Checker {
     module_exports: HashMap<String, ModuleExports>,
     /// Declared bound for each type parameter (`<T extends Comparable<T>>`).
     tv_bounds: HashMap<TvId, Type>,
+    /// Numeric conversions the engine must perform. See [`Coercions`].
+    coercions: Coercions,
+    /// Conversions applied to the *result* of a compound assignment, keyed by
+    /// the assignment node. See [`result_coercion_for`].
+    result_coercions: Coercions,
+    /// The numeric type both operands of a binary operator have, keyed by the
+    /// operator node. See [`op_type_for`].
+    op_types: Coercions,
+    /// The numeric type of a local, keyed by the name that declares it. The
+    /// engine gives every local a frame slot; this is what that slot holds.
+    local_types: Coercions,
+    /// Zero-defaults for uninitialized bindings and fields, keyed by the address
+    /// of the declared `TypeExpr`. See [`DefaultVal`].
+    defaults: std::collections::HashMap<usize, DefaultVal>,
     classes: Vec<ClassInfo>,
     ifaces: Vec<IfaceInfo>,
     enums: Vec<EnumInfo>,
@@ -1142,6 +1535,11 @@ impl Checker {
             marker_recv: None,
             module_exports: HashMap::new(),
             tv_bounds: HashMap::new(),
+            coercions: Coercions::new(),
+            result_coercions: Coercions::new(),
+            op_types: Coercions::new(),
+            local_types: Coercions::new(),
+            defaults: std::collections::HashMap::new(),
             classes: Vec::new(),
             ifaces: Vec::new(),
             enums: Vec::new(),
@@ -1395,6 +1793,7 @@ impl Checker {
                     ret: iter_ret,
                 })),
                 optional: false,
+                readonly: false,
             }],
         });
         self.type_defs.insert("Iterable".into(), TypeDef::Iface(id));
@@ -1417,6 +1816,7 @@ impl Checker {
                     ret: aiter_ret,
                 })),
                 optional: false,
+                readonly: false,
             }],
         });
         self.type_defs
@@ -1437,6 +1837,7 @@ impl Checker {
                     ret: Type::Str,
                 })),
                 optional: false,
+                readonly: false,
             }],
         });
         self.type_defs.insert("Display".into(), TypeDef::Iface(id));
@@ -1616,6 +2017,32 @@ impl Checker {
         self.type_defs
             .insert("AsyncIter".into(), TypeDef::Class(id));
         self.async_iter_id = Some(id);
+    }
+
+    /// Give `AsyncIter<T>.next()` its real return type once `Promise` exists.
+    ///
+    /// `next()` returns `Promise<T?>`, but `Promise` is declared by the web
+    /// surface, which is collected *after* the builtins are installed. Until
+    /// then `promise_of` has no interface to name and yields `Err` — and `Err`
+    /// is assignable in both directions, so `const s: string = await it.next()`
+    /// typechecked against anything at all. An async iterator is one of the few
+    /// places where a hole is invisible: the `await` looks like it is doing the
+    /// work. Link the signature the moment `Promise` is known.
+    fn link_async_iter(&mut self) {
+        let Some(id) = self.async_iter_id else {
+            return;
+        };
+        let Some(m) = self.classes[id].methods.first() else {
+            return;
+        };
+        if !matches!(m.sig.ret, Type::Err) {
+            return;
+        }
+        let tv = Type::Var(self.classes[id].tparams[0]);
+        let ret = self.promise_of(nullable(tv));
+        if !matches!(ret, Type::Err) {
+            self.classes[id].methods[0].sig.ret = ret;
+        }
     }
 
     fn async_iter_of(&mut self, t: Type) -> Type {
@@ -2154,7 +2581,9 @@ impl Checker {
                 _ => {}
             }
         }
-        // Phase B: resolve headers.
+        // Phase B: resolve headers. Aliases first, in dependency order — see
+        // `collect_alias_headers`.
+        self.collect_alias_headers(module);
         for item in &module.items {
             let d = match item {
                 Item::Decl(d) => d,
@@ -2166,6 +2595,77 @@ impl Checker {
             };
             self.collect_decl_header(d);
         }
+        self.link_async_iter();
+    }
+
+    /// Resolve type aliases in *dependency* order, not source order.
+    ///
+    /// An alias is expanded where it is named, so `type A = { p: B }` needs `B`
+    /// to be resolved already. Phase A gives every alias an id with an `Err`
+    /// placeholder, and if `B` is declared *below* `A`, source order bakes that
+    /// placeholder into `A` for good — `A` ends up with a poisoned field that
+    /// silently accepts every value, because `Err` is assignable both ways. That
+    /// is exactly what happened to `RequestInit.privateToken` in the generated
+    /// web surface, where the declarations come out in whatever order the IDL
+    /// was in. Nobody writing Mersey should have to order their types.
+    ///
+    /// A cycle (`type A = { b: B }; type B = { a: A }`) has no valid order at
+    /// all: an alias is *expanded* where it is named, and expanding a cycle
+    /// never terminates. It is reported (E0414) rather than left to collapse
+    /// into the placeholder, which would poison the field and let it accept
+    /// every value — the same silent hole, just harder to find. A type that
+    /// refers to itself is what a `class` is for.
+    fn collect_alias_headers(&mut self, module: &Module) {
+        let mut aliases: Vec<&crate::ast::TypeAliasDecl> = Vec::new();
+        for item in &module.items {
+            let d = match item {
+                Item::Decl(d) => d,
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => d,
+                _ => continue,
+            };
+            if let Decl::TypeAlias(t) = d {
+                aliases.push(t);
+            }
+        }
+        let by_name: HashMap<&str, usize> = aliases
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.text.as_str(), i))
+            .collect();
+
+        let mut state = vec![0u8; aliases.len()]; // 0 = unvisited, 1 = on stack, 2 = done
+        let mut order: Vec<usize> = Vec::new();
+        let mut circular: Vec<usize> = Vec::new();
+        for i in 0..aliases.len() {
+            alias_visit(i, &aliases, &by_name, &mut state, &mut order, &mut circular);
+        }
+        for i in order {
+            self.resolve_alias_header(aliases[i]);
+        }
+        for i in circular {
+            self.error(
+                Code::CircularTypeAlias,
+                format!(
+                    "type alias `{}` refers to itself; use a class for a recursive type",
+                    aliases[i].name.text
+                ),
+                aliases[i].name.pos,
+            );
+        }
+    }
+
+    fn resolve_alias_header(&mut self, t: &crate::ast::TypeAliasDecl) {
+        let TypeDef::Alias(id) = self.type_defs[&t.name.text] else {
+            return;
+        };
+        let tvs = self.aliases[id].tparams.clone();
+        self.push_tp_scope(&t.type_params, &tvs);
+        let target = self.resolve_type(&t.ty);
+        self.tp_scopes.pop();
+        self.aliases[id].target = target;
     }
 
     fn collect_import(&mut self, im: &ImportDecl) {
@@ -2412,13 +2912,17 @@ impl Checker {
                 for m in &i.members {
                     match m {
                         InterfaceMember::Prop {
-                            name, optional, ty, ..
+                            readonly,
+                            name,
+                            optional,
+                            ty,
                         } => {
                             let t = self.resolve_type(ty);
                             members.push(IfaceMember {
                                 name: name.clone(),
                                 ty: t,
                                 optional: *optional,
+                                readonly: *readonly,
                             });
                         }
                         InterfaceMember::Method {
@@ -2439,6 +2943,9 @@ impl Checker {
                                     ret,
                                 })),
                                 optional: false,
+                                // A method is not a property; you cannot assign
+                                // to it either way.
+                                readonly: true,
                             });
                         }
                     }
@@ -2451,16 +2958,7 @@ impl Checker {
                 };
                 self.define_at(&e.name.text, Type::EnumMeta(id), true, e.name.pos);
             }
-            Decl::TypeAlias(t) => {
-                let TypeDef::Alias(id) = self.type_defs[&t.name.text] else {
-                    return;
-                };
-                let tvs = self.aliases[id].tparams.clone();
-                self.push_tp_scope(&t.type_params, &tvs);
-                let target = self.resolve_type(&t.ty);
-                self.tp_scopes.pop();
-                self.aliases[id].target = target;
-            }
+            Decl::TypeAlias(t) => self.resolve_alias_header(t),
         }
         // Class values (constructors as values / statics).
         if let Decl::Class(c) = d {
@@ -2583,6 +3081,10 @@ impl Checker {
                     p.ty.as_ref()
                         .map(|t| self.resolve_type(t))
                         .unwrap_or(Type::Err);
+                // A parameter is a local like any other, and it gets slot 0..n.
+                if !p.rest {
+                    self.note_local(&p.target, &ty);
+                }
                 if p.rest {
                     // `...xs: int32[]` — the per-argument type is the element.
                     ty = match ty {
@@ -2673,9 +3175,22 @@ impl Checker {
         if let Some(t) = predefined(name) {
             return t;
         }
-        if name.contains('.') {
-            return Type::Unknown; // namespace-qualified: module graph later
-        }
+        // A *namespaced* constructor — `new Intl.NumberFormat(…)`. JavaScript has
+        // namespaces holding constructors; Mersey does not. The dotted name is
+        // resolved by joining its segments (`Intl.NumberFormat` ->
+        // `IntlNumberFormat`), which is how the generated surface declares it —
+        // while the engine still hands the *written* name to the host, which
+        // walks the path and constructs the real thing.
+        let joined: String;
+        let name: &str = if name.contains('.') {
+            joined = name.split('.').collect();
+            if !self.type_defs.contains_key(&joined) {
+                return Type::Unknown;
+            }
+            &joined
+        } else {
+            name
+        };
         match self.type_defs.get(name) {
             Some(TypeDef::Class(id)) => {
                 let id = *id;
@@ -2950,7 +3465,7 @@ impl Checker {
             self.bind_pattern_ty(&p.target, &ty, false);
             if let Some(d) = &p.default {
                 let dt = self.check_expr(d, Some(&pt.ty));
-                self.require_assignable(&dt, &pt.ty, pos_of(d), "default value");
+                self.require_assignable_at(d, &dt, &pt.ty, "default value");
             }
         }
         let saved_ret = self.ret_ty.replace(sig.ret.clone());
@@ -2988,8 +3503,21 @@ impl Checker {
         for m in &c.members {
             match m {
                 ClassMember::Field {
-                    name, init, mods, ..
+                    name,
+                    init,
+                    mods,
+                    ty,
+                    ..
                 } => {
+                    if init.is_none() && !mods.is_static {
+                        // No initializer: instances are born with the type's zero.
+                        let t = self.field_info(id, name).map(|f| f.0).unwrap_or(Type::Err);
+                        self.note_default(ty, &t);
+                    }
+                    if init.is_none() && mods.is_static {
+                        let t = self.resolve_type(ty);
+                        self.note_default(ty, &t);
+                    }
                     if let Some(init) = init {
                         let want = self.field_info(id, name).map(|f| f.0).unwrap_or(Type::Err);
                         self.push_scope();
@@ -2998,7 +3526,7 @@ impl Checker {
                             self.define("this", self_ty.clone(), true);
                         }
                         let t = self.check_expr(init, Some(&want));
-                        self.require_assignable(&t, &want, pos_of(init), "field initializer");
+                        self.require_assignable_at(init, &t, &want, "field initializer");
                         self.in_static = false;
                         self.pop_scope();
                     }
@@ -3489,6 +4017,52 @@ impl Checker {
         }
     }
 
+    /// Remember what a local holds, if it holds a number.
+    fn note_local(&mut self, p: &Pattern, ty: &Type) {
+        if let (Pattern::Name(n), Some(k)) = (p, num_of(ty)) {
+            self.local_types.insert(n as *const Name as usize, k);
+        }
+    }
+
+    /// The zero-default of a resolved type, if it has one.
+    ///
+    /// A type alias is already gone by the time this runs — `type Meters =
+    /// float64` arrives here as `F64` — which is why the *checker* answers this
+    /// question and the engine only reads the answer.
+    fn default_of(&self, t: &Type) -> Option<DefaultVal> {
+        Some(match t {
+            Type::Int(k) => DefaultVal::Num(Num::Int(*k)),
+            Type::F32 => DefaultVal::Num(Num::F32),
+            Type::F64 => DefaultVal::Num(Num::F64),
+            Type::BigInt => DefaultVal::BigInt,
+            Type::BigDec => DefaultVal::BigDec,
+            Type::Str => DefaultVal::Str,
+            Type::Char => DefaultVal::Char,
+            Type::Bool => DefaultVal::Bool,
+            Type::Array(_) => DefaultVal::Array,
+            // Map, Set and bytes are classes to the type system, but they are
+            // *containers* to the language, and a container defaults to empty.
+            Type::Class(id, _) => match self.classes.get(*id).map(|c| c.name.as_str()) {
+                Some("Map") => DefaultVal::Map,
+                Some("Set") => DefaultVal::Set,
+                Some("bytes") => DefaultVal::Bytes,
+                // A user class has no constructible default: `null`, until
+                // definite assignment exists to forbid the situation entirely.
+                _ => return None,
+            },
+            // `T?` defaults to `null`, which for a nullable type is not a lie.
+            _ => return None,
+        })
+    }
+
+    /// A binding or field was declared with `ty` and given no initializer:
+    /// record what it starts as.
+    fn note_default(&mut self, ty: &TypeExpr, t: &Type) {
+        if let Some(d) = self.default_of(t) {
+            self.defaults.insert(ty as *const TypeExpr as usize, d);
+        }
+    }
+
     fn check_var(&mut self, v: &VarStmt) {
         for b in &v.bindings {
             let declared = b.ty.as_ref().map(|t| self.resolve_type(t));
@@ -3498,10 +4072,14 @@ impl Checker {
                 .map(|e| self.check_expr(e, declared.as_ref()));
             let ty = match (&declared, init_ty) {
                 (Some(d), Some(i)) => {
-                    self.require_assignable(&i, d, pos_of(b.init.as_ref().unwrap()), "initializer");
+                    self.require_assignable_at(b.init.as_ref().unwrap(), &i, d, "initializer");
                     d.clone()
                 }
-                (Some(d), None) => d.clone(),
+                (Some(d), None) => {
+                    // No initializer: the binding starts at its type's zero.
+                    self.note_default(b.ty.as_ref().expect("declared"), d);
+                    d.clone()
+                }
                 (None, Some(i)) => {
                     if matches!(i, Type::Null) {
                         self.error(
@@ -3523,6 +4101,7 @@ impl Checker {
                     Type::Err
                 }
             };
+            self.note_local(&b.target, &ty);
             self.bind_pattern_ty(&b.target, &ty, v.kind == VarKind::Const);
         }
     }
@@ -3786,7 +4365,7 @@ impl Checker {
                                 *pos,
                             );
                         } else {
-                            self.require_assignable(&t, &want, pos_of(e), "return value");
+                            self.require_assignable_at(e, &t, &want, "return value");
                         }
                     }
                     None => {
@@ -4084,6 +4663,14 @@ impl Checker {
                 if k != IntKind::I32 {
                     if let Some(v) = unsuffixed_int_value(e) {
                         return if int_fits(v, k) {
+                            // The literal *is* a `uint32` — but the engine has
+                            // no idea. It reads the digits and produces the
+                            // default `int32`, which for `4294967295` is a range
+                            // error for a value that fits the type it was given,
+                            // and for `2147483647` in an `int64` is a number that
+                            // wraps at the wrong width. Record the type it
+                            // adapted to, so the literal is *built* as one.
+                            self.coercions.insert(node_id(e), Num::Int(k));
                             Type::Int(k)
                         } else {
                             self.error(
@@ -4133,7 +4720,7 @@ impl Checker {
                     if ts.len() == elems.len() && elems.iter().all(|e| !e.spread) {
                         for (el, want) in elems.iter().zip(ts.iter()) {
                             let t = self.check_expr(&el.expr, Some(want));
-                            self.require_assignable(&t, want, pos_of(&el.expr), "tuple element");
+                            self.require_assignable_at(&el.expr, &t, want, "tuple element");
                         }
                         return Type::Tuple(ts);
                     }
@@ -4166,6 +4753,15 @@ impl Checker {
                     } else {
                         t
                     };
+                    // `const xs: float64[] = [7]` — the element widens, and the
+                    // array must actually hold the widened value. Unification
+                    // alone would agree that the array is `float64[]` and leave
+                    // an `int32` sitting in it.
+                    if !el.spread {
+                        if let Some(w) = &want_elem {
+                            self.coerce(&el.expr, &t, w);
+                        }
+                    }
                     unified = Some(match unified {
                         None => t,
                         Some(u) => self.unify_pair(u, t),
@@ -4184,6 +4780,33 @@ impl Checker {
                             let t = match value {
                                 Some(v) => self.check_expr(v, want.as_ref()),
                                 None => self.lookup(&name.text).map(|v| v.ty).unwrap_or(Type::Err),
+                            };
+                            // `const r: { x: float64 } = { x: 7 }` — the field
+                            // widens. The record's own type follows the value it
+                            // will actually hold, so the two cannot disagree.
+                            let t = match &want {
+                                // Both numeric, and different: the field widens,
+                                // and its type follows the value it will hold. A
+                                // field that simply does not match stays as it is
+                                // — retyping it here would hide the mismatch from
+                                // the error message that is about to report it.
+                                Some(w)
+                                    if num_of(&t).is_some()
+                                        && num_of(w).is_some()
+                                        && num_of(w) != num_of(&t) =>
+                                {
+                                    match value {
+                                        Some(v) => self.coerce(v, &t, w),
+                                        // `{ x }` has no expression to hang the
+                                        // conversion on; the field itself is the
+                                        // thing being converted.
+                                        None => {
+                                            self.coerce_key(name as *const Name as usize, &t, w)
+                                        }
+                                    }
+                                    w.clone()
+                                }
+                                _ => t,
                             };
                             fs.push(RecField {
                                 name: name.text.clone(),
@@ -4328,7 +4951,15 @@ impl Checker {
                 let t = self.check_expr(expr, None);
                 self.check_assignable_target(expr);
                 match strip_narrow_helpers(&t) {
-                    n @ (Type::Int(_) | Type::F32 | Type::F64) => n,
+                    n @ (Type::Int(_) | Type::F32 | Type::F64) => {
+                        // `i++` is `i = i + 1`, and it is the hottest operator in
+                        // the language — every counted loop runs one per
+                        // iteration.
+                        if let Some(k) = num_of(&n) {
+                            self.op_types.insert(node_id(e), k);
+                        }
+                        n
+                    }
                     Type::Err => Type::Err,
                     other => {
                         self.error(
@@ -4340,7 +4971,7 @@ impl Checker {
                     }
                 }
             }
-            Expr::Binary { op, l, r } => self.check_binary(*op, l, r),
+            Expr::Binary { op, l, r } => self.check_binary(e, *op, l, r),
             Expr::Assign { op, target, value } => {
                 // Assignment targets check against the *declared* type, not
                 // a narrowed one (the assignment may widen back).
@@ -4354,14 +4985,33 @@ impl Checker {
                 self.check_assignable_target(target);
                 let vt = self.check_expr(value, Some(&tt));
                 if *op == "=" {
-                    self.require_assignable(&vt, &tt, pos_of(value), "assignment");
+                    self.require_assignable_at(value, &vt, &tt, "assignment");
                 } else if !matches!(tt, Type::Err) {
                     // Compound assignment: the operation must be valid; the
                     // result converts back to the target type with wrapping,
                     // as in C (`a += 1` on an int16 stays int16).
                     let res = self.check_binary_types(compound_op(op), &tt, &vt, pos_of(value));
+                    // The operator itself works in the common type; the *result*
+                    // then converts back to the target's (rule 6, recorded below).
+                    if let Some(common) = self.numeric_common(&tt, &vt) {
+                        if let Some(k) = num_of(&common) {
+                            self.op_types.insert(node_id(e), k);
+                        }
+                    }
                     let numeric = |t: &Type| matches!(t, Type::Int(_) | Type::F32 | Type::F64);
-                    if !(numeric(&res) && numeric(&tt)) {
+                    if numeric(&res) && numeric(&tt) {
+                        // Rule 6 of §3.3: the operation happens in the common
+                        // type and the result converts *back* to the target's,
+                        // wrapping as C does — `int16 a; a += 1` stays an int16.
+                        // Integer promotion means `res` is at least an int32, so
+                        // without this the value silently outgrew its own slot:
+                        // `a` held 32768, which an int16 cannot represent.
+                        if let (Some(r), Some(t)) = (num_of(&res), num_of(&tt)) {
+                            if r != t {
+                                self.result_coercions.insert(node_id(e), t);
+                            }
+                        }
+                    } else {
                         self.require_assignable(&res, &tt, pos_of(value), "compound assignment");
                     }
                 }
@@ -4601,7 +5251,7 @@ impl Checker {
                 match (value, &want) {
                     (Some(v), Some(w)) => {
                         let t = self.check_expr(v, Some(w));
-                        self.require_assignable(&t, w, pos_of(v), "yielded value");
+                        self.require_assignable_at(v, &t, w, "yielded value");
                     }
                     (Some(v), None) => {
                         self.check_expr(v, None);
@@ -4673,7 +5323,7 @@ impl Checker {
 
     // ---- operators ----------------------------------------------------------------
 
-    fn check_binary(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Type {
+    fn check_binary(&mut self, e: &Expr, op: BinOp, l: &Expr, r: &Expr) -> Type {
         match op {
             BinOp::And => {
                 self.check_condition(l);
@@ -4726,6 +5376,18 @@ impl Checker {
             BinOp::Eq | BinOp::Ne => {
                 let lt = self.check_expr(l, None);
                 let rt = self.check_expr(r, Some(&lt));
+                // `1 == 1l` compares as int64 — §3.3's widening applies here too,
+                // and once both sides are the same number the engine can be told
+                // which one instead of working it out from the values.
+                if let Some(common) =
+                    self.numeric_common(&strip_narrow_helpers(&lt), &strip_narrow_helpers(&rt))
+                {
+                    self.coerce(l, &lt, &common);
+                    self.coerce(r, &rt, &common);
+                    if let Some(n) = num_of(&common) {
+                        self.op_types.insert(node_id(e), n);
+                    }
+                }
                 if !self.comparable(&lt, &rt) {
                     self.error(
                         Code::BadOperand,
@@ -4742,7 +5404,29 @@ impl Checker {
             _ => {
                 let lt = self.check_expr(l, None);
                 let rt = self.check_expr(r, None);
-                self.check_binary_types(op, &lt, &rt, pos_of(r))
+                let out = self.check_binary_types(op, &lt, &rt, pos_of(r));
+                // Usual arithmetic conversions (§3.3): both operands become the
+                // common type *before* the operator runs. The engine promoted at
+                // the operator instead, dispatching on whatever the values
+                // happened to be — which gave the right answer only because the
+                // values were usually right. Now the promotion is in the
+                // bytecode, so the operator sees one type and the JIT can see it
+                // too: `x / 2` in a `float64` function is a float divide, not an
+                // integer one that happens to get fixed up.
+                if let Some(common) =
+                    self.numeric_common(&strip_narrow_helpers(&lt), &strip_narrow_helpers(&rt))
+                {
+                    self.coerce(l, &lt, &common);
+                    self.coerce(r, &rt, &common);
+                    // Both operands are this type now, and the engine no longer
+                    // has to deduce it. An `int32 + int32` walked a string check,
+                    // a bigint check, a promotion, and *then* a dispatch — four
+                    // matches to add two numbers whose types were known all along.
+                    if let Some(n) = num_of(&common) {
+                        self.op_types.insert(node_id(e), n);
+                    }
+                }
+                out
             }
         }
     }
@@ -4766,6 +5450,37 @@ impl Checker {
             (Type::BigInt, Type::BigInt, Lt | Gt | Le | Ge) => return Type::Bool,
             (Type::BigDec, Type::BigDec, Lt | Gt | Le | Ge) => return Type::Bool,
             _ => {}
+        }
+
+        // Arithmetic on a *bounded* type parameter: `<T extends Numeric>` means
+        // every T that can be substituted is a number, so `a + b` on two T's is
+        // a T — whichever number it turns out to be. Without this the bound says
+        // something true and useless: a generic `sum<T>` could not add, and the
+        // only way to write one was to give up the width and take the value
+        // untyped. Both operands must be the *same* parameter; mixing `T` and
+        // `U` has no common type to promote to.
+        //
+        // `%` and `**` are left out on purpose: `Numeric` admits `bigdec`, which
+        // has neither, so allowing them here would be a promise the substitution
+        // cannot keep.
+        if let (Type::Var(a), Type::Var(b)) = (&l, &r) {
+            if a == b && self.tv_is_numeric(*a) {
+                return match op {
+                    Add | Sub | Mul | Div => l.clone(),
+                    Lt | Gt | Le | Ge => Type::Bool,
+                    _ => {
+                        self.error(
+                            Code::BadOperand,
+                            format!(
+                                "`{}` is not available on a `Numeric` type parameter",
+                                op.as_str()
+                            ),
+                            pos,
+                        );
+                        Type::Err
+                    }
+                };
+            }
         }
         let Some(common) = self.numeric_common(&l, &r) else {
             self.error(
@@ -4802,6 +5517,14 @@ impl Checker {
 
     /// Usual arithmetic conversions (§3.3): promote small ints to int32,
     /// then wider rank wins, float wins, unsigned wins at equal rank.
+    /// Is this type parameter bounded by `Numeric`?
+    fn tv_is_numeric(&self, tv: TvId) -> bool {
+        let Some(numeric) = self.numeric_id else {
+            return false;
+        };
+        matches!(self.tv_bounds.get(&tv), Some(Type::Iface(id, _)) if *id == numeric)
+    }
+
     fn numeric_common(&self, a: &Type, b: &Type) -> Option<Type> {
         let promote = |t: &Type| -> Option<Type> {
             Some(match t {
@@ -5061,7 +5784,7 @@ impl Checker {
                     let want = Type::Array(Rc::new(rest_elem.clone()));
                     self.require_assignable(&t, &want, pos_of(&a.expr), "spread argument");
                 } else {
-                    self.require_assignable(&t, &rest_elem, pos_of(&a.expr), "argument");
+                    self.require_assignable_at(&a.expr, &t, &rest_elem, "argument");
                 }
             }
             return f.ret.clone();
@@ -5110,7 +5833,7 @@ impl Checker {
             // this same argument just fixed (a callback whose return type is
             // `U`, inferred from its parameters) — substitute it too.
             let at = subst(&at, &map);
-            self.require_assignable(&at, &want, pos_of(&a.expr), "argument");
+            self.require_assignable_at(&a.expr, &at, &want, "argument");
         }
         // A type parameter nobody managed to infer: `Err`, so the failure stays
         // quiet rather than becoming a value that can be used as anything.
@@ -6277,6 +7000,18 @@ impl Checker {
         Access::Public
     }
 
+    /// Is this member readonly through the interface? A `readonly` property, or
+    /// one declared with only a `get`.
+    fn iface_member_readonly(&self, id: IfaceId, name: &str) -> Option<bool> {
+        if let Some(m) = self.ifaces[id].members.iter().find(|m| m.name == name) {
+            return Some(m.readonly);
+        }
+        self.ifaces[id]
+            .extends
+            .iter()
+            .find_map(|(pid, _)| self.iface_member_readonly(*pid, name))
+    }
+
     fn iface_member(&self, id: IfaceId, name: &str) -> Option<(Type, bool)> {
         if let Some(m) = self.ifaces[id].members.iter().find(|m| m.name == name) {
             return Some((m.ty.clone(), m.optional));
@@ -6337,6 +7072,22 @@ impl Checker {
                             );
                         }
                     }
+                    // The same rule through an interface: a member declared
+                    // `readonly`, or with only a `get`, can be read and not
+                    // written. Only class receivers were checked, so an interface
+                    // was a way around the class's own rule.
+                    Type::Iface(id, _) => {
+                        if self.iface_member_readonly(id, name) == Some(true) {
+                            self.error(
+                                Code::ReadonlyViolation,
+                                format!(
+                                    "`{name}` is readonly on interface `{}`",
+                                    self.ifaces[id].name
+                                ),
+                                pos_of(obj),
+                            );
+                        }
+                    }
                     Type::Record(_) | Type::Err | Type::ClassMeta(_) => {}
                     _ => {}
                 }
@@ -6384,6 +7135,33 @@ impl Checker {
     }
 
     // ---- assignability ---------------------------------------------------------------
+
+    /// Check assignability *and* record the conversion the value needs.
+    ///
+    /// These are the same thing seen from two sides: the checker permits `7` to
+    /// flow into a `float64` precisely because it knows how to widen it, and this
+    /// is where it writes down that it must. Every place a value crosses into a
+    /// context of a different numeric type goes through here.
+    fn require_assignable_at(&mut self, e: &Expr, from: &Type, to: &Type, what: &str) {
+        self.require_assignable(from, to, pos_of(e), what);
+        self.coerce(e, from, to);
+    }
+
+    /// Record that `e`'s value must be converted to `to` before it is used.
+    fn coerce(&mut self, e: &Expr, from: &Type, to: &Type) {
+        self.coerce_key(node_id(e), from, to);
+    }
+
+    /// As `coerce`, for a value with no expression of its own: the `{ x }`
+    /// shorthand, whose value comes from the binding `x` names.
+    fn coerce_key(&mut self, key: usize, from: &Type, to: &Type) {
+        let (Some(f), Some(t)) = (num_of(from), num_of(to)) else {
+            return;
+        };
+        if f != t {
+            self.coercions.insert(key, t);
+        }
+    }
 
     fn require_assignable(&mut self, from: &Type, to: &Type, pos: Pos, what: &str) {
         if !self.assignable(from, to) {
@@ -6458,9 +7236,9 @@ impl Checker {
                         .iter()
                         .zip(b.params.iter())
                         .all(|(x, y)| self.assignable(&y.ty, &x.ty))
-                    && (matches!(b.ret, Void)
-                        || matches!(a.ret, Void) && matches!(b.ret, Void)
-                        || self.assignable(&a.ret, &b.ret))
+                    // A target that returns `void` discards the result, so the
+                    // source may return whatever it likes.
+                    && (matches!(b.ret, Void) || self.assignable(&a.ret, &b.ret))
             }
             (Class(a, aargs), Class(b, bargs)) => {
                 let mut cur = Some((*a, aargs.as_ref().clone()));

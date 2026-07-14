@@ -1,0 +1,9 @@
+throw across 50 inlined frames: bottom
+the callee's own handler wins: 11
+finally ran while unwinding: f!
+runaway recursion: threw
+super through an inlined call: derived/base
+arrow made inside an inlined call: 9
+this across a foreign frame: 7 source
+mutual recursion: true false
+generator calling inlined functions: 30

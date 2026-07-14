@@ -1,0 +1,46 @@
+// Class hierarchy analysis, and the one thing that can make it false.
+//
+// Tier 1 compiles `s.area()` into a **direct call** — no vtable, no inline cache,
+// no guard — whenever nothing below `Shape` overrides `area`. That is sound
+// because the set of classes is *known*: the module graph is closed (§4.5), there
+// is no `eval`, and a class cannot be patched at run time (§4.1).
+//
+// Except in one case. `import(…)` evaluates a module later, and that module may
+// declare a subclass. Nothing has changed behind the engine's back — the module
+// was loaded and typechecked with all the others — but the class set has changed
+// since the code was compiled, and code compiled against "nothing overrides
+// `area`" is now wrong.
+//
+// So compiled code records how many classes existed when it was compiled, and is
+// discarded the moment that stops being true. Without that check this program
+// prints 1007 interpreted and 12 compiled, because every `Sneaky` would run
+// `Shape.area`.
+
+import { console } from "std:console";
+import { Shape } from "./shape.mersey";
+
+function total(ss: Shape[]): int32 {
+    let t = 0;
+    for (let i = 0; i < ss.length; i++) {
+        t = t + ss[i].area();
+    }
+    return t;
+}
+
+// Hot: `total` is compiled here, and at this moment `area` really does have no
+// overrides — so the call inside it becomes a direct jump.
+const ss: Shape[] = [new Shape(), new Shape()];
+let r = 0;
+for (let k = 0; k < 300; k++) {
+    r = total(ss);
+}
+console.log("before import:", r);
+
+// …and now a subclass that overrides `area` arrives.
+const m = await import("./cha-mod.mersey");
+ss.push(m.make());
+
+for (let k = 0; k < 300; k++) {
+    r = total(ss);
+}
+console.log("after import:", r);

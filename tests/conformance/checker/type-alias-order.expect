@@ -1,0 +1,2 @@
+error[E0401] @ 14:22: initializer: `{inner: {n: string}, tag: int32}` is not assignable to `{inner: {n: int32}, tag: string}`
+error[E0414] @ 19:6: type alias `Loop2` refers to itself; use a class for a recursive type

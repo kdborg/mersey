@@ -1,0 +1,17 @@
+// `AsyncIter<T>.next()` is `Promise<T?>` — not an untyped hole.
+//
+// `Promise` is declared by the web surface, collected after the builtins are
+// installed; while `next()` still carried the placeholder from that gap, every
+// one of these lines compiled clean. A poisoned type accepts anything, and an
+// `await` in front of it makes the mistake look like work.
+async function nums(): AsyncIter<int32> {
+    yield 1;
+}
+
+async function main(): Promise<void> {
+    const it = nums();
+    const bad: string = await it.next();
+    const alsoBad: bool = await it.next();
+    const good: int32? = await it.next();
+    it.next(1);
+}

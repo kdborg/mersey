@@ -1,0 +1,9 @@
+captured local: 3
+per-iteration: [0, 1, 2]
+counted: 4950
+captured param: 15
+shadowed: 1
+captured item: 6
+generator frame: 10
+catch param: boom
+module var: 42

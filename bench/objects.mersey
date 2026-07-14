@@ -1,0 +1,56 @@
+// Object code: the shape Tier 1 could not touch until it could reach the heap.
+//
+// A field read was 17ns, an array index 24ns, a method call 91ns — each of them a
+// trip round the interpreter's dispatch loop, and each of them one or two
+// instructions on a machine. Nothing here allocates inside the loop, so all of it
+// compiles: the fields are at constant offsets (sealed shapes, §4.1), the method
+// calls are direct (nothing overrides them, and the module graph is closed), and
+// the array elements are a bounds check and an indexed load.
+//
+//   MERSEY_JIT=0 mersey run bench/objects.mersey   (Tier 0 interpreter)
+//   mersey run bench/objects.mersey                (Tier 1 JIT)
+import { console } from "std:console";
+
+class Body {
+    public x: float64 = 0.0;
+    public y: float64 = 0.0;
+    public vx: float64 = 0.0;
+    public vy: float64 = 0.0;
+    public mass: float64 = 1.0;
+
+    public constructor(i: int32) {
+        const f = i as float64;
+        this.x = f;
+        this.y = f * 0.5;
+        this.vx = 1.0;
+        this.vy = 0.25;
+        this.mass = 1.0 + f * 0.001;
+    }
+
+    public step(dt: float64): void {
+        this.x = this.x + this.vx * dt;
+        this.y = this.y + this.vy * dt;
+    }
+
+    public energy(): float64 {
+        return 0.5 * this.mass * (this.vx * this.vx + this.vy * this.vy);
+    }
+}
+
+function simulate(bs: Body[], steps: int32): float64 {
+    let total = 0.0;
+    for (let s = 0; s < steps; s++) {
+        for (let i = 0; i < bs.length; i++) {
+            const b = bs[i];
+            b.step(0.01);
+            total = total + b.energy();
+        }
+    }
+    return total;
+}
+
+const bodies: Body[] = [];
+for (let i = 0; i < 2000; i++) {
+    bodies.push(new Body(i));
+}
+console.log(simulate(bodies, 5000));

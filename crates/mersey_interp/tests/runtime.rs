@@ -50,12 +50,15 @@ fn run_program_with(bytes: &[u8], name: &str, use_vm: bool) -> String {
         Err(d) => return format!("{d}\n"),
     };
     let parsed = parser::parse(&src);
+    // Leaked first: the AST that is checked must be the AST that runs.
+    // `check` takes `&'static` precisely so this cannot be got wrong.
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
     let mut diags = parsed.diagnostics;
     if diags.is_empty() {
-        diags = bind::bind(&parsed.module).diagnostics;
+        diags = bind::bind(module).diagnostics;
     }
     if diags.is_empty() {
-        diags = check::check(&parsed.module).diagnostics;
+        diags = check::check(module).diagnostics;
     }
     if !diags.is_empty() {
         let mut s = String::new();
@@ -64,7 +67,7 @@ fn run_program_with(bytes: &[u8], name: &str, use_vm: bool) -> String {
         }
         return s;
     }
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
+
     let buffer = Rc::new(RefCell::new(String::new()));
     let host = Box::new(TestHost {
         out: buffer.clone(),

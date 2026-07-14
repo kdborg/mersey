@@ -1,0 +1,24 @@
+// What an interface getter refuses.
+interface Sized {
+    get size(): int32;
+}
+
+// Missing it entirely.
+class A implements Sized {}
+
+// Present, but the wrong type — an interface that only checked the name would
+// let this through, and `s.size` would hand you a string.
+class B implements Sized {
+    public get size(): string {
+        return "no";
+    }
+}
+
+// A `get`-only member is readonly, and assigning to it is an error.
+class C implements Sized {
+    public get size(): int32 {
+        return 1;
+    }
+}
+const s: Sized = new C();
+s.size = 5;

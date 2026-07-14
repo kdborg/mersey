@@ -25,20 +25,17 @@ impl Host for BufHost {
 fn run(src_text: &str, use_vm: bool, jit: bool) -> String {
     let src = source::decode("<test>", src_text.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
+    // Leaked first: the AST that is checked must be the AST that runs.
+    // `check` takes `&'static` precisely so this cannot be got wrong.
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
     assert!(
         parsed.diagnostics.is_empty(),
         "parse: {:?}",
         parsed.diagnostics[0].message
     );
-    assert!(
-        bind::bind(&parsed.module).diagnostics.is_empty(),
-        "bind errors"
-    );
-    assert!(
-        check::check(&parsed.module).diagnostics.is_empty(),
-        "check errors"
-    );
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(bind::bind(module).diagnostics.is_empty(), "bind errors");
+    assert!(check::check(module).diagnostics.is_empty(), "check errors");
+
     let buf = Rc::new(RefCell::new(String::new()));
     let mut i = new_interp(Box::new(BufHost(buf.clone())));
     i.use_vm = use_vm;
@@ -166,39 +163,13 @@ fn float_kernels_and_trapping_division() {
 
 #[test]
 fn float_kernels_actually_compile() {
-    let src = source::decode("<test>", FLOAT_AND_DIV.as_bytes()).expect("decode");
-    let parsed = parser::parse(&src);
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
-    let mut compiled = Vec::new();
-    for item in &module.items {
-        let mersey_front::ast::Item::Decl(mersey_front::ast::Decl::Function(f)) = item else {
-            continue;
-        };
-        let chunk = mersey_interp::vm::compile_fn_public(&f.body).expect("bytecode");
-        let params: Vec<String> = f
-            .params
-            .iter()
-            .map(|p| match &p.target {
-                mersey_front::ast::Pattern::Name(n) => n.text.clone(),
-                _ => panic!("simple params only"),
-            })
-            .collect();
-        if mersey_jit::hook(&chunk, &params).is_some() {
-            compiled.push(f.name.text.clone());
-        }
+    let compiled = compiled_fns(FLOAT_AND_DIV);
+    for want in ["mandelIters", "harmonic", "safeDiv"] {
+        assert!(
+            compiled.contains(&want.to_string()),
+            "`{want}` fell out of the JIT subset: {compiled:?}"
+        );
     }
-    assert!(
-        compiled.contains(&"mandelIters".to_string()),
-        "float kernel not compiled: {compiled:?}"
-    );
-    assert!(
-        compiled.contains(&"harmonic".to_string()),
-        "float division kernel not compiled: {compiled:?}"
-    );
-    assert!(
-        compiled.contains(&"safeDiv".to_string()),
-        "integer division kernel not compiled: {compiled:?}"
-    );
 }
 
 #[test]
@@ -211,36 +182,42 @@ fn jit_matches_vm_and_tree() {
     assert!(!jit_out.is_empty());
 }
 
-#[test]
-fn jit_actually_compiles_the_kernels() {
-    // Compile the kernels directly through the hook to prove they are in
-    // the accepted subset (not silently falling back to the interpreter).
-    let src = source::decode("<test>", KERNELS.as_bytes()).expect("decode");
+
+/// Which top-level functions Tier 1 actually accepts — asked of the engine, by the
+/// path the engine uses. A test that assembled the compiler's input itself would
+/// be testing its own assembly.
+fn compiled_fns(src_text: &str) -> Vec<String> {
+    let src = source::decode("<test>", src_text.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
     let module: &'static _ = Box::leak(Box::new(parsed.module));
-    let mut compiled = 0;
+    assert!(parsed.diagnostics.is_empty(), "parse errors");
+    assert!(bind::bind(module).diagnostics.is_empty(), "bind errors");
+    assert!(check::check(module).diagnostics.is_empty(), "check errors");
+
+    let buf = Rc::new(RefCell::new(String::new()));
+    let mut i = new_interp(Box::new(BufHost(buf)));
+    i.use_vm = true;
+    i.jit = Some(mersey_jit::hook);
+    i.run_module(module)
+        .unwrap_or_else(|t| panic!("runtime: {}", i.describe_thrown(&t)));
+
+    let mut out = Vec::new();
     for item in &module.items {
-        let mersey_front::ast::Item::Decl(mersey_front::ast::Decl::Function(f)) = item else {
-            continue;
-        };
-        let chunk = mersey_interp::vm::compile_fn_public(&f.body).expect("bytecode");
-        let params: Vec<String> = f
-            .params
-            .iter()
-            .map(|p| match &p.target {
-                mersey_front::ast::Pattern::Name(n) => n.text.clone(),
-                _ => panic!("simple params only"),
-            })
-            .collect();
-        let jitted = mersey_jit::hook(&chunk, &params);
-        assert!(
-            jitted.is_some(),
-            "kernel `{}` fell out of the JIT subset",
-            f.name.text
-        );
-        compiled += 1;
+        if let mersey_front::ast::Item::Decl(mersey_front::ast::Decl::Function(f)) = item {
+            if i.jit_accepts(&f.name.text) {
+                out.push(f.name.text.clone());
+            }
+        }
     }
-    assert_eq!(compiled, 3);
+    out
+}
+
+#[test]
+fn jit_actually_compiles_the_kernels() {
+    // Through the hook, to prove they are in the accepted subset and not silently
+    // falling back to the interpreter.
+    let compiled = compiled_fns(KERNELS);
+    assert_eq!(compiled.len(), 3, "compiled: {compiled:?}");
 }
 
 /// §5.2 asks for guard pages and CFI-compatible codegen. A JIT turns
@@ -316,36 +293,8 @@ console.log(sumTo64(1000l), mix64(9l, 3l), big(3000000000l));
 #[test]
 fn int64_kernels_compile_and_agree() {
     // In the accepted subset (not silently falling back to the interpreter).
-    let src = source::decode("<i64>", I64_KERNELS.as_bytes()).expect("decode");
-    let parsed = parser::parse(&src);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "{:?}",
-        parsed.diagnostics.first().map(|d| d.to_string())
-    );
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
-    let mut compiled = 0;
-    for item in &module.items {
-        let mersey_front::ast::Item::Decl(mersey_front::ast::Decl::Function(f)) = item else {
-            continue;
-        };
-        let chunk = mersey_interp::vm::compile_fn_public(&f.body).expect("bytecode");
-        let params: Vec<String> = f
-            .params
-            .iter()
-            .map(|p| match &p.target {
-                mersey_front::ast::Pattern::Name(n) => n.text.clone(),
-                _ => panic!("simple params only"),
-            })
-            .collect();
-        assert!(
-            mersey_jit::hook(&chunk, &params).is_some(),
-            "int64 kernel `{}` fell out of the JIT subset",
-            f.name.text
-        );
-        compiled += 1;
-    }
-    assert_eq!(compiled, 3, "expected three int64 kernels");
+    let compiled = compiled_fns(I64_KERNELS);
+    assert_eq!(compiled.len(), 3, "expected three int64 kernels: {compiled:?}");
 
     // And Tier 1 must agree with Tier 0 and the tree-walker, exactly.
     let jit = run(I64_KERNELS, true, true);
@@ -356,4 +305,19 @@ fn int64_kernels_compile_and_agree() {
     // 1+…+1000, and a value that does not fit an int32.
     assert!(jit.starts_with("500500 "), "{jit}");
     assert!(jit.contains("3000000000000007"), "{jit}"); // 3e9 * 1e6 + 7, far past int32
+}
+
+/// The declared return type of a function, as the JIT wants it.
+fn ret_num_of(f: &mersey_front::ast::FnDecl) -> Option<mersey_front::check::Num> {
+    use mersey_front::check::{IntKind, Num};
+    let mersey_front::ast::TypeExpr::Named { name, .. } = f.ret.as_ref()? else {
+        return None;
+    };
+    Some(match name.as_str() {
+        "int32" => Num::Int(IntKind::I32),
+        "int64" => Num::Int(IntKind::I64),
+        "float64" => Num::F64,
+        "float32" => Num::F32,
+        _ => return None,
+    })
 }

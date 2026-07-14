@@ -9,7 +9,7 @@ description = "Stage B embedding API: the C ABI every native host (Chromium, she
 # mersey_wasm / mersey_jit).
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 mersey_front = { path = "../mersey_front" }

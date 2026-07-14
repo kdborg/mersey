@@ -1,0 +1,81 @@
+// Declared numeric types are real at run time (§3.3, §3.6).
+//
+// The checker accepted C-style widening and typed the expression accordingly;
+// the engine then erased the type, stored whatever the value happened to be, and
+// dispatched arithmetic on *that*. So `let x: float64 = 7` held an int32, and
+// `x / 2` was an integer divide: the answer was 3. Every tier agreed, which is
+// why nothing caught it — they were all wrong the same way.
+//
+// The conversions now live in the bytecode. This is what they buy.
+
+import { console } from "std:console";
+
+class Box {
+    public v: float64 = 0.0;
+    public constructor(v: float64) {
+        this.v = v;
+    }
+}
+
+function half(x: float64): float64 {
+    return x / 2;
+}
+
+function widen(): float64 {
+    return 7; // the declared return type is what the caller gets
+}
+
+// --- an int literal reaching a float64, by every route there is
+const init: float64 = 7;
+let assigned: float64 = 0.0;
+assigned = 7;
+const elem: float64[] = [7];
+const field: { x: float64 } = { x: 7 };
+const boxed = new Box(7);
+
+console.log("param      :", half(7));
+console.log("initializer:", init / 2);
+console.log("assignment :", assigned / 2);
+console.log("array      :", elem[0] / 2);
+console.log("record     :", field.x / 2);
+console.log("class field:", boxed.v / 2);
+console.log("return     :", widen() / 2);
+
+// --- the operand of an operator is converted before the operator runs.
+// Divided again, so the answer says which *kind* of number came out: an
+// integer 3 would mean the `1` was still an int and the operator did the
+// widening by luck, at a place where it might not have.
+const f: float64 = 6.0;
+console.log("mixed op   :", (f + 1) / 2, "and", (1 + f) / 2);
+
+// --- an int64 wraps at 64 bits, not at 32
+let big: int64 = 2147483647;
+console.log("int64      :", big + 1);
+console.log("int64 shift:", big << 4);
+
+// --- a uint32 literal that does not fit an int32 fits the type it was given
+let u: uint32 = 4294967295;
+console.log("uint32     :", u);
+console.log("uint32 wrap:", u + 1);
+
+// --- and an integer stays an integer: widening is not rounding
+const n: int32 = 7;
+console.log("int divide :", n / 2);
+
+// --- compound assignment converts its operand too
+let acc: float64 = 0.0;
+acc += 7;
+acc *= 3;
+console.log("compound   :", acc / 2);
+
+// --- compound assignment converts the RESULT back to the target's type,
+// wrapping as C does (§3.3 rule 6). Integer promotion means the operator works
+// in int32, so without the conversion back an int16 held 32768 — a number it
+// cannot represent.
+let small: int16 = 32767;
+small += 1;
+console.log("int16 +=   :", small);
+
+// --- a negative literal behind a unary minus is still a literal
+const neg: float64 = -7;
+console.log("negative   :", neg / 2);

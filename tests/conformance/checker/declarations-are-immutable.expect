@@ -1,0 +1,5 @@
+error[E0304] @ 29:1: cannot assign to `f`: it is a function declaration
+error[E0304] @ 30:1: cannot assign to `C`: it is a class declaration
+error[E0304] @ 31:1: cannot assign to `E`: it is an enum declaration
+error[E0304] @ 32:1: cannot assign to `console`: it is an import
+error[E0304] @ 33:1: cannot assign to `fixed`: it is a `const`

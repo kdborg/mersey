@@ -60,10 +60,12 @@ fn run(retained: usize, major_every: usize) -> Vec<f64> {
     let text = program(retained);
     let src = source::decode("<bench>", text.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
-    assert!(parsed.diagnostics.is_empty());
-    assert!(bind::bind(&parsed.module).diagnostics.is_empty());
-    assert!(check::check(&parsed.module).diagnostics.is_empty());
+    // Leaked first: the AST that is checked must be the AST that runs.
+    // `check` takes `&'static` precisely so this cannot be got wrong.
     let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(parsed.diagnostics.is_empty());
+    assert!(bind::bind(module).diagnostics.is_empty());
+    assert!(check::check(module).diagnostics.is_empty());
 
     let mut i = new_interp(Box::new(Silent));
     i.run_module(module).ok().expect("run");

@@ -1080,15 +1080,33 @@ impl Binder {
         }
     }
 
+    /// What may be assigned to: a `let`, and nothing else.
+    ///
+    /// A `const` was already rejected. A *declaration* — a function, a class, an
+    /// enum, an import — was not, and `f = g` quietly rebound it: the name went
+    /// on typechecking as the thing it used to be while meaning something else.
+    /// That is the one move the whole design rules out. Mersey's premise is that
+    /// the program is known at compile time — sealed classes, static dispatch, a
+    /// closed module graph, a JIT that compiles a call into a direct jump to the
+    /// function the name refers to. A name that can be repointed at run time
+    /// takes all of it back, and it was never something anyone would want: a
+    /// declaration is what a thing *is*, not a variable that happens to hold it.
     fn check_const_target(&mut self, target: &Expr) {
         if let Expr::Ident(n) = target {
             for scope in self.scopes.iter().rev() {
                 if let Some(sym) = scope.values.get(&n.text) {
-                    if matches!(sym.kind, VKind::Var { is_const: true }) {
-                        let msg = format!("cannot assign to `{}`: it is a `const`", n.text);
-                        let pos = n.pos;
-                        self.error(Code::AssignToConst, msg, pos);
-                    }
+                    let what = match sym.kind {
+                        VKind::Var { is_const: false } => return, // the assignable binding
+                        VKind::Var { is_const: true } => "a `const`",
+                        VKind::Func => "a function declaration",
+                        VKind::Class => "a class declaration",
+                        VKind::Enum => "an enum declaration",
+                        VKind::Import => "an import",
+                        VKind::Namespace => "an imported namespace",
+                    };
+                    let msg = format!("cannot assign to `{}`: it is {what}", n.text);
+                    let pos = n.pos;
+                    self.error(Code::AssignToConst, msg, pos);
                     return;
                 }
             }

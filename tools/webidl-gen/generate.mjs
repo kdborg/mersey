@@ -8,7 +8,8 @@
 //
 // Type mapping notes (v1, recorded in the file header):
 //  - integers (octet..unsigned long) → int32; 64-bit + floats → float64
-//  - any/object/record<K,V>/unmappable → JsAny (checker treats as `any`)
+//  - any/object/unmappable → JsAny (the checker treats it as `unknown`: a
+//    sound top type, so it must be narrowed or cast before it can be used)
 //  - overloads: first wins; params are renamed p0..pN; statics/ctors skipped
 //  - special ops (indexed getters, iterable<>, maplike) skipped
 import idl from "@webref/idl";
@@ -198,6 +199,10 @@ const RESERVED_TYPE_NAMES = new Set([
   "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray",
   "BigInt64Array", "BigUint64Array", "Float16Array", "DataView", "ArrayBufferView",
   "BufferSource", "ArrayBuffer", "Promise", "JsAny",
+  // ECMA-402. `new Intl.NumberFormat(…)` is a *namespaced* constructor: the
+  // type is written with a dot, and both the checker and the bridge resolve it
+  // by walking the path.
+  "Intl", "IntlNumberFormat", "IntlDateTimeFormat", "IntlCollator",
 ]);
 
 // ECMAScript-defined types that WebIDL references but doesn't define
@@ -228,6 +233,21 @@ interface __JSON {
     parse(p0: string): JsAny;
 }
 let JSON: __JSON;
+interface IntlNumberFormat {
+    format(p0: float64): string;
+}
+interface IntlDateTimeFormat {
+    format(p0: float64): string;
+}
+interface IntlCollator {
+    compare(p0: string, p1: string): int32;
+}
+interface __Intl {
+    readonly NumberFormat: JsAny;
+    readonly DateTimeFormat: JsAny;
+    readonly Collator: JsAny;
+}
+let Intl: __Intl;
 interface __Math {
     readonly PI: float64;
     random(): float64;

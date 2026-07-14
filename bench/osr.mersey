@@ -1,0 +1,22 @@
+// A hot loop inside a function that is called exactly ONCE.
+//
+// Tiering on call count alone cannot see this: the counter reaches 1 and stops,
+// so the loop runs to completion in Tier 0 no matter how long it takes. Only the
+// loop's own back edge can trigger compilation, and the compiled code is only
+// reachable by re-entering the function at the loop header (OSR).
+//
+// Interpreted this takes minutes; Tier 1 finishes it in under a third of a
+// second. (It used to be *killed* rather than slow — the engine could not
+// collect garbage inside a running loop, so the loop's own bookkeeping grew
+// until the OOM killer stepped in. That is fixed; see ROADMAP.)
+import { console } from "std:console";
+
+function work(n: int32): int32 {
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+        acc = (acc + i * 3) ^ (i >> 2);
+    }
+    return acc;
+}
+
+console.log(work(200000000));

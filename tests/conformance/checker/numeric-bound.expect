@@ -1,0 +1,4 @@
+error[E0405] @ 17:16: `%` is not available on a `Numeric` type parameter
+error[E0405] @ 21:16: `+` needs numeric operands, got `T` and `T`
+error[E0405] @ 25:16: `+` needs numeric operands, got `T` and `U`
+error[E0401] @ 30:14: `string` does not satisfy the bound `Numeric` on this call

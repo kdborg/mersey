@@ -1,0 +1,19 @@
+// A type alias may name one declared below it.
+//
+// Aliases are expanded where they are named, so they used to be resolved in
+// source order — and an alias naming a later one silently captured the
+// placeholder that stands in for "not resolved yet". That placeholder is the
+// error type, which is assignable in both directions, so the field it landed on
+// accepted every value. It is what `RequestInit.privateToken` was in the
+// generated web surface, where declaration order is whatever the IDL had.
+type Outer = { inner: Inner, tag: Label };
+type Inner = { n: int32 };
+type Label = string;
+
+const ok: Outer = { inner: { n: 1 }, tag: "x" };
+const bad: Outer = { inner: { n: "not an int" }, tag: 2 };
+
+// A cycle has no valid order — expanding it never terminates — so it is
+// reported (E0414) rather than collapsing into the same placeholder.
+type Loop = { next: Loop2 };
+type Loop2 = { back: Loop };

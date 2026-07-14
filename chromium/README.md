@@ -1,47 +1,92 @@
-# Chromium integration package (Stage B)
+# Chromium integration (Stage B)
 
-This directory is the prepared patch set for the Chromium fork described in
-`docs/architecture/browser-integration.md`. **It is not built in this
-repository** — a Chromium checkout and build farm are outside this repo's
-scope — but every interface it depends on is already real and tested here:
+**The fork exists.** `<script type="text/mersey">` in a page is compiled and
+executed by the Mersey engine inside Blink — no V8, no WASM in the stack —
+through the same C ABI that `native/host_demo.c` and
+`crates/mersey_capi/tests/abi.rs` drive in this repository.
 
-- the engine behind the boundary: `crates/mersey_capi` (C ABI), proven by a
-  native host with a fake DOM in `native/host_demo.c` — load, execute,
-  DOM writes, event callbacks, diagnostic reporting, all with no V8 and no
-  WASM in the stack;
-- the behavior contract: `tests/conformance/` — the same goldens the native
-  engine, the WASM engine, and the future Blink-hosted engine must match
-  (the harness already runs the full runtime suite in the WASM build).
+The Chromium tree is not *in* this repo (a checkout is 29GB), but the fork is
+built and committed in the checkout beside it:
 
-## Patch plan (dependency order)
+```
+~/chromium/src   branch: mersey
+  arm64 linux host: system gperf instead of the missing CIPD package
+  Mersey: run <script type="text/mersey"> on the Mersey engine
+  Mersey: document the arm64-host toolchain substitutions
+```
 
-1. **`//components/mersey`** — C++ wrapper over `mersey_capi` (this
-   directory's sources). Rust static lib linked via `//build/rust`;
-   `MerseyContext` owns one `msy_context` per execution context.
-2. **Script loading** — add `MerseyScript` beside `ClassicScript`/
-   `ModuleScript` in Blink (`third_party/blink/renderer/core/script/`).
-   `ScriptLoader::DetermineScriptType` learns `type="text/mersey"`;
-   fetching reuses `ScriptResource` (CORS/SRI/CSP checks are type-agnostic
-   there — spec §5.4 falls out of reusing them).
-3. **Execution contexts** — one `MerseyContext` per Document, created on
-   first Mersey script, torn down with the ExecutionContext
-   (`Supplement<Document>` pattern).
-4. **DOM bindings** — the `msy_host_table` grows per-API host functions,
-   generated from Blink's WebIDL by a second codegen backend
-   (`mersey_bindings_generator`). The v1 hand surface (getElementById,
-   createElement, textContent, value, appendChild, remove,
-   addEventListener) maps 1:1 to what the loader shim and the C demo host
-   already implement.
-5. **Scheduling** — Mersey callbacks post to the Document's task runners;
-   `msy_context_invoke` is called from the posted task (the engine never
-   owns a loop — embedding-api.md rule 1).
-6. **DevTools** — CDP Debugger/Runtime domains implemented over the
-   engine's diagnostics; deferred until the bytecode tier exposes
-   breakpoints.
+## What landed
 
-Build flag: `enable_mersey = true` (GN arg), default off.
+| | |
+|---|---|
+| `//third_party/mersey` | the engine behind `include/mersey.h`. A prebuilt Rust staticlib, refreshed by `refresh.sh` from this repo. |
+| `core/script/mersey_script_runner.{h,cc}` | one engine context per `Document` (a `Supplement<Document>`), the host table wired to the console, the element surface and Blink's task runners. An event listener re-enters the engine through `msy_context_invoke`. |
+| `core/script/script_loader.{h,cc}` | `ScriptTypeAtPrepare::kMersey`. An **inline** Mersey script runs at prepare time, the way an inline speculation-rules block is consumed. |
+| `build/config/clang/clang.gni` | `use_tot_clang_flags`, so a released system clang can carry an arm64 build. |
 
-## Contents
+## Building it
 
-- `components/mersey/mersey_context.h/.cc` — the C++ wrapper over the ABI
-  (compiles against `mersey.h`; Blink types stubbed behind `#if`).
+```bash
+chromium/setup-arm64-host.sh ~/chromium/src   # the host substitutions, scripted
+cp chromium/args.arm64.gn ~/chromium/src/out/mersey-arm64/args.gn
+cd ~/chromium/src && gn gen out/mersey-arm64
+autoninja -C out/mersey-arm64 libblink_core.so
+```
+
+Chromium ships **no hermetic toolchain for linux-arm64** — every prebuilt in
+`third_party` is x86-64, and an arm64 host cannot run them. So the build is
+carried by native tools: clang (plus a shadow resource-dir tree, because
+Ubuntu's `clang_rt` layout is not Chromium's), the Rust toolchain (**rustc 1.98
+exactly** — a newer nightly mangles the allocator symbols differently from the
+std it ships, and nothing links), `bindgen` and `rustfmt` (needing a *real*
+`libclang.so`, not a symlink), lld instead of mold, ninja instead of siso, node
+pinned to the exact version `third_party/node` expects, and gperf built from
+source because **no linux-arm64 CIPD package for it exists at all**.
+
+Two fork-side GN args carry the rest: `use_tot_clang_flags` (five flags only
+tip-of-tree clang knows) and `rust_std_in_executable_only` (Chromium's Rust
+allocator crate is linked into the executable, not into each component `.so`;
+outside the hermetic toolchain that leaves std's allocator symbols unresolved in
+every DSO and `-Wl,-z,defs` kills every link — they resolve at load time, which
+is what a component build *is*, and `no_unresolved_symbols` already makes the
+same exemption for sanitizer instrumentation).
+
+**None of this is needed on x86-64 Linux, macOS or Windows**, where the hermetic
+toolchain works and only `target_cpu`/`target_os` change. That is what makes the
+rest of the matrix a configuration exercise rather than another archaeology, and
+it is why it is scripted rather than left in a shell history.
+
+## Why the ABI came first
+
+The C ABI was a year behind the engine it wrapped: five hooks (`print`,
+`error`, and three fake-DOM calls from the Phase 6 demo) against a `Host`
+trait that had grown the universal object bridge, promises, capabilities,
+time and entropy. Blink would have been talking to the demo, not the engine.
+
+So before any Blink code: **`msy_abi_version`**, the full host table (bridge,
+caps, time, entropy), **module graphs** (`scan_imports` → the host fetches →
+`run_graph`, the same payload the browser loader builds), **callbacks with
+arguments**, **`MSY_FLAG_NO_JIT`** for sandboxes that forbid a second JIT,
+and — the part that matters most — the loader itself moved into
+`mersey_interp::embed`, so the WASM boundary and the C boundary now *share one
+implementation* rather than drifting apart.
+
+`crates/mersey_capi/tests/abi.rs` drives all of it through the `extern "C"`
+symbols against a mock page: a handle table of fake DOM objects, events with
+JSON payloads, a promise the host settles **after** the script returned, and a
+capability list the engine enforces. When the Blink glue misbehaves, that file
+is the evidence for which side of the boundary is wrong.
+
+## Next
+
+1. **The universal bridge in Blink.** The runner wires the console and the
+   small element surface; `web_get`/`web_set`/`web_call`/`web_new` over real
+   DOM objects is the same table, filled in — and the engine side is already
+   proven by the WASM path's live-realm assertions.
+2. **External scripts.** `scan_imports`/`run_graph` are in the ABI; wiring
+   them to `ScriptResource` is what makes `<script src="app.mersey">` work
+   (CORS/SRI/CSP are Blink's, and stay Blink's).
+3. **Build the crate graph with GN** (`rust_static_library`) rather than a
+   prebuilt, so all six platform/arch combinations come from one build. This
+   is what turns "arm64 Linux works" into the full matrix.
+4. **DevTools.** Stack traces already cross as strings; CDP is post-fork.

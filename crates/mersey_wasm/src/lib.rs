@@ -22,7 +22,7 @@
 
 use std::cell::UnsafeCell;
 
-use mersey_front::{bind, check, parser, source};
+
 use mersey_interp::{new_interp, Host, Interp};
 
 #[link(wasm_import_module = "env")]
@@ -274,32 +274,7 @@ pub extern "C" fn msy_alloc(len: usize) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn msy_scan_imports(ptr: *const u8, len: usize) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let Ok(src) = source::decode("<scan>", bytes) else {
-        return pack("[]");
-    };
-    let parsed = parser::parse(&src);
-    let statics = mersey_front::graph::imports(&parsed.module);
-    // Dynamic `import(…)` targets are part of the graph too: the loader has to
-    // fetch and check them, they just do not *run* until someone imports them.
-    let dynamics = mersey_front::graph::dynamic_imports(&parsed.module);
-    let arr = |specs: &[String]| {
-        let mut out = String::from("[");
-        for (i, s) in specs.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push('"');
-            out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
-            out.push('"');
-        }
-        out.push(']');
-        out
-    };
-    pack(&format!(
-        "{{\"static\":{},\"dynamic\":{}}}",
-        arr(&statics),
-        arr(&dynamics)
-    ))
+    pack(&mersey_interp::embed::scan_imports_json(bytes))
 }
 
 /// Allocate a buffer the host reads back (ptr<<32 | len). Leaked, like all
@@ -322,109 +297,11 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
     }));
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let text = String::from_utf8_lossy(bytes).into_owned();
-    let Some(payload) = mersey_interp::webjson::parse(&text) else {
-        send(host_error, "bad module-graph payload");
-        return 1;
-    };
-    let Some(mersey_interp::webjson::Json::Arr(items)) = payload.get("modules") else {
-        send(host_error, "module-graph payload has no modules");
-        return 1;
-    };
-
-    let mut parsed_modules: Vec<(String, &'static mersey_front::ast::Module)> = Vec::new();
-    let mut failed = false;
-
-    // The `std:` modules written in Mersey (`std:result`, `std:url`, …) are
-    // embedded in the engine, not fetched — the loader has nothing to fetch them
-    // *from*. They have to be in the graph before anything that imports them is
-    // checked, or their exports are unknown and every use of one is a type error
-    // in a file the author never wrote. They come first: nothing they import can
-    // depend on the page's own modules.
-    for spec in mersey_front::stdlib::source_modules() {
-        let Some(text) = mersey_front::stdlib::source(spec) else {
-            continue;
-        };
-        let Ok(decoded) = source::decode(spec, text.as_bytes()) else {
-            continue;
-        };
-        let parsed = parser::parse(&decoded);
-        if !parsed.diagnostics.is_empty() {
-            continue; // the conformance suite would have caught this
-        }
-        let module: &'static _ = Box::leak(Box::new(parsed.module));
-        parsed_modules.push(((*spec).to_string(), module));
-    }
-
-    for item in items {
-        let (Some(spec), Some(src_text)) = (
-            item.get("spec").and_then(|v| v.as_str()),
-            item.get("source").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let decoded = match source::decode(spec, src_text.as_bytes()) {
-            Ok(d) => d,
-            Err(d) => {
-                send(host_error, &d.to_string());
-                failed = true;
-                continue;
-            }
-        };
-        let parsed = parser::parse(&decoded);
-        for d in &parsed.diagnostics {
-            send(host_error, &format!("{spec}: {d}"));
-            failed = true;
-        }
-        let module: &'static _ = Box::leak(Box::new(parsed.module));
-        for d in &bind::bind(module).diagnostics {
-            send(host_error, &format!("{spec}: {d}"));
-            failed = true;
-        }
-        parsed_modules.push((spec.to_string(), module));
-    }
-    if failed {
-        return 1;
-    }
-    let refs: Vec<(String, &mersey_front::ast::Module)> = parsed_modules
-        .iter()
-        .map(|(s, m)| (s.clone(), *m))
-        .collect();
-    for (spec, out) in check::check_graph(&refs) {
-        for d in &out.diagnostics {
-            send(host_error, &format!("{spec}: {d}"));
-            failed = true;
-        }
-    }
-    if failed {
-        return 1;
-    }
-
-    // Modules the payload marks lazy are the targets of a dynamic `import(…)`:
-    // loaded and checked with the rest, but not run until someone imports them.
-    let lazy: Vec<String> = match payload.get("lazy") {
-        Some(mersey_interp::webjson::Json::Arr(items)) => items
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        _ => Vec::new(),
-    };
-    let (eager, deferred): (Vec<_>, Vec<_>) = parsed_modules
-        .into_iter()
-        .partition(|(spec, _)| !lazy.contains(spec));
-
     ensure_interp();
+    // One loader for every host: the graph logic lives in `mersey_interp::embed`
+    // and is shared verbatim with the C ABI (and so with the Chromium fork).
     with_interp(|interp| {
-        for (spec, module) in deferred {
-            interp.register_lazy(spec, module);
-        }
-        match interp.run_graph(eager) {
-            Ok(()) => 0,
-            Err(t) => {
-                let msg = interp.describe_thrown(&t);
-                send(host_error, &msg);
-                2
-            }
-        }
+        mersey_interp::embed::run_graph_json(interp, &text, &mut |msg| send(host_error, msg))
     })
     .unwrap_or(2)
 }
@@ -435,42 +312,15 @@ pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
         send(host_error, &format!("engine panic: {info}"));
     }));
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-
-    let src = match source::decode("<script>", bytes) {
-        Ok(s) => s,
-        Err(d) => {
-            send(host_error, &d.to_string());
-            return 1;
-        }
-    };
-    let parsed = parser::parse(&src);
-    let mut diags = parsed.diagnostics;
-    if diags.is_empty() {
-        diags = bind::bind(&parsed.module).diagnostics;
-    }
-    if diags.is_empty() {
-        diags = check::check(&parsed.module).diagnostics;
-    }
-    if !diags.is_empty() {
-        for d in &diags {
-            send(host_error, &d.to_string());
-        }
-        return 1;
-    }
-
-    // One module per page lifetime; the AST lives as long as its callbacks.
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
     ensure_interp();
-    with_interp(|interp| match interp.run_module(module) {
-        Ok(()) => 0,
-        Err(t) => {
-            let msg = interp.describe_thrown(&t);
-            send(host_error, &msg);
-            2
-        }
+    with_interp(|interp| {
+        mersey_interp::embed::run_single(interp, "<script>", bytes, &mut |msg| {
+            send(host_error, msg)
+        })
     })
     .unwrap_or(2)
 }
+
 
 /// Fire a callback with JSON arguments (event objects, promise values).
 #[no_mangle]

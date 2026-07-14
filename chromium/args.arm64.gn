@@ -1,0 +1,41 @@
+# Mersey fork, initial arm64 Linux build.
+# Component build + no symbols: 4 cores / 15GB RAM — links must stay small.
+target_os = "linux"
+target_cpu = "arm64"
+is_debug = false
+# Chromium's own build/rust/std/BUILD.gn: a *prebuilt* Rust stdlib in a
+# component build is a known-broken configuration ("There is currently no known
+# solution to this for the prebuilt stdlib") — the allocator and the stdlib
+# ldflags land in different shared objects. An arm64 Linux host has no choice
+# about the prebuilt stdlib, so it has no choice about this either.
+is_component_build = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+enable_nacl = false
+use_remoteexec = false
+use_siso = false
+
+# arm64 host: no linux-arm64 hermetic toolchain exists, so the system
+# toolchain carries the build (fork decision, see third_party/mersey/README).
+clang_base_path = "/home/parallels/opt/llvm21"
+clang_use_chrome_plugins = false
+clang_version = "21"
+treat_warnings_as_errors = false
+rust_sysroot_absolute = "/home/parallels/.rustup/toolchains/nightly-2026-06-15-aarch64-unknown-linux-gnu"
+rustc_version = "1.98.0-nightly-3daae5e42"
+use_tot_clang_flags = false
+use_mold = false
+rust_bindgen_root = "/home/parallels/opt/rust-bindgen"
+rust_std_in_executable_only = false  # not needed in a static build
+
+# ---------------------------------------------------------------------------
+# Reproducing this host setup from scratch:  chromium/setup-arm64-host.sh
+#
+# Then:
+#   mkdir -p ~/chromium/src/out/mersey-arm64
+#   cp chromium/args.arm64.gn ~/chromium/src/out/mersey-arm64/args.gn
+#   cd ~/chromium/src && gn gen out/mersey-arm64
+#   autoninja -C out/mersey-arm64 content_shell
+#
+# Paths assume $HOME=/home/parallels; edit if that is not true.

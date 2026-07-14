@@ -1,0 +1,8 @@
+super in ctor  : x
+super method   : Derived(Base(x), 7)
+inherited      : hello from base
+arrow captures this: 3
+recursive method: 5
+captured param  : 15
+defaults/rest   : 101 6
+field inits     : 10/20

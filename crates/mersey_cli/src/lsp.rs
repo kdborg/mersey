@@ -327,7 +327,12 @@ fn diagnostics_notification(uri: &str, text: &str) -> String {
                 diags = bind::bind(&parsed.module).diagnostics;
             }
             if diags.is_empty() {
-                diags = check::check(&parsed.module).diagnostics;
+                // `analyze_graph`, not `check`: the editor re-parses on every
+                // keystroke and frees the AST behind it, so it must not publish
+                // conversions keyed to addresses that are about to be recycled.
+                // It never runs the program, so it has none to contribute.
+                let refs = [(uri.to_string(), &parsed.module)];
+                diags.extend(check::analyze_graph(&refs).diagnostics);
             }
             for d in &diags {
                 items.push(lsp_diagnostic(d));

@@ -1,0 +1,3 @@
+error[E0401] @ 13:25: initializer: `int32?` is not assignable to `string`
+error[E0401] @ 14:27: initializer: `int32?` is not assignable to `bool`
+error[E0402] @ 16:5: expected 0 argument(s), got 1

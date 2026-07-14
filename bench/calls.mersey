@@ -1,0 +1,13 @@
+// Call-heavy code: the shape the JIT could not touch until it could compile a
+// call. `fib` is nothing but recursion, so a subset with "no calls" left the
+// whole function interpreted — 4.69s here, against V8's 0.03s.
+import { console } from "std:console";
+
+function fib(n: int32): int32 {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+console.log(fib(32));

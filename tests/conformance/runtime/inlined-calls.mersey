@@ -1,0 +1,153 @@
+// A Mersey-to-Mersey call runs *inside* the interpreter's loop.
+//
+// A call used to cost 90ns — for a function with no arguments and no locals. It
+// re-entered `exec`, a two-thousand-line Rust function: a prologue, a fresh
+// `Exec`, a fresh operand stack, for a callee that needed none of it. Now a call
+// pushes a frame and keeps going round the same loop.
+//
+// Everything a nested Rust call gave for free has to be done by hand now: a
+// throw has to find the *caller's* handler, `finally` has to run on the way out,
+// `super` has to find the right `this`, an arrow made inside a call has to
+// capture the right one, and the depth limit has to count frames that are no
+// longer Rust frames. These are those.
+
+import { console } from "std:console";
+
+// A throw from deep inside inlined calls must find the caller's handler.
+function deep(n: int32): int32 {
+    if (n == 0) {
+        throw new RangeError("bottom");
+    }
+    return deep(n - 1);
+}
+let caught = "";
+try {
+    deep(50);
+} catch (e: Error) {
+    caught = e.message;
+}
+console.log("throw across 50 inlined frames:", caught);
+
+// A handler *inside* an inlined callee wins over the caller's.
+function inner(): int32 {
+    try {
+        throw new Error("mine");
+    } catch (e: Error) {
+        return 1;
+    }
+}
+function outer2(): int32 {
+    try {
+        return inner() + 10;
+    } catch (e: Error) {
+        return -1;
+    }
+}
+console.log("the callee's own handler wins:", outer2());
+
+// `finally` runs while unwinding through an inlined frame.
+let ran = "";
+function withFinally(): int32 {
+    try {
+        throw new Error("x");
+    } finally {
+        ran = ran + "f";
+    }
+}
+try {
+    withFinally();
+} catch (e: Error) {
+    ran = ran + "!";
+}
+console.log("finally ran while unwinding:", ran);
+
+// Recursion is still bounded — an inlined frame is still a frame.
+function runaway(n: int32): int32 {
+    return runaway(n + 1) + 1;
+}
+let depth = "no";
+try {
+    runaway(0);
+} catch (e: Error) {
+    depth = "threw";
+}
+console.log("runaway recursion:", depth);
+
+// `super`, through an inlined call.
+class Base {
+    public who(): string {
+        return "base";
+    }
+}
+class Derived extends Base {
+    public override who(): string {
+        return `derived/${super.who()}`;
+    }
+}
+function ask(d: Derived): string {
+    return d.who();
+}
+console.log("super through an inlined call:", ask(new Derived()));
+
+// An arrow made *inside* an inlined call captures that frame's `this`, and it
+// outlives the frame.
+class Box {
+    public v: int32 = 0;
+    public make(): () => int32 {
+        return (): int32 => this.v;
+    }
+}
+function makeIt(b: Box): () => int32 {
+    return b.make();
+}
+const box = new Box();
+box.v = 9;
+console.log("arrow made inside an inlined call:", makeIt(box)());
+
+// An arrow whose `this` belongs to one class, called from inside another's
+// constructor — the shape that caught the bug.
+class Sink {
+    public constructor(arm: (v: int32) => void) {
+        arm(7);
+    }
+}
+class Source {
+    public got: int32 = 0;
+    public tag: string = "source";
+    public constructor() {
+        const s = new Sink((v: int32) => {
+            this.got = v;
+        });
+    }
+}
+const src = new Source();
+console.log("this across a foreign frame:", src.got, src.tag);
+
+// Mutual recursion, and a generator that calls inlined functions.
+function even(n: int32): bool {
+    if (n == 0) {
+        return true;
+    }
+    return odd(n - 1);
+}
+function odd(n: int32): bool {
+    if (n == 0) {
+        return false;
+    }
+    return even(n - 1);
+}
+console.log("mutual recursion:", even(100), odd(100));
+
+function sq(x: int32): int32 {
+    return x * x;
+}
+function gen(n: int32): int32 {
+    for (let i = 0; i < n; i++) {
+        yield sq(i);
+    }
+}
+let sum = 0;
+for (const v of gen(5)) {
+    sum = sum + v;
+}
+console.log("generator calling inlined functions:", sum);

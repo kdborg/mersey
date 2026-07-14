@@ -1,0 +1,92 @@
+// Method calls: found once per call site, then inlined.
+//
+// A method call used to walk the whole of `call_member` — past iterators,
+// promises, arrays, strings — and *then* search the class chain, on every call,
+// and then re-enter the interpreter. It cost 169ns against 70ns for a plain
+// function, and a method call is what object-oriented code is made of.
+//
+// The site now remembers what the name resolved to, keyed on the class it
+// resolved it for. Which means the thing that must be right is what happens when
+// a *different* class turns up at the same site.
+
+import { console } from "std:console";
+
+class Animal {
+    public name(): string {
+        return "animal";
+    }
+    public speak(): string {
+        return `${this.name()} says ${this.sound()}`;
+    }
+    public sound(): string {
+        return "...";
+    }
+}
+
+class Dog extends Animal {
+    public override name(): string {
+        return "dog";
+    }
+    public override sound(): string {
+        return "woof";
+    }
+}
+
+class Cat extends Animal {
+    public override sound(): string {
+        return "meow";
+    }
+    // `name` is inherited — the site that calls it sees two different classes.
+}
+
+// One call site, three classes through it, over and over: a cache keyed on the
+// class must not hand one class another's method.
+function describe(a: Animal): string {
+    return a.speak();
+}
+
+const zoo: Animal[] = [new Dog(), new Cat(), new Animal()];
+let out = "";
+for (let round = 0; round < 3; round++) {
+    for (const a of zoo) {
+        out = out + describe(a) + "|";
+    }
+}
+console.log(out);
+
+// The same, but the *first* class through the site is the one that inherits —
+// so the cache is filled with a method found on the parent, and then a subclass
+// that overrides it arrives.
+function justSound(a: Animal): string {
+    return a.sound();
+}
+const order: Animal[] = [new Animal(), new Dog(), new Animal(), new Cat()];
+let sounds = "";
+for (const a of order) {
+    sounds = sounds + justSound(a) + ",";
+}
+console.log(sounds);
+
+// A method reached through `super` from an inlined method.
+class Loud extends Dog {
+    public override sound(): string {
+        return `${super.sound()}!!!`;
+    }
+}
+console.log(new Loud().speak());
+
+// A *field* holding a closure is not a method, and must not be cached as one.
+class Holder {
+    public fn: (() => string)? = null;
+    public run(): string {
+        const f = this.fn;
+        if (f == null) {
+            return "none";
+        }
+        return f();
+    }
+}
+const h = new Holder();
+console.log("field closure:", h.run());
+h.fn = (): string => "called";
+console.log("field closure:", h.run());

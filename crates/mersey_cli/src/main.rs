@@ -548,11 +548,14 @@ fn compile_cmd(path: &str) -> ExitCode {
     };
     let parsed = parser::parse(&src);
     let mut diags = parsed.diagnostics;
+    // Leaked before checking: the disassembly must show the conversions the
+    // checker decided on, and those belong to the nodes it checked.
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
     if diags.is_empty() {
-        diags = bind::bind(&parsed.module).diagnostics;
+        diags = bind::bind(module).diagnostics;
     }
     if diags.is_empty() {
-        diags = tycheck::check(&parsed.module).diagnostics;
+        diags = tycheck::check(module).diagnostics;
     }
     if !diags.is_empty() {
         for d in &diags {
@@ -560,7 +563,6 @@ fn compile_cmd(path: &str) -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
     print!("{}", interp::vm::listing(module));
     ExitCode::SUCCESS
 }

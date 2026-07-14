@@ -1,0 +1,7 @@
+import { Shape } from "./shape.mersey";
+// Overrides `area` — and does not exist until this module is evaluated, which is
+// after `total` has already been compiled against "nothing overrides it".
+export class Sneaky extends Shape {
+    public override area(): int32 { return 999; }
+}
+export function make(): Shape { return new Sneaky(); }

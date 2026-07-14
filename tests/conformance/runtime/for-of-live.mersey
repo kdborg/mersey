@@ -1,0 +1,35 @@
+// `for…of` over an array iterates live, by index — JS semantics, not a snapshot.
+//
+// The length is re-read every pass: elements pushed mid-loop are visited, and a
+// loop over a shrinking array ends early. This replaced a per-loop copy of the
+// whole array, and every tier must agree about what "live" means.
+
+import { console } from "std:console";
+
+// Growth is seen (bounded: stops adding at 6).
+const xs: int32[] = [1, 2, 3];
+let sum = 0;
+for (const x of xs) {
+    sum = sum + x;
+    if (xs.length < 6) {
+        xs.push(x + 10);
+    }
+}
+console.log("grew:", sum, xs.length);
+
+// A shrink ends the loop early.
+const ys: int32[] = [1, 2, 3, 4, 5];
+let seen = 0;
+for (const y of ys) {
+    seen = seen + 1;
+    ys.pop();
+}
+console.log("shrank:", seen, ys.length);
+
+// Strings still snapshot (they are immutable; there is no difference to see),
+// and an `Iterable<T>` class still drains its iterator.
+let chars = 0;
+for (const c of "abc") {
+    chars = chars + 1;
+}
+console.log("string:", chars);

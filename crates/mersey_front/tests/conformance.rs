@@ -38,11 +38,12 @@ fn check_dump(src: &SourceFile) -> String {
     use std::fmt::Write;
     let parsed = parser::parse(src);
     let mut diags = parsed.diagnostics;
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
     if diags.is_empty() {
-        diags = bind::bind(&parsed.module).diagnostics;
+        diags = bind::bind(module).diagnostics;
     }
     if diags.is_empty() {
-        diags = check::check(&parsed.module).diagnostics;
+        diags = check::check(module).diagnostics;
     }
     if diags.is_empty() {
         return "ok\n".to_string();

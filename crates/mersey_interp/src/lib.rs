@@ -18,12 +18,14 @@
 //! module per program (bounded, lives for the process/page lifetime).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use mersey_front::ast::*;
+use mersey_front::check;
 
 pub mod bignum;
+pub mod embed;
 pub mod gc;
 use gc::GcCell;
 pub mod regex;
@@ -157,56 +159,116 @@ pub trait Host {
 
 type Str = Rc<Vec<char>>;
 
+/// One Mersey value.
+///
+/// `#[repr(u8)]` is not decoration. Tier 1 loads and stores these cells *in
+/// place* — a field of an object, an element of an array — and to do that it has
+/// to know where the tag is and where the payload is. Rust's default enum layout
+/// is deliberately unspecified, so compiled code reading it would be reading
+/// whatever this build happened to choose. `repr(u8)` fixes the layout by
+/// language rule: a tag byte at offset 0, and each variant's payload laid out
+/// after it as a C struct would be. The discriminants are written out for the
+/// same reason — a variant reordered by someone tidying up must not silently
+/// change what the machine code thinks a `float64` is.
+///
+/// It costs nothing: the widest payload is still one word, so a `Value` is still
+/// 16 bytes. `repr::check()` proves the layout at startup rather than trusting
+/// this comment.
 #[derive(Clone)]
+#[repr(u8)]
 pub enum Value {
-    Null,
-    Bool(bool),
-    I32(i32),
-    I64(i64),
-    U32(u32),
-    U64(u64),
-    F32(f32),
-    F64(f64),
-    Char(char),
-    Str(Str),
-    BigIntV(Rc<BigInt>),
-    BigDecV(Rc<BigDec>),
-    Array(Rc<GcCell<Vec<Value>>>),
+    Null = 0,
+    Bool(bool) = 1,
+    I32(i32) = 2,
+    I64(i64) = 3,
+    U32(u32) = 4,
+    U64(u64) = 5,
+    F32(f32) = 6,
+    F64(f64) = 7,
+    Char(char) = 8,
+    Str(Str) = 9,
+    BigIntV(Rc<BigInt>) = 10,
+    BigDecV(Rc<BigDec>) = 11,
+    Array(Rc<GcCell<Vec<Value>>>) = 12,
     /// Insertion-ordered map; key equality is `values_equal` (O(n) MVP).
-    MapV(Rc<GcCell<Vec<(Value, Value)>>>),
-    SetV(Rc<GcCell<Vec<Value>>>),
+    MapV(Rc<GcCell<Vec<(Value, Value)>>>) = 13,
+    SetV(Rc<GcCell<Vec<Value>>>) = 14,
     /// Insertion-ordered fields: a record's field order is part of its
     /// observable behaviour (it survives `JSON.stringify` across the bridge).
-    Record(Rc<GcCell<Vec<(String, Value)>>>),
-    Closure(Rc<Closure>),
-    Class(Rc<ClassDef>),
-    Instance(Rc<GcCell<Instance>>),
+    Record(Rc<GcCell<Vec<(String, Value)>>>) = 15,
+    Closure(Rc<Closure>) = 16,
+    Class(Rc<ClassDef>) = 17,
+    Instance(Rc<GcCell<Instance>>) = 18,
     /// `console`, `document`, enum objects: named bags of values.
-    Namespace(Rc<Namespace>),
+    Namespace(Rc<Namespace>) = 19,
     /// A DOM element handle (Stage A: identified by element id).
-    Dom(Rc<String>),
+    Dom(Rc<String>) = 20,
     /// Opaque handle to a host (JS) object, reached via the universal
     /// bridge. Handle 0 is the global object (window).
-    JsRef(i64),
+    JsRef(i64) = 21,
     /// Packed byte buffer with O(1) element access — the engine-side home
     /// for pixel/audio/binary data (no per-element bridge hops).
-    Bytes(Rc<RefCell<Vec<u8>>>),
+    Bytes(Rc<RefCell<Vec<u8>>>) = 22,
     /// A compiled regular expression.
-    RegexV(Rc<regex::Regex>),
+    RegexV(Rc<regex::Regex>) = 23,
     /// A generator: a coroutine that produces values (`Iter<T>`).
-    IterV(Rc<GcCell<GenState>>),
+    IterV(Rc<GcCell<GenState>>) = 24,
     /// A Mersey promise (§ async/await).
-    PromiseV(Rc<GcCell<PromiseState>>),
+    PromiseV(Rc<GcCell<PromiseState>>) = 25,
     /// A callable that settles a promise; handed to host `.then(…)` so JS
-    /// promises can resume Mersey coroutines.
-    Resolver(Rc<GcCell<PromiseState>>, bool),
+    /// promises can resume Mersey coroutines. Two variants rather than one with a
+    /// flag: the flag would be the *only* thing in the whole `Value` enum needing
+    /// more than a pointer's worth of payload, and it would cost every value in
+    /// the engine 8 bytes to carry it — on every clone, every stack push, every
+    /// frame slot, every instance field.
+    Resolve(Rc<GcCell<PromiseState>>) = 26,
+    Reject(Rc<GcCell<PromiseState>>) = 27,
     /// Internal reaction used by `Promise.all` (slot index, is_reject).
-    AllSlot(u32, bool),
+    AllSlot(u32, bool) = 28,
     /// Executor handed to `new Promise(…)` on the host side: receives the
     /// host's (resolve, reject) and wires them to a Mersey promise, so a
     /// Mersey promise can cross the bridge as a *real* JS promise.
-    PromiseExec(Rc<GcCell<PromiseState>>),
-    Native(&'static str),
+    PromiseExec(Rc<GcCell<PromiseState>>) = 29,
+    /// A built-in, by name. A `&'static str` is a *fat* pointer — a pointer and
+    /// a length — and it was the only payload in this enum wider than a word.
+    /// That one variant made every `Value` 24 bytes instead of 16: eight wasted
+    /// bytes on every clone, every stack push, every frame slot, every field of
+    /// every object. A reference *to* the string is a thin pointer.
+    Native(&'static &'static str) = 30,
+}
+
+/// The layout of a [`Value`], as Tier 1's compiled code sees it.
+///
+/// Compiled code loads a `float64` field with one instruction, and the address
+/// it loads from is `object + slot * SIZE + PAYLOAD`. That arithmetic is only
+/// right if these numbers are right, and getting them wrong would not produce a
+/// compile error — it would produce a program that reads the wrong bytes. So
+/// they are *checked*, once, against a real value, before any heap-touching code
+/// is compiled; see `mersey_jit`.
+pub mod repr {
+    /// Bytes per value. Every field of every object is one of these.
+    pub const SIZE: usize = 16;
+
+    /// Where each payload starts.
+    ///
+    /// **Not one offset.** `repr(u8)` lays each variant out as the C struct
+    /// `{ tag: u8, payload }` — so the payload sits at *its own* alignment, and a
+    /// `float64` is at 8 while an `int32` is at 4 and a `bool` is at 1. Assuming a
+    /// single offset is the natural mistake, and it is not one the compiler would
+    /// catch: it would read four bytes from the wrong place and carry on. Each of
+    /// these is checked against a real value before any code that uses them is
+    /// emitted (`mersey_jit::heap::layout_holds`).
+    pub const OFF_BOOL: i32 = 1;
+    pub const OFF_I32: i32 = 4;
+    pub const OFF_I64: i32 = 8;
+    pub const OFF_F64: i32 = 8;
+    pub const TAG_NULL: u8 = 0;
+    pub const TAG_BOOL: u8 = 1;
+    pub const TAG_I32: u8 = 2;
+    pub const TAG_I64: u8 = 3;
+    pub const TAG_F64: u8 = 7;
+    pub const TAG_ARRAY: u8 = 12;
+    pub const TAG_INSTANCE: u8 = 18;
 }
 
 /// One input slot of a pending `Promise.all`.
@@ -255,6 +317,7 @@ impl PromiseState {
     pub(crate) fn take_edges(&mut self, out: &mut Vec<Value>) {
         for coro in std::mem::take(&mut self.waiters) {
             out.extend(coro.stack);
+            out.extend(coro.frame);
         }
         for (ok, err, _) in std::mem::take(&mut self.reactions) {
             out.extend(ok);
@@ -339,6 +402,7 @@ impl GenState {
     pub(crate) fn take_coro(&mut self, out: &mut Vec<Value>) {
         if let Some(coro) = self.coro.take() {
             out.extend(coro.stack);
+            out.extend(coro.frame);
         }
         if let Some(a) = self.adapter.take() {
             out.extend(a.func());
@@ -377,8 +441,11 @@ struct PendingGraph {
 
 /// One entry of the diagnostic call stack.
 pub struct Frame_ {
-    pub name: String,
-    pub module: String,
+    /// Shared, not owned. A call used to allocate *two Strings* — the function's
+    /// name and its module — purely so that a stack trace could be printed if one
+    /// were ever needed. Almost none ever are.
+    pub name: Rc<str>,
+    pub module: Rc<str>,
     pub pos: mersey_front::diag::Pos,
 }
 
@@ -395,6 +462,10 @@ pub struct Coro {
     pub pc: usize,
     pub stack: Vec<Value>,
     pub scopes: Vec<Env>,
+    /// The frame's slot-resolved locals. A suspended coroutine owns them, so
+    /// they must be saved with the rest of its state — and rooted with it, or
+    /// the collector would sweep values that only a paused generator holds.
+    pub frame: Vec<Value>,
     pub handlers: Vec<(usize, usize, usize)>,
     pub cls: Option<Rc<ClassDef>>,
     /// The promise this coroutine's completion settles.
@@ -426,12 +497,28 @@ pub struct Closure {
     pub(crate) cls: Option<Rc<ClassDef>>,
 }
 
-struct FnData {
-    #[allow(dead_code)] // future stack traces
-    name: String,
+pub struct FnData {
+    name: Rc<str>,
     is_async: bool,
     params: &'static [Param],
     body: FnBody,
+    /// The numeric type the function is declared to return, if it returns a
+    /// number. A compiled call needs to know what comes back before it compiles
+    /// the callee — and with recursion it cannot wait to find out.
+    ret_num: Option<mersey_front::check::Num>,
+    /// The function is declared to return `bool`.
+    ///
+    /// A compiled kernel has one numeric world, and in an integer one a `bool`
+    /// is an `i32` — comparisons produce 0 or 1 and flow through the same slots
+    /// as everything else. That is fine *inside* the kernel and wrong the moment
+    /// the value leaves it: `isEven(10)` would hand the interpreter `1` where
+    /// every other tier gives `true`, and `console.log` would print it. The
+    /// declared type is the only thing that knows, so it travels with the
+    /// function and the result is converted back at the boundary.
+    ret_bool: bool,
+    /// …or an object. The declared return type as written; resolved to a class
+    /// on the first Tier 1 compile that asks, when every class exists.
+    ret_ty: Option<&'static TypeExpr>,
     /// Lazily compiled bytecode: None = not tried, Some(None) = this body
     /// uses a construct the compiler doesn't cover (AST fallback),
     /// Some(Some(chunk)) = compiled.
@@ -439,12 +526,24 @@ struct FnData {
 }
 
 impl FnData {
-    fn new(name: String, is_async: bool, params: &'static [Param], body: FnBody) -> FnData {
+    fn new(
+        name: Rc<str>,
+        is_async: bool,
+        params: &'static [Param],
+        body: FnBody,
+        ret: Option<&'static TypeExpr>,
+    ) -> FnData {
         FnData {
             name,
             is_async,
             params,
             body,
+            ret_bool: matches!(ret, Some(TypeExpr::Named { name, .. }) if name == "bool"),
+            ret_num: match ret {
+                Some(TypeExpr::Named { name, .. }) => num_of_name(name),
+                _ => None,
+            },
+            ret_ty: ret,
             chunk: RefCell::new(None),
         }
     }
@@ -455,6 +554,26 @@ enum FnBody {
     Expr(&'static Expr),
 }
 
+/// What a field holds, as far as Tier 1 is concerned.
+///
+/// The class knows its own field types — they are written in the source — and
+/// this is them, resolved: a name like `Node` has become the class it names, so
+/// compiled code reading `this.left.value` can find `value`'s offset without
+/// looking anything up at run time.
+#[derive(Clone)]
+pub enum FieldTy {
+    Num(mersey_front::check::Num),
+    Bool,
+    /// A class-typed field. It may hold `null`, and it may hold an instance of a
+    /// *subclass* — both of which compiled code handles, because a subclass's
+    /// layout begins with its base's (§4.1), so this class's offsets stay right.
+    Obj(Rc<ClassDef>),
+    Arr(Rc<FieldTy>),
+    /// A string, a record, a function, a generic — something Tier 1 has no
+    /// register for. Reading one is not a bug; it is a reason to interpret.
+    Opaque,
+}
+
 pub struct ClassDef {
     /// Process-unique, never reused. Inline caches key on this rather than on
     /// the `Rc` address, which a later class could otherwise reuse after a
@@ -462,11 +581,35 @@ pub struct ClassDef {
     pub(crate) id: u64,
     name: String,
     pub(crate) parent: Option<Rc<ClassDef>>,
+    /// The declared type of each field, as *written*. Resolving it needs the
+    /// other classes, and a class can name itself (`left: Node` inside `Node`),
+    /// so it cannot be resolved while the class is being built.
+    field_tyexprs: Vec<Option<&'static TypeExpr>>,
+    /// …and as *resolved*, worked out on the first Tier 1 compile that needs it
+    /// and kept. By then every class in the module graph exists.
+    field_tys: RefCell<Option<Rc<Vec<FieldTy>>>>,
     /// Instance fields in initialization order (base-class fields first).
     /// Sealed shapes (§4.1) mean this layout is fixed at class-definition
     /// time, so a field is a **constant offset** — the whole point of
     /// removing prototypes.
     fields: Vec<(String, Option<&'static Expr>)>,
+    /// The instance's slots, exactly as `new` should leave them before the
+    /// constructor runs: every literal initializer already in place, `null`
+    /// everywhere else.
+    ///
+    /// `new` used to walk the field list *three times* — once to build a vector
+    /// of nulls, once to fill in the literals, and once to collect the
+    /// initializers that were not literals. That was 20ns a field, on every
+    /// allocation, to reproduce a result that is the same every time. It is
+    /// computed once, at class definition, and cloned.
+    initial_slots: Vec<Value>,
+    /// The initializers that actually compute something, and so cannot be folded:
+    /// `(slot, expr)`. Usually empty.
+    dynamic_inits: Vec<(usize, &'static Expr)>,
+    /// Container fields with no initializer: each instance gets its own fresh
+    /// empty one, because an empty array in `initial_slots` would be one array
+    /// *shared* by every instance.
+    container_inits: Vec<(usize, mersey_front::check::DefaultVal)>,
     /// name → slot, computed once when the class is defined.
     field_slots: HashMap<String, u32>,
     methods: HashMap<String, Rc<FnData>>,
@@ -491,6 +634,56 @@ pub struct Instance {
     /// members not declared in Mersey resolve against it, and the instance
     /// crosses the bridge AS that object.
     host: Option<i64>,
+}
+
+/// A bare instance of `cls`, exactly as `new` leaves it before the constructor
+/// runs: literal initializers in place, fresh containers, zeros and nulls
+/// elsewhere. This is the allocation itself, factored out so Tier 1 can perform
+/// it through a shim — the compiled `new` is this call plus a compiled
+/// constructor.
+///
+/// Only for classes whose initializers all fold (`dynamic_inits` empty): an
+/// initializer that computes needs an evaluator, and this has none.
+pub fn alloc_instance(cls: &Rc<ClassDef>) -> Value {
+    let mut slots = cls.initial_slots.clone();
+    for (slot, d) in &cls.container_inits {
+        slots[*slot] = default_value(*d);
+    }
+    let inst = Rc::new(GcCell::new(Instance {
+        class: cls.clone(),
+        slots,
+        host: None,
+    }));
+    gc::track_instance(&inst);
+    Value::Instance(inst)
+}
+
+/// The address of an instance's fields, so Tier 1 can load one at a constant
+/// offset. This is what sealed shapes (§4.1) were *for*.
+///
+/// There is no `unsafe` here, and that is not an accident: `RefCell` and `Vec`
+/// both hand out the address of what they hold in safe Rust. The engine crate
+/// never dereferences it — `mersey_jit` does, which is the one crate allowed to.
+///
+/// The pointer stays valid for as long as the instance does, because an
+/// instance's slot vector is **never resized**: its length is its class's field
+/// count, fixed when the class was declared. A language where an object can grow
+/// a property could not offer this at all.
+///
+/// `None` when the instance is already borrowed — an object the engine is
+/// already inside is one compiled code declines to touch, rather than one it
+/// races with.
+pub fn instance_slots(inst: &GcCell<Instance>) -> Option<*mut Value> {
+    let b = inst.try_borrow()?;
+    Some(b.slots.as_ptr() as *mut Value)
+}
+
+/// The address and length of an array's elements. Unlike an instance's slots,
+/// these move when the array grows — so compiled code, which cannot grow one and
+/// cannot call anything that could, reads them once and keeps them.
+pub fn array_data(a: &GcCell<Vec<Value>>) -> Option<(*mut Value, usize)> {
+    let b = a.try_borrow()?;
+    Some((b.as_ptr() as *mut Value, b.len()))
 }
 
 // ---- environments ----------------------------------------------------------------
@@ -580,6 +773,21 @@ pub struct Interp {
     globals: Env,
     callbacks: Vec<Value>,
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
+    /// Every class the program has defined.
+    ///
+    /// Tier 1 compiles `o.m()` into a **direct call** — no vtable, no inline
+    /// cache, no guard — when no subclass of `o`'s class overrides `m`. Answering
+    /// that needs the whole hierarchy, and Mersey can answer it: the module graph
+    /// is closed (§4.5), classes are sealed (§4.1), and there is no `eval`, so the
+    /// set of classes is *known*. A JS engine has to guess and check; this does
+    /// not. See `overridden_below`.
+    all_classes: Vec<Rc<ClassDef>>,
+    /// Calls before a function is offered to Tier 1, and back edges before a
+    /// running loop is. Settable so a test — or the differential fuzzer — can make
+    /// a program that runs *once* still reach Tier 1. A fuzzer that never crossed
+    /// the threshold would be fuzzing the interpreter and reporting on the JIT.
+    pub jit_threshold: u32,
+    pub osr_threshold: u32,
     /// Class whose method is currently executing (innermost last), for `super`.
     class_stack: Vec<Rc<ClassDef>>,
     /// Call stack for diagnostics: (function name, module, position of the
@@ -594,6 +802,10 @@ pub struct Interp {
     /// (§4.5 — the graph is closed); they simply do not execute until someone
     /// imports them.
     lazy_modules: HashMap<String, &'static Module>,
+    /// Web globals this host does not provide. Importing one is fine — most are
+    /// interfaces, wanted only for their type — but *using* one as a value is
+    /// the error, and this is what makes that error say why.
+    absent_globals: HashSet<String>,
     /// Stack address at the last host boundary — the base the budget measures
     /// growth from. See `STACK_BUDGET`.
     stack_base: usize,
@@ -618,39 +830,541 @@ pub struct Interp {
     gc_pending: bool,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
     pub jit: Option<JitHook>,
-    jit_cache: HashMap<usize, Option<JitFn>>,
+    /// Owns every value Tier 1 code allocates, for the duration of one call.
+    jit_arena: Arena,
+    /// Keyed by (chunk, receiver class): the same method body compiled against
+    /// two classes is two different compilations, because what its own calls
+    /// resolve to need not be the same.
+    jit_cache: HashMap<(usize, u64), Option<Rc<Compiled>>>,
     call_counts: HashMap<usize, u32>,
 }
 
-/// An argument to a JIT kernel (kernels are homogeneous: all int or all float).
+/// An argument to a compiled function.
+///
+/// `Ptr` is a **borrowed** object or array — the address of a live `Rc`'s
+/// contents, not a new reference to it. The caller owns the `Rc` and outlives
+/// the call.
+///
+/// `Owned` is an object handed over *with* its arena handle: the arena owns a
+/// reference to it, and compiled code may release that handle when it overwrites
+/// the local holding it. Only on-stack replacement produces these — it enters a
+/// function in the middle, where a local that would have held a compiled
+/// allocation instead holds an interpreter value, so the value is cloned into
+/// the arena to make the frame look the way compiled code left it.
 #[derive(Clone, Copy)]
 pub enum JitArg {
     I32(i32),
     I64(i64),
     F64(f64),
+    /// An object or an array; 0 is `null`.
+    Ptr(*const u8),
+    /// An arena-owned object: its address, and its arena handle.
+    Owned(*const u8, u64),
 }
 
-/// What a JIT kernel returned. `Bail` means the kernel hit a condition the
-/// spec says must throw (`x / 0`, `INT_MIN / -1`) — the interpreter re-runs
-/// the call so the error carries a proper message and stack trace. This is a
-/// trap at the *edge*, not a deopt in the middle: compiled code never
-/// resumes.
+/// Every reference-counted value Tier 1 code creates, owned in one place.
+///
+/// Compiled code does not hold `Rc`s — it holds addresses. When it allocates, the
+/// engine keeps the actual `Rc` here and hands back the address plus a *handle*
+/// naming this slot. Releasing the handle drops the reference (that is what keeps
+/// a hot allocating loop from growing forever); anything never released is
+/// dropped when the call ends, on **every** exit — a return, a bail, a trap — 
+/// because the interpreter clears the arena, not the compiled code. Nothing
+/// compiled ever frees; it only lets go.
+#[derive(Default)]
+pub struct Arena {
+    slots: Vec<Option<Value>>,
+    free: Vec<usize>,
+}
+
+impl Arena {
+    /// Own `v`; the returned handle names it. Handles start at 1 — 0 is
+    /// "borrowed, nothing to release" everywhere in compiled code.
+    pub fn keep(&mut self, v: Value) -> u64 {
+        match self.free.pop() {
+            Some(i) => {
+                self.slots[i] = Some(v);
+                (i + 1) as u64
+            }
+            None => {
+                self.slots.push(Some(v));
+                self.slots.len() as u64
+            }
+        }
+    }
+
+    pub fn release(&mut self, h: u64) {
+        if h == 0 {
+            return;
+        }
+        let i = (h - 1) as usize;
+        if let Some(slot) = self.slots.get_mut(i) {
+            if slot.take().is_some() {
+                self.free.push(i);
+            }
+        }
+    }
+
+    /// Take the value out, keeping it alive: how a compiled result crosses back
+    /// to the interpreter as an owned `Value`.
+    pub fn take(&mut self, h: u64) -> Option<Value> {
+        if h == 0 {
+            return None;
+        }
+        let i = (h - 1) as usize;
+        let v = self.slots.get_mut(i)?.take();
+        if v.is_some() {
+            self.free.push(i);
+        }
+        v
+    }
+
+    /// The end of a compiled call, on every path: drop whatever it never let go.
+    pub fn clear(&mut self) {
+        self.slots.clear();
+        self.free.clear();
+    }
+}
+
+/// What a compiled function returned.
+///
+/// `Bail` means it could not run this call at all — the code is fine, the values
+/// were not (an argument was not the type the kernel was compiled for). Nothing
+/// has happened; the interpreter runs the call instead.
+///
+/// `Trap` means it ran, got as far as `pc` in function `func`, and hit a
+/// condition the language says must throw: `x / 0`, an index out of bounds, a
+/// field of `null`, the recursion limit. It carries **where**, so the interpreter
+/// raises the error at the position it actually happened — rather than re-running
+/// the call to find out, which was the old answer and is not available once
+/// compiled code can write to the heap.
 pub enum JitResult {
     I32(i32),
     I64(i64),
     F64(f64),
+    /// A finished Mersey value — how a compiled *object* comes back: the call
+    /// wrapper pulls it out of the arena before the arena is cleared.
+    Val(Value),
     Null,
     Bail,
+    Trap(Trap),
 }
 
-/// A JIT-compiled kernel.
-pub type JitFn = Rc<dyn Fn(&[JitArg]) -> JitResult>;
-/// Backend entry: compile a chunk whose parameters are the given simple
-/// names; None = outside the JIT-able subset.
-pub type JitHook = fn(&vm::Chunk, &[String]) -> Option<JitFn>;
+/// Why compiled code stopped, and where.
+#[derive(Clone, Copy)]
+pub struct Trap {
+    pub reason: TrapReason,
+    /// Which function of the compiled group, and the bytecode position in it.
+    pub func: usize,
+    pub pc: usize,
+    /// Detail for the message: the index and the length, for a bounds trap.
+    pub a: i64,
+    pub b: i64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TrapReason {
+    DivZero,
+    IntMinOverflow,
+    Depth,
+    Bounds,
+    /// A field or element of `null`.
+    NullAccess,
+    /// A heap cell did not hold what its declared type says it holds. The type
+    /// system says this cannot happen; compiled code checks anyway, because the
+    /// alternative to checking is reading an integer as a pointer.
+    BadTag,
+}
+
+/// What one value at the Tier 1 boundary is.
+#[derive(Clone)]
+pub enum JitSlot {
+    I32,
+    I64,
+    F64,
+    /// An instance of this class, or of a subclass, or `null`.
+    Obj(Rc<ClassDef>),
+    /// An array of these.
+    Arr(Rc<FieldTy>),
+}
+
+/// One function in a compiled group: its bytecode, and everything about its
+/// signature that compiled code has to know before it compiles the body.
+#[derive(Clone)]
+pub struct JitFn {
+    pub chunk: Rc<vm::Chunk>,
+    pub params: Vec<String>,
+    /// The declared type of each parameter. A parameter's type cannot be inferred
+    /// from the body — the values come from outside it — so this is the only
+    /// place an object parameter's class can come from.
+    pub param_tys: Vec<Option<JitSlot>>,
+    /// The class of `this`, for a method. `None` for a plain function.
+    pub this: Option<Rc<ClassDef>>,
+    /// The numeric type this function is declared to return. Recursion means a
+    /// call cannot wait for the callee to be compiled to find out.
+    pub ret: Option<mersey_front::check::Num>,
+    /// …or `bool`.
+    pub ret_bool: bool,
+    /// …or an instance of this class (or a subclass, or null).
+    pub ret_obj: Option<Rc<ClassDef>>,
+    /// The global binding this came from, if it came from one. Compiled code
+    /// calls the function a name meant *when it was compiled*; if the name is
+    /// later repointed (`f = g`), the code is discarded. A method has no binding:
+    /// a class's method set cannot change (§4.1).
+    pub bind: Option<(String, Rc<Closure>)>,
+}
+
+/// The numeric world a compiled function returns in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum JitKind {
+    I32,
+    I64,
+    F64,
+}
+
+/// What the compiler may ask the engine while it decides what it can compile.
+///
+/// The backend drives this, not the interpreter, and it has to: whether `o.m()`
+/// is compilable depends on what `o` is, and working *that* out means propagating
+/// types through the bytecode — which is the compiler's job and nobody else's.
+pub trait JitEnv {
+    /// A top-level function by name, if compiled code could call it directly.
+    fn function(&self, name: &str) -> Option<JitFn>;
+
+    /// The method `name` on a receiver of class `cls`, if the call can be made
+    /// **directly** — which needs `cls` to be the last word on what `m` means. See
+    /// `Interp::overridden_below`.
+    fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
+
+    /// How many classes exist. Compiled code's dispatch is only static as long as
+    /// the hierarchy it was compiled against is the whole hierarchy — and a
+    /// dynamic `import()` can add to it.
+    fn n_classes(&self) -> usize;
+
+    /// The class `new name(…)` constructs, if compiled code can construct it:
+    /// its field initializers all fold (no expressions to evaluate), it is not
+    /// host-backed, and it is not one of the built-in error classes. The
+    /// constructor body, if there is one, is compiled like any method.
+    fn class_for_new(&self, name: &str) -> Option<Rc<ClassDef>>;
+
+    /// A class's constructor as a compilable function, `None` if it has none
+    /// (then `new` takes no arguments and only the field defaults run).
+    fn ctor(&self, cls: &Rc<ClassDef>) -> Option<Option<JitFn>>;
+}
+
+/// Native code for one root function *and everything it calls*.
+///
+/// A call graph is compiled as a unit rather than one function at a time: a
+/// compiled function that had to return to the interpreter to make a call
+/// would pay for the transition twice per call, which is most of what the
+/// call costs. Compiled code calls compiled code directly.
+pub struct JitCode {
+    pub kind: JitKind,
+    /// Enter the root at the top, with its arguments. The arena owns everything
+    /// the call allocates; the interpreter clears it when the call ends.
+    #[allow(clippy::type_complexity)]
+    pub call: Box<dyn Fn(&[JitArg], &mut Arena) -> JitResult>,
+    /// Re-enter the root *at a loop header*, carrying the current value of
+    /// every local (on-stack replacement). This is what lets a loop inside a
+    /// function that is only ever called once reach Tier 1 at all.
+    #[allow(clippy::type_complexity)]
+    pub osr: Box<dyn Fn(&[JitArg], usize, &mut Arena) -> JitResult>,
+    /// Frame size. The compiled code uses the *same* frame the interpreter does,
+    /// with the same slot numbers — which is what makes on-stack replacement a
+    /// copy of a `Vec` rather than a search for each local by name.
+    pub n_slots: usize,
+    /// What each slot holds. The frame is no longer all one type — that was the
+    /// whole limitation — so marshalling it has to go slot by slot.
+    pub slot_kinds: Vec<JitSlot>,
+    /// Bytecode positions of the loop headers `osr` can resume at.
+    pub osr_entries: Vec<usize>,
+    /// Where the root's `this` lives, for a method. It is a frame slot like any
+    /// other, and it comes *after* the parameters — so `call` takes the arguments
+    /// in order and then, if there is one, the receiver.
+    pub this_slot: Option<usize>,
+    /// The chunks of the group, in the order a `Trap`'s `func` indexes them — so
+    /// a trap's `pc` can be turned back into a line and a column.
+    pub chunks: Vec<Rc<vm::Chunk>>,
+    /// Which slots hold objects the compiled code *owns* (arena handles), so an
+    /// on-stack replacement knows which locals to clone into the arena.
+    pub owned_slots: Vec<bool>,
+    /// The global bindings this code was compiled against.
+    pub bound: Vec<(String, Rc<Closure>)>,
+    /// The classes it constructs or reaches into. Held so the raw class pointers
+    /// baked into the code stay valid for exactly as long as the code does.
+    pub classes: Vec<Rc<ClassDef>>,
+    /// The size of the class hierarchy it was compiled against.
+    pub n_classes: usize,
+}
+
+/// Backend entry: compile `root` and everything it calls. `None` = outside the
+/// subset Tier 1 can take.
+pub type JitHook = fn(&dyn JitEnv, &JitFn) -> Option<Rc<JitCode>>;
+
+/// Compiled code, plus the bindings it was compiled against.
+///
+/// Compiled code calls a callee's *chunk* directly, which is only correct while
+/// the global name still refers to the function it named at compile time — and
+/// a function declaration is an ordinary binding that can be reassigned
+/// (`f = g`). Nothing reassigns it while the kernel runs (compiled code cannot
+/// write a global), so checking at the entry is enough: if a binding moved, the
+/// code is discarded and the call is interpreted.
+struct Compiled {
+    code: Rc<JitCode>,
+}
+
+/// The engine, as the compiler is allowed to see it.
+struct InterpEnv<'a> {
+    i: &'a Interp,
+}
+
+impl JitEnv for InterpEnv<'_> {
+    fn function(&self, name: &str) -> Option<JitFn> {
+        self.i.top_level_fn(name)
+    }
+    fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        self.i.direct_method(cls, name)
+    }
+    fn n_classes(&self) -> usize {
+        self.i.all_classes.len()
+    }
+    fn class_for_new(&self, name: &str) -> Option<Rc<ClassDef>> {
+        let Some(Value::Class(cls)) = env_get(&self.i.globals, name) else {
+            return None;
+        };
+        // Field initializers that compute need an evaluator, and the shim that
+        // allocates for compiled code has none. Host-backed and built-in error
+        // classes construct through machinery of their own.
+        if !cls.dynamic_inits.is_empty() || cls.is_host_backed() || cls.is_builtin_error {
+            return None;
+        }
+        Some(cls)
+    }
+    fn ctor(&self, cls: &Rc<ClassDef>) -> Option<Option<JitFn>> {
+        let Some(data) = cls.ctor_data() else {
+            // No constructor anywhere in the chain: `new` is just the defaults.
+            return Some(None);
+        };
+        if data.is_async {
+            return None;
+        }
+        // A constructor is compiled on first *use*; a hot `new` may arrive first.
+        if data.chunk.borrow().is_none() {
+            let module = self.i.current_module.clone();
+            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            *data.chunk.borrow_mut() = Some(out);
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.i.param_types(data.params),
+            chunk,
+            this: Some(cls.clone()),
+            ret: None,
+            ret_bool: false,
+            ret_obj: None,
+            bind: None,
+        }))
+    }
+}
+
+/// Parameter names, if every parameter is a plain name: no destructuring, no
+/// rest, no default. Anything else is bound by machinery the kernel does not
+/// have, so the function stays interpreted.
+fn simple_param_names(params: &[Param]) -> Option<Vec<String>> {
+    params
+        .iter()
+        .map(|p| match (&p.target, p.rest, &p.default) {
+            (Pattern::Name(n), false, None) => Some(n.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The numeric type a declared type *name* stands for.
+fn num_of_name(name: &str) -> Option<mersey_front::check::Num> {
+    use mersey_front::check::{IntKind, Num};
+    Some(match name {
+        "int8" => Num::Int(IntKind::I8),
+        "int16" => Num::Int(IntKind::I16),
+        "int32" => Num::Int(IntKind::I32),
+        "int64" => Num::Int(IntKind::I64),
+        "uint8" => Num::Int(IntKind::U8),
+        "uint16" => Num::Int(IntKind::U16),
+        "uint32" => Num::Int(IntKind::U32),
+        "uint64" => Num::Int(IntKind::U64),
+        "float32" => Num::F32,
+        "float64" => Num::F64,
+        _ => return None,
+    })
+}
+
+/// The value an uninitialized binding or field starts with: its type's zero.
+///
+/// Numbers are 0 at their declared width, `string` is `""`, `char` is `'\0'`,
+/// `bool` is `false`, containers are empty. The *kind* comes from the checker
+/// ([`check::default_for_ty`]) — only the checker can see through a type alias —
+/// and this is where it becomes a value.
+///
+/// Containers are freshly allocated on every call, never shared: an empty array
+/// stored in `initial_slots` would be *one* array handed to every instance, and
+/// the first push would prove it.
+pub(crate) fn default_value(d: check::DefaultVal) -> Value {
+    use check::DefaultVal as D;
+    match d {
+        D::Num(n) => match n {
+            check::Num::F32 => Value::F32(0.0),
+            check::Num::F64 => Value::F64(0.0),
+            check::Num::Int(check::IntKind::I64) => Value::I64(0),
+            check::Num::Int(check::IntKind::U32) => Value::U32(0),
+            check::Num::Int(check::IntKind::U64) => Value::U64(0),
+            // The kinds below 32 bits are carried as int32 (§3.3).
+            check::Num::Int(_) => Value::I32(0),
+        },
+        D::BigInt => Value::BigIntV(Rc::new(BigInt::zero())),
+        D::BigDec => Value::BigDecV(Rc::new(BigDec::parse("0").expect("zero"))),
+        D::Str => Value::Str(Rc::new(Vec::new())),
+        D::Char => Value::Char('\0'),
+        D::Bool => Value::Bool(false),
+        D::Array => new_array(Vec::new()),
+        D::Map => new_map(Vec::new()),
+        D::Set => new_set(Vec::new()),
+        D::Bytes => Value::Bytes(Rc::new(RefCell::new(Vec::new()))),
+    }
+}
+
+/// Is this default an immutable value, safe to precompute once and share?
+/// A container is not: sharing one is aliasing, not defaulting.
+pub(crate) fn default_is_shareable(d: check::DefaultVal) -> bool {
+    use check::DefaultVal as D;
+    !matches!(d, D::Array | D::Map | D::Set | D::Bytes)
+}
+
+/// The slots a fresh instance starts with, the initializers that have to run,
+/// and the container defaults that must be allocated per instance.
+/// See `ClassDef::initial_slots`.
+#[allow(clippy::type_complexity)]
+fn fold_field_inits(
+    fields: &[(String, Option<&'static Expr>)],
+    tyexprs: &[Option<&'static TypeExpr>],
+) -> (
+    Vec<Value>,
+    Vec<(usize, &'static Expr)>,
+    Vec<(usize, check::DefaultVal)>,
+) {
+    let mut slots = Vec::with_capacity(fields.len());
+    let mut dynamic = Vec::new();
+    let mut containers = Vec::new();
+    for (slot, (_, init)) in fields.iter().enumerate() {
+        match init {
+            Some(e @ Expr::Lit { kind, text, .. }) => match parse_literal(*kind, text) {
+                Ok(v) => slots.push(v),
+                // A literal the engine cannot build (out of range at its declared
+                // type) still has to be *evaluated*, so it can throw where it is
+                // written rather than where it is used.
+                Err(_) => {
+                    slots.push(Value::Null);
+                    dynamic.push((slot, *e));
+                }
+            },
+            Some(e) => {
+                slots.push(Value::Null);
+                dynamic.push((slot, *e));
+            }
+            // No initializer: the field starts at its type's zero, not at null.
+            None => match tyexprs.get(slot).copied().flatten().and_then(check::default_for_ty) {
+                Some(d) if default_is_shareable(d) => slots.push(default_value(d)),
+                Some(d) => {
+                    slots.push(Value::Null);
+                    containers.push((slot, d));
+                }
+                // No default (a class type, an interface): null, honestly.
+                None => slots.push(Value::Null),
+            },
+        }
+    }
+    (slots, dynamic, containers)
+}
+
+/// What the interpreter would have said, had it been the one to reach through the
+/// null. Compiled code stopped at an instruction; the instruction says which of
+/// the three it was.
+fn null_access_message(chunk: &vm::Chunk, pc: usize) -> String {
+    let name = |ni: u16| chunk.names[ni as usize].clone();
+    match chunk.code.get(pc) {
+        Some(vm::Op::GetMember(ni, _)) => format!("no member `{}` on null", name(*ni)),
+        Some(vm::Op::CallMethod(ni, _)) => format!("no method `{}` on null", name(*ni)),
+        Some(vm::Op::SetMember(_, _)) => "cannot assign to a member of this value".to_string(),
+        Some(vm::Op::IndexGet) => "only arrays and strings are indexable".to_string(),
+        Some(vm::Op::IndexSet) => "only array elements can be assigned by index".to_string(),
+        _ => "no member on null".to_string(),
+    }
+}
+
+/// A runtime value as an argument to compiled code — but only if it is what that
+/// slot was compiled to hold. This is the entry guard: it is what makes the
+/// compiled code deopt-free, because inside it every value's type is known.
+///
+/// An object passes if it is an instance of the class the code expects **or of a
+/// subclass**. That is not a concession; it is the point. A subclass's fields
+/// begin with its base's (§4.1), so every offset the code computed is still the
+/// right offset, and every method it resolved is still the right method (nothing
+/// below the class overrides it, or the code would not exist). A `Shape[]` full
+/// of `Circle`s and `Square`s runs the compiled code.
+fn jit_arg(v: &Value, slot: &JitSlot) -> Option<JitArg> {
+    match (v, slot) {
+        (Value::I32(n), JitSlot::I32) => Some(JitArg::I32(*n)),
+        (Value::I64(n), JitSlot::I64) => Some(JitArg::I64(*n)),
+        (Value::F64(n), JitSlot::F64) => Some(JitArg::F64(*n)),
+        // A `bool` lives in an integer register — a comparison produces one — and
+        // this is the edge where it goes back to being a value.
+        (Value::Bool(t), JitSlot::I32) => Some(JitArg::I32(*t as i32)),
+        (Value::Instance(i), JitSlot::Obj(cls)) => {
+            let ok = i.try_borrow()?.class.descends_from(cls);
+            ok.then(|| JitArg::Ptr(Rc::as_ptr(i) as *const u8))
+        }
+        (Value::Array(a), JitSlot::Arr(_)) => Some(JitArg::Ptr(Rc::as_ptr(a) as *const u8)),
+        // A null object or array is a null pointer, which compiled code checks
+        // before it dereferences — exactly as the interpreter does.
+        (Value::Null, JitSlot::Obj(_) | JitSlot::Arr(_)) => Some(JitArg::Ptr(std::ptr::null())),
+        _ => None,
+    }
+}
+
+/// What compiled code returned, as a Mersey value — or handed back whole, when
+/// it did not produce one (a bail, a trap) and the caller must deal with that.
+fn jit_value(r: JitResult, ret_bool: bool) -> Result<Value, JitResult> {
+    match r {
+        // In an integer kernel a `bool` *is* an i32: a comparison yields 0 or 1
+        // and flows through the same slots as every other value. Only the
+        // declared type knows it was a bool, and only at the boundary does the
+        // difference become visible — so this is where it is put back.
+        JitResult::I32(v) if ret_bool => Ok(Value::Bool(v != 0)),
+        JitResult::I32(v) => Ok(Value::I32(v)),
+        JitResult::I64(v) => Ok(Value::I64(v)),
+        JitResult::F64(v) => Ok(Value::F64(v)),
+        JitResult::Val(v) => Ok(v),
+        JitResult::Null => Ok(Value::Null),
+        other => Err(other),
+    }
+}
 
 /// Calls before a function is considered hot (Tier 1 threshold).
 const JIT_THRESHOLD: u32 = 64;
+
+/// Loop iterations before the *containing* function is compiled and re-entered
+/// at the loop header. A function called once around a long loop never becomes
+/// hot by call count — the counter only ever reaches 1 — so the loop's own
+/// back edge is what has to trigger it.
+const OSR_THRESHOLD: u32 = 5_000;
+
+/// How deep compiled code may recurse before handing the call back. The
+/// interpreter's own limit (`MAX_CALL_DEPTH`) then raises the `RangeError`
+/// with a stack trace, exactly as it would have without a JIT.
+pub const JIT_DEPTH_LIMIT: i64 = MAX_CALL_DEPTH as i64;
 
 pub fn new_interp(host: Box<dyn Host>) -> Interp {
     let root = Rc::new(GcCell::new(Scope {
@@ -674,11 +1388,15 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         globals,
         callbacks: Vec::new(),
         error_classes,
+        all_classes: Vec::new(),
+        jit_threshold: JIT_THRESHOLD,
+        osr_threshold: OSR_THRESHOLD,
         class_stack: Vec::new(),
         frames: Vec::new(),
         depth: 0,
         pending_graph: None,
         lazy_modules: HashMap::new(),
+        absent_globals: HashSet::new(),
         stack_base: stack_here(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
@@ -689,6 +1407,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         pending_class_names: std::collections::HashSet::new(),
         gc_pending: false,
         jit: None,
+        jit_arena: Arena::default(),
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
     }
@@ -716,6 +1435,143 @@ impl ClassDef {
     pub(crate) fn slot_of(&self, name: &str) -> Option<u32> {
         self.field_slots.get(name).copied()
     }
+
+    pub fn class_id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn field_slot(&self, name: &str) -> Option<u32> {
+        self.field_slots.get(name).copied()
+    }
+
+    pub fn n_fields(&self) -> usize {
+        self.fields.len()
+    }
+
+
+
+    /// Is `other` this class, or one of its ancestors? Which is the same question
+    /// as "are this class's field offsets valid on an instance of `other`" — and
+    /// they are, because a subclass's layout begins with its base's.
+    pub fn descends_from(&self, other: &ClassDef) -> bool {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if k.id == other.id {
+                return true;
+            }
+            c = k.parent.as_deref();
+        }
+        false
+    }
+
+    /// Every field's type, resolved. Worked out once, on the first Tier 1 compile
+    /// that needs it — not at class-definition time, when the classes a field
+    /// names may not exist yet (and one of them may be this very class).
+    pub fn field_types(&self) -> Rc<Vec<FieldTy>> {
+        if let Some(t) = self.field_tys.borrow().as_ref() {
+            return t.clone();
+        }
+        // Placed *before* resolving, so a class whose field names itself does not
+        // recurse forever: the inner resolution finds this empty answer, and only
+        // needs the class, not its fields.
+        let env = self.env.clone();
+        let tys: Vec<FieldTy> = self
+            .field_tyexprs
+            .iter()
+            .map(|t| match (t, &env) {
+                (Some(t), Some(env)) => resolve_field_ty(t, env),
+                _ => FieldTy::Opaque,
+            })
+            .collect();
+        let tys = Rc::new(tys);
+        *self.field_tys.borrow_mut() = Some(tys.clone());
+        tys
+    }
+
+    /// The method `name` resolves to on this class, and the class that declares
+    /// it (which is where its `super` and its private fields are relative to).
+    pub fn lookup_method(&self, name: &str) -> Option<Rc<FnData>> {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if let Some(m) = k.methods.get(name) {
+                return Some(m.clone());
+            }
+            c = k.parent.as_deref();
+        }
+        None
+    }
+
+    /// Does this class declare `name` itself (as opposed to inheriting it)?
+    pub fn declares_method(&self, name: &str) -> bool {
+        self.methods.contains_key(name)
+    }
+
+    /// Is `name` a getter, a setter, or a static — anything that makes `o.name`
+    /// or `o.name()` mean something other than a field load or a method call?
+    pub fn is_accessor(&self, name: &str) -> bool {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if k.getters.contains_key(name) || k.setters.contains_key(name) {
+                return true;
+            }
+            c = k.parent.as_deref();
+        }
+        false
+    }
+
+    pub fn is_host_backed(&self) -> bool {
+        self.host_iface.is_some()
+    }
+
+    pub fn is_builtin_error_class(&self) -> bool {
+        self.is_builtin_error
+    }
+
+    /// The constructor that runs for `new`, walking up to the base class exactly
+    /// as `instantiate` does.
+    pub fn ctor_data(&self) -> Option<Rc<FnData>> {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if let Some(f) = &k.ctor {
+                return Some(f.clone());
+            }
+            c = k.parent.as_deref();
+        }
+        None
+    }
+}
+
+/// A field's declared type, as a thing Tier 1 can reason about. Anything it has
+/// no register for — a string, a record, a generic, a nullable number — is
+/// `Opaque`, which is a decision to interpret, not a failure.
+fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
+    match t {
+        TypeExpr::Named { name, args, .. } if args.is_empty() => {
+            if name == "bool" {
+                return FieldTy::Bool;
+            }
+            if let Some(n) = num_of_name(name) {
+                return FieldTy::Num(n);
+            }
+            match env_get(env, name) {
+                Some(Value::Class(c)) => FieldTy::Obj(c),
+                _ => FieldTy::Opaque,
+            }
+        }
+        TypeExpr::ArrayOf(e) => match resolve_field_ty(e, env) {
+            FieldTy::Opaque => FieldTy::Opaque,
+            inner => FieldTy::Arr(Rc::new(inner)),
+        },
+        // `Node?` holds a `Node` or `null`, and compiled code represents `null`
+        // as a null pointer — so a nullable *object* is the same register. A
+        // nullable number is not: there is no `null` in an f64.
+        TypeExpr::Nullable(e) => match resolve_field_ty(e, env) {
+            FieldTy::Obj(c) => FieldTy::Obj(c),
+            FieldTy::Arr(e) => FieldTy::Arr(e),
+            _ => FieldTy::Opaque,
+        },
+        _ => FieldTy::Opaque,
+    }
 }
 
 fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> ClassDef {
@@ -725,11 +1581,18 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
         .enumerate()
         .map(|(i, (n, _))| (n.clone(), i as u32))
         .collect();
+    let (initial_slots, dynamic_inits, container_inits) =
+        fold_field_inits(&fields, &[None, None]);
     ClassDef {
         id: fresh_class_id(),
         name: name.to_string(),
         parent,
         field_slots,
+        field_tyexprs: vec![None; fields.len()], // `message` and `stack`: strings
+        field_tys: RefCell::new(None),
+        initial_slots,
+        dynamic_inits,
+        container_inits,
         fields,
         methods: HashMap::new(),
         getters: HashMap::new(),
@@ -778,7 +1641,7 @@ impl Interp {
             let loc = if f.pos.line > 0 {
                 format!("{}:{}:{}", f.module, f.pos.line, f.pos.col)
             } else {
-                f.module.clone()
+                f.module.to_string()
             };
             format!("\n    at {} ({loc})", f.name)
         };
@@ -802,10 +1665,10 @@ impl Interp {
         }
     }
 
-    pub(crate) fn push_frame(&mut self, name: &str, module: &str) {
+    pub(crate) fn push_frame(&mut self, name: &Rc<str>, module: &Rc<str>) {
         self.frames.push(Frame_ {
-            name: name.to_string(),
-            module: module.to_string(),
+            name: name.clone(),
+            module: module.clone(),
             pos: mersey_front::diag::Pos { line: 0, col: 0 },
         });
     }
@@ -999,10 +1862,11 @@ impl Interp {
         for d in &decls {
             if let Decl::Function(f) = d {
                 let data = Rc::new(FnData::new(
-                    f.name.text.clone(),
+                    f.name.text.as_str().into(),
                     f.is_async,
                     &f.params,
                     FnBody::Block(&f.body),
+                    f.ret.as_ref(),
                 ));
                 let c = Closure {
                     data,
@@ -1069,6 +1933,7 @@ impl Interp {
                     let result = PromiseState::pending();
                     let coro = Coro {
                         gen: None,
+                        frame: vm::new_frame(&chunk, &globals, None),
                         chunk,
                         pc: 0,
                         stack: Vec::new(),
@@ -1077,7 +1942,7 @@ impl Interp {
                         cls: None,
                         result: result.clone(),
                     };
-                    self.push_frame("<module>", &spec);
+                    self.push_frame(&"<module>".into(), &spec.as_str().into());
                     let out = self.drive(coro, None);
                     self.pop_frame();
                     out?;
@@ -1095,8 +1960,9 @@ impl Interp {
         if self.use_vm {
             if let Some(chunk) = compiled {
                 let globals = self.globals.clone();
-                self.push_frame("<module>", &spec);
-                let out = vm::run_chunk(self, &chunk, globals);
+                self.push_frame(&"<module>".into(), &spec.as_str().into());
+                let frame = vm::new_frame(&chunk, &globals, None);
+                let out = vm::run_chunk(self, &chunk, globals, frame, None);
                 self.pop_frame();
                 out?;
                 self.drain_tasks()?;
@@ -1142,7 +2008,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for level in ["log", "warn", "error", "info", "debug"] {
                     let id: &'static str = Box::leak(format!("console.{level}").into_boxed_str());
-                    entries.insert(level.to_string(), Value::Native(id));
+                    entries.insert(level.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let console = Value::Namespace(Rc::new(Namespace {
                     name: "console".to_string(),
@@ -1165,7 +2031,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for n in natives {
                     let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
                     name: ns_name.to_string(),
@@ -1180,7 +2046,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for n in ["collect", "stats"] {
                     let id: &'static str = Box::leak(format!("gc.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
                     name: "gc".to_string(),
@@ -1195,7 +2061,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for n in ["now", "monotonic", "parts", "fromParts", "format", "parse"] {
                     let id: &'static str = Box::leak(format!("time.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
                     name: "time".to_string(),
@@ -1217,7 +2083,7 @@ impl Interp {
                     "decodeUtf8",
                 ] {
                     let id: &'static str = Box::leak(format!("bytes.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
                     name: "bytes".to_string(),
@@ -1232,7 +2098,7 @@ impl Interp {
                 let mut entries = HashMap::new();
                 for n in ["resolve", "reject", "all"] {
                     let id: &'static str = Box::leak(format!("promise.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 let ns = Value::Namespace(Rc::new(Namespace {
                     name: "Promise".to_string(),
@@ -1271,7 +2137,7 @@ impl Interp {
                 for n in natives {
                     // Native ids are `<ns>.<method>`, leaked once per import.
                     let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
-                    entries.insert(n.to_string(), Value::Native(id));
+                    entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
                 }
                 for (n, v) in consts {
                     entries.insert(n.to_string(), v.clone());
@@ -1290,13 +2156,13 @@ impl Interp {
                     // Engine-provided helpers (not IDL): explicit handle
                     // release for long-lived pages.
                     if n.text == "release" {
-                        env_define(&self.globals, "release", Value::Native("web.release"));
+                        env_define(&self.globals, "release", Value::Native(&"web.release"));
                         continue;
                     }
                     // Bind a Mersey instance of a host-backed class to an
                     // existing host object (the browser builds custom elements).
                     if n.text == "attach" {
-                        env_define(&self.globals, "attach", Value::Native("web.attach"));
+                        env_define(&self.globals, "attach", Value::Native(&"web.attach"));
                         continue;
                     }
                     // Fast path: the hand-written DOM surface (kept because
@@ -1305,11 +2171,11 @@ impl Interp {
                         let mut entries = HashMap::new();
                         entries.insert(
                             "getElementById".to_string(),
-                            Value::Native("dom.getElementById"),
+                            Value::Native(&"dom.getElementById"),
                         );
                         entries.insert(
                             "createElement".to_string(),
-                            Value::Native("dom.createElement"),
+                            Value::Native(&"dom.createElement"),
                         );
                         let document = Value::Namespace(Rc::new(Namespace {
                             name: "document".to_string(),
@@ -1319,13 +2185,21 @@ impl Interp {
                         continue;
                     }
                     // General path: any ambient web global, via the bridge.
+                    //
+                    // A name the host does not have is NOT an error here. Most of
+                    // the web surface is interfaces — `Element`, `Event` — imported
+                    // to be *written in type positions*, and demanding a live global
+                    // for those would make every type annotation a runtime dependency
+                    // on the host implementing it. It also breaks feature detection,
+                    // which the platform is built on. So the name is simply left
+                    // unbound, and the error surfaces only if the program actually
+                    // uses it as a value — see the `is not defined` path in `eval`.
                     let handle = self.host.web_global(&n.text);
                     if handle < 0 {
-                        return self.type_error(format!(
-                            "`{}` is not available in this host (no web bridge)",
-                            n.text
-                        ));
+                        self.absent_globals.insert(n.text.clone());
+                        continue;
                     }
+                    self.absent_globals.remove(&n.text);
                     env_define(&self.globals, &n.text, Value::JsRef(handle));
                 }
                 Ok(())
@@ -1398,8 +2272,14 @@ impl Interp {
         }
 
         let mut fields: Vec<(String, Option<&'static Expr>)> = Vec::new();
+        // The declared type of each field, in the same order. Tier 1 needs it to
+        // know that `this.x` is a `float64` at offset 3 — and the base class's
+        // fields come first, which is exactly why a base's offsets stay valid on
+        // a subclass.
+        let mut field_tyexprs: Vec<Option<&'static TypeExpr>> = Vec::new();
         if let Some(p) = &parent {
             fields.extend(p.fields.iter().map(|(n, e)| (n.clone(), *e)));
+            field_tyexprs.extend(p.field_tyexprs.iter().copied());
         }
         let mut methods = HashMap::new();
         let mut getters = HashMap::new();
@@ -1411,16 +2291,25 @@ impl Interp {
         for m in &c.members {
             match m {
                 ClassMember::Field {
-                    mods, name, init, ..
+                    mods,
+                    name,
+                    init,
+                    ty,
+                    ..
                 } => {
                     if mods.is_static {
                         let v = match init {
                             Some(e) => self.eval(e, &self.globals.clone())?,
-                            None => Value::Null,
+                            // Uninitialized: the type's zero, like any binding.
+                            None => match check::default_for_ty(ty) {
+                                Some(d) => default_value(d),
+                                None => Value::Null,
+                            },
                         };
                         statics.borrow_mut().insert(name.clone(), v);
                     } else {
                         fields.push((name.clone(), init.as_ref()));
+                        field_tyexprs.push(Some(ty));
                     }
                 }
                 ClassMember::Method {
@@ -1429,14 +2318,19 @@ impl Interp {
                     name,
                     params,
                     body,
+                    ret,
                     ..
                 } => {
                     if let Some(body) = body {
+                        // A method's declared return type, which it used not to
+                        // keep: a method was never compiled, so what it returned
+                        // at the boundary was moot. It is compiled now.
                         let data = Rc::new(FnData::new(
-                            name.clone(),
+                            name.as_str().into(),
                             *is_async,
                             params,
                             FnBody::Block(body),
+                            Some(ret),
                         ));
                         if mods.is_static {
                             static_methods.insert(name.clone(), data);
@@ -1448,7 +2342,13 @@ impl Interp {
                 ClassMember::Getter { name, body, .. } => {
                     getters.insert(
                         name.clone(),
-                        Rc::new(FnData::new(name.clone(), false, &[], FnBody::Block(body))),
+                        Rc::new(FnData::new(
+                            name.as_str().into(),
+                            false,
+                            &[],
+                            FnBody::Block(body),
+                            None,
+                        )),
                     );
                 }
                 ClassMember::Setter {
@@ -1457,19 +2357,21 @@ impl Interp {
                     setters.insert(
                         name.clone(),
                         Rc::new(FnData::new(
-                            name.clone(),
+                            name.as_str().into(),
                             false,
                             std::slice::from_ref(param),
                             FnBody::Block(body),
+                            None,
                         )),
                     );
                 }
                 ClassMember::Ctor { params, body, .. } => {
                     ctor = Some(Rc::new(FnData::new(
-                        format!("{}.constructor", c.name.text),
+                        format!("{}.constructor", c.name.text).into(),
                         false,
                         params,
                         FnBody::Block(body),
+                        None,
                     )));
                 }
             }
@@ -1480,11 +2382,18 @@ impl Interp {
             .enumerate()
             .map(|(i, (n, _))| (n.clone(), i as u32))
             .collect();
+        let (initial_slots, dynamic_inits, container_inits) =
+            fold_field_inits(&fields, &field_tyexprs);
         let def = Rc::new(ClassDef {
             id: fresh_class_id(),
             name: c.name.text.clone(),
             parent,
             field_slots,
+            field_tyexprs,
+            field_tys: RefCell::new(None),
+            initial_slots,
+            dynamic_inits,
+            container_inits,
             fields,
             methods,
             getters,
@@ -1497,6 +2406,7 @@ impl Interp {
             env: Some(self.globals.clone()),
         });
         gc::track_class(&def);
+        self.all_classes.push(def.clone());
         env_define(&self.globals, &c.name.text, Value::Class(def));
         Ok(true)
     }
@@ -1676,6 +2586,33 @@ impl Interp {
                 target, iter, body, ..
             } => {
                 let iterable = self.eval(iter, env)?;
+                // An array iterates **live**, by index: the length is re-read
+                // every pass, so growth is seen and a shrink ends the loop —
+                // which is what `for…of` means in JS, and what the bytecode VM
+                // does. A snapshot here was a full copy of the array per loop,
+                // and a semantic the other tier no longer has.
+                if let Value::Array(a) = &iterable {
+                    let a = a.clone();
+                    let mut ix = 0usize;
+                    loop {
+                        let item = {
+                            let items = a.borrow();
+                            if ix >= items.len() {
+                                break;
+                            }
+                            items[ix].clone()
+                        };
+                        ix += 1;
+                        let scope = child_env(env);
+                        self.bind_pattern(target, item, &scope)?;
+                        match loop_ctl(self.exec_stmt(body, &scope)?, label) {
+                            LoopCtl::BreakLoop => break,
+                            LoopCtl::NextIter => {}
+                            LoopCtl::Out(sig) => return Ok(sig),
+                        }
+                    }
+                    return Ok(Sig::Normal);
+                }
                 let items: Vec<Value> = self.iter_values(&iterable)?;
                 for item in items {
                     let scope = child_env(env);
@@ -1802,7 +2739,13 @@ impl Interp {
         for b in &v.bindings {
             let value = match &b.init {
                 Some(e) => self.eval(e, env)?,
-                None => Value::Null,
+                // No initializer: the binding starts at its type's zero — 0, "",
+                // '\0', false, or a fresh empty container — and at `null` only
+                // when the type has no zero (a class, an interface, `T?`).
+                None => match b.ty.as_ref().and_then(check::default_for_ty) {
+                    Some(d) => default_value(d),
+                    None => Value::Null,
+                },
             };
             self.bind_pattern(&b.target, value, env)?;
         }
@@ -1874,6 +2817,27 @@ impl Interp {
     }
 
     fn call_closure_inner(&mut self, c: &Closure, args: Vec<Value>) -> VResult {
+        // The fast path: a body with nothing in the environment needs no
+        // environment. No `Scope`, so no `Rc`, no `GcCell`, no `HashMap`, and
+        // nothing handed to the collector — and the arguments go straight into
+        // the frame slots the compiler gave them instead of being inserted into
+        // a map by name and hashed back out again.
+        //
+        // Names that are not locals still resolve: the chain this runs against is
+        // the closure's own environment, whose root is the globals.
+        if self.use_vm && !c.data.is_async {
+            if let Some(chunk) = self.chunk_of(c) {
+                if chunk.needs_env
+                    || !chunk.simple_params
+                    || args.len() != c.data.params.len()
+                    || vm::chunk_yields(&chunk)
+                {
+                    // Not a candidate; fall through to the general path below.
+                } else {
+                    return self.call_fast(c, chunk, args);
+                }
+            }
+        }
         let scope = child_env(&c.env);
         self.bind_params(c.data.params, args, &scope)?;
         if let Some(this) = &c.this {
@@ -1888,7 +2852,7 @@ impl Interp {
                 Some(x) => x,
                 None => {
                     let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module);
+                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -1897,6 +2861,7 @@ impl Interp {
                 if vm::chunk_yields(&chunk) {
                     let coro = Coro {
                         gen: None,
+                        frame: vm::new_frame(&chunk, &scope, c.this.as_ref()),
                         chunk,
                         pc: 0,
                         stack: Vec::new(),
@@ -1926,7 +2891,7 @@ impl Interp {
                 Some(x) => x,
                 None => {
                     let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module);
+                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -1942,6 +2907,7 @@ impl Interp {
             if vm::chunk_yields(&chunk) {
                 let coro = Coro {
                     gen: None,
+                    frame: vm::new_frame(&chunk, &scope, c.this.as_ref()),
                     chunk,
                     pc: 0,
                     stack: Vec::new(),
@@ -1968,24 +2934,55 @@ impl Interp {
                 Some(x) => x,
                 None => {
                     let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module);
+                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
             };
             if let Some(chunk) = compiled {
-                // Tier 1: hot, simple-int kernels run native (Phase 4).
-                if let Some(hook) = self.jit {
-                    if c.this.is_none() && c.cls.is_none() {
-                        if let Some(v) = self.try_jit(hook, &chunk, c.data.params, &scope)? {
+                // Tier 1: hot kernels run native (Phase 4). The arguments are read
+                // back out of the scope they were just bound into, so defaults and
+                // destructuring stayed with `bind_params` and this path sees only
+                // finished values.
+                if self.jit.is_some() {
+                    let args: Option<Vec<Value>> = simple_param_names(c.data.params)
+                        .map(|names| names.iter().filter_map(|n| env_get(&scope, n)).collect());
+                    if let Some(args) = args.filter(|a| a.len() == c.data.params.len()) {
+                        if let Some(v) = self.try_jit_args(
+                            &chunk,
+                            c.data.params,
+                            c.data.ret_num,
+                            c.data.ret_bool,
+                            self.ret_class(&c.data),
+                            c.this.as_ref(),
+                            &args,
+                        )? {
                             return Ok(v);
                         }
                     }
                 }
+                // The signature travels with the call so a loop inside this body
+                // can be compiled and resumed at its header (OSR) without waiting
+                // for the function to be called again — it may never be.
+                let osr = if self.jit.is_some() {
+                    Some(vm::OsrCtx {
+                        params: c.data.params,
+                        ret: c.data.ret_num,
+                        ret_bool: c.data.ret_bool,
+                        ret_obj: self.ret_class(&c.data),
+                        this: match &c.this {
+                            Some(Value::Instance(i)) => Some(i.borrow().class.clone()),
+                            _ => None,
+                        },
+                    })
+                } else {
+                    None
+                };
                 self.push_frame(&c.data.name, &chunk.module);
                 let out = {
                     let frame = Frame::enter(self, c);
-                    vm::run_chunk(frame.i, &chunk, scope)
+                    let f = vm::new_frame(&chunk, &scope, c.this.as_ref());
+                    vm::run_chunk(frame.i, &chunk, scope, f, osr)
                 };
                 self.pop_frame();
                 return out;
@@ -2006,56 +3003,530 @@ impl Interp {
         }
     }
 
-    /// Attempt a Tier 1 native call: count the call site, compile once
-    /// hot, and dispatch when every argument is an int32. The arguments are
-    /// re-read from the freshly bound scope so default-value semantics
-    /// stayed with `bind_params`.
-    fn try_jit(
+    /// A method's class, on the stack for `super` while the method runs.
+    pub(crate) fn globals_env(&self) -> Env {
+        self.globals.clone()
+    }
+
+    pub(crate) fn class_stack_push(&mut self, cls: Rc<ClassDef>) {
+        self.class_stack.push(cls);
+    }
+
+    pub(crate) fn class_stack_pop(&mut self) {
+        self.class_stack.pop();
+    }
+
+    /// The method `name` on this class, and the class that declares it (which is
+    /// what `super` inside it will look above).
+    ///
+    /// A method call used to walk the whole of `call_member` — past iterators,
+    /// promises, arrays, strings — and *then* search the class chain, on every
+    /// call. It is 169ns against 70ns for a plain function, and a method call is
+    /// what object-oriented code is made of.
+    pub(crate) fn method_of(
+        &self,
+        cls: &Rc<ClassDef>,
+        name: &str,
+    ) -> Option<(Rc<FnData>, Rc<ClassDef>)> {
+        find_in_chain(cls, |c| c.methods.get(name).map(|d| (d.clone(), c.clone())))
+    }
+
+    /// Can this call run *inside* the interpreter's loop, rather than by
+    /// re-entering it?
+    ///
+    /// The same conditions as the environment-free fast path — nothing in the
+    /// environment, plain parameters, not a generator, not async — plus the
+    /// arity, because a missing argument is a `null` and this path does not bind
+    /// defaults. Anything else goes the long way.
+    pub(crate) fn inlinable(&mut self, c: &Closure, argc: usize) -> Option<Rc<vm::Chunk>> {
+        if !self.use_vm || c.data.is_async {
+            return None;
+        }
+        let chunk = self.chunk_of(c)?;
+        if chunk.needs_env || !chunk.simple_params || chunk.yields || argc != c.data.params.len() {
+            return None;
+        }
+        Some(chunk)
+    }
+
+    pub(crate) fn jit_enabled(&self) -> bool {
+        self.jit.is_some()
+    }
+
+    /// Does any class *below* `cls` override `name`?
+    ///
+    /// This is the whole of method dispatch in Tier 1. If the answer is no, then
+    /// every instance a `cls`-typed expression can hold — `cls` itself or any
+    /// subclass — runs the same method body, and the call compiles to a direct
+    /// jump: no vtable load, no inline cache, no class check, and so no deopt.
+    /// If the answer is yes, the function stays in Tier 0.
+    ///
+    /// A JS engine cannot ask this question, because the answer changes when
+    /// someone assigns to a prototype. Mersey deleted that (§4.1), and this is
+    /// what it bought.
+    fn overridden_below(&self, cls: &Rc<ClassDef>, name: &str) -> bool {
+        self.all_classes
+            .iter()
+            .any(|k| !Rc::ptr_eq(k, cls) && k.descends_from(cls) && k.declares_method(name))
+    }
+
+    /// Count a call for Tier 1, and run it natively if it is hot and compiled.
+    /// `Ok(None)` means the interpreter should run it.
+    pub(crate) fn jit_call(
         &mut self,
-        hook: JitHook,
         chunk: &Rc<vm::Chunk>,
-        params: &'static [Param],
-        scope: &Env,
+        c: &Closure,
+        args: &[Value],
     ) -> Result<Option<Value>, Thrown> {
-        let key = Rc::as_ptr(chunk) as usize;
-        let count = self.call_counts.entry(key).or_insert(0);
-        *count += 1;
-        if *count < JIT_THRESHOLD {
+        if self.jit.is_none() {
             return Ok(None);
         }
-        let names: Option<Vec<String>> = params
-            .iter()
-            .map(|p| match (&p.target, p.rest, &p.default) {
-                (Pattern::Name(n), false, None) => Some(n.text.clone()),
-                _ => None,
-            })
-            .collect();
-        let Some(names) = names else { return Ok(None) };
-        let compiled = self
-            .jit_cache
-            .entry(key)
-            .or_insert_with(|| hook(chunk, &names))
-            .clone();
-        let Some(f) = compiled else { return Ok(None) };
-        // Entry guard: every argument must match the kernel's numeric world.
-        let mut args = Vec::with_capacity(names.len());
-        for n in &names {
-            match env_get(scope, n) {
-                Some(Value::I32(v)) => args.push(JitArg::I32(v)),
-                Some(Value::I64(v)) => args.push(JitArg::I64(v)),
-                Some(Value::F64(v)) => args.push(JitArg::F64(v)),
-                _ => return Ok(None), // guard failed: interpret instead
+        self.try_jit_args(
+            chunk,
+            c.data.params,
+            c.data.ret_num,
+            c.data.ret_bool,
+            self.ret_class(&c.data),
+            c.this.as_ref(),
+            args,
+        )
+    }
+
+
+
+    /// This closure's compiled body, compiling it once on first use.
+    fn chunk_of(&mut self, c: &Closure) -> Option<Rc<vm::Chunk>> {
+        if let Some(cached) = c.data.chunk.borrow().clone() {
+            return cached;
+        }
+        let module = self.current_module.clone();
+        let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+        *c.data.chunk.borrow_mut() = Some(out.clone());
+        out
+    }
+
+    /// A call with no environment. See `call_closure_inner`.
+    fn call_fast(&mut self, c: &Closure, chunk: Rc<vm::Chunk>, args: Vec<Value>) -> VResult {
+        let jittable = self.jit.is_some();
+        if jittable {
+            if let Some(v) = self.try_jit_args(
+                &chunk,
+                c.data.params,
+                c.data.ret_num,
+                c.data.ret_bool,
+                self.ret_class(&c.data),
+                c.this.as_ref(),
+                &args,
+            )? {
+                return Ok(v);
             }
         }
-        Ok(match f(&args) {
-            JitResult::I32(v) => Some(Value::I32(v)),
-            JitResult::I64(v) => Some(Value::I64(v)),
-            JitResult::F64(v) => Some(Value::F64(v)),
-            JitResult::Null => Some(Value::Null),
-            // The kernel hit a trapping condition: re-run interpreted so the
-            // error is raised properly (with its position and stack).
-            JitResult::Bail => None,
+        let osr = if jittable {
+            Some(vm::OsrCtx {
+                params: c.data.params,
+                ret: c.data.ret_num,
+                ret_bool: c.data.ret_bool,
+                ret_obj: self.ret_class(&c.data),
+                this: match &c.this {
+                    Some(Value::Instance(i)) => Some(i.borrow().class.clone()),
+                    _ => None,
+                },
+            })
+        } else {
+            None
+        };
+        let frame = vm::arg_frame(&chunk, args, c.this.as_ref());
+        self.push_frame(&c.data.name, &chunk.module);
+        let out = {
+            let f = Frame::enter(self, c);
+            // The closure's own environment *is* the scope: there is nothing to
+            // put in a fresh one.
+            vm::run_chunk(f.i, &chunk, c.env.clone(), frame, osr)
+        };
+        self.pop_frame();
+        out
+    }
+
+    /// Attempt a Tier 1 native call: count the call site, compile once hot, and
+    /// dispatch when every argument is what the compiled code expects.
+    #[allow(clippy::too_many_arguments)]
+    fn try_jit_args(
+        &mut self,
+        chunk: &Rc<vm::Chunk>,
+        params: &'static [Param],
+        ret_num: Option<mersey_front::check::Num>,
+        ret_bool: bool,
+        ret_obj: Option<Rc<ClassDef>>,
+        this: Option<&Value>,
+        args: &[Value],
+    ) -> Result<Option<Value>, Thrown> {
+        if !self.count_call(chunk) {
+            return Ok(None);
+        }
+        let cls = match this {
+            Some(Value::Instance(i)) => Some(i.borrow().class.clone()),
+            Some(_) => return Ok(None),
+            None => None,
+        };
+        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls) else {
+            return Ok(None);
+        };
+        let Some(compiled) = self.jit_compile(chunk, &root) else {
+            return Ok(None);
+        };
+        if !self.assumptions_hold(&compiled) {
+            self.jit_cache.remove(&self.jit_key(chunk, &root));
+            return Ok(None);
+        }
+        // The entry guard, per slot: the frame is not one type, so each argument
+        // is checked against the slot it goes into. `this` goes last, into the
+        // slot the compiler gave it — which is *after* the parameters, not before.
+        let mut jargs = Vec::with_capacity(args.len() + 1);
+        for (i, v) in args.iter().enumerate() {
+            match compiled.code.slot_kinds.get(i).and_then(|k| jit_arg(v, k)) {
+                Some(a) => jargs.push(a),
+                None => return Ok(None), // interpret instead
+            }
+        }
+        if let (Some(t), Some(s)) = (this, compiled.code.this_slot) {
+            match compiled.code.slot_kinds.get(s).and_then(|k| jit_arg(t, k)) {
+                Some(a) => jargs.push(a),
+                None => return Ok(None),
+            }
+        }
+        // The arena owns everything this call allocates, and is cleared on every
+        // way out — that is the whole memory story of a compiled call.
+        let r = (compiled.code.call)(&jargs, &mut self.jit_arena);
+        self.jit_arena.clear();
+        match jit_value(r, ret_bool) {
+            Ok(v) => Ok(Some(v)),
+            Err(r) => self.after_jit(r, &compiled),
+        }
+    }
+
+    /// Compiled code produced no value. Either it declined the call — in which
+    /// case the interpreter runs it, and nothing has happened — or it ran and hit
+    /// something the language says must throw, in which case it says *where*, and
+    /// the error is raised there.
+    ///
+    /// It used to be one case: bail, and re-run the call interpreted to find out
+    /// what went wrong. That was a fine answer while compiled code could not touch
+    /// the heap, because re-running a pure function is free of consequence. It is
+    /// not a fine answer now — a function that has already written to an object
+    /// would write to it a second time — so a trap carries its position, and the
+    /// error is built from that instead.
+    fn after_jit(&mut self, r: JitResult, compiled: &Compiled) -> Result<Option<Value>, Thrown> {
+        let JitResult::Trap(t) = r else {
+            return Ok(None); // Bail: nothing ran, interpret the call
+        };
+        let chunk = compiled.code.chunks.get(t.func).cloned();
+        if let Some(c) = &chunk {
+            self.set_site(c.pos_at(t.pc));
+        }
+        Err(match t.reason {
+            TrapReason::DivZero => self.throw("RangeError", "division by zero"),
+            TrapReason::IntMinOverflow => self.throw("RangeError", "integer overflow in division"),
+            TrapReason::Depth => self.throw("RangeError", "maximum call depth exceeded"),
+            TrapReason::Bounds => self.throw(
+                "RangeError",
+                format!("index {} out of bounds (length {})", t.a, t.b),
+            ),
+            // The *same* message the interpreter gives, which is a different message
+            // for each way of reaching through a null — so the instruction it
+            // stopped at is what says which. Compiled code that got this wrong would
+            // still throw, and a test that only checked "it threw" would pass.
+            TrapReason::NullAccess => {
+                let msg = chunk
+                    .as_ref()
+                    .map(|c| null_access_message(c, t.pc))
+                    .unwrap_or_else(|| "no member on null".to_string());
+                self.throw("TypeError", msg)
+            }
+            TrapReason::BadTag => self.throw("TypeError", "value is not of its declared type"),
         })
+    }
+
+    /// Count a call, and say whether the chunk is hot. The counter lives on the
+    /// chunk: hashing its address on every call, forever, to decide whether to
+    /// compile it once is a strange thing to pay for.
+    fn count_call(&self, chunk: &Rc<vm::Chunk>) -> bool {
+        let n = chunk.hot.get();
+        if n < self.jit_threshold {
+            chunk.hot.set(n + 1);
+            return false;
+        }
+        true
+    }
+
+    /// Re-enter a running function's compiled body at a loop header.
+    ///
+    /// The interpreter is *inside* the function, several thousand iterations
+    /// into a loop, and holds the live locals in `frame`. Compiling the whole
+    /// function and jumping into it at that loop header hands the rest of the
+    /// execution — the remaining iterations *and* everything after the loop —
+    /// to native code. Without this, a `main` that loops a hundred million
+    /// times is compiled only after it finishes, which is never.
+    pub(crate) fn try_osr(
+        &mut self,
+        chunk: &Rc<vm::Chunk>,
+        params: &'static [Param],
+        ret_num: Option<mersey_front::check::Num>,
+        ret_bool: bool,
+        ret_obj: Option<Rc<ClassDef>>,
+        this: Option<Rc<ClassDef>>,
+        target: usize,
+        frame: &[Value],
+    ) -> Result<Option<Value>, Thrown> {
+        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, this) else {
+            return Ok(None);
+        };
+        let Some(compiled) = self.jit_compile(chunk, &root) else {
+            return Ok(None);
+        };
+        if !self.assumptions_hold(&compiled) || !compiled.code.osr_entries.contains(&target) {
+            return Ok(None);
+        }
+        // The compiled code uses the interpreter's own frame layout, so resuming
+        // is a straight transfer of the locals it is already holding — every one
+        // of which must be what the code compiled them as.
+        if frame.len() != compiled.code.n_slots {
+            return Ok(None);
+        }
+        let mut locals = Vec::with_capacity(frame.len());
+        for (i, v) in frame.iter().enumerate() {
+            let kind = compiled.code.slot_kinds.get(i).cloned();
+            let Some(kind) = kind else { return Ok(None) };
+            // A slot the body has not reached yet is still `null`: dead at this
+            // loop header, and the code gives it a zero.
+            let a = match (v, &kind) {
+                (Value::Null, JitSlot::I32) => JitArg::I32(0),
+                (Value::Null, JitSlot::I64) => JitArg::I64(0),
+                (Value::Null, JitSlot::F64) => JitArg::F64(0.0),
+                (other, k) => match jit_arg(other, k) {
+                    Some(a) => a,
+                    None => return Ok(None),
+                },
+            };
+            // A slot the compiled code *owns* — one it would have allocated into,
+            // and will release when it overwrites. The interpreter's frame is
+            // abandoned after a successful OSR, so the arena takes a reference of
+            // its own; both sides are counted, and both let go correctly.
+            let a = match (a, compiled.code.owned_slots.get(i)) {
+                (JitArg::Ptr(p), Some(true)) if !p.is_null() => {
+                    let h = self.jit_arena.keep(v.clone());
+                    JitArg::Owned(p, h)
+                }
+                (a, _) => a,
+            };
+            locals.push(a);
+        }
+        let r = (compiled.code.osr)(&locals, target, &mut self.jit_arena);
+        self.jit_arena.clear();
+        match jit_value(r, ret_bool) {
+            Ok(v) => Ok(Some(v)),
+            Err(r) => self.after_jit(r, &compiled),
+        }
+    }
+
+    /// Does the world still look the way the compiled code assumed it did?
+    ///
+    /// Two assumptions. Every global it calls still names the function it named
+    /// when it was compiled — a function declaration cannot be reassigned (§4.5,
+    /// E0304), but an *import* binding could once be, so this is checked rather
+    /// than trusted. And no class has appeared since: dispatch is direct because
+    /// nothing overrode the method, and a `import()` that pulls in a new subclass
+    /// is the one thing that could make that false.
+    fn assumptions_hold(&self, compiled: &Compiled) -> bool {
+        if compiled.code.n_classes != self.all_classes.len() {
+            return false;
+        }
+        compiled.code.bound.iter().all(|(name, expected)| {
+            matches!(env_get(&self.globals, name), Some(Value::Closure(c)) if Rc::ptr_eq(&c, expected))
+        })
+    }
+
+    /// Is this top-level function inside Tier 1's subset — really compiled, not
+    /// silently interpreted?
+    ///
+    /// This asks the compiler the same way the engine does, through the same
+    /// environment, so a test using it is testing the path that runs. A test that
+    /// assembled the compiler's input by hand would be testing its own assembly.
+    pub fn jit_accepts(&mut self, name: &str) -> bool {
+        let Some(Value::Closure(c)) = env_get(&self.globals, name) else {
+            return false;
+        };
+        if self.chunk_of(&c).is_none() {
+            return false;
+        }
+        let Some(root) = self.top_level_fn(name) else {
+            return false;
+        };
+        let Some(hook) = self.jit else { return false };
+        hook(&InterpEnv { i: self }, &root).is_some()
+    }
+
+    /// …and the same for a method of a class.
+    pub fn jit_accepts_method(&mut self, class: &str, name: &str) -> bool {
+        let Some(Value::Class(cls)) = env_get(&self.globals, class) else {
+            return false;
+        };
+        let Some(data) = cls.lookup_method(name) else {
+            return false;
+        };
+        // A method is compiled to bytecode on its first call; a test may ask
+        // before that has happened.
+        if data.chunk.borrow().is_none() {
+            let module = self.current_module.clone();
+            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            *data.chunk.borrow_mut() = Some(out);
+        }
+        let Some(root) = self.direct_method(&cls, name) else {
+            return false;
+        };
+        let Some(hook) = self.jit else { return false };
+        hook(&InterpEnv { i: self }, &root).is_some()
+    }
+
+    /// Compiled code is specialised to its receiver's class, so two classes
+    /// sharing an inherited method get two compilations of it — the field offsets
+    /// are the same, but what its *own* calls resolve to need not be.
+    fn jit_key(&self, chunk: &Rc<vm::Chunk>, root: &JitFn) -> (usize, u64) {
+        (
+            Rc::as_ptr(chunk) as usize,
+            root.this.as_ref().map_or(0, |c| c.id),
+        )
+    }
+
+    /// The root of a compiled group: this function, with everything the compiler
+    /// needs to know about its signature before it looks at its body.
+    #[allow(clippy::too_many_arguments)]
+    fn root_fn(
+        &self,
+        chunk: &Rc<vm::Chunk>,
+        params: &'static [Param],
+        ret: Option<mersey_front::check::Num>,
+        ret_bool: bool,
+        ret_obj: Option<Rc<ClassDef>>,
+        this: Option<Rc<ClassDef>>,
+    ) -> Option<JitFn> {
+        Some(JitFn {
+            chunk: chunk.clone(),
+            params: simple_param_names(params)?,
+            param_tys: self.param_types(params),
+            this,
+            ret,
+            ret_bool,
+            ret_obj,
+            bind: None,
+        })
+    }
+
+    /// What each parameter is declared to be. A body cannot tell you: the values
+    /// come from outside it.
+    fn param_types(&self, params: &[Param]) -> Vec<Option<JitSlot>> {
+        params
+            .iter()
+            .map(|p| {
+                let t = p.ty.as_ref()?;
+                match resolve_field_ty(t, &self.globals) {
+                    FieldTy::Num(mersey_front::check::Num::Int(
+                        mersey_front::check::IntKind::I32,
+                    )) => Some(JitSlot::I32),
+                    FieldTy::Num(mersey_front::check::Num::Int(
+                        mersey_front::check::IntKind::I64,
+                    )) => Some(JitSlot::I64),
+                    FieldTy::Num(mersey_front::check::Num::F64) => Some(JitSlot::F64),
+                    FieldTy::Bool => Some(JitSlot::I32),
+                    FieldTy::Obj(c) => Some(JitSlot::Obj(c)),
+                    FieldTy::Arr(e) => Some(JitSlot::Arr(e)),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Compile `chunk` and everything it calls, once, and remember the result
+    /// (including the decision *not* to compile it).
+    fn jit_compile(&mut self, chunk: &Rc<vm::Chunk>, root: &JitFn) -> Option<Rc<Compiled>> {
+        let key = self.jit_key(chunk, root);
+        if let Some(cached) = self.jit_cache.get(&key) {
+            return cached.clone();
+        }
+        let hook = self.jit?;
+        let out = hook(&InterpEnv { i: self }, root).map(|code| Rc::new(Compiled { code }));
+        self.jit_cache.insert(key, out.clone());
+        out
+    }
+
+    /// The global `name`, if it is a plain top-level function that compiled
+    /// code could call directly: no receiver, no captured environment beyond
+    /// the globals, not a generator, not async, and already compiled to
+    /// bytecode (if it has never run, it is not on any hot path).
+    fn top_level_fn(&self, name: &str) -> Option<JitFn> {
+        let Some(Value::Closure(c)) = env_get(&self.globals, name) else {
+            return None;
+        };
+        if c.this.is_some() || c.cls.is_some() || c.data.is_async {
+            return None;
+        }
+        if !Rc::ptr_eq(&c.env, &self.globals) {
+            return None;
+        }
+        let chunk = c.data.chunk.borrow().clone()??;
+        if chunk.yields {
+            return None;
+        }
+        Some(JitFn {
+            params: simple_param_names(c.data.params)?,
+            param_tys: self.param_types(c.data.params),
+            chunk,
+            this: None,
+            ret: c.data.ret_num,
+            ret_bool: c.data.ret_bool,
+            ret_obj: self.ret_class(&c.data),
+            bind: Some((name.to_string(), c.clone())),
+        })
+    }
+
+    /// The method `name` on a receiver of class `cls`, if the call can be
+    /// compiled into a *direct* one.
+    fn direct_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        // A getter or a setter means `o.name` is a call, not a load, and this is
+        // not the shape the compiler thinks it is.
+        if cls.is_accessor(name) || cls.is_host_backed() {
+            return None;
+        }
+        let data = cls.lookup_method(name)?;
+        if data.is_async {
+            return None;
+        }
+        // The whole of dispatch: if nothing below `cls` overrides `name`, then
+        // every instance this receiver can hold runs *this* body.
+        if self.overridden_below(cls, name) {
+            return None;
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.param_types(data.params),
+            chunk,
+            this: Some(cls.clone()),
+            ret: data.ret_num,
+            ret_bool: data.ret_bool,
+            ret_obj: self.ret_class(&data),
+            bind: None, // a class's method set cannot change (§4.1)
+        })
+    }
+
+    /// The class a function is declared to return, when it returns an object.
+    pub(crate) fn ret_class(&self, data: &FnData) -> Option<Rc<ClassDef>> {
+        match resolve_field_ty(data.ret_ty?, &self.globals) {
+            FieldTy::Obj(c) => Some(c),
+            _ => None,
+        }
     }
 
     fn bind_params(
@@ -2127,8 +3598,9 @@ impl Interp {
                 Ok(Value::Null)
             }
             // Settling callbacks handed to host promises.
-            Value::Resolver(p, rejected) => {
-                let (p, rejected) = (p.clone(), *rejected);
+            Value::Resolve(p) | Value::Reject(p) => {
+                let rejected = matches!(callee, Value::Reject(_));
+                let p = p.clone();
                 let v = args.into_iter().next().unwrap_or(Value::Null);
                 self.settle(&p, v, rejected);
                 Ok(Value::Null)
@@ -2685,7 +4157,7 @@ impl Interp {
         }
     }
 
-    fn instantiate(&mut self, cls: &Rc<ClassDef>, args: Vec<Value>) -> VResult {
+    pub(crate) fn instantiate(&mut self, cls: &Rc<ClassDef>, args: Vec<Value>) -> VResult {
         if cls.is_builtin_error {
             let mut slots = vec![Value::Null; cls.fields.len()];
             slots[0] = args.into_iter().next().unwrap_or(Value::Null);
@@ -2700,9 +4172,16 @@ impl Interp {
             gc::track_instance(&inst);
             return Ok(Value::Instance(inst));
         }
+        // The slots a fresh instance starts with, literals already in place: one
+        // clone of a vector that was built once, at class definition.
+        let mut slots = cls.initial_slots.clone();
+        // Container fields with no initializer: a fresh empty one per instance.
+        for (slot, d) in &cls.container_inits {
+            slots[*slot] = default_value(*d);
+        }
         let inst = Rc::new(GcCell::new(Instance {
             class: cls.clone(),
-            slots: vec![Value::Null; cls.fields.len()],
+            slots,
             host: None,
         }));
         gc::track_instance(&inst);
@@ -2710,16 +4189,21 @@ impl Interp {
         let env = cls.env.clone().unwrap_or_else(|| self.globals.clone());
 
         // Field initializers, base-first, with `this` in scope.
-        for (slot, (_, init)) in cls.fields.clone().iter().enumerate() {
-            let v = match init {
-                Some(e) => {
-                    let scope = child_env(&env);
-                    env_define(&scope, "this", this.clone());
-                    self.eval(e, &scope)?
-                }
-                None => Value::Null,
-            };
-            inst.borrow_mut().slots[slot] = v;
+        //
+        // One scope for all of them, and only if there is an initializer to run.
+        // This used to clone the whole field list on *every* instantiation — the
+        // names and all — and then allocate a fresh environment per initialized
+        // field, to hold one binding that every one of them wanted to be the same.
+        // The literal initializers are already in `initial_slots`, cloned above.
+        // What is left is the ones that compute, or read `this` — usually none,
+        // and one scope is enough for all of them.
+        if !cls.dynamic_inits.is_empty() {
+            let scope = child_env(&env);
+            env_define(&scope, "this", this.clone());
+            for (slot, e) in &cls.dynamic_inits {
+                let v = self.eval(e, &scope)?;
+                inst.borrow_mut().slots[*slot] = v;
+            }
         }
 
         // Nearest constructor up the chain; implicit pass-through otherwise.
@@ -2939,10 +4423,37 @@ impl Interp {
         })
     }
 
+    /// Evaluate an expression, then apply whatever numeric conversion the
+    /// checker recorded for it (§3.3) — the same conversion the bytecode
+    /// compiler turns into a `Convert` op. The tree-walker is the differential
+    /// oracle: if it did not do this, it would disagree with the VM about what
+    /// the program *means*, and the tests would be comparing two answers neither
+    /// of which is the language's.
     fn eval(&mut self, e: &'static Expr, env: &Env) -> VResult {
+        let Some(to) = vm::coercion_for(e) else {
+            return self.eval_uncoerced(e, env);
+        };
+        // A literal is built *at* its declared type, never converted into it.
+        // `let b: uint32 = 4294967295` has no int32 to convert from — reading it
+        // as one is a range error for a value that fits the type it was given.
+        if let Some(v) = vm::fold_const(e, to) {
+            return Ok(v);
+        }
+        let v = self.eval_uncoerced(e, env)?;
+        Ok(vm::convert_num(&v, to))
+    }
+
+    fn eval_uncoerced(&mut self, e: &'static Expr, env: &Env) -> VResult {
         match e {
-            Expr::Ident(n) => env_get(env, &n.text)
-                .ok_or_else(|| self.throw("TypeError", format!("`{}` is not defined", n.text))),
+            Expr::Ident(n) => env_get(env, &n.text).ok_or_else(|| {
+                if self.absent_globals.contains(&n.text) {
+                    return self.throw(
+                        "TypeError",
+                        format!("`{}` is not available in this host (no web bridge)", n.text),
+                    );
+                }
+                self.throw("TypeError", format!("`{}` is not defined", n.text))
+            }),
             Expr::This(_) => env_get(env, "this")
                 .ok_or_else(|| self.throw("TypeError", "`this` is not available here")),
             Expr::Lit { kind, text, .. } => self.eval_literal(*kind, text),
@@ -2982,12 +4493,21 @@ impl Interp {
                         RecordField::Named { name, value } => {
                             let v = match value {
                                 Some(e) => self.eval(e, env)?,
-                                None => env_get(env, &name.text).ok_or_else(|| {
-                                    self.throw(
-                                        "TypeError",
-                                        format!("`{}` is not defined", name.text),
-                                    )
-                                })?,
+                                None => {
+                                    let v = env_get(env, &name.text).ok_or_else(|| {
+                                        self.throw(
+                                            "TypeError",
+                                            format!("`{}` is not defined", name.text),
+                                        )
+                                    })?;
+                                    // `{ x }` may widen (§3.3); the conversion is
+                                    // keyed on the field name, there being no
+                                    // expression to key it on.
+                                    match vm::coercion_for_name(name) {
+                                        Some(to) => vm::convert_num(&v, to),
+                                        None => v,
+                                    }
+                                }
                             };
                             rec_set(&mut out, &name.text, v);
                         }
@@ -3010,17 +4530,18 @@ impl Interp {
             Expr::Arrow {
                 is_async,
                 params,
+                ret,
                 body,
-                ..
             } => {
                 let data = Rc::new(FnData::new(
-                    "<arrow>".to_string(),
+                    "<arrow>".into(),
                     *is_async,
                     params,
                     match body {
                         ArrowBody::Expr(e) => FnBody::Expr(e),
                         ArrowBody::Block(b) => FnBody::Block(b),
                     },
+                    ret.as_ref(),
                 ));
                 // Arrows capture `this` lexically.
                 let this = env_get(env, "this");
@@ -3153,6 +4674,13 @@ impl Interp {
                         }
                     }
                 };
+                // §3.3 rule 6: a compound assignment computes in the common type
+                // and converts back to the target's — the same conversion the VM
+                // emits after the operator.
+                let new = match vm::result_coercion_for(e) {
+                    Some(to) => vm::convert_num(&new, to),
+                    None => new,
+                };
                 self.assign_to(target, new.clone(), env)?;
                 Ok(new)
             }
@@ -3195,7 +4723,7 @@ impl Interp {
                 }
                 if let Expr::SuperMember { name, .. } = callee.as_ref() {
                     let argv = self.eval_args(args, env)?;
-                    return self.call_super_method(name, argv, env);
+                    return self.call_super_method(name, argv, env_get(env, "this"));
                 }
                 let f = self.eval(callee, env)?;
                 if *optional && matches!(f, Value::Null) {
@@ -3239,11 +4767,11 @@ impl Interp {
             }
             Expr::SuperMember { name, .. } => {
                 // Non-call super member: resolve to a bound closure.
-                self.super_lookup(name, env)
+                self.super_lookup(name, env_get(env, "this"))
             }
             Expr::SuperCall { args, .. } => {
                 let argv = self.eval_args(args, env)?;
-                self.super_call(argv, env)
+                self.super_call(argv, env_get(env, "this"))
             }
             Expr::ImportCall(inner) => {
                 let spec = match &**inner {
@@ -4177,8 +5705,8 @@ impl Interp {
             Value::PromiseV(p) => Ok(p),
             Value::JsRef(h) => {
                 let p = PromiseState::pending();
-                let ok = Value::Resolver(p.clone(), false);
-                let err = Value::Resolver(p.clone(), true);
+                let ok = Value::Resolve(p.clone());
+                let err = Value::Reject(p.clone());
                 // A JS thenable settles our promise through the bridge.
                 self.web_call(h, "then", vec![ok, err])?;
                 Ok(p)
@@ -4216,6 +5744,7 @@ impl Interp {
                         roots.envs.push(e.clone());
                     }
                     roots.values.extend(coro.stack.iter().cloned());
+                    roots.values.extend(coro.frame.iter().cloned());
                 }
                 Task::React(ok, err, down, v, _) => {
                     roots.values.extend(ok.iter().cloned());
@@ -4249,6 +5778,13 @@ impl Interp {
 
     /// The routine collection: generational, so the pause is bounded by how
     /// much has been allocated since last time rather than by the heap.
+    /// Cross-check the reference-counting cycle collector against the tracing
+    /// one, from the real roots. See `gc::verify_cycles`.
+    pub fn verify_cycles(&mut self) -> Result<(), String> {
+        let roots = self.gc_roots();
+        gc::verify_cycles(&roots)
+    }
+
     fn collect_young(&mut self) -> gc::GcStats {
         let roots = self.gc_roots();
         gc::collect(&roots)
@@ -4315,6 +5851,7 @@ impl Interp {
         let result = PromiseState::pending();
         let coro = Coro {
             gen: None,
+            frame: vm::new_frame(&chunk, &scope, c.this.as_ref()),
             chunk,
             pc: 0,
             stack: Vec::new(),
@@ -4423,7 +5960,8 @@ impl Interp {
             }
             Value::Closure(_)
             | Value::Native(_)
-            | Value::Resolver(..)
+            | Value::Resolve(..)
+            | Value::Reject(..)
             | Value::AllSlot(..)
             | Value::PromiseExec(..) => {
                 let id = self.alloc_callback(v.clone());
@@ -4682,9 +6220,8 @@ impl Interp {
             .ok_or_else(|| self.throw("TypeError", "`super` outside a class"))
     }
 
-    fn super_lookup(&mut self, name: &str, env: &Env) -> VResult {
-        let this =
-            env_get(env, "this").ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
+    fn super_lookup(&mut self, name: &str, this: Option<Value>) -> VResult {
+        let this = this.ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
         let cls = self.current_class()?;
         let parent = cls
             .parent
@@ -4702,6 +6239,22 @@ impl Interp {
             })));
         }
         self.type_error(format!("no method `{name}` on the base class"))
+    }
+
+    /// The Mersey class `head` names, if it names one. `None` for a host
+    /// constructor, a builtin (`Map`, `Set`), or a namespace path — none of which
+    /// are classes and none of which can be cached as one.
+    pub(crate) fn resolve_class(&mut self, head: &str, env: &Env) -> Option<Rc<ClassDef>> {
+        if head.contains('.') {
+            return None;
+        }
+        if (head == "Map" || head == "Set") && env_get(env, head).is_none() {
+            return None;
+        }
+        match env_get(env, head) {
+            Some(Value::Class(cls)) => Some(cls),
+            _ => None,
+        }
     }
 
     fn new_named(&mut self, head: &str, argv: Vec<Value>, env: &Env) -> VResult {
@@ -4725,10 +6278,13 @@ impl Interp {
         }
         let bare = head.split('.').next().unwrap_or(head);
         match env_get(env, bare) {
-            Some(Value::Class(cls)) => self.instantiate(&cls, argv),
-            // `new WebSocket(url)`, `new Uint8Array(n)`, …: any host
-            // constructor reachable through the bridge.
-            _ => self.web_new(bare, argv),
+            Some(Value::Class(cls)) if !head.contains('.') => self.instantiate(&cls, argv),
+            // `new WebSocket(url)`, `new Uint8Array(n)`, `new Intl.NumberFormat(…)`:
+            // any host constructor reachable through the bridge. The *whole* name
+            // goes to the host — a namespaced constructor lives at a path, and
+            // truncating it to its first segment would ask for the namespace
+            // itself, which is not a constructor.
+            _ => self.web_new(head, argv),
         }
     }
 
@@ -5038,9 +6594,8 @@ impl Interp {
         }
     }
 
-    pub(crate) fn super_call(&mut self, argv: Vec<Value>, env: &Env) -> VResult {
-        let this =
-            env_get(env, "this").ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
+    pub(crate) fn super_call(&mut self, argv: Vec<Value>, this: Option<Value>) -> VResult {
+        let this = this.ok_or_else(|| self.throw("TypeError", "`super` needs `this`"))?;
         let cls = self.current_class()?;
         let parent = cls
             .parent
@@ -5080,8 +6635,13 @@ impl Interp {
         Ok(Value::Null) // no ctor anywhere up the chain: nothing to do
     }
 
-    fn call_super_method(&mut self, name: &str, args: Vec<Value>, env: &Env) -> VResult {
-        let f = self.super_lookup(name, env)?;
+    pub(crate) fn call_super_method(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        this: Option<Value>,
+    ) -> VResult {
+        let f = self.super_lookup(name, this)?;
         self.call_value(&f, args)
     }
 
@@ -5927,7 +7487,9 @@ fn kind_of(v: &Value) -> &'static str {
         Value::RegexV(_) => "Regex",
         Value::IterV(_) => "Iter",
         Value::PromiseV(_) => "Promise",
-        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => "function",
+        Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
+            "function"
+        }
         Value::Native(_) => "native function",
     }
 }
@@ -5980,7 +7542,7 @@ pub fn to_display(v: &Value) -> String {
         Value::RegexV(_) => "<Regex>".to_string(),
         Value::IterV(_) => "<Iter>".to_string(),
         Value::PromiseV(_) => "<Promise>".to_string(),
-        Value::Resolver(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
+        Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
             "<function>".to_string()
         }
     }

@@ -1,0 +1,4 @@
+export class Shape {
+    public size: int32 = 2;
+    public area(): int32 { return this.size * this.size; }
+}

@@ -1,0 +1,30 @@
+// A `Numeric` bound is a promise the checker holds you to on both sides.
+//
+// Inside the function you get arithmetic on `T` — that is what makes a generic
+// numeric function writable at all. What you *don't* get is an operator that
+// some Numeric type lacks: `Numeric` admits `bigdec`, which has no `%` and no
+// `**`, so neither is offered on a `T`.
+function sum<T extends Numeric>(xs: T[], zero: T): T {
+    let total = zero;
+    for (const x of xs) {
+        total = total + x;
+    }
+    return total;
+}
+
+function bad<T extends Numeric>(a: T, b: T): T {
+    const cmp: bool = a < b; // fine: every Numeric compares
+    return a % b; // not fine: bigdec has no remainder
+}
+
+function unbounded<T>(a: T, b: T): T {
+    return a + b; // no bound, no arithmetic
+}
+
+function mixed<T extends Numeric, U extends Numeric>(a: T, b: U): T {
+    return a + b; // two different parameters have no common type
+}
+
+// The bound is checked at the call, too.
+const ok: int32 = sum<int32>([1, 2], 0);
+const nope = sum<string>(["a", "b"], "");

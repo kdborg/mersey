@@ -35,6 +35,47 @@ unions (`A | B`, discriminated and narrowed by `switch`/`instanceof`).
 Nullability is explicit: `T?` admits `null`; `T` does not. Accessing a member
 on `T?` requires narrowing (`if (x != null)`) or the `?.` operator.
 
+### Zero-defaults
+
+A declaration without an initializer starts at its type's **zero** — never at
+`null`:
+
+| type | starts as |
+|---|---|
+| every numeric type (`int8`…`uint64`, `float32`, `float64`) | `0` |
+| `bigint`, `bigdec` | `0` |
+| `string` | `""` |
+| `char` | `'\0'` |
+| `bool` | `false` |
+| `T[]`, `Map<K, V>`, `Set<T>`, `bytes` | empty (a fresh one per binding — two instances of a class never share a default container) |
+| `T?` | `null` — the honest zero of a nullable type |
+
+```mersey
+let count: int32;          // 0
+let name: string;          // ""
+let seen: Set<int32>;      // an empty set
+
+class Point {
+    public x: float64;     // every Point is born with x == 0
+    public tags: string[]; // …and its own empty array
+}
+```
+
+This applies to locals, fields (instance and static), and resolves through
+type aliases — `type Meters = float64` defaults the way `float64` does.
+
+The rule exists because the alternative was the type system lying. A `float64`
+field holding `null` is a value its own declared type says cannot exist, and
+it was not hypothetical: the engine's compiled tier believes declared types,
+and a null in a number-typed field produced a real divergence between tiers.
+Now a number-typed cell always holds a number.
+
+The one type with no constructible zero is a non-nullable class or interface:
+`public owner: Node;` with no initializer still starts as `null`, and is the
+remaining place a declared type can disagree with the value. Prefer `Node?`,
+which says what is true. (A definite-assignment rule for reference fields is
+tracked in the ROADMAP.)
+
 ## 3.3 Numeric conversions (the C/C++ rules, made safe)
 
 Implicit conversion exists **only among numeric types**, following C's model:
@@ -70,6 +111,15 @@ Two ergonomic rules complete the model:
    `int16 a; a += 1;` stays `int16`. (Plain `a = a + 1` still requires the
    result type to be assignable — promotion makes it `int32`, so write `+=`
    or cast.)
+
+These conversions are **carried in the bytecode**, not left to the engine to
+infer from the values it happens to find. The checker is the only thing that
+knows a `7` is being stored into a `float64`, so it records the conversion at the
+node where it decided, and the compiler emits it — a literal is *built* at its
+declared type, everything else is converted at the point it crosses. Without
+that, the engine erased the declared type and dispatched on the value: `let x:
+float64 = 7; x / 2` stored an `int32` and did an integer divide, and the answer
+was 3. See `docs/architecture/engine.md`.
 
 `bigint` and `bigdec` never convert implicitly to or from fixed-size types
 (too easy to lose precision or allocate accidentally); `BigInt.from(x)`,
@@ -206,6 +256,13 @@ A class opts into a language protocol by **implementing an interface**:
     }
 
 - `Iterable<T>` — `iter(): Iter<T>`. `for … of` accepts it.
+
+  `for … of` over an **array** iterates *live*, by index, exactly as JS does:
+  the length is re-read each pass, so elements pushed during the loop are
+  visited and a shrink ends it early. (It used to iterate a snapshot — a full
+  copy of the array per loop, which was both a cost and a departure from the
+  JS base semantics.) Strings, maps, sets, generators and `Iterable<T>`
+  classes are unaffected.
 - `AsyncIterable<T>` — `iter(): AsyncIter<T>`. `for await` accepts it. (An
   `async` method whose body yields *is* an async generator, so it returns
   `AsyncIter<T>`, not `Promise<AsyncIter<T>>`.)

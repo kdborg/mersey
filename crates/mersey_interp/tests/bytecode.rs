@@ -17,7 +17,7 @@ fn compiles(src: &str) -> bool {
     let module: &'static Module = Box::leak(Box::new(parsed.module));
     for item in &module.items {
         if let Item::Decl(Decl::Function(f)) = item {
-            return mersey_interp::vm::compile_fn_public(&f.body).is_some();
+            return mersey_interp::vm::compile_fn_public(&f.body, &f.params).is_some();
         }
     }
     panic!("no function in source");
@@ -102,7 +102,7 @@ fn super_calls_with_spread_compile() {
             if let Item::Decl(Decl::Class(c)) = item {
                 for m in &c.members {
                     if let mersey_front::ast::ClassMember::Method { body: Some(b), .. } = m {
-                        return mersey_interp::vm::compile_fn_public(b).is_some();
+                        return mersey_interp::vm::compile_fn_public(b, &[]).is_some();
                     }
                 }
             }

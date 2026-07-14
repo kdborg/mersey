@@ -1,0 +1,75 @@
+// browser
+//
+// The web platform, as Mersey sees it: `browser:dom` is the whole WebIDL
+// surface — 1391 globals and 1122 interfaces — generated from the same
+// specifications the browsers implement, and typechecked like any other module.
+// There is no `any` waiting at the boundary: `document.body` is nullable
+// because the spec says it can be null, and the checker will not let you
+// forget it.
+//
+// Nothing here is hand-wired into the engine. Every call in this example
+// crosses one universal bridge to the host, which is why the surface can be
+// complete rather than a curated subset — and why `Intl.NumberFormat`, a
+// constructor that lives inside a namespace, works without the engine knowing
+// what `Intl` is.
+//
+// This program is typechecked here rather than executed: there is no DOM in a
+// terminal. The same technologies are driven against a live realm by
+// `web/test/platform.mjs`.
+
+import { console } from "std:console";
+import {
+    document,
+    window,
+    navigator,
+    localStorage,
+    sessionStorage,
+    fetch,
+    setTimeout,
+    Intl,
+    WebSocket,
+    Element,
+    Event,
+    Node,
+} from "browser:dom";
+
+// The document, and an element built and appended to it.
+const heading = document.createElement("h1") as Element;
+heading.textContent = "Mersey";
+const body = document.body; // Element? — nullable, and the checker knows
+if (body != null) {
+    body.appendChild(heading);
+}
+
+// Events reach Mersey closures.
+heading.addEventListener("click", (e: Event) => {
+    console.log("clicked:", e.type);
+});
+
+// Node's constants are the real ones.
+console.log("element nodes are type", Node.ELEMENT_NODE);
+
+// Storage: two independent areas, exactly as the spec has them.
+localStorage.setItem("visits", "1");
+sessionStorage.setItem("tab", "left");
+console.log("visits:", localStorage.getItem("visits"));
+
+// The window and the agent it runs in.
+console.log("origin:", window.location.host, "— lang:", navigator.language);
+
+// ECMA-402: a *namespaced* constructor. Mersey has no namespaces; the name is
+// resolved as `Intl.NumberFormat` and handed to the host whole.
+const money = new Intl.NumberFormat("en-GB");
+console.log("formatted:", money.format(1234567.891));
+
+// The network, as a promise you can await.
+async function load(): Promise<string> {
+    const res = await fetch("/api/items");
+    return await res.text();
+}
+
+// A socket, and a timer — both ordinary values.
+const socket = new WebSocket("wss://example.com/live");
+setTimeout(() => {
+    socket.close();
+}, 30000);

@@ -1,0 +1,214 @@
+// The heap, as Tier 1 compiles it — and as every other tier must agree it works.
+//
+// This is the test for the thing the JIT could not do until now: reach an object.
+// A field at a constant offset, an array element, a method called directly. Each
+// one is a single instruction on a machine and was a trip round the interpreter's
+// dispatch loop, and the whole risk of making it fast is that it stops being
+// *right*.
+//
+// So everything here is written to be run hot. The conformance harness runs it on
+// the tree-walker and the bytecode VM as well, and all three must print the same
+// thing. What is being checked is not "does it go fast" — it is "does the compiled
+// code and the interpreted code agree about the heap", which is the only question
+// that matters, because a wrong answer arrives quietly.
+
+import { console } from "std:console";
+
+// ---- fields: read, write, and every width ----------------------------------
+class Body {
+    public x: float64 = 0.0;
+    public y: float64 = 0.0;
+    public vx: float64 = 1.0;
+    public vy: float64 = 0.5;
+    public hits: int32 = 0;
+    public big: int64 = 0l;
+    public alive: bool = true;
+    // A reference field, which may be null — and legitimately: the last one has
+    // no neighbour.
+    public next: Body? = null;
+
+    public constructor(i: int32) {
+        this.x = i as float64;
+        this.big = i as int64;
+    }
+
+    // Writes fields. This is what makes the group "effectful", and a trap inside
+    // it can no longer be answered by running the whole call again.
+    public step(dt: float64): void {
+        this.x = this.x + this.vx * dt;
+        this.y = this.y + this.vy * dt;
+        this.hits = this.hits + 1;
+        this.big = this.big + 2l;
+        this.alive = !this.alive;
+    }
+
+    public energy(): float64 {
+        return this.vx * this.vx + this.vy * this.vy;
+    }
+
+    // Reads a field of *another* object, reached through a field of this one.
+    public neighbourX(): float64 {
+        if (this.next != null) {
+            return this.next.x;
+        }
+        return -1.0;
+    }
+}
+
+// A subclass that adds a field and does **not** override `energy`. Class hierarchy
+// analysis is what lets `b.energy()` compile to a direct call — and a `Body[]` full
+// of `Heavy`s must still get the right answer, because a subclass's fields begin
+// with its base's, so every offset the compiler computed is still the right one.
+class Heavy extends Body {
+    public mass: float64 = 2.0;
+    public constructor(i: int32) {
+        super(i);
+        this.vx = 2.0;
+    }
+}
+
+function simulate(bs: Body[], steps: int32): float64 {
+    let total = 0.0;
+    for (let s = 0; s < steps; s++) {
+        for (let i = 0; i < bs.length; i++) {
+            const b = bs[i];
+            b.step(0.5);
+            total = total + b.energy();
+        }
+    }
+    return total;
+}
+
+const bodies: Body[] = [];
+for (let i = 0; i < 6; i++) {
+    bodies.push(i % 2 == 0 ? new Body(i) : new Heavy(i));
+}
+// A chain, so the last one's `next` is null and the null path is taken.
+for (let i = 0; i < 5; i++) {
+    bodies[i].next = bodies[i + 1];
+}
+
+console.log("sim:", simulate(bodies, 200));
+console.log("fields:", bodies[0].x, bodies[0].hits, bodies[0].big, bodies[0].alive);
+console.log("subclass:", bodies[1].energy(), bodies[3].x);
+console.log("neighbour:", bodies[0].neighbourX(), bodies[5].neighbourX());
+
+// ---- arrays: elements read and written, of every width ----------------------
+function total(xs: float64[]): float64 {
+    let t = 0.0;
+    for (let i = 0; i < xs.length; i++) {
+        t = t + xs[i];
+    }
+    return t;
+}
+
+function scale(xs: float64[], k: float64): void {
+    for (let i = 0; i < xs.length; i++) {
+        xs[i] = xs[i] * k;
+    }
+}
+
+function counts(ns: int32[]): int32 {
+    let t = 0;
+    for (let i = 0; i < ns.length; i++) {
+        ns[i] = ns[i] + 1;
+        t = t + ns[i];
+    }
+    return t;
+}
+
+const xs: float64[] = [];
+const ns: int32[] = [];
+for (let i = 0; i < 8; i++) {
+    xs.push(i as float64);
+    ns.push(i);
+}
+for (let r = 0; r < 100; r++) {
+    scale(xs, 1.01);
+    counts(ns);
+}
+console.log("array:", total(xs) > 30.0, ns[0], ns[7]);
+
+// ---- an array of objects, mutated through the element -----------------------
+function bumpAll(bs: Body[]): int32 {
+    let n = 0;
+    for (let i = 0; i < bs.length; i++) {
+        bs[i].hits = bs[i].hits + 1;
+        n = n + bs[i].hits;
+    }
+    return n;
+}
+for (let r = 0; r < 100; r++) {
+    bumpAll(bodies);
+}
+console.log("through element:", bodies[0].hits);
+
+// ---- the things that must throw, and must throw the *same* ------------------
+//
+// Compiled code that has already written to an object cannot be re-run by the
+// interpreter to find out what went wrong — it would write to it again. So it has
+// to raise these itself, with the same message the interpreter would have given.
+
+// Each of these is called *hot* before it is made to fault, because a function
+// called once is a function the JIT never compiled — and a test of compiled code
+// that never compiled it passes for the wrong reason.
+
+function outOfBounds(xs: float64[], i: int32): float64 {
+    xs[0] = 1.0; // a write *before* the fault: re-running this would double it
+    return xs[i];
+}
+
+for (let w = 0; w < 200; w++) {
+    outOfBounds(xs, 0);
+}
+try {
+    outOfBounds(xs, 99);
+} catch (e: RangeError) {
+    console.log("bounds:", e.message);
+}
+try {
+    outOfBounds(xs, -1);
+} catch (e: RangeError) {
+    console.log("negative:", e.message);
+}
+
+function divByZero(b: Body, d: int32): int32 {
+    b.hits = b.hits + 1; // again: a write first
+    return 100 / d;
+}
+
+for (let w = 0; w < 200; w++) {
+    divByZero(bodies[0], 5);
+}
+try {
+    divByZero(bodies[0], 0);
+} catch (e: RangeError) {
+    console.log("div:", e.message);
+}
+
+// `owner` is declared non-null and never assigned, so it holds `null` anyway —
+// nothing requires a field to be initialized. Compiled code believes the declared
+// type, reaches through it, and must find the null rather than read address zero.
+class Owned {
+    public v: int32 = 1;
+    public owner: Owned;
+}
+
+function throughNull(o: Owned): int32 {
+    o.v = o.v + 1; // a write first
+    return o.owner.v;
+}
+
+const owned = new Owned();
+owned.owner = owned; // warm it up on the path where the reference is *not* null
+for (let w = 0; w < 200; w++) {
+    throughNull(owned);
+}
+try {
+    throughNull(new Owned()); // …and this one's `owner` was never assigned
+} catch (e: TypeError) {
+    console.log("null:", e.message);
+}
+
+// The write that happened before each throw must have happened exactly **once**.
+console.log("after throwing:", xs[0], bodies[0].hits);

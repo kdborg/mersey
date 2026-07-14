@@ -28,6 +28,10 @@ class Custom extends Error {
     }
 }
 
+function halve(x: float64): float64 {
+    return x / 2;
+}
+
 function counter(start: int32, to: int32): int32 {
     let i = start;
     while (i <= to) {
@@ -47,6 +51,33 @@ test("C-style coercion widens, and integer division truncates", () => {
 test("integers wrap at their declared width, not at 2^53", () => {
     const big: int32 = 2147483647;
     assert(big + 1 == -2147483648, "int32 wraps");
+    // The *declared* width, not the width the value happened to be stored at.
+    // This is the case the engine used to get wrong: the literal was an int32,
+    // nothing converted it, and an int64 wrapped at 32 bits.
+    const wide: int64 = 2147483647;
+    assert(wide + 1 == 2147483648, "int64 does not wrap here");
+    const u: uint32 = 4294967295;
+    assert(u + 1 == 0, "uint32 wraps at 32 bits");
+});
+
+test("widening is real at run time, not just in the type checker", () => {
+    // `7` is an int32 literal. Everything below declares a float64, so what is
+    // stored is a float64 — and float division is what these are asking for.
+    const init: float64 = 7;
+    assert(init / 2 == 3.5, "initializer widens");
+
+    const xs: float64[] = [7];
+    assert(xs[0] / 2 == 3.5, "array element widens");
+
+    assert(halve(7) == 3.5, "argument widens");
+
+    let acc: float64 = 0.0;
+    acc += 7;
+    assert(acc / 2 == 3.5, "compound assignment widens its operand");
+
+    // And an int32 stays an int32: widening is not rounding.
+    const n: int32 = 7;
+    assert(n / 2 == 3, "integer division still truncates");
 });
 
 test("strings are sequences of code points, not UTF-16 units", () => {

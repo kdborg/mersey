@@ -1,0 +1,36 @@
+// A declaration is not a variable, and cannot be reassigned.
+//
+// `const` was always rejected; a *declaration* was not. `f = g` quietly rebound
+// a function, and the name went on typechecking as the thing it used to be while
+// meaning something else. That is the one move the whole design rules out: this
+// language's premise is that the program is known at compile time — sealed
+// classes, static dispatch, a closed module graph, and a JIT that turns a call
+// into a direct jump to the function the name refers to. A name that can be
+// repointed at run time takes all of that back.
+import { console } from "std:console";
+
+function f(): int32 {
+    return 1;
+}
+
+function g(): int32 {
+    return 2;
+}
+
+class C {}
+
+enum E {
+    A,
+}
+
+const fixed: int32 = 1;
+let variable: int32 = 1;
+
+f = g;
+C = C;
+E = E;
+console = console;
+fixed = 2;
+
+// The one binding that may be assigned to.
+variable = 2;

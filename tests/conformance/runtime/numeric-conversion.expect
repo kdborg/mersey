@@ -1,0 +1,16 @@
+param      : 3.5
+initializer: 3.5
+assignment : 3.5
+array      : 3.5
+record     : 3.5
+class field: 3.5
+return     : 3.5
+mixed op   : 3.5 and 3.5
+int64      : 2147483648
+int64 shift: 34359738352
+uint32     : 4294967295
+uint32 wrap: 0
+int divide : 3
+compound   : 10.5
+int16 +=   : -32768
+negative   : -3.5

@@ -628,7 +628,7 @@ pub fn for_each_expr(module: &Module, f: &mut impl FnMut(&Expr)) {
     }
 }
 
-fn walk_decl(d: &Decl, f: &mut impl FnMut(&Expr)) {
+pub fn walk_decl(d: &Decl, f: &mut impl FnMut(&Expr)) {
     match d {
         Decl::Function(fd) => {
             for p in &fd.params {
@@ -685,7 +685,7 @@ fn walk_var(v: &VarStmt, f: &mut impl FnMut(&Expr)) {
     }
 }
 
-fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
+pub fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
     match s {
         Stmt::Block(b) => b.iter().for_each(|s| walk_stmt(s, f)),
         Stmt::Var(v) => walk_var(v, f),
@@ -754,7 +754,7 @@ fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
     }
 }
 
-fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
+pub fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
     f(e);
     match e {
         Expr::Ident(_) | Expr::This(_) | Expr::Lit { .. } => {}

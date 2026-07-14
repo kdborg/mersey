@@ -59,29 +59,61 @@ impl Host for BufHost {
 
 // ---- pipeline under test ---------------------------------------------------------
 
-/// Frontend only; returns whether the program is clean.
-fn frontend(bytes: &[u8]) -> bool {
-    let Ok(src) = source::decode("<fuzz>", bytes) else {
-        return false;
-    };
+/// Parse, bind and typecheck. `Some(module)` if the program is clean.
+///
+/// The module is leaked, and it is the *checked* one — which is what the two
+/// engines then run. Checking one AST and running a different one was a real bug
+/// here: the checker's conversions belong to the nodes it checked, and a program
+/// that runs a copy of itself gets the conversions of whatever used to live at
+/// those addresses. `check` now takes `&'static`, so it cannot be done again.
+fn frontend(bytes: &[u8]) -> Option<&'static mersey_front::ast::Module> {
+    let src = source::decode("<fuzz>", bytes).ok()?;
     let parsed = parser::parse(&src);
     if !parsed.diagnostics.is_empty() {
-        return false;
+        return None;
     }
-    if !bind::bind(&parsed.module).diagnostics.is_empty() {
-        return false;
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    if !bind::bind(module).diagnostics.is_empty() {
+        return None;
     }
-    check::check(&parsed.module).diagnostics.is_empty()
+    if !check::check(module).diagnostics.is_empty() {
+        return None;
+    }
+    Some(module)
 }
 
 /// Execute on one engine; returns output + error line.
-fn execute(src_text: &str, use_vm: bool) -> String {
-    let src = source::decode("<fuzz>", src_text.as_bytes()).expect("checked");
-    let parsed = parser::parse(&src);
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
+/// Which engine ran it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    /// The AST tree-walker: the oracle. Slow, simple, and the thing the other two
+    /// have to agree with.
+    Tree,
+    /// The bytecode VM.
+    Vm,
+    /// The VM, plus the Cranelift JIT — with the thresholds dropped to nothing, so
+    /// a program that runs once still reaches Tier 1.
+    ///
+    /// Without that last part this tier was never actually exercised: a generated
+    /// program calls its function a handful of times, the threshold is sixty-four,
+    /// and the fuzzer would have gone on reporting "no findings" about a compiler
+    /// it never invoked.
+    Jit,
+}
+
+fn execute(module: &'static mersey_front::ast::Module, tier: Tier) -> String {
     let buf = Rc::new(RefCell::new(String::new()));
     let mut i = new_interp(Box::new(BufHost(buf.clone())));
-    i.use_vm = use_vm;
+    i.use_vm = tier != Tier::Tree;
+    if tier == Tier::Jit {
+        i.jit = Some(mersey_jit::hook);
+        // 1, not 0. Compiling on the very first call asks for callees that have
+        // never run — they have no bytecode yet, so the group is refused, the
+        // refusal is cached, and the "JIT tier" quietly interprets everything.
+        // One interpreted pass first gives every callee a body.
+        i.jit_threshold = 1;
+        i.osr_threshold = 1;
+    }
     let err = match i.run_module(module) {
         Ok(()) => String::new(),
         Err(t) => format!("error: {}", i.describe_thrown(&t)),
@@ -157,7 +189,7 @@ fn run_mutation(iters: u64, rng: &mut Rng) -> u64 {
         let seed = &corpus[rng.below(corpus.len())];
         let input = mutate(rng, seed);
         let r = catch_unwind(AssertUnwindSafe(|| {
-            frontend(&input);
+            let _ = frontend(&input);
         }));
         if r.is_err() {
             crashes += 1;
@@ -172,7 +204,133 @@ fn run_mutation(iters: u64, rng: &mut Rng) -> u64 {
 // ---- mode 2: grammar-aware differential ----------------------------------------------
 
 /// Generate a small well-typed program (int32 world, bounded loops).
+///
+/// Half of them are about the **heap** — classes with fields, arrays, methods —
+/// because that is what Tier 1 learned to compile, and a generator that only made
+/// arithmetic would have gone on reporting "no findings" about code it never
+/// wrote. A differential fuzzer is only worth what it generates.
 fn gen_program(rng: &mut Rng) -> String {
+    if rng.chance(50) {
+        return gen_object_program(rng);
+    }
+    gen_numeric_program(rng)
+}
+
+/// Objects: fields read and written, arrays indexed, methods called, subclasses
+/// through a base-typed variable, and `null` where a reference can be null.
+/// Everything Tier 1 now compiles — and every tier must agree about all of it.
+fn gen_object_program(rng: &mut Rng) -> String {
+    let mut s = String::from("import { console } from \"std:console\";\n");
+    // `unset` has no initializer, so every `Cell` is born holding **null** in a
+    // field the type system calls a `float64` — nothing in the language requires a
+    // field to be assigned. Compiled code believes the declared type, and this is
+    // the one shape that makes it wrong. Leaving it out is how this fuzzer missed a
+    // real divergence: every class it used to generate initialized everything.
+    s.push_str(
+        "class Cell {
+    public a: int32 = 0;
+    public b: float64 = 0.0;
+    public flag: bool = false;
+    public unset: float64;
+    public next: Cell? = null;
+    public constructor(a: int32) { this.a = a; this.b = 0.5; }
+    public get(): int32 { return this.a; }
+    public scale(k: float64): float64 { return this.b * k; }
+    public bump(d: int32): void { this.a = this.a + d; }
+    public useUnset(): float64 { return this.unset + 1.0; }
+    public setUnset(v: float64): void { this.a = this.a + 1; this.unset = v; }
+    public mixUnset(): void { this.a = this.a + 1; this.unset = this.unset * 2.0; }
+}
+",
+    );
+    // A subclass that does *not* override `get`, so class hierarchy analysis is
+    // allowed to compile the call directly — and must be right when the receiver
+    // is one of these.
+    s.push_str("class Cell2 extends Cell {\n    public extra: int32 = 7;\n    public constructor(a: int32) { super(a); }\n}\n");
+
+    // `mk` allocates and returns; `work` allocates in its loop, stores returned
+    // objects over owned locals (the exact shape of a real use-after-free found
+    // in Tier 1: `Dup` handing a borrowed copy to the store while the owned
+    // original was released), and reads them afterwards.
+    s.push_str(
+        "function mk(a: int32): Cell {
+    return new Cell(a);
+}
+function work(cs: Cell[], n: int32, k: int32): int32 {
+    let acc = 0;
+    let f = 0.0;
+    let own = new Cell(k);
+    for (let i = 0; i < n; i++) {
+        own = mk(own.get() % 97);
+        const churn = new Cell(i);
+        acc = (acc + own.get() + churn.get()) | 0;
+        const c = cs[i];
+",
+    );
+    let stmts = 1 + rng.below(6);
+    for _ in 0..stmts {
+        match rng.below(9) {
+            0 => s.push_str(&format!("        c.bump({});\n", rng.below(9))),
+            1 => s.push_str(&format!(
+                "        acc = (acc {} c.get()) | 0;\n",
+                gen_binop(rng)
+            )),
+            2 => s.push_str(&format!("        f = f + c.scale({}.5);\n", rng.below(4))),
+            3 => s.push_str("        c.flag = !c.flag;\n"),
+            4 => s.push_str(&format!(
+                "        c.a = (c.a {} k) | 0;\n",
+                gen_binop(rng)
+            )),
+            5 => s.push_str(
+                "        if (c.next != null) { acc = acc + 1; } else { acc = acc ^ 3; }\n",
+            ),
+            // Reading, writing and read-modify-writing a field that may still hold
+            // null. These throw, and the throw is left to escape: a `try` inside the
+            // loop would both stop the function compiling and hide the message, and
+            // the message is the thing being compared.
+            6 => s.push_str("        f = f + c.useUnset();\n"),
+            7 => s.push_str(&format!("        c.setUnset({}.25);\n", rng.below(5))),
+            _ => s.push_str("        c.mixUnset();\n"),
+        }
+    }
+    // No casts here: `as` is outside the Tier 1 subset, and a cast in the
+    // template would quietly keep every generated program interpreted — the
+    // exact blind spot this generator exists to not have.
+    s.push_str(
+        "    }
+    if (f > 3.0) {
+        acc = acc ^ 5;
+    }
+    return (acc + own.get()) | 0;
+}
+",
+    );
+
+    s.push_str(&format!(
+        "const cs: Cell[] = [];
+for (let i = 0; i < {}; i++) {{ cs.push(i % 2 == 0 ? new Cell(i) : new Cell2(i)); }}
+cs[0].next = cs[1];
+let out = 0;
+",
+        2 + rng.below(30)
+    ));
+    let calls = 2 + rng.below(3);
+    for _ in 0..calls {
+        s.push_str(&format!(
+            "try {{ out = (out {} work(cs, cs.length, {})) | 0; }} catch (e: Error) {{ console.log(\"caught:\", e.message); }}\nconsole.log(out, cs[0].a, cs[0].b, cs[0].flag, cs[0].unset);\n",
+            gen_binop(rng),
+            rng.below(20),
+        ));
+    }
+    // And an index that is out of bounds, which must throw the same error on
+    // every tier — the one thing compiled code has to raise for itself.
+    if rng.chance(25) {
+        s.push_str("try { console.log(cs[cs.length]); } catch (e: Error) { console.log(\"caught:\", e.message); }\n");
+    }
+    s
+}
+
+fn gen_numeric_program(rng: &mut Rng) -> String {
     let mut s = String::from("import { console } from \"std:console\";\n");
     let n_fns = 1 + rng.below(3);
     for f in 0..n_fns {
@@ -249,10 +407,15 @@ fn run_differential(iters: u64, rng: &mut Rng) -> u64 {
     for i in 0..iters {
         let prog = gen_program(rng);
         let r = catch_unwind(AssertUnwindSafe(|| {
-            if !frontend(prog.as_bytes()) {
-                return None; // generator produced something the checker rejects
-            }
-            Some((execute(&prog, true), execute(&prog, false)))
+            // The generator produced something the checker rejects.
+            let module = frontend(prog.as_bytes())?;
+            // All three engines run the *same* checked AST — the one an embedder
+            // would run. Anything else compares three programs, not three engines.
+            Some((
+                execute(module, Tier::Tree),
+                execute(module, Tier::Vm),
+                execute(module, Tier::Jit),
+            ))
         }));
         match r {
             Err(_) => {
@@ -261,11 +424,12 @@ fn run_differential(iters: u64, rng: &mut Rng) -> u64 {
                 let _ = std::fs::write(&path, &prog);
                 eprintln!("PANIC; program saved to {path}");
             }
-            Ok(Some((vm, tree))) if vm != tree => {
+            Ok(Some((tree, vm, jit))) if vm != tree || jit != tree => {
                 findings += 1;
                 let path = format!("fuzz-diverge-{i}.mersey");
                 let _ = std::fs::write(&path, &prog);
-                eprintln!("ENGINE DIVERGENCE; program saved to {path}");
+                let who = if vm != tree { "VM" } else { "JIT" };
+                eprintln!("ENGINE DIVERGENCE ({who} vs tree-walker); program saved to {path}");
             }
             _ => {}
         }

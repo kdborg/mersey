@@ -1,0 +1,55 @@
+// The mistakes §4 says are errors, being errors.
+//
+// The classes page shows each of these next to the feature it belongs to, with
+// the code it reports. This file is what makes those codes true — a page that
+// promises `E0408` and delivers silence teaches the wrong thing.
+
+class Vault {
+    private pin: int32 = 1234;
+}
+
+class Account {
+    public readonly id: uint64;
+    public constructor(id: uint64) {
+        this.id = id;
+    }
+}
+
+abstract class Shape {
+    public abstract area(): float64;
+}
+
+class Base {
+    public m(): int32 {
+        return 1;
+    }
+}
+
+// `override` is not optional: shadowing a base method silently is the bug the
+// keyword exists to prevent.
+class Derived extends Base {
+    public m(): int32 {
+        return 2;
+    }
+}
+
+interface Drawable {
+    draw(): string;
+}
+
+// Declared conformance the class does not have: the signature is checked, not
+// just the name.
+class Icon implements Drawable {
+    public draw(): int32 {
+        return 1;
+    }
+}
+
+const pin = new Vault().pin;
+
+const acct = new Account(1);
+acct.id = 2;
+
+const s = new Shape();
+
+throw 42;

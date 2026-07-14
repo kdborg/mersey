@@ -96,6 +96,8 @@ pub enum Code {
     BadThrow,
     /// E0413: `yield` outside a function body
     YieldOutsideFunction,
+    /// E0414: a type alias that (directly or indirectly) refers to itself
+    CircularTypeAlias,
 }
 
 impl Code {
@@ -143,6 +145,7 @@ impl Code {
             Code::BadReturn => "E0411",
             Code::BadThrow => "E0412",
             Code::YieldOutsideFunction => "E0413",
+            Code::CircularTypeAlias => "E0414",
         }
     }
 }

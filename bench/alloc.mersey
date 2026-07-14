@@ -1,0 +1,42 @@
+// Allocation in the hot loop: the shape Tier 1 could not take until compiled
+// code could *make* an object.
+//
+// Every iteration allocates a `Vec2`, calls a method that allocates another,
+// stores it over an owned local (releasing the previous one — this loop holds
+// two objects, not three million), and reads it back. This is `oop.mersey` from
+// the measurement scratchpad, promoted to the bench suite the day it compiled.
+//
+//   MERSEY_JIT=0 mersey run bench/alloc.mersey   (Tier 0 interpreter)
+//   mersey run bench/alloc.mersey                (Tier 1 JIT)
+import { console } from "std:console";
+
+class Vec2 {
+    public x: float64 = 0.0;
+    public y: float64 = 0.0;
+
+    public constructor(x: float64, y: float64) {
+        this.x = x;
+        this.y = y;
+    }
+
+    public add(o: Vec2): Vec2 {
+        return new Vec2(this.x + o.x, this.y + o.y);
+    }
+
+    public dot(o: Vec2): float64 {
+        return this.x * o.x + this.y * o.y;
+    }
+}
+
+function run(n: int32): float64 {
+    let acc = new Vec2(0.0, 0.0);
+    let total = 0.0;
+    for (let i = 0; i < n; i++) {
+        const v = new Vec2(1.0, 2.0);
+        acc = acc.add(v);
+        total = total + acc.dot(v);
+    }
+    return total;
+}
+
+console.log(run(3000000));

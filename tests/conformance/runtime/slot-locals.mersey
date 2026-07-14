@@ -1,0 +1,110 @@
+// Locals live in frame slots — except the ones a closure can see.
+//
+// A local is now an index into a flat frame: no string, no hash, no walk up a
+// scope chain. But a closure outlives the frame that made it, so anything a
+// closure can name has to stay in the environment. Getting that line wrong does
+// not run slowly — it reads a dead slot, or loses a variable altogether. These
+// are the cases where the line is.
+
+import { console } from "std:console";
+
+// --- a closure captures a local: the local must survive the call that made it
+function counter(): () => int32 {
+    let n = 0;
+    return (): int32 => {
+        n = n + 1;
+        return n;
+    };
+}
+const c = counter();
+c();
+c();
+console.log("captured local:", c());
+
+// --- each iteration of a `for (let …)` gets its own binding
+function perIteration(): int32[] {
+    const fns: (() => int32)[] = [];
+    for (let i = 0; i < 3; i++) {
+        fns.push((): int32 => i);
+    }
+    const out: int32[] = [];
+    for (const f of fns) {
+        out.push(f());
+    }
+    return out;
+}
+console.log("per-iteration:", perIteration());
+
+// --- a loop with NO closure in it: one binding, and a slot. Same answers.
+function counted(n: int32): int32 {
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+        total = total + i;
+    }
+    return total;
+}
+console.log("counted:", counted(100));
+
+// --- a closure over a *parameter*
+function adder(by: int32): (n: int32) => int32 {
+    return (n: int32): int32 => n + by;
+}
+console.log("captured param:", adder(10)(5));
+
+// --- shadowing: an inner block's `x` is a different variable
+function shadow(): int32 {
+    let x = 1;
+    {
+        let x = 2;
+        x = x + 10;
+    }
+    return x;
+}
+console.log("shadowed:", shadow());
+
+// --- a for-of item a closure captures
+function items(): int32 {
+    const fns: (() => int32)[] = [];
+    for (const v of [1, 2, 3]) {
+        fns.push((): int32 => v);
+    }
+    let sum = 0;
+    for (const f of fns) {
+        sum = sum + f();
+    }
+    return sum;
+}
+console.log("captured item:", items());
+
+// --- a generator suspends with its frame, and resumes holding it
+function gen(n: int32): int32 {
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+        acc = acc + i;
+        yield acc;
+    }
+}
+let last = 0;
+for (const v of gen(5)) {
+    last = v;
+}
+console.log("generator frame:", last);
+
+// --- a catch parameter, and a local declared after a try
+function caught(): string {
+    let where = "none";
+    try {
+        throw new Error("boom");
+    } catch (e: Error) {
+        where = e.message;
+    }
+    return where;
+}
+console.log("catch param:", caught());
+
+// --- module-level variables are globals: a function must still see them
+let moduleVar = 41;
+function readsModuleVar(): int32 {
+    return moduleVar + 1;
+}
+console.log("module var:", readsModuleVar());

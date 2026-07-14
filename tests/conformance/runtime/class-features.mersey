@@ -1,0 +1,243 @@
+// Every class feature the specification names, exercised.
+//
+// §4 of the spec shows each of these as an example. This file is where they are
+// *proved*: if a feature stops working, or never worked the way the page says,
+// this test fails and the page is wrong in the same commit.
+
+import { console } from "std:console";
+
+// ---- 4.1 fixed layout, fields, constructor --------------------------------
+class Account {
+    private balance: bigdec = 0m;
+    protected readonly owner: string;
+    public readonly id: uint64;
+
+    public constructor(id: uint64, owner: string) {
+        this.id = id;
+        this.owner = owner;
+    }
+
+    public deposit(amount: bigdec): void {
+        if (amount <= 0m) {
+            throw new RangeError("amount must be positive");
+        }
+        this.balance = this.balance + amount;
+    }
+
+    public getBalance(): bigdec {
+        return this.balance;
+    }
+}
+
+const acct = new Account(1, "ada");
+acct.deposit(150m);
+console.log("balance:", acct.getBalance());
+
+// ---- 4.2 access control ---------------------------------------------------
+// `private` is the default: `rate` has no modifier and is unreachable outside.
+class Vault {
+    rate: float64 = 0.05;
+    private pin: int32 = 1234;
+    protected key: string = "shared-with-subclasses";
+    public label: string = "public";
+
+    public check(guess: int32): bool {
+        return guess == this.pin; // the declaring class can see `private`
+    }
+}
+console.log("access:", new Vault().check(1234), new Vault().label);
+
+// ---- 4.2 static ------------------------------------------------------------
+class Counter {
+    private static made: int32 = 0;
+    public static create(): Counter {
+        Counter.made += 1;
+        return new Counter();
+    }
+    public static total(): int32 {
+        return Counter.made;
+    }
+}
+Counter.create();
+Counter.create();
+console.log("static:", Counter.total());
+
+// ---- 4.2 readonly ----------------------------------------------------------
+// `id` is assignable in the constructor and nowhere else — `acct.id = 2` is a
+// compile error (E0408), which is why it is not written here.
+console.log("readonly:", acct.id);
+
+// ---- 4.2 get / set accessors ----------------------------------------------
+class Temperature {
+    private celsius: float64 = 0.0;
+
+    public get fahrenheit(): float64 {
+        return this.celsius * 9.0 / 5.0 + 32.0;
+    }
+
+    public set fahrenheit(f: float64) {
+        this.celsius = (f - 32.0) * 5.0 / 9.0;
+    }
+}
+const temp = new Temperature();
+temp.fahrenheit = 212.0; // calls the setter
+console.log("accessor:", temp.fahrenheit); // calls the getter
+
+// ---- 4.3 abstract, extends, super, override, final ------------------------
+abstract class Shape {
+    public readonly name: string;
+
+    public constructor(name: string) {
+        this.name = name;
+    }
+
+    // No body: a subclass must provide one.
+    public abstract area(): float64;
+
+    // `final`: a subclass may not replace this.
+    public final describe(): string {
+        return `${this.name} of area ${this.area()}`;
+    }
+}
+
+class Circle extends Shape {
+    private r: float64;
+
+    public constructor(r: float64) {
+        super("circle"); // the base constructor runs first
+        this.r = r;
+    }
+
+    // `override` is required — silently shadowing a base method is an error.
+    public override area(): float64 {
+        return 3.14159 * this.r * this.r;
+    }
+}
+
+class Square extends Shape {
+    private side: float64;
+
+    public constructor(side: float64) {
+        super("square");
+        this.side = side;
+    }
+
+    public override area(): float64 {
+        return this.side * this.side;
+    }
+}
+
+// One vtable call, two answers — `new Shape("x")` would not compile.
+const shapes: Shape[] = [new Circle(1.0), new Square(3.0)];
+for (const s of shapes) {
+    console.log("shape:", s.describe());
+}
+
+// ---- 4.3 interfaces (nominal conformance) ---------------------------------
+interface Drawable {
+    draw(): string;
+}
+
+interface Sized {
+    size(): int32;
+}
+
+// A class satisfies an interface by *saying so*. Matching the shape by accident
+// is not enough, and the checker verifies the signatures, not just the names.
+class Icon implements Drawable, Sized {
+    public draw(): string {
+        return "[icon]";
+    }
+    public size(): int32 {
+        return 16;
+    }
+}
+
+function render(d: Drawable): string {
+    return d.draw();
+}
+console.log("interface:", render(new Icon()), new Icon().size());
+
+// ---- 4.3 generics, and a bounded type parameter ---------------------------
+class Box<T> {
+    private value: T;
+
+    public constructor(value: T) {
+        this.value = value;
+    }
+
+    public get(): T {
+        return this.value;
+    }
+}
+
+const boxed = new Box<string>("held");
+console.log("generic:", boxed.get());
+
+// The bound is what makes the function usable: without `T extends Numeric`
+// there is no `+` on a T, and an unbounded T supports nothing at all.
+function sum<T extends Numeric>(xs: T[], zero: T): T {
+    let total = zero;
+    for (const x of xs) {
+        total = total + x;
+    }
+    return total;
+}
+console.log("bounded:", sum<int32>([1, 2, 3], 0), sum<float64>([0.5, 0.25], 0.0));
+
+// ---- 4.3 `is`: a checked runtime test that narrows -------------------------
+function area(s: Shape): float64 {
+    if (s is Circle) {
+        return s.area(); // `s` is a Circle here — narrowed, not cast
+    }
+    return 0.0;
+}
+console.log("is:", area(new Circle(2.0)) > 12.0);
+
+// ---- 4.4 functions: optional, default, and rest parameters ----------------
+function greet(name: string, greeting: string = "hello", loud?: bool): string {
+    const text = `${greeting}, ${name}`;
+    return loud == true ? text.toUpperCase() : text;
+}
+console.log("params:", greet("ada"), "|", greet("ada", "hi", true));
+
+function joinAll(sep: string, ...parts: string[]): string {
+    return parts.join(sep);
+}
+console.log("rest:", joinAll("-", "a", "b", "c"));
+
+// An arrow function is an ordinary value, typed the same way.
+const double = (n: int32): int32 => n * 2;
+console.log("arrow:", double(21));
+
+// ---- 4.6 exceptions: typed catches, matched in order ----------------------
+class WithdrawalError extends Error {
+    public readonly attempted: bigdec;
+
+    public constructor(message: string, attempted: bigdec) {
+        super(message);
+        this.attempted = attempted;
+    }
+}
+
+function withdraw(amount: bigdec): void {
+    if (amount > 100m) {
+        throw new WithdrawalError("over limit", amount);
+    }
+    if (amount <= 0m) {
+        throw new RangeError("amount must be positive");
+    }
+}
+
+for (const amount of [500m, -1m, 50m]) {
+    try {
+        withdraw(amount);
+        console.log("withdrew:", amount);
+    } catch (e: WithdrawalError) {
+        console.log("caught WithdrawalError:", e.message, e.attempted);
+    } catch (e: Error) {
+        console.log("caught Error:", e.message);
+    } finally {
+        // Runs on every path, including the ones that threw.
+    }
+}

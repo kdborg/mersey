@@ -48,6 +48,34 @@ fn every_library_example_runs_and_prints_what_the_docs_say() {
 
     for path in examples() {
         let src = std::fs::read_to_string(&path).unwrap();
+
+        // A browser example cannot run here — there is no DOM to run it against.
+        // It is *typechecked* instead, against the real generated web surface, so
+        // it still cannot name a global or a member that does not exist; and the
+        // page shows it with no output, because none was produced. The web
+        // platform is proved end-to-end elsewhere, by `web/test/platform.mjs`
+        // driving a live realm.
+        if src
+            .lines()
+            .take_while(|l| l.starts_with("//"))
+            .any(|l| l.trim_start_matches('/').trim() == "browser")
+        {
+            let out = Command::new(env!("CARGO_BIN_EXE_mersey"))
+                .arg("check")
+                .arg(&path)
+                .output()
+                .expect("run mersey");
+            if !out.status.success() {
+                failures.push(format!(
+                    "== {} (browser example failed to typecheck)\n{}{}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr),
+                ));
+            }
+            continue;
+        }
+
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_mersey"));
         cmd.arg("run");
         for c in caps_of(&src) {

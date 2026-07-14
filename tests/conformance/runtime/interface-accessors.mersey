@@ -1,0 +1,69 @@
+// An interface can require a getter.
+//
+// Classes had `get`/`set` from the start; interfaces could only require a field
+// or a method, so a computed property could not be part of a contract. From the
+// caller's side a getter *is* a readonly property — `s.size` either works or it
+// does not — so that is what an interface asks for, and a class satisfies it
+// with an accessor or with a plain readonly field, whichever it actually has.
+
+import { console } from "std:console";
+
+interface Sized {
+    get size(): int32;
+}
+
+interface Named {
+    get name(): string;
+    set name(v: string);
+}
+
+// Satisfied by accessors.
+class Box implements Sized, Named {
+    private label: string = "box";
+    private items: int32[] = [1, 2, 3];
+
+    public get size(): int32 {
+        return this.items.length;
+    }
+
+    public get name(): string {
+        return this.label;
+    }
+
+    public set name(v: string) {
+        this.label = v;
+    }
+}
+
+// Satisfied by a plain readonly field — the interface asked for a value, not for
+// how it is produced.
+class Fixed implements Sized {
+    public readonly size: int32 = 9;
+}
+
+function total(xs: Sized[]): int32 {
+    let n = 0;
+    for (const x of xs) {
+        n = n + x.size;
+    }
+    return n;
+}
+
+const b = new Box();
+console.log("getter    :", b.size);
+console.log("setter    :", b.name);
+b.name = "renamed";
+console.log("after set :", b.name);
+console.log("field also:", new Fixed().size);
+console.log("through the interface:", total([b, new Fixed()]));
+
+// `get` is still an ordinary name: `get(` is a method called `get` (§6.9).
+interface Store {
+    get(key: string): int32;
+}
+class Memory implements Store {
+    public get(key: string): int32 {
+        return key.length;
+    }
+}
+console.log("a method named get:", new Memory().get("abcd"));

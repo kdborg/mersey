@@ -3,7 +3,10 @@
 // none of it hand-wired into the engine. Each call goes through the
 // universal bridge, typed by the generated WebIDL declarations.
 import { console } from "std:console";
-import { document, localStorage, fetch, setTimeout, crypto, JSON, URL, Node } from "browser:dom";
+import {
+    document, localStorage, sessionStorage, fetch, setTimeout, crypto, JSON, URL, Node,
+    window, navigator, WebSocket, Event, Element, HTMLElement, Intl,
+} from "browser:dom";
 
 const out: Element = document.getElementById("out") as Element;
 let lines: string[] = [];
@@ -64,3 +67,33 @@ box.style.color = "rebeccapurple";
 box.textContent = "styled by Mersey";
 (document.body as Element).appendChild(box);
 show(`style: color=${box.style.color} class=${box.className}`);
+
+// --- window, navigator, session storage, WebSocket, Event, Intl
+{
+    show(`window: ${window.location.protocol}//${window.location.host}`);
+    show(`navigator: ua=${navigator.userAgent.length > 0} lang=${navigator.language.length > 0}`);
+
+    sessionStorage.setItem("session-key", "session-value");
+    show(`sessionStorage: ${sessionStorage.getItem("session-key")}`);
+
+    // Intl: a *namespaced* constructor. The host builds the real formatter.
+    const nf = new Intl.NumberFormat("en-US");
+    show(`intl: ${nf.format(1234567.891)}`);
+    const col = new Intl.Collator("en");
+    show(`collator: ${col.compare("a", "b") < 0}`);
+
+    // Event: a real DOM event, dispatched and caught.
+    const btn = document.createElement("button") as Element;
+    btn.addEventListener("click", (e: Event) => {
+        show(`event: type=${e.type}`);
+    });
+    const body = document.body;
+    if (body != null) {
+        body.appendChild(btn);
+    }
+    (btn as HTMLElement).click();
+
+    // WebSocket: constructed through the bridge (it will not connect here).
+    const ws = new WebSocket("wss://example.invalid/socket");
+    show(`websocket: url=${ws.url.length > 0} state=${ws.readyState >= 0}`);
+}

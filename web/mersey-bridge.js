@@ -279,7 +279,9 @@ export function makeBridge(globalObject, invokeCallback) {
         const args = JSON.parse(argsJson).map(decode);
         const c = useBindings ? CTORS.get(ctorName) : null; // generated binding
         if (c) return ok(c(args));
-        const Ctor = globalObject[ctorName]; // fallback (e.g. Promise, typed arrays)
+        // A dotted name is a *namespaced* constructor — `Intl.NumberFormat`. Walk
+        // the path rather than looking up one flat key, which would never find it.
+        const Ctor = ctorName.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
         if (typeof Ctor !== "function") return err(`${ctorName} is not a constructor`);
         return ok(new Ctor(...args));
       } catch (e) {

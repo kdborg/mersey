@@ -813,6 +813,55 @@ impl<'s> Parser<'s> {
         self.expect_punct(P::LBrace)?;
         let mut members = Vec::new();
         while !self.at_punct(P::RBrace) && self.kind() != TK::Eof {
+            // `get n(): T` — a property the implementor computes. From the
+            // caller's side that is all a getter is, so an interface requires it
+            // as a readonly property, and a class satisfies it with a `get`
+            // accessor or with a plain readonly field. `set n(v: T)` says the
+            // same thing about writing, and a name with both is simply not
+            // readonly.
+            //
+            // As in a class body, `get(` is a method *named* `get` (§6.9 note 2).
+            if (self.at_kw(Kw::Get) || self.at_kw(Kw::Set))
+                && self.at_member_name(1)
+                && self.kind_at(2) == TK::Punct(P::LParen)
+            {
+                let is_get = self.at_kw(Kw::Get);
+                self.advance();
+                let name = self.expect_member_name()?;
+                self.expect_punct(P::LParen)?;
+                let ty = if is_get {
+                    self.expect_punct(P::RParen)?;
+                    self.expect_punct(P::Colon)?;
+                    self.parse_type()?
+                } else {
+                    // `set n(v: T)` — the type is the parameter's.
+                    self.expect_ident("a parameter name")?;
+                    self.expect_punct(P::Colon)?;
+                    let t = self.parse_type()?;
+                    self.expect_punct(P::RParen)?;
+                    t
+                };
+                // A name declared with both a getter and a setter is writable.
+                match members.iter_mut().find(|m| match m {
+                    InterfaceMember::Prop { name: n, .. } => *n == name,
+                    _ => false,
+                }) {
+                    Some(InterfaceMember::Prop { readonly, .. }) => *readonly = false,
+                    _ => members.push(InterfaceMember::Prop {
+                        readonly: is_get,
+                        name,
+                        optional: false,
+                        ty,
+                    }),
+                }
+                if !self.eat_punct(P::Semi)
+                    && !self.eat_punct(P::Comma)
+                    && !self.at_punct(P::RBrace)
+                {
+                    return self.expected("`;` or `,` after an interface member");
+                }
+                continue;
+            }
             let readonly = self.is_modifier_here(Kw::Readonly);
             if readonly {
                 self.advance();

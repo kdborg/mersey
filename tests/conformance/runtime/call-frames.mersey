@@ -1,0 +1,94 @@
+// Calls without an environment, and `this` as a frame slot.
+//
+// A body with nothing living in the environment needs no environment: no Scope,
+// no Rc, no GcCell, no HashMap, and nothing handed to the collector. The
+// arguments go straight into the frame slots the compiler gave them.
+//
+// That only works if everything which *used* to read the environment now reads
+// the frame — and `this` and `super` did. These are the places that would break.
+
+import { console } from "std:console";
+
+class Base {
+    public tag: string = "base";
+    public constructor(tag: string) {
+        this.tag = tag;
+    }
+    public describe(): string {
+        return `Base(${this.tag})`;
+    }
+    public greet(): string {
+        return "hello from base";
+    }
+}
+
+class Derived extends Base {
+    public extra: int32 = 7;
+    // A constructor whose *only* use of `this` is the `super` call. The compiler
+    // has to reserve the slot anyway, or `super` has no `this` to work with.
+    public constructor(tag: string) {
+        super(tag);
+    }
+    public override describe(): string {
+        // `super.m()` needs `this`, which is now a slot, not a name.
+        return `Derived(${super.describe()}, ${this.extra})`;
+    }
+}
+
+const d = new Derived("x");
+console.log("super in ctor  :", d.tag);
+console.log("super method   :", d.describe());
+console.log("inherited      :", d.greet());
+
+// An arrow takes the enclosing `this` with it — out of the frame, into a closure
+// that outlives the frame.
+class Counter {
+    private n: int32 = 0;
+    public bump(): () => int32 {
+        return (): int32 => {
+            this.n = this.n + 1;
+            return this.n;
+        };
+    }
+}
+const c = new Counter();
+const bump = c.bump();
+bump();
+bump();
+console.log("arrow captures this:", bump());
+
+// A method calling a method on itself, several frames deep.
+class Chain {
+    public depth: int32 = 0;
+    public down(n: int32): int32 {
+        if (n == 0) {
+            return this.depth;
+        }
+        this.depth = this.depth + 1;
+        return this.down(n - 1);
+    }
+}
+console.log("recursive method:", new Chain().down(5));
+
+// A function whose parameter is captured cannot take the fast path — the
+// argument has to live in the environment, where the closure can find it.
+function adder(by: int32): (n: int32) => int32 {
+    return (n: int32): int32 => n + by;
+}
+console.log("captured param  :", adder(10)(5));
+
+// Defaults and rest are bound by `bind_params`, not by moving args into slots.
+function opts(a: int32, b: int32 = 100, ...rest: int32[]): int32 {
+    return a + b + rest.length;
+}
+console.log("defaults/rest   :", opts(1), opts(1, 2, 3, 4, 5));
+
+// A field initializer that is *not* a literal still runs, and can see `this`.
+class Computed {
+    public base: int32 = 10;
+    public doubled: int32 = 4 * 5;
+    public describe(): string {
+        return `${this.base}/${this.doubled}`;
+    }
+}
+console.log("field inits     :", new Computed().describe());

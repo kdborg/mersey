@@ -1,0 +1,17 @@
+balance: 150
+access: true public
+static: 2
+readonly: 1
+accessor: 212
+shape: circle of area 3.14159
+shape: square of area 9
+interface: [icon] 16
+generic: held
+bounded: 6 0.75
+is: true
+params: hello, ada | HI, ADA
+rest: a-b-c
+arrow: 42
+caught WithdrawalError: over limit 500
+caught Error: amount must be positive
+withdrew: 50

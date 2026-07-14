@@ -62,7 +62,13 @@ pub fn build(outdir: &str) -> ExitCode {
     }
 
     // The library: enumerated from the checker.
-    let api = check::api_reference();
+    //
+    // Sorted by title, because a reader who wants `math` looks for it where `m`
+    // is — not where the checker happened to register it. The order the groups
+    // come back in is an implementation detail of the compiler, and it has no
+    // business being the order of a page people read.
+    let mut api = check::api_reference();
+    api.sort_by_key(|g| g.title.to_lowercase());
     let mut body = String::new();
     body.push_str("<h1>Standard library</h1>\n");
     body.push_str(
@@ -116,10 +122,20 @@ pub fn build(outdir: &str) -> ExitCode {
             let _ = write!(body, "<div class=\"about\">{}</div>\n", paragraphs(&about));
         }
         if !g.import.is_empty() {
+            // What you write to get this group. Usually the title *is* the name
+            // you import (`math` from `std:math`). `browser:dom` has no such
+            // name — it exports the globals themselves — so it shows a few of
+            // them instead of an import statement that would not compile.
+            let names = if g.title.contains(':') {
+                let shown: Vec<&str> = g.members.iter().take(4).map(|m| m.name.as_str()).collect();
+                format!("{}, …", shown.join(", "))
+            } else {
+                esc(&g.title)
+            };
             let _ = write!(
                 body,
                 "<pre class=\"import\"><code>import {{ {} }} from \"{}\";</code></pre>\n",
-                esc(&g.title),
+                names,
                 esc(&g.import)
             );
         }
@@ -251,8 +267,10 @@ fn split_doc_comment(src: &str) -> (String, String) {
     for line in src.lines() {
         if in_header && line.starts_with("//") {
             let t = line.trim_start_matches('/').trim();
-            // `// caps:` is an instruction to the test runner, not prose.
-            if t.starts_with("caps:") {
+            // Directives to the test runner — which capabilities to grant, and
+            // whether the example needs a browser — are not prose, and do not
+            // belong in the description they sit above.
+            if t.starts_with("caps:") || t == "browser" {
                 continue;
             }
             about.push(t.to_string());

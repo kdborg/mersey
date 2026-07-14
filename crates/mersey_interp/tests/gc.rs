@@ -51,24 +51,24 @@ churn(5000);
 fn cycles_are_reclaimed() {
     let src = source::decode("<gc>", CYCLES.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
-    assert!(parsed.diagnostics.is_empty());
-    assert!(bind::bind(&parsed.module).diagnostics.is_empty());
-    assert!(check::check(&parsed.module).diagnostics.is_empty());
+    // Leaked first: the AST that is checked must be the AST that runs.
+    // `check` takes `&'static` precisely so this cannot be got wrong.
     let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(parsed.diagnostics.is_empty());
+    assert!(bind::bind(module).diagnostics.is_empty());
+    assert!(check::check(module).diagnostics.is_empty());
 
     let mut i = new_interp(Box::new(Silent));
     if let Err(t) = i.run_module(module) {
         panic!("runtime: {}", i.describe_thrown(&t));
     }
 
-    // Without a collector these 5,000 cyclic instances — plus the closures
-    // and scopes in the cycle — would all still be live.
+    // The cycles are gone. Most of them were reclaimed *while the loop was
+    // still running* — the collector no longer waits for a host boundary — so
+    // this final pass finds only the stragglers since the last one. What must
+    // be true is that nothing cyclic survives, which the two assertions below
+    // check: the heap is empty, and a second pass has nothing to do.
     let before = i.collect_garbage();
-    assert!(
-        before.collected >= 5000,
-        "expected the cycles to be collected, got {}",
-        before.collected
-    );
     // Breaking each cycle drops the rest of it by refcount, so the heap is
     // left essentially empty (only the live module scope survives).
     assert!(
@@ -141,19 +141,19 @@ fn minor_collections_see_stores_into_old_objects() {
 
     let src = source::decode("<gc-gen>", OLD_TO_YOUNG.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
     assert!(
         parsed.diagnostics.is_empty(),
         "{:?}",
         parsed.diagnostics.first().map(|d| d.to_string())
     );
-    assert!(bind::bind(&parsed.module).diagnostics.is_empty());
-    let checked = check::check(&parsed.module);
+    assert!(bind::bind(module).diagnostics.is_empty());
+    let checked = check::check(module);
     assert!(
         checked.diagnostics.is_empty(),
         "{:?}",
         checked.diagnostics.first().map(|d| d.to_string())
     );
-    let module: &'static _ = Box::leak(Box::new(parsed.module));
 
     let out = Rc::new(RefCell::new(String::new()));
     let mut i = new_interp(Box::new(Capture(out.clone())));
@@ -176,4 +176,103 @@ fn minor_collections_see_stores_into_old_objects() {
         "true 200",
         "objects stored into the old generation did not survive collection"
     );
+}
+
+/// A loop that allocates cycles must not grow without bound.
+///
+/// This is the bug the reference-counting cycle collector exists for. Collection
+/// used to happen only at host boundaries, because a tracing collector needs
+/// roots and the interpreter cannot enumerate the live values in its own Rust
+/// locals. A program that stayed inside one loop therefore never collected at
+/// all: refcounting freed the garbage that was not cyclic, but every `for` body
+/// that makes a closure builds a cycle (the scope holds the closure, the closure
+/// captured the scope), and those accumulated. Two million iterations held 1.7 GB;
+/// a long enough loop was killed by the OOM killer rather than finishing.
+///
+/// The program reports its own heap from *inside* the loop, so this measures the
+/// thing that was broken rather than the state left behind afterwards.
+const CYCLES_IN_A_LOOP: &str = r#"
+import { console } from "std:console";
+import { gc } from "std:gc";
+
+class Node2 {
+    public onTick: (() => int32)? = null;
+    private ticks: int32 = 0;
+    public arm(): void {
+        this.onTick = () => { this.ticks += 1; return this.ticks; };
+    }
+}
+
+let live = 0;
+for (let i = 0; i < 300000; i++) {
+    const node = new Node2();
+    node.arm();                 // instance -> closure -> scope -> instance
+    if (i == 299999) {
+        live = gc.stats().live;
+    }
+}
+console.log(live);
+"#;
+
+#[test]
+fn a_loop_that_allocates_cycles_does_not_grow_without_bound() {
+    let src = source::decode("<gc>", CYCLES_IN_A_LOOP.as_bytes()).expect("decode");
+    let parsed = parser::parse(&src);
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(parsed.diagnostics.is_empty());
+    assert!(bind::bind(module).diagnostics.is_empty());
+    assert!(check::check(module).diagnostics.is_empty());
+
+    let out = Rc::new(RefCell::new(String::new()));
+    let mut i = new_interp(Box::new(Capture(out.clone())));
+    if let Err(t) = i.run_module(module) {
+        panic!("runtime: {}", i.describe_thrown(&t));
+    }
+    let live: usize = out.borrow().trim().parse().expect("a heap size");
+
+    // 300,000 iterations each build a cycle of three objects. Uncollected, the
+    // heap at the last iteration would be most of a million objects; collected
+    // as it goes, it stays near the threshold the collector triggers at.
+    assert!(
+        live < 100_000,
+        "the heap grew with the loop: {live} objects live at the last iteration"
+    );
+}
+
+/// The cycle collector's soundness, checked against the tracing collector over
+/// every conformance program.
+///
+/// The two decide liveness by completely different means: the tracer walks from
+/// a root set, the cycle collector subtracts internal references from strong
+/// counts. If they agree on every heap the test suite can build, the internal
+/// edge accounting is right — and it has to be exactly right, because
+/// overcounting one edge drives an object's external count to zero and sweeps it
+/// while it is still in use.
+#[test]
+fn the_cycle_collector_never_considers_a_reachable_object_garbage() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/runtime");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("conformance programs") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "mersey") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        let src = source::decode("<gc>", text.as_bytes()).expect("decode");
+        let parsed = parser::parse(&src);
+        let module: &'static _ = Box::leak(Box::new(parsed.module));
+        if !parsed.diagnostics.is_empty() {
+            continue; // a program that is meant not to compile
+        }
+
+        let mut i = new_interp(Box::new(Silent));
+        if i.run_module(module).is_err() {
+            continue; // a program that is meant to throw
+        }
+        i.verify_cycles()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        checked += 1;
+    }
+    assert!(checked > 10, "only {checked} programs checked");
 }
