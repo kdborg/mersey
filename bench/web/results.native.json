@@ -3,56 +3,56 @@
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "canvas",
-    "ms": 29,
-    "rss": 14221,
+    "ms": 21,
+    "rss": 11935,
     "checksum": 20000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 139,
-    "rss": 17346,
+    "ms": 102,
+    "rss": 12712,
     "checksum": 1765835917
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 90,
-    "rss": 14468,
+    "ms": 63,
+    "rss": 18904,
     "checksum": 320000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "dom",
-    "ms": 68,
-    "rss": 35002,
+    "ms": 59,
+    "rss": 42688,
     "checksum": 10000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "json",
-    "ms": 121,
-    "rss": 14597,
+    "ms": 88,
+    "rss": 24928,
     "checksum": 848890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "storage",
-    "ms": 122,
-    "rss": 18812,
+    "ms": 78,
+    "rss": 35597,
     "checksum": 208890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 155,
-    "rss": 27650,
+    "ms": 93,
+    "rss": 19945,
     "checksum": 537780
   }
 ]

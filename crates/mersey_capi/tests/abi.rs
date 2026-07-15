@@ -223,6 +223,19 @@ fn table() -> MsyHostTable {
         dom_set_text: None,
         dom_get_text: None,
         dom_add_listener: None,
+        // Interned + scalar + wide-string fast paths (ABI v3–v5): this mock host
+        // uses only the reflective ops, so the engine falls back to them.
+        web_intern: None,
+        web_get_id: None,
+        web_set_str: None,
+        web_set_num: None,
+        web_call_str: None,
+        web_call_scalars: None,
+        web_new_scalars: None,
+        web_get_u16: None,
+        web_set_u16: None,
+        web_call_u16: None,
+        web_new_u16: None,
     }
 }
 

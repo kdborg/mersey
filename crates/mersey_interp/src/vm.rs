@@ -1711,7 +1711,7 @@ impl C {
                     match p {
                         TplPart::Text(t) => {
                             let v = Value::Str(Rc::new(
-                                crate::unescape(t).chars().collect::<Vec<char>>(),
+                                crate::utf16(&(crate::unescape(t))),
                             ));
                             let i = self.konst(v);
                             self.emit(Op::Const(i));
@@ -2845,7 +2845,7 @@ fn exec(
                 // A class implementing `Display` gets its `toString()` called —
                 // which means this can run Mersey code, and can throw.
                 let shown = throwing!(i.display(&v));
-                stack.push(Value::Str(Rc::new(shown.chars().collect())));
+                stack.push(Value::Str(Rc::new(crate::utf16(&(shown)))));
             }
             Op::Call(argc) => {
                 let n = argc as usize;

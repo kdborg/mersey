@@ -82,8 +82,32 @@ function killForks() {
   try { execSync(`pkill -9 -f "${FORK_DIR}/dist/bin/[f]irefox" 2>/dev/null`); } catch {}
 }
 
+// Quiet the browser: the background services (region lookup, telemetry, search,
+// updates) fire network requests and steal CPU *during* the timed loop, which is
+// what makes the full-browser numbers bounce. Disable them per profile.
+const QUIET_PREFS = [
+  'user_pref("toolkit.telemetry.enabled", false);',
+  'user_pref("datareporting.healthreport.uploadEnabled", false);',
+  'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
+  'user_pref("browser.region.network.url", "");',
+  'user_pref("browser.region.update.enabled", false);',
+  'user_pref("app.update.enabled", false);',
+  'user_pref("browser.search.update", false);',
+  'user_pref("browser.newtabpage.enabled", false);',
+  'user_pref("browser.startup.homepage_override.mstone", "ignore");',
+  'user_pref("network.captive-portal-service.enabled", false);',
+  'user_pref("browser.safebrowsing.downloads.enabled", false);',
+  'user_pref("extensions.update.enabled", false);',
+].join("\n");
+
+async function writePrefs(profileDir) {
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(join(profileDir, "prefs.js"), QUIET_PREFS);
+}
+
 async function runPage(pageFile, profileDir, expectResult = true) {
   killForks();
+  await writePrefs(profileDir);
   await sleep(800); // let the previous tree's processes exit
   return new Promise((resolve) => {
     // detached: own process group, so we can kill the whole tree at the end.

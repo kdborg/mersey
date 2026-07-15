@@ -57,7 +57,7 @@ fn as_scalars(args: &[Value]) -> Option<Vec<OwnedScalar>> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
         out.push(match a {
-            Value::Str(s) => OwnedScalar::Str(s.iter().collect()),
+            Value::Str(s) => OwnedScalar::Str(utf16_to_string(s)),
             Value::I32(n) => OwnedScalar::Num(*n as f64),
             Value::F64(f) => OwnedScalar::Num(*f),
             Value::I64(n) => OwnedScalar::Num(*n as f64),
@@ -75,22 +75,22 @@ fn scalar_ref(s: &OwnedScalar) -> WebScalar {
 }
 
 /// An argument for the wide-string fast path. A string is the engine's own
-/// UTF-32 (`&[char]`), borrowed and passed to the host with zero copying and no
-/// UTF-8 encoding — the host does the one conversion it cannot avoid (to its
-/// native string form). See `Host::web_call_u16`.
+/// UTF-16 (`&[u16]`), borrowed straight from the engine's string buffer and
+/// passed to the host with zero copying and no conversion — Gecko/V8 are UTF-16
+/// too, so both sides now speak the same encoding. See `Host::web_call_u16`.
 pub enum WebArg<'a> {
     Num(f64),
-    Str(&'a [char]),
+    Str(&'a [u16]),
 }
 
 /// A typed reply from the wide-string fast path — no JSON for the common cases.
-/// Scalars come back decoded; strings arrive as the host's native UTF-16 and
-/// become the engine's UTF-32 here. `Json` carries the rare non-scalar result
-/// (an object or array) as tagged JSON, so a call is never re-executed.
+/// Scalars come back decoded; a string arrives as the host's native UTF-16 and
+/// *is* the engine's string form (a plain copy of the code units). `Json`
+/// carries the rare non-scalar result (an object or array) as tagged JSON.
 pub enum WebReply {
     Null,
     Num(f64),
-    Str(Vec<char>),
+    Str(Vec<u16>),
     Ref(i64),
     Bool(bool),
     Err(String),
@@ -229,6 +229,9 @@ pub trait Host {
     fn web_call_u16(&mut self, _target: i64, _name_id: u32, _args: &[WebArg]) -> Option<WebReply> {
         None
     }
+    fn web_new_u16(&mut self, _ctor_id: u32, _args: &[WebArg]) -> Option<WebReply> {
+        None
+    }
     /// Snapshot a host iterable (NodeList, HTMLCollection, Set, …) as an
     /// array, so `for (const n of nodeList)` works.
     fn web_iterate(&mut self, _target: i64) -> String {
@@ -259,7 +262,59 @@ pub trait Host {
 
 // ---- values -------------------------------------------------------------------
 
-type Str = Rc<Vec<char>>;
+// Strings are WTF-16: a buffer of UTF-16 code units, exactly as a browser holds
+// them (Gecko's nsString, V8's String). `length` and indexing are code-unit
+// based, byte-identical to JavaScript. Lone surrogates round-trip losslessly to
+// a UTF-16 host (unlike a `Vec<char>`, which cannot represent them). See the
+// `string-representation` project note.
+type Str = Rc<Vec<u16>>;
+
+/// A Rust string as the engine's UTF-16 form.
+pub(crate) fn utf16(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+/// The engine's UTF-16 string as a Rust `String`. Lossy only on lone surrogates
+/// (U+FFFD), which affects display and UTF-8 marshalling but not the raw units
+/// that cross to a UTF-16 host.
+pub(crate) fn utf16_to_string(s: &[u16]) -> String {
+    String::from_utf16_lossy(s)
+}
+
+/// One `char` (a Unicode scalar) as a UTF-16 string (1 or 2 code units).
+pub(crate) fn char_utf16(c: char) -> Vec<u16> {
+    let mut buf = [0u16; 2];
+    c.encode_utf16(&mut buf).to_vec()
+}
+
+/// Decode a UTF-16 string to code points (lone surrogates → U+FFFD). Used by the
+/// regex subsystem, which matches on code points, not code units.
+pub(crate) fn utf16_to_chars(s: &[u16]) -> Vec<char> {
+    char::decode_utf16(s.iter().copied())
+        .map(|r| r.unwrap_or('\u{FFFD}'))
+        .collect()
+}
+
+/// Re-encode code points as UTF-16.
+pub(crate) fn chars_to_u16(cs: &[char]) -> Vec<u16> {
+    cs.iter().flat_map(|c| char_utf16(*c)).collect()
+}
+
+/// The code point starting at code-unit `i` (combining a surrogate pair), as a
+/// Rust `char`; a lone surrogate decodes to U+FFFD. Used where the language
+/// hands back a scalar (`Char`) rather than a code unit.
+pub(crate) fn code_point_at(s: &[u16], i: usize) -> Option<char> {
+    let u = *s.get(i)? as u32;
+    if (0xD800..=0xDBFF).contains(&u) {
+        if let Some(&lo) = s.get(i + 1) {
+            if (0xDC00..=0xDFFF).contains(&(lo as u32)) {
+                let c = 0x10000 + ((u - 0xD800) << 10) + (lo as u32 - 0xDC00);
+                return Some(char::from_u32(c).unwrap_or('\u{FFFD}'));
+            }
+        }
+    }
+    Some(char::from_u32(u).unwrap_or('\u{FFFD}'))
+}
 
 /// One Mersey value.
 ///
@@ -1718,9 +1773,9 @@ impl Interp {
         let cls = self.error_classes[class].clone();
         let stack = self.stack_trace();
         let mut slots = vec![Value::Null; cls.fields.len()];
-        slots[0] = Value::Str(Rc::new(msg.into().chars().collect())); // message
+        slots[0] = Value::Str(Rc::new(utf16(&(msg.into())))); // message
         if slots.len() > 1 {
-            slots[1] = Value::Str(Rc::new(stack.chars().collect())); // stack
+            slots[1] = Value::Str(Rc::new(utf16(&(stack)))); // stack
         }
         Thrown(Value::Instance(Rc::new(GcCell::new(Instance {
             class: cls,
@@ -2863,7 +2918,7 @@ impl Interp {
             Pattern::Array { elems, rest } => {
                 let items: Vec<Value> = match &value {
                     Value::Array(a) => a.borrow().clone(),
-                    Value::Str(s) => s.iter().map(|c| Value::Char(*c)).collect(),
+                    Value::Str(s) => char::decode_utf16(s.iter().copied()).map(|r| Value::Char(r.unwrap_or('\u{FFFD}'))).collect(),
                     _ => return self.type_error("cannot destructure a non-array"),
                 };
                 for (i, e) in elems.iter().enumerate() {
@@ -3880,19 +3935,19 @@ impl Interp {
                 } else {
                     format!("{}{text}", " ".repeat(width - n))
                 };
-                Ok(Value::Str(Rc::new(padded.chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&(padded)))))
             }
             "format.fixed" => {
                 let x = args.first().and_then(as_num).unwrap_or(f64::NAN);
                 let d = args.get(1).and_then(as_i64).unwrap_or(0).clamp(0, 17) as usize;
-                Ok(Value::Str(Rc::new(format!("{x:.d$}").chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&format!("{x:.d$}")))))
             }
             "json.stringify" => {
                 let v = args.first().cloned().unwrap_or(Value::Null);
                 let j = self.to_web(&v);
                 let mut out = String::new();
                 webjson::write(&mut out, &j);
-                Ok(Value::Str(Rc::new(out.chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&(out)))))
             }
             "json.parse" => {
                 let text = self.want_string(args.first())?;
@@ -3963,14 +4018,14 @@ impl Interp {
             "fs.readText" => {
                 let path = self.want_string(args.first())?;
                 match self.host.read_text(&path) {
-                    Ok(text) => Ok(Value::Str(Rc::new(text.chars().collect()))),
+                    Ok(text) => Ok(Value::Str(Rc::new(utf16(&(text))))),
                     Err(msg) => Err(self.throw("Error", msg)),
                 }
             }
             "env.get" => {
                 let key = self.want_string(args.first())?;
                 Ok(match self.host.env_var(&key) {
-                    Some(v) => Value::Str(Rc::new(v.chars().collect())),
+                    Some(v) => Value::Str(Rc::new(utf16(&(v)))),
                     None => Value::Null,
                 })
             }
@@ -3983,7 +4038,7 @@ impl Interp {
                     .host
                     .caps()
                     .into_iter()
-                    .map(|c| Value::Str(Rc::new(c.chars().collect())))
+                    .map(|c| Value::Str(Rc::new(utf16(&(c)))))
                     .collect();
                 Ok(new_array(caps))
             }
@@ -4046,7 +4101,7 @@ impl Interp {
             "regex.compile" => {
                 let pattern = self.want_string(args.first())?;
                 let flags = match args.get(1) {
-                    Some(Value::Str(s)) => s.iter().collect::<String>(),
+                    Some(Value::Str(s)) => utf16_to_string(&s),
                     _ => String::new(),
                 };
                 match regex::Regex::new(&pattern, &flags) {
@@ -4124,7 +4179,7 @@ impl Interp {
                     (tod % 3600) / 60,
                     tod % 60,
                 );
-                Ok(Value::Str(Rc::new(text.chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&(text)))))
             }
             "time.parse" => {
                 let text = self.want_string(args.first())?;
@@ -4183,7 +4238,7 @@ impl Interp {
                 // Invalid UTF-8 is `null`, not U+FFFD: a decode that quietly
                 // succeeds on garbage is how corrupt data travels.
                 Ok(match String::from_utf8(b.borrow().clone()) {
-                    Ok(text) => Value::Str(Rc::new(text.chars().collect())),
+                    Ok(text) => Value::Str(Rc::new(utf16(&(text)))),
                     Err(_) => Value::Null,
                 })
             }
@@ -4254,7 +4309,7 @@ impl Interp {
 
     fn want_string(&self, v: Option<&Value>) -> Result<String, Thrown> {
         match v {
-            Some(Value::Str(s)) => Ok(s.iter().collect()),
+            Some(Value::Str(s)) => Ok(utf16_to_string(s)),
             _ => Err(self.throw("TypeError", "expected a string argument")),
         }
     }
@@ -4264,7 +4319,7 @@ impl Interp {
             let mut slots = vec![Value::Null; cls.fields.len()];
             slots[0] = args.into_iter().next().unwrap_or(Value::Null);
             if slots.len() > 1 {
-                slots[1] = Value::Str(Rc::new(self.stack_trace().chars().collect()));
+                slots[1] = Value::Str(Rc::new(utf16(&(self.stack_trace()))));
             }
             let inst = Rc::new(GcCell::new(Instance {
                 class: cls.clone(),
@@ -4357,18 +4412,14 @@ impl Interp {
             Value::Record(r) => Ok(rec_get(&r.borrow(), name)),
             Value::Namespace(ns) => Ok(ns.entries.get(name).cloned()),
             Value::Dom(id) => match name {
-                "textContent" => Ok(Some(Value::Str(Rc::new(
-                    self.host
-                        .dom_get_text(id)
-                        .unwrap_or_default()
-                        .chars()
-                        .collect(),
-                )))),
+                "textContent" => Ok(Some(Value::Str(Rc::new(utf16(
+                    &self.host.dom_get_text(id).unwrap_or_default(),
+                ))))),
                 "value" => {
                     let id = id.to_string();
-                    Ok(Some(Value::Str(Rc::new(
-                        self.host.dom_get_value(&id).chars().collect(),
-                    ))))
+                    Ok(Some(Value::Str(Rc::new(utf16(
+                        &self.host.dom_get_value(&id),
+                    )))))
                 }
                 _ => Ok(None),
             },
@@ -4571,7 +4622,7 @@ impl Interp {
                         }
                     }
                 }
-                Ok(Value::Str(Rc::new(out.chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&(out)))))
             }
             Expr::Array(elems) => {
                 let mut items = Vec::new();
@@ -4967,7 +5018,7 @@ impl Interp {
                     }
                     "join" => {
                         let sep = match args.first() {
-                            Some(Value::Str(s)) => s.iter().collect::<String>(),
+                            Some(Value::Str(s)) => utf16_to_string(&s),
                             _ => String::new(),
                         };
                         let items = a.borrow().clone();
@@ -4975,7 +5026,7 @@ impl Interp {
                         for it in &items {
                             parts.push(self.display(it)?);
                         }
-                        Ok(Value::Str(Rc::new(parts.join(&sep).chars().collect())))
+                        Ok(Value::Str(Rc::new(utf16(&(parts.join(&sep))))))
                     }
                     "map" => {
                         let f = args.first().cloned().unwrap_or(Value::Null);
@@ -5153,7 +5204,7 @@ impl Interp {
                             Ok(new_array(sorted))
                         }
                     }
-                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    "toString" => Ok(Value::Str(Rc::new(utf16(&(to_display(recv)))))),
                     _ => self.type_error(format!("arrays have no method `{name}`")),
                 }
             }
@@ -5211,7 +5262,7 @@ impl Interp {
                         m.borrow_mut().clear();
                         Ok(Value::Null)
                     }
-                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    "toString" => Ok(Value::Str(Rc::new(utf16(&(to_display(recv)))))),
                     _ => self.type_error(format!("no method `{name}` on Map")),
                 }
             }
@@ -5244,7 +5295,7 @@ impl Interp {
                         m.borrow_mut().clear();
                         Ok(Value::Null)
                     }
-                    "toString" => Ok(Value::Str(Rc::new(to_display(recv).chars().collect()))),
+                    "toString" => Ok(Value::Str(Rc::new(utf16(&(to_display(recv)))))),
                     _ => self.type_error(format!("no method `{name}` on Set")),
                 }
             }
@@ -5253,9 +5304,11 @@ impl Interp {
                 let Some(Value::Str(subject)) = args.first() else {
                     return self.type_error(format!("regex `{name}` needs a string"));
                 };
-                let chars: Vec<char> = subject.as_ref().clone();
-                let slice =
-                    |a: usize, b: usize| -> Value { Value::Str(Rc::new(chars[a..b].to_vec())) };
+                // Regex matches on code points; decode here, re-encode results.
+                let chars: Vec<char> = utf16_to_chars(subject);
+                let slice = |a: usize, b: usize| -> Value {
+                    Value::Str(Rc::new(chars_to_u16(&chars[a..b])))
+                };
                 let make_match = |m: &regex::Match| -> Value {
                     let groups: Vec<Value> = m
                         .groups
@@ -5294,7 +5347,7 @@ impl Interp {
                     }
                     "replace" => {
                         let with = match args.get(1) {
-                            Some(Value::Str(w)) => w.iter().collect::<String>(),
+                            Some(Value::Str(w)) => utf16_to_string(w),
                             Some(other) => to_display(other),
                             None => String::new(),
                         };
@@ -5303,14 +5356,14 @@ impl Interp {
                                 let mut out: Vec<char> = chars[..m.start].to_vec();
                                 out.extend(with.chars());
                                 out.extend(&chars[m.end..]);
-                                Value::Str(Rc::new(out))
+                                Value::Str(Rc::new(chars_to_u16(&out)))
                             }
-                            None => Value::Str(Rc::new(chars.clone())),
+                            None => Value::Str(Rc::new(chars_to_u16(&chars))),
                         })
                     }
                     "replaceAll" => {
                         let with = match args.get(1) {
-                            Some(Value::Str(w)) => w.iter().collect::<String>(),
+                            Some(Value::Str(w)) => utf16_to_string(w),
                             Some(other) => to_display(other),
                             None => String::new(),
                         };
@@ -5336,7 +5389,7 @@ impl Interp {
                         if at < chars.len() {
                             out.extend_from_slice(&chars[at..]);
                         }
-                        Ok(Value::Str(Rc::new(out)))
+                        Ok(Value::Str(Rc::new(chars_to_u16(&out))))
                     }
                     "split" => {
                         let mut parts = Vec::new();
@@ -5359,10 +5412,10 @@ impl Interp {
                 }
             }
             Value::Str(s) => {
-                let text: String = s.iter().collect();
+                let text: String = utf16_to_string(s);
                 let arg0 = || -> String {
                     match args.first() {
-                        Some(Value::Str(a)) => a.iter().collect(),
+                        Some(Value::Str(a)) => utf16_to_string(a),
                         Some(other) => to_display(other),
                         None => String::new(),
                     }
@@ -5386,8 +5439,8 @@ impl Interp {
                             None => -1,
                         }))
                     }
-                    "trimStart" => Ok(Value::Str(Rc::new(text.trim_start().chars().collect()))),
-                    "trimEnd" => Ok(Value::Str(Rc::new(text.trim_end().chars().collect()))),
+                    "trimStart" => Ok(Value::Str(Rc::new(utf16(&(text.trim_start()))))),
+                    "trimEnd" => Ok(Value::Str(Rc::new(utf16(&(text.trim_end()))))),
                     "substring" => {
                         let len = s.len() as i64;
                         let norm = |v: i64| v.clamp(0, len) as usize;
@@ -5399,48 +5452,52 @@ impl Interp {
                         Ok(Value::Str(Rc::new(s[start..end].to_vec())))
                     }
                     "concat" => {
-                        let mut out: Vec<char> = s.to_vec();
+                        let mut out: Vec<u16> = s.to_vec();
                         for a in &args {
                             match a {
                                 Value::Str(other) => out.extend(other.iter()),
-                                other => out.extend(to_display(other).chars()),
+                                other => out.extend(utf16(&to_display(other))),
                             }
                         }
                         Ok(Value::Str(Rc::new(out)))
                     }
                     "charAt" => {
+                        // The i-th UTF-16 code unit as a 1-unit string (JS).
                         let i = args.first().and_then(as_i64).unwrap_or(0);
-                        let out: Vec<char> = resolve_at(i, s.len())
+                        let out: Vec<u16> = resolve_at(i, s.len())
                             .and_then(|i| s.get(i).copied())
                             .into_iter()
                             .collect();
                         Ok(Value::Str(Rc::new(out)))
                     }
                     "codePointAt" => {
+                        // The code point starting at code-unit i (JS: combines a
+                        // surrogate pair).
                         let i = args.first().and_then(as_i64).unwrap_or(0);
                         Ok(resolve_at(i, s.len())
-                            .and_then(|i| s.get(i).copied())
+                            .and_then(|i| code_point_at(s, i))
                             .map(|c| Value::I32(c as i32))
                             .unwrap_or(Value::Null))
                     }
                     "at" => {
+                        // Char-returning: the code point at code-unit i.
                         let i = args.first().and_then(as_i64).unwrap_or(0);
                         Ok(resolve_at(i, s.len())
-                            .and_then(|i| s.get(i).copied())
+                            .and_then(|i| code_point_at(s, i))
                             .map(Value::Char)
                             .unwrap_or(Value::Null))
                     }
                     "startsWith" => Ok(Value::Bool(text.starts_with(&arg0()))),
                     "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
-                    "toUpperCase" => Ok(Value::Str(Rc::new(text.to_uppercase().chars().collect()))),
-                    "toLowerCase" => Ok(Value::Str(Rc::new(text.to_lowercase().chars().collect()))),
-                    "trim" => Ok(Value::Str(Rc::new(text.trim().chars().collect()))),
+                    "toUpperCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_uppercase()))))),
+                    "toLowerCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_lowercase()))))),
+                    "trim" => Ok(Value::Str(Rc::new(utf16(&(text.trim()))))),
                     "slice" => {
                         let len = s.len() as i64;
                         let norm = |v: i64| v.clamp(0, len) as usize;
                         let start = norm(args.first().and_then(as_i64).unwrap_or(0));
                         let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        let out: Vec<char> = if start < end {
+                        let out: Vec<u16> = if start < end {
                             s[start..end].to_vec()
                         } else {
                             Vec::new()
@@ -5450,7 +5507,7 @@ impl Interp {
                     "replace" | "replaceAll" => {
                         let needle = arg0();
                         let with = match args.get(1) {
-                            Some(Value::Str(a)) => a.iter().collect::<String>(),
+                            Some(Value::Str(a)) => utf16_to_string(a),
                             Some(other) => to_display(other),
                             None => String::new(),
                         };
@@ -5459,7 +5516,7 @@ impl Interp {
                         } else {
                             text.replace(&needle as &str, &with)
                         };
-                        Ok(Value::Str(Rc::new(out.chars().collect())))
+                        Ok(Value::Str(Rc::new(utf16(&(out)))))
                     }
                     "repeat" => {
                         let n = args
@@ -5468,17 +5525,17 @@ impl Interp {
                             .unwrap_or(0)
                             .clamp(0, 1_000_000);
                         Ok(Value::Str(Rc::new(
-                            text.repeat(n as usize).chars().collect(),
+                            utf16(&(text.repeat(n as usize))),
                         )))
                     }
                     "padStart" | "padEnd" => {
                         let width = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
                         let pad = match args.get(1) {
-                            Some(Value::Str(a)) if !a.is_empty() => a.iter().collect::<String>(),
+                            Some(Value::Str(a)) if !a.is_empty() => utf16_to_string(a),
                             _ => " ".to_string(),
                         };
-                        let mut out: Vec<char> = s.as_ref().clone();
-                        let pad_chars: Vec<char> = pad.chars().collect();
+                        let mut out: Vec<u16> = s.as_ref().clone();
+                        let pad_chars: Vec<u16> = utf16(&(pad));
                         let mut k = 0;
                         while out.len() < width {
                             let c = pad_chars[k % pad_chars.len()];
@@ -5494,10 +5551,10 @@ impl Interp {
                     "split" => {
                         let sep = arg0();
                         let parts: Vec<Value> = if sep.is_empty() {
-                            text.chars().map(|c| Value::Str(Rc::new(vec![c]))).collect()
+                            s.iter().map(|u| Value::Str(Rc::new(vec![*u]))).collect()
                         } else {
                             text.split(&sep as &str)
-                                .map(|p| Value::Str(Rc::new(p.chars().collect())))
+                                .map(|p| Value::Str(Rc::new(utf16(&(p)))))
                                 .collect()
                         };
                         Ok(new_array(parts))
@@ -5519,7 +5576,7 @@ impl Interp {
                             .unwrap_or(0)
                             .clamp(0, 1000) as u32;
                         let mode_name = match rec_get(&f, "mode") {
-                            Some(Value::Str(s)) => s.iter().collect::<String>(),
+                            Some(Value::Str(s)) => utf16_to_string(&s),
                             _ => "HALF_EVEN".to_string(),
                         };
                         let Some(mode) = RoundingMode::parse(&mode_name) else {
@@ -5544,7 +5601,7 @@ impl Interp {
             | Value::Bool(_)
                 if name == "toString" =>
             {
-                Ok(Value::Str(Rc::new(to_display(recv).chars().collect())))
+                Ok(Value::Str(Rc::new(utf16(&(to_display(recv))))))
             }
             Value::Dom(_) if name == "addEventListener" => {
                 self.call_native("dom.addEventListener", Some(recv), args)
@@ -5632,7 +5689,7 @@ impl Interp {
                         format!("index {ix} out of bounds (length {})", s.len()),
                     ))
                 } else {
-                    Ok(Value::Char(s[ix as usize]))
+                    Ok(Value::Char(code_point_at(s, ix as usize).unwrap_or('\u{FFFD}')))
                 }
             }
             _ => self.type_error("only arrays and strings are indexable"),
@@ -6036,7 +6093,7 @@ impl Interp {
             Value::F32(f) => Json::Num(*f as f64),
             Value::F64(f) => Json::Num(*f),
             Value::Char(c) => Json::Str(c.to_string()),
-            Value::Str(s) => Json::Str(s.iter().collect()),
+            Value::Str(s) => Json::Str(utf16_to_string(s)),
             Value::BigIntV(b) => Json::Str(b.to_decimal()),
             Value::BigDecV(d) => Json::Str(d.to_decimal()),
             Value::JsRef(h) => Json::Obj(vec![("__ref__".into(), Json::Num(*h as f64))]),
@@ -6094,7 +6151,7 @@ impl Interp {
                     Value::F64(*n)
                 }
             }
-            Json::Str(s) => Value::Str(Rc::new(s.chars().collect())),
+            Json::Str(s) => Value::Str(Rc::new(utf16(&(s)))),
             Json::Arr(items) => new_array(items.iter().map(|i| self.from_web(i)).collect()),
             Json::Obj(fields) => {
                 if let Some(Json::Num(h)) = j.get("__ref__") {
@@ -6214,7 +6271,7 @@ impl Interp {
             }
             let reply = match &v {
                 Value::Str(s) => {
-                    let text: String = s.iter().collect();
+                    let text: String = utf16_to_string(s);
                     Some(self.host.web_set_str(target, id, &text))
                 }
                 Value::I32(n) => Some(self.host.web_set_num(target, id, *n as f64)),
@@ -6292,15 +6349,19 @@ impl Interp {
     }
 
     fn web_new(&mut self, ctor: &str, args: Vec<Value>) -> VResult {
-        // Fast path: scalar constructor arguments cross without JSON (`new URL(s)`).
-        if !args.is_empty() {
-            if let Some(scalars) = as_scalars(&args) {
-                if let Some(id) = self.intern(ctor) {
-                    let refs: Vec<WebScalar> = scalars.iter().map(scalar_ref).collect();
-                    let reply = self.host.web_new_scalars(id, &refs);
-                    if !reply.is_empty() {
-                        return self.web_reply(&reply);
-                    }
+        if !args.is_empty() && args.iter().all(is_web_scalar) {
+            if let Some(id) = self.intern(ctor) {
+                // Wide-string fast path: UTF-32 args, typed reply (`new URL(s)`).
+                let wargs: Vec<WebArg> = args.iter().map(value_as_webarg).collect();
+                if let Some(reply) = self.host.web_new_u16(id, &wargs) {
+                    return self.value_from_reply(reply);
+                }
+                // UTF-8 scalar fallback.
+                let owned = as_scalars(&args).unwrap_or_default();
+                let refs: Vec<WebScalar> = owned.iter().map(scalar_ref).collect();
+                let reply = self.host.web_new_scalars(id, &refs);
+                if !reply.is_empty() {
+                    return self.web_reply(&reply);
                 }
             }
         }
@@ -6633,7 +6694,7 @@ impl Interp {
                 }
                 let out = self.call_member(v, "toString", Vec::new())?;
                 match out {
-                    Value::Str(s) => Ok(s.iter().collect()),
+                    Value::Str(s) => Ok(utf16_to_string(&s)),
                     other => Ok(to_display(&other)),
                 }
             }
@@ -6687,7 +6748,7 @@ impl Interp {
     pub(crate) fn iter_values(&mut self, v: &Value) -> Result<Vec<Value>, Thrown> {
         match v {
             Value::Array(a) => Ok(a.borrow().clone()),
-            Value::Str(s) => Ok(s.iter().map(|c| Value::Char(*c)).collect()),
+            Value::Str(s) => Ok(char::decode_utf16(s.iter().copied()).map(|r| Value::Char(r.unwrap_or('\u{FFFD}'))).collect()),
             Value::JsRef(h) => {
                 let h = *h;
                 self.web_iterate(h)
@@ -6773,7 +6834,7 @@ impl Interp {
             if c.is_builtin_error {
                 if let Value::Instance(inst) = &this {
                     let msg = argv.into_iter().next().unwrap_or(Value::Null);
-                    let stack = Value::Str(Rc::new(self.stack_trace().chars().collect()));
+                    let stack = Value::Str(Rc::new(utf16(&(self.stack_trace()))));
                     let mut i = inst.borrow_mut();
                     if let Some(slot) = i.class.slot_of("message") {
                         i.slots[slot as usize] = msg;
@@ -6915,7 +6976,7 @@ impl Interp {
         // String / char concatenation and comparisons first.
         match (&l, &r, op) {
             (Value::Str(a), Value::Str(b), BinOp::Add) => {
-                let mut s: Vec<char> = a.as_ref().clone();
+                let mut s: Vec<u16> = a.as_ref().clone();
                 s.extend(b.iter());
                 return Ok(Value::Str(Rc::new(s)));
             }
@@ -7669,7 +7730,7 @@ pub fn to_display(v: &Value) -> String {
         Value::F32(f) => f.to_string(),
         Value::F64(f) => f.to_string(),
         Value::Char(c) => c.to_string(),
-        Value::Str(s) => s.iter().collect(),
+        Value::Str(s) => utf16_to_string(s),
         Value::BigIntV(b) => b.to_decimal(),
         Value::BigDecV(d) => d.to_decimal(),
         Value::MapV(m) => {
@@ -7720,7 +7781,7 @@ pub(crate) fn parse_literal(kind: LitKind, text: &str) -> Result<Value, (&'stati
         LitKind::Bool => Ok(Value::Bool(text == "true")),
         LitKind::Str => {
             let inner = &text[1..text.len() - 1];
-            Ok(Value::Str(Rc::new(unescape(inner).chars().collect())))
+            Ok(Value::Str(Rc::new(utf16(&(unescape(inner))))))
         }
         LitKind::Char => {
             let inner = &text[2..text.len() - 1]; // strip c' and '

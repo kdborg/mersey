@@ -224,6 +224,14 @@ export function makeBridge(globalObject, invokeCallback) {
       if (typeof fn !== "function") throw new Error(`${method} is not a function`);
       return wideResult(fn.apply(obj, args));
     },
+    newWide(ctorId, ...args) {
+      const name = names[ctorId];
+      const c = useBindings ? CTORS.get(name) : null;
+      if (c) return wideResult(c(args));
+      const Ctor = name.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
+      if (typeof Ctor !== "function") throw new Error(`${name} is not a constructor`);
+      return wideResult(new Ctor(...args));
+    },
     global(name) {
       // Ambient globals only: the engine already gates this by import.
       return name in globalObject ? handleFor(globalObject[name]) : -1;

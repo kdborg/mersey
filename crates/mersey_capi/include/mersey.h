@@ -54,27 +54,28 @@ typedef struct {
     size_t str_len;
 } msy_scalar;
 
-/* Wide-string fast path (ABI v5). The engine's strings are UTF-32; a UTF-16
- * host (Gecko) is UTF-16. These cross the two without the UTF-8 intermediary
- * and without JSON: arguments are UTF-32 (the engine's own form, zero-copy),
- * replies are typed and carry strings as UTF-16 (the host's own form). */
+/* Wide-string fast path (ABI v5). The engine's strings are UTF-16, and a UTF-16
+ * host (Gecko's nsString, V8's String) is too — so strings cross with no
+ * encoding conversion at all: arguments are UTF-16 (borrowed straight from the
+ * engine buffer), replies carry UTF-16 the engine copies into a new string.
+ * No UTF-8 intermediary, no JSON. */
 
-/* An argument: a number, or a UTF-32 string (code points; str32_len in code
- * points). is_num != 0 selects the number. */
+/* An argument: a number, or a UTF-16 string (code units; str16_len in code
+ * units). is_num != 0 selects the number. */
 typedef struct {
     int32_t is_num;
     double num;
-    const uint32_t *str32;
-    size_t str32_len;
-} msy_arg32;
+    const uint16_t *str16;
+    size_t str16_len;
+} msy_arg16;
 
 /* A typed reply, filled by the host. `str16` (when present) is UTF-16, valid
  * until the next call across the boundary on this context. */
 typedef struct {
     int32_t tag;           /* 0 null  1 num  2 str16  3 ref  4 bool  5 err(str16)
-                            * 6 complex (not a scalar — caller uses the JSON op) */
+                            * 7 json(str16, tagged JSON — caller parses it) */
     double num;            /* tag 1: number; tag 3: handle; tag 4: 0/1 */
-    const uint16_t *str16; /* tag 2 / tag 5: UTF-16 text */
+    const uint16_t *str16; /* tag 2 / 5 / 7: UTF-16 text */
     size_t str16_len;      /* in UTF-16 code units */
 } msy_reply;
 
@@ -182,9 +183,13 @@ typedef struct {
     void (*web_get_u16)(void *data, int64_t target, uint32_t name_id,
                         msy_reply *out);
     void (*web_set_u16)(void *data, int64_t target, uint32_t name_id,
-                        const msy_arg32 *value, msy_reply *out);
+                        const msy_arg16 *value, msy_reply *out);
     void (*web_call_u16)(void *data, int64_t target, uint32_t name_id,
-                         const msy_arg32 *args, size_t argc, msy_reply *out);
+                         const msy_arg16 *args, size_t argc, msy_reply *out);
+    /* new Ctor(args…) with UTF-32 args and a typed reply (the handle of the new
+     * object comes back as tag 3). */
+    void (*web_new_u16)(void *data, uint32_t ctor_id, const msy_arg16 *args,
+                        size_t argc, msy_reply *out);
 } msy_host_table;
 
 /* Create a context backed by `host` (the table is copied). Check

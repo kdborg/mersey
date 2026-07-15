@@ -122,21 +122,23 @@ pub struct MsyHostTable {
         extern "C" fn(*mut c_void, u32, *const MsyScalar, usize, *mut usize) -> *const c_char,
     >,
 
-    // wide-string fast paths (ABI v5): UTF-32 args in, typed UTF-16 reply out
+    // wide-string fast paths (ABI v5): UTF-16 args in, typed UTF-16 reply out
     pub web_get_u16: Option<extern "C" fn(*mut c_void, i64, u32, *mut MsyReply)>,
-    pub web_set_u16: Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg32, *mut MsyReply)>,
+    pub web_set_u16: Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg16, *mut MsyReply)>,
     pub web_call_u16:
-        Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg32, usize, *mut MsyReply)>,
+        Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg16, usize, *mut MsyReply)>,
+    pub web_new_u16:
+        Option<extern "C" fn(*mut c_void, u32, *const MsyArg16, usize, *mut MsyReply)>,
 }
 
-/// A UTF-32 argument, field for field with `msy_arg32` in include/mersey.h.
+/// A UTF-16 argument, field for field with `msy_arg16` in include/mersey.h.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct MsyArg32 {
+pub struct MsyArg16 {
     pub is_num: i32,
     pub num: f64,
-    pub str32: *const u32,
-    pub str32_len: usize,
+    pub str16: *const u16,
+    pub str16_len: usize,
 }
 
 /// A typed reply, field for field with `msy_reply` in include/mersey.h.
@@ -155,40 +157,41 @@ impl Default for MsyReply {
     }
 }
 
-fn to_msy_arg32(a: &mersey_interp::WebArg) -> MsyArg32 {
+fn to_msy_arg16(a: &mersey_interp::WebArg) -> MsyArg16 {
     match a {
         mersey_interp::WebArg::Num(n) => {
-            MsyArg32 { is_num: 1, num: *n, str32: std::ptr::null(), str32_len: 0 }
+            MsyArg16 { is_num: 1, num: *n, str16: std::ptr::null(), str16_len: 0 }
         }
-        // char is bit-compatible with u32: the code points cross with no copy.
-        mersey_interp::WebArg::Str(chars) => MsyArg32 {
+        // The engine's string is already UTF-16: the code units cross with no
+        // copy and no conversion.
+        mersey_interp::WebArg::Str(units) => MsyArg16 {
             is_num: 0,
             num: 0.0,
-            str32: chars.as_ptr() as *const u32,
-            str32_len: chars.len(),
+            str16: units.as_ptr(),
+            str16_len: units.len(),
         },
     }
 }
 
-/// Turn a filled reply into a `WebReply`; a UTF-16 string becomes UTF-32.
+/// Turn a filled reply into a `WebReply`. A string reply is UTF-16, which *is*
+/// the engine's form — a plain copy of the code units, no conversion.
 fn read_msy_reply(r: &MsyReply) -> mersey_interp::WebReply {
     use mersey_interp::WebReply;
-    let utf16_to_chars = || -> Vec<char> {
+    let units = || -> Vec<u16> {
         if r.str16.is_null() {
             return Vec::new();
         }
-        let units = unsafe { std::slice::from_raw_parts(r.str16, r.str16_len) };
-        char::decode_utf16(units.iter().copied())
-            .map(|c| c.unwrap_or('\u{FFFD}'))
-            .collect()
+        unsafe { std::slice::from_raw_parts(r.str16, r.str16_len) }.to_vec()
     };
+    // Err/Json want a Rust String; decode there (rare paths).
+    let as_string = || String::from_utf16_lossy(&units());
     match r.tag {
         1 => WebReply::Num(r.num),
-        2 => WebReply::Str(utf16_to_chars()),
+        2 => WebReply::Str(units()),
         3 => WebReply::Ref(r.num as i64),
         4 => WebReply::Bool(r.num != 0.0),
-        5 => WebReply::Err(utf16_to_chars().into_iter().collect()),
-        7 => WebReply::Json(utf16_to_chars().into_iter().collect()),
+        5 => WebReply::Err(as_string()),
+        7 => WebReply::Json(as_string()),
         _ => WebReply::Null,
     }
 }
@@ -445,7 +448,7 @@ impl Host for CHost {
         value: &mersey_interp::WebArg,
     ) -> Option<mersey_interp::WebReply> {
         let f = self.table.web_set_u16?;
-        let arg = to_msy_arg32(value);
+        let arg = to_msy_arg16(value);
         let mut reply = MsyReply::default();
         f(self.table.data, target, name_id, &arg, &mut reply);
         Some(read_msy_reply(&reply))
@@ -457,9 +460,20 @@ impl Host for CHost {
         args: &[mersey_interp::WebArg],
     ) -> Option<mersey_interp::WebReply> {
         let f = self.table.web_call_u16?;
-        let cargs: Vec<MsyArg32> = args.iter().map(to_msy_arg32).collect();
+        let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
         let mut reply = MsyReply::default();
         f(self.table.data, target, name_id, cargs.as_ptr(), cargs.len(), &mut reply);
+        Some(read_msy_reply(&reply))
+    }
+    fn web_new_u16(
+        &mut self,
+        ctor_id: u32,
+        args: &[mersey_interp::WebArg],
+    ) -> Option<mersey_interp::WebReply> {
+        let f = self.table.web_new_u16?;
+        let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
+        let mut reply = MsyReply::default();
+        f(self.table.data, ctor_id, cargs.as_ptr(), cargs.len(), &mut reply);
         Some(read_msy_reply(&reply))
     }
 
