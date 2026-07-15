@@ -145,6 +145,18 @@
     host-bound workloads below — it refuses functions that allocate or call the host — which is why the
     two stories are separate.</p>
 
+  <h2>The new polyfill: Mersey transpiled to JavaScript</h2>
+  <p class="note">The polyfill grew a second execution mode: the same front end (same checker, same
+    diagnostics) now emits <em>JavaScript</em> at load time, and the browser's own JIT runs it — the
+    WASM interpreter stays as the conformance vehicle. Gated by the full runtime conformance suite
+    (<b>31/31 goldens pass</b>, matching the engine byte for byte) and the same workload checksums.
+    The result in stock browsers, no fork needed:</p>
+  <div class="scroll"><table id="tjstable"></table></div>
+  <p class="note">On web-platform workloads the transpiled polyfill is <b>at hand-written-JS speed</b>
+    (within noise; sometimes ahead), <b>10–60× the WASM interpreter</b>. On compute it is ~1.5–2× JS
+    (the integer-wrapping semantics cost) — and <b>~130–530× the WASM interpreter</b>. This is what ships
+    as the Stage-A polyfill; the engine-in-browser remains Stage B.</p>
+
   <h2>Time per web-platform workload</h2>
   <p class="note">Wall-clock of the workload loop, self-timed inside the language (startup excluded),
     median of 3 runs. <b>Log scale</b> — each gridline is 10× — because plain JS and the engine are orders
@@ -246,6 +258,16 @@
     storage: { fast:171, slow:191 },
     json:    { fast:113, slow:107 },
   };
+  // The transpiled-JS polyfill (Mersey -> JS at load time, browser JIT runs it).
+  const TJS = {
+    canvas:  { c: 5.1,  f: 7.0 },
+    compute: { c: 190.8, f: 150.3 },
+    crypto:  { c: 8.6,  f: 9.7 },
+    dom:     { c: 4.4,  f: 9.6 },
+    json:    { c: 2.1,  f: 5.0 },
+    storage: { c: 56.7, f: 35.6 },
+    url:     { c: 21.9, f: 27.6 },
+  };
   // Compute-bound kernel (its own workload class — the JIT's target).
   const COMPUTE = { fjs: 111, cjs: 94, native: 102, cpoly: 19184, fpoly: 80326 };
   const WL = Object.keys(DATA);
@@ -338,6 +360,20 @@
       <div class="bars">${row("native", d.fast)}${row("js", d.slow)}</div>
     </div>`;
   }).join("");
+
+  // ---- transpiled-JS polyfill table ----
+  {
+    const wls = Object.keys(TJS);
+    let h = "<thead><tr><th>workload</th><th>hand-written JS<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th><th>transpiled Mersey<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th><th>WASM interpreter<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th></tr></thead><tbody>";
+    for (const w of wls) {
+      const d = w === "compute" ? COMPUTE : DATA[w];
+      const js = w === "compute" ? `${COMPUTE.cjs} · ${COMPUTE.fjs}` : `${DATA[w].cjs} · ${DATA[w].fjs}`;
+      const poly = w === "compute" ? `${(COMPUTE.cpoly/1000).toFixed(1)} s · ${(COMPUTE.fpoly/1000).toFixed(1)} s` : `${DATA[w].cpoly} · ${DATA[w].fpoly}`;
+      h += `<tr><td>${w}</td><td class="num">${js}</td><td class="num"><span class="best">${TJS[w].c} · ${TJS[w].f}</span></td><td class="num">${poly}</td></tr>`;
+    }
+    h += "</tbody>";
+    document.getElementById("tjstable").innerHTML = h;
+  }
 
   // ---- full table ----
   const cols = [

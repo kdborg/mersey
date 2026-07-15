@@ -307,6 +307,28 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 }
 
 #[no_mangle]
+/// Transpile one module to JavaScript. Returns (ptr<<32|len) of the UTF-8 JS
+/// text in engine memory (read then discard), or of a text starting with
+/// "!" — the checker's diagnostics — when the program does not check. The
+/// JS-backend polyfill calls this once per script, then the browser's own
+/// JIT runs the output; the interpreter below stays as the test vehicle.
+#[no_mangle]
+pub extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let src = String::from_utf8_lossy(bytes);
+    let out = mersey_js::transpile(&src, "<script>", true);
+    let text = if out.diagnostics.is_empty() {
+        out.js
+    } else {
+        format!("!{}", out.diagnostics.join("\n"))
+    };
+    let boxed = text.into_bytes().into_boxed_slice();
+    let plen = boxed.len();
+    let pptr = Box::leak(boxed).as_ptr();
+    ((pptr as u64) << 32) | plen as u64
+}
+
+#[no_mangle]
 pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
     std::panic::set_hook(Box::new(|info| {
         send(host_error, &format!("engine panic: {info}"));

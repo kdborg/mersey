@@ -1,0 +1,9 @@
+[package]
+name = "mersey_js"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The transpiler backend: checked Mersey AST out as JavaScript, so a stock browser's own JIT runs Mersey at JS speed (the Stage-A polyfill; the WASM engine remains the conformance vehicle)"
+
+[dependencies]
+mersey_front = { path = "../mersey_front" }

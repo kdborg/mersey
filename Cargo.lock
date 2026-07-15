@@ -322,6 +322,7 @@ dependencies = [
  "mersey_front",
  "mersey_interp",
  "mersey_jit",
+ "mersey_js",
  "ureq",
 ]
 
@@ -363,11 +364,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mersey_js"
+version = "0.1.0"
+dependencies = [
+ "mersey_front",
+]
+
+[[package]]
 name = "mersey_wasm"
 version = "0.1.0"
 dependencies = [
  "mersey_front",
  "mersey_interp",
+ "mersey_js",
 ]
 
 [[package]]

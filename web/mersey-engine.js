@@ -233,6 +233,15 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
   }
 
   return {
+    /// Transpile one module to JavaScript (the JS-backend polyfill). Returns
+    /// the JS text, or throws with the checker's diagnostics.
+    transpile(source) {
+      const [ptr, len] = writeStr(source);
+      const packed = exports.msy_transpile(ptr, len);
+      const out = readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
+      if (out.startsWith("!")) throw new Error(out.slice(1));
+      return out;
+    },
     /// Run one module (no relative imports).
     run(source) {
       sources.set("<script>", source);

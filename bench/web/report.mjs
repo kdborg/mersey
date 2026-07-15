@@ -10,7 +10,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [...(await load("results.stock.json")), ...(await load("results.native.json"))];
+const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json"))];
 const workloads = [...new Set(rows.map((r) => r.wl))].sort();
 const key = (browser, impl) => `${browser}/${impl}`;
 const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
@@ -18,9 +18,11 @@ const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser ===
 // Columns, in reading order.
 const cols = [
   ["chromium", "js", "Chromium JS"],
-  ["chromium", "poly", "Chromium polyfill"],
+  ["chromium", "poly", "Chromium WASM poly"],
+  ["chromium", "tjs", "Chromium JS-backend"],
   ["firefox", "js", "Firefox JS"],
-  ["firefox", "poly", "Firefox polyfill"],
+  ["firefox", "poly", "Firefox WASM poly"],
+  ["firefox", "tjs", "Firefox JS-backend"],
   ["firefox-fork", "native", "Firefox fork native"],
 ];
 

@@ -1,0 +1,128 @@
+[
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "canvas",
+    "ms": 5.110000006854534,
+    "rss": 67134,
+    "heap": 0,
+    "checksum": 20000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "compute",
+    "ms": 190.7800000011921,
+    "rss": 62655,
+    "heap": 0,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "crypto",
+    "ms": 8.609999999403954,
+    "rss": 59975,
+    "heap": 0,
+    "checksum": 320000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "dom",
+    "ms": 4.375,
+    "rss": 100976,
+    "heap": 0,
+    "checksum": 10000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "json",
+    "ms": 2.100000001490116,
+    "rss": 60868,
+    "heap": 0,
+    "checksum": 848890
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "storage",
+    "ms": 56.71500000357628,
+    "rss": 71059,
+    "heap": 0,
+    "checksum": 208890
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "url",
+    "ms": 21.91499999910593,
+    "rss": 75955,
+    "heap": 0,
+    "checksum": 537780
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "canvas",
+    "ms": 7.039999999999964,
+    "rss": 110406,
+    "heap": 0,
+    "checksum": 20000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "compute",
+    "ms": 150.27999999999997,
+    "rss": 91036,
+    "heap": 0,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "crypto",
+    "ms": 9.659999999999968,
+    "rss": 75129,
+    "heap": 0,
+    "checksum": 320000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "dom",
+    "ms": 9.620000000000005,
+    "rss": 107470,
+    "heap": 0,
+    "checksum": 10000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "json",
+    "ms": 4.980000000000018,
+    "rss": 96869,
+    "heap": 0,
+    "checksum": 848890
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "storage",
+    "ms": 35.56,
+    "rss": 99274,
+    "heap": 0,
+    "checksum": 208890
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "url",
+    "ms": 27.579999999999984,
+    "rss": 104611,
+    "heap": 0,
+    "checksum": 537780
+  }
+]

@@ -13,4 +13,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mersey_front = { path = "../mersey_front" }
+mersey_js = { path = "../mersey_js" }
 mersey_interp = { path = "../mersey_interp" }

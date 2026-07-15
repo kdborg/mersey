@@ -46,6 +46,27 @@ fn main() -> ExitCode {
         }
     };
     match (cmd, rest) {
+        // Transpile one module to JavaScript on stdout (the JS-backend
+        // polyfill; conformance-gated against the engine).
+        ("js", [file]) => {
+            let src = match std::fs::read(file) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("{file}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let src = String::from_utf8_lossy(&src);
+            let out = mersey_js::transpile(&src, file, true);
+            if !out.diagnostics.is_empty() {
+                for d in &out.diagnostics {
+                    eprintln!("{d}");
+                }
+                return ExitCode::FAILURE;
+            }
+            print!("{}", out.js);
+            return ExitCode::SUCCESS;
+        }
         ("run", rest) if !rest.is_empty() => {
             let mut caps = Vec::new();
             let mut file = None;

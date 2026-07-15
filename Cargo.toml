@@ -8,6 +8,7 @@ members = [
     "crates/mersey_jit",
     "crates/mersey_capi",
     "crates/mersey_fuzz",
+    "crates/mersey_js",
 ]
 
 [workspace.package]
