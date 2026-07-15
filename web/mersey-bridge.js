@@ -205,18 +205,27 @@ export function makeBridge(globalObject, invokeCallback) {
       const v = g ? g(obj) : obj[prop];
       return wideResult(typeof v === "function" && !g ? v.bind(obj) : v);
     },
-    setWide(target, nameId, value) {
+    // refsMask: bit i set means args[i] is a handle number — resolve it to the
+    // object it names, so calls with object arguments (appendChild(el),
+    // getRandomValues(buf)) stay on the wide path.
+    setWide(target, nameId, refsMask, value) {
       const obj = handles[target];
       if (obj == null) throw new Error(`stale handle ${target}`);
+      if (refsMask & 1) value = handles[value];
       const prop = names[nameId];
       const s = bound(obj, prop, SETS, "s");
       if (s) s(obj, value);
       else obj[prop] = value;
       return null;
     },
-    callWide(target, nameId, ...args) {
+    callWide(target, nameId, refsMask, ...args) {
       const obj = handles[target];
       if (obj == null) throw new Error(`stale handle ${target}`);
+      if (refsMask) {
+        for (let i = 0; refsMask >> i; i++) {
+          if ((refsMask >> i) & 1) args[i] = handles[args[i]];
+        }
+      }
       const method = names[nameId];
       const c = bound(obj, method, CALLS, "c");
       if (c) return wideResult(c(obj, args));
@@ -224,13 +233,23 @@ export function makeBridge(globalObject, invokeCallback) {
       if (typeof fn !== "function") throw new Error(`${method} is not a function`);
       return wideResult(fn.apply(obj, args));
     },
-    newWide(ctorId, ...args) {
+    newWide(ctorId, refsMask, ...args) {
+      if (refsMask) {
+        for (let i = 0; refsMask >> i; i++) {
+          if ((refsMask >> i) & 1) args[i] = handles[args[i]];
+        }
+      }
       const name = names[ctorId];
       const c = useBindings ? CTORS.get(name) : null;
       if (c) return wideResult(c(args));
       const Ctor = name.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
       if (typeof Ctor !== "function") throw new Error(`${name} is not a constructor`);
       return wideResult(new Ctor(...args));
+    },
+    // The raw object a handle names — the C++ host unwraps it once to a native
+    // pointer (Element, canvas context) and then calls Gecko directly, no JS.
+    handleObj(h) {
+      return handles[h];
     },
     global(name) {
       // Ambient globals only: the engine already gates this by import.

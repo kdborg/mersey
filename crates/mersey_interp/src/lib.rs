@@ -81,6 +81,12 @@ fn scalar_ref(s: &OwnedScalar) -> WebScalar {
 pub enum WebArg<'a> {
     Num(f64),
     Str(&'a [u16]),
+    /// A host-object handle (`body.appendChild(el)`, `getRandomValues(buf)`).
+    /// Crosses as a number plus a kind tag; the bridge resolves it back to the
+    /// object, so calls with object arguments stay on the fast path.
+    Ref(i64),
+    Bool(bool),
+    Null,
 }
 
 /// A typed reply from the wide-string fast path — no JSON for the common cases.
@@ -99,7 +105,16 @@ pub enum WebReply {
 
 /// True for values the wide-string fast path can carry (scalars only).
 fn is_web_scalar(v: &Value) -> bool {
-    matches!(v, Value::Str(_) | Value::I32(_) | Value::F64(_) | Value::I64(_))
+    matches!(
+        v,
+        Value::Str(_)
+            | Value::I32(_)
+            | Value::F64(_)
+            | Value::I64(_)
+            | Value::Bool(_)
+            | Value::Null
+            | Value::JsRef(_)
+    )
 }
 
 /// Borrow a scalar `Value` as a `WebArg` — the string case is zero-copy.
@@ -109,6 +124,9 @@ fn value_as_webarg(v: &Value) -> WebArg {
         Value::I32(n) => WebArg::Num(*n as f64),
         Value::F64(f) => WebArg::Num(*f),
         Value::I64(n) => WebArg::Num(*n as f64),
+        Value::Bool(b) => WebArg::Bool(*b),
+        Value::Null => WebArg::Null,
+        Value::JsRef(h) => WebArg::Ref(*h),
         _ => WebArg::Num(0.0), // never reached: callers gate on is_web_scalar
     }
 }
@@ -976,6 +994,9 @@ pub struct Interp {
     all_cells: Vec<AllCell>,
     /// Member-name interning: a name crosses the ABI once, then it is an id.
     interned: HashMap<String, u32>,
+    /// The handle of the page's `JSON` global, if imported — stringify/parse on
+    /// it are served by the engine's own writer/parser, no bridge call at all.
+    json_handle: i64,
     /// Evaluated modules: specifier → its exported bindings.
     modules: HashMap<String, HashMap<String, Value>>,
     /// The module currently executing (for relative import resolution).
@@ -1559,6 +1580,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
         interned: HashMap::new(),
+        json_handle: -1,
         modules: HashMap::new(),
         current_module: String::new(),
         pending_class_names: std::collections::HashSet::new(),
@@ -2352,6 +2374,9 @@ impl Interp {
                     // unbound, and the error surfaces only if the program actually
                     // uses it as a value — see the `is not defined` path in `eval`.
                     let handle = self.host.web_global(&n.text);
+                    if handle >= 0 && n.text == "JSON" {
+                        self.json_handle = handle;
+                    }
                     if handle < 0 {
                         self.absent_globals.insert(n.text.clone());
                         continue;
@@ -6082,6 +6107,92 @@ impl Interp {
 
     /// Mersey value → tagged JSON. Objects become `{"__ref__":n}`,
     /// closures are registered and become `{"__cb__":id}`.
+    /// JSON.stringify, engine-side: serialize a pure value tree straight to
+    /// JSON text — no bridge call, no double serialization. Returns false (and
+    /// the caller uses the real host JSON) if the tree holds anything that is
+    /// not plain data: a host handle, a function, a Map/Set, a class instance.
+    /// Output matches JS for the values it accepts: insertion-ordered keys,
+    /// shortest round-trip numbers, `null` for non-finite.
+    fn pure_json(v: &Value, out: &mut String) -> bool {
+        match v {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::I32(n) => out.push_str(&n.to_string()),
+            Value::I64(n) => out.push_str(&n.to_string()),
+            Value::U32(n) => out.push_str(&n.to_string()),
+            Value::U64(n) => out.push_str(&n.to_string()),
+            Value::F32(f) => {
+                let f = *f as f64;
+                if f.is_finite() {
+                    out.push_str(&format!("{f}"));
+                } else {
+                    out.push_str("null");
+                }
+            }
+            Value::F64(f) => {
+                if f.is_finite() {
+                    out.push_str(&format!("{f}"));
+                } else {
+                    out.push_str("null");
+                }
+            }
+            Value::Char(c) => webjson::write_str(out, &c.to_string()),
+            Value::Str(s) => webjson::write_str(out, &utf16_to_string(s)),
+            Value::Array(a) => {
+                out.push('[');
+                for (i, item) in a.borrow().iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    if !Self::pure_json(item, out) {
+                        return false;
+                    }
+                }
+                out.push(']');
+            }
+            Value::Record(r) => {
+                out.push('{');
+                for (i, (k, val)) in r.borrow().iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    webjson::write_str(out, k);
+                    out.push(':');
+                    if !Self::pure_json(val, out) {
+                        return false;
+                    }
+                }
+                out.push('}');
+            }
+            _ => return false, // handles, functions, instances: real JSON.stringify
+        }
+        true
+    }
+
+    /// JSON.parse, engine-side: parsed JSON straight to values — object keys
+    /// are data here, never `__ref__`/`__cb__` wire tags.
+    fn json_to_value_plain(j: &Json) -> Value {
+        match j {
+            Json::Null => Value::Null,
+            Json::Bool(b) => Value::Bool(*b),
+            Json::Num(n) => {
+                if n.fract() == 0.0 && n.abs() <= i32::MAX as f64 {
+                    Value::I32(*n as i32)
+                } else {
+                    Value::F64(*n)
+                }
+            }
+            Json::Str(s) => Value::Str(Rc::new(utf16(s))),
+            Json::Arr(items) => new_array(items.iter().map(Self::json_to_value_plain).collect()),
+            Json::Obj(fields) => new_record(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Self::json_to_value_plain(v)))
+                    .collect(),
+            ),
+        }
+    }
+
     fn to_web(&mut self, v: &Value) -> Json {
         match v {
             Value::Null => Json::Null,
@@ -6291,6 +6402,25 @@ impl Interp {
     }
 
     fn web_call(&mut self, target: i64, method: &str, args: Vec<Value>) -> VResult {
+        // JSON.stringify / JSON.parse on pure data never need the host at all:
+        // the engine has its own writer and parser, and going to the page would
+        // serialize the value twice (once to ship it, once for the result).
+        if target == self.json_handle && self.json_handle >= 0 && args.len() == 1 {
+            if method == "stringify" {
+                let mut out = String::new();
+                if Self::pure_json(&args[0], &mut out) {
+                    return Ok(Value::Str(Rc::new(utf16(&out))));
+                }
+                // Not pure data (a handle, a function): the real JSON.stringify.
+            } else if method == "parse" {
+                if let Value::Str(s) = &args[0] {
+                    return match webjson::parse(&utf16_to_string(s)) {
+                        Some(j) => Ok(Self::json_to_value_plain(&j)),
+                        None => Err(self.throw("SyntaxError", "invalid JSON")),
+                    };
+                }
+            }
+        }
         // Fast paths skip JSON entirely. Not for `method == ""`, which calls the
         // handle itself (`fetch(url)`), and only when every argument is a scalar.
         if !method.is_empty() && !args.is_empty() {

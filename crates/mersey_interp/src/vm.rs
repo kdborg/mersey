@@ -116,6 +116,40 @@ impl Chunk {
     }
 }
 
+/// Append a decimal integer straight into a UTF-16 buffer — no String, no
+/// intermediate allocation. The hot case of `${i}` in a template.
+fn append_int_u16(out: &mut Vec<u16>, mut v: i64) {
+    if v < 0 {
+        out.push(u16::from(b'-'));
+        // i64::MIN negates onto itself; split off the last digit first.
+        let last = (v % 10).unsigned_abs() as u16;
+        v = (v / 10).abs();
+        if v == 0 {
+            out.push(u16::from(b'0') + last);
+            return;
+        }
+        append_digits(out, v as u64);
+        out.push(u16::from(b'0') + last);
+        return;
+    }
+    append_digits(out, v as u64);
+}
+
+fn append_digits(out: &mut Vec<u16>, v: u64) {
+    let mut buf = [0u16; 20];
+    let mut i = buf.len();
+    let mut v = v;
+    loop {
+        i -= 1;
+        buf[i] = u16::from(b'0') + (v % 10) as u16;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[i..]);
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
     Const(u16),
@@ -168,6 +202,10 @@ pub enum Op {
     /// If TOS is not null: keep it and jump. Else: pop and fall through.
     NotNullJump(usize),
     ToDisplayStr,
+    /// Pop n parts and join them into ONE string: the fused template op.
+    /// `\`value-${i}\`` is two parts and one allocation, not a display-convert
+    /// and a concat per part (each of which allocated).
+    TemplateJoin(u8),
     /// Stack: [callee, a1..an]
     Call(u8),
     /// Stack: [callee, argsArray]
@@ -1706,25 +1744,43 @@ impl C {
                 Err(_) => self.bail(), // AST tier reports the proper error
             },
             Expr::Template(parts) => {
-                let mut first = true;
-                for p in parts {
-                    match p {
-                        TplPart::Text(t) => {
-                            let v = Value::Str(Rc::new(
-                                crate::utf16(&(crate::unescape(t))),
-                            ));
-                            let i = self.konst(v);
-                            self.emit(Op::Const(i));
-                        }
-                        TplPart::Expr(e) => {
-                            self.expr(e);
-                            self.emit(Op::ToDisplayStr);
+                // Push every part raw, then join once (one allocation total).
+                // Beyond 255 parts, fall back to pairwise concatenation.
+                if parts.len() <= u8::MAX as usize && !parts.is_empty() {
+                    for p in parts {
+                        match p {
+                            TplPart::Text(t) => {
+                                let v = Value::Str(Rc::new(
+                                    crate::utf16(&(crate::unescape(t))),
+                                ));
+                                let i = self.konst(v);
+                                self.emit(Op::Const(i));
+                            }
+                            TplPart::Expr(e) => self.expr(e),
                         }
                     }
-                    if !first {
-                        self.emit(Op::Bin(BinOp::Add));
+                    self.emit(Op::TemplateJoin(parts.len() as u8));
+                } else {
+                    let mut first = true;
+                    for p in parts {
+                        match p {
+                            TplPart::Text(t) => {
+                                let v = Value::Str(Rc::new(
+                                    crate::utf16(&(crate::unescape(t))),
+                                ));
+                                let i = self.konst(v);
+                                self.emit(Op::Const(i));
+                            }
+                            TplPart::Expr(e) => {
+                                self.expr(e);
+                                self.emit(Op::ToDisplayStr);
+                            }
+                        }
+                        if !first {
+                            self.emit(Op::Bin(BinOp::Add));
+                        }
+                        first = false;
                     }
-                    first = false;
                 }
             }
             Expr::Array(elems) => {
@@ -2847,6 +2903,39 @@ fn exec(
                 let shown = throwing!(i.display(&v));
                 stack.push(Value::Str(Rc::new(crate::utf16(&(shown)))));
             }
+            Op::TemplateJoin(n) => {
+                let n = n as usize;
+                let at = stack.len() - n;
+                // One output buffer; the common part kinds append in place with
+                // no intermediate String and no per-part allocation.
+                let mut out: Vec<u16> = Vec::new();
+                let mut failed: Option<Thrown> = None;
+                for k in 0..n {
+                    match &stack[at + k] {
+                        Value::Str(s) => out.extend_from_slice(s),
+                        Value::I32(v) => append_int_u16(&mut out, *v as i64),
+                        Value::I64(v) => append_int_u16(&mut out, *v),
+                        Value::Char(c) => out.extend(crate::char_utf16(*c)),
+                        other => {
+                            // Anything else (floats, bools, Display classes —
+                            // which can run Mersey code and throw).
+                            let other = other.clone();
+                            match i.display(&other) {
+                                Ok(shown) => out.extend(crate::utf16(&shown)),
+                                Err(t) => {
+                                    failed = Some(t);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                stack.truncate(at);
+                if let Some(t) = failed {
+                    throwing!(Err(t));
+                }
+                stack.push(Value::Str(Rc::new(out)));
+            }
             Op::Call(argc) => {
                 let n = argc as usize;
                 // A Mersey-to-Mersey call does not re-enter this function: it
@@ -3307,6 +3396,7 @@ pub fn analyze(chunk: &Chunk) -> Result<Vec<Option<i32>>, String> {
             Op::Dup => (1, 2),
             Op::Bin(_) | Op::BinNum(..) => (2, 1),
             Op::Un(_) | Op::Truthy | Op::Convert(_) | Op::ToDisplayStr | Op::IterArray => (1, 1),
+            Op::TemplateJoin(n) => (i32::from(n), 1),
             Op::LoadSlot(slot) => {
                 bounds(slot, chunk.n_slots as usize, "slot")?;
                 (0, 1)

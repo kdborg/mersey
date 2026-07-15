@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 5u
+#define MSY_ABI_VERSION 6u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -60,10 +60,14 @@ typedef struct {
  * engine buffer), replies carry UTF-16 the engine copies into a new string.
  * No UTF-8 intermediary, no JSON. */
 
-/* An argument: a number, or a UTF-16 string (code units; str16_len in code
- * units). is_num != 0 selects the number. */
+/* An argument. `kind` selects the payload:
+ *   0 str16 (UTF-16 code units; str16_len in units)
+ *   1 number (num)
+ *   2 host-object handle (num) — the bridge resolves it back to the object
+ *   3 bool (num is 0/1)      4 null
+ * Kinds 0/1 keep the old is_num semantics; 2–4 are ABI v6. */
 typedef struct {
-    int32_t is_num;
+    int32_t kind;
     double num;
     const uint16_t *str16;
     size_t str16_len;

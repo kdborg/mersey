@@ -28,7 +28,7 @@ use mersey_interp::{embed, new_interp, Host, Interp, WebScalar};
 
 /// Bumped whenever the table layout or a boundary contract changes. The
 /// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 5;
+pub const MSY_ABI_VERSION: u32 = 6;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).
@@ -132,10 +132,11 @@ pub struct MsyHostTable {
 }
 
 /// A UTF-16 argument, field for field with `msy_arg16` in include/mersey.h.
+/// `kind`: 0 str16, 1 num, 2 ref handle, 3 bool, 4 null.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MsyArg16 {
-    pub is_num: i32,
+    pub kind: i32,
     pub num: f64,
     pub str16: *const u16,
     pub str16_len: usize,
@@ -158,18 +159,21 @@ impl Default for MsyReply {
 }
 
 fn to_msy_arg16(a: &mersey_interp::WebArg) -> MsyArg16 {
+    use mersey_interp::WebArg;
+    let num = |kind: i32, n: f64| MsyArg16 { kind, num: n, str16: std::ptr::null(), str16_len: 0 };
     match a {
-        mersey_interp::WebArg::Num(n) => {
-            MsyArg16 { is_num: 1, num: *n, str16: std::ptr::null(), str16_len: 0 }
-        }
+        WebArg::Num(n) => num(1, *n),
         // The engine's string is already UTF-16: the code units cross with no
         // copy and no conversion.
-        mersey_interp::WebArg::Str(units) => MsyArg16 {
-            is_num: 0,
+        WebArg::Str(units) => MsyArg16 {
+            kind: 0,
             num: 0.0,
             str16: units.as_ptr(),
             str16_len: units.len(),
         },
+        WebArg::Ref(h) => num(2, *h as f64),
+        WebArg::Bool(b) => num(3, if *b { 1.0 } else { 0.0 }),
+        WebArg::Null => num(4, 0.0),
     }
 }
 

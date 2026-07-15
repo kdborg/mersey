@@ -173,14 +173,21 @@
     <b>Compute</b> got the <b>JIT</b>: Cranelift is now compiled into the fork (24 vendored crates, two
     latent version-unification bugs in Gecko's own hashbrown/bitflags shims fixed along the way), and it
     delivers the 65× above. <b>Web-platform</b> code is host-bound — the JIT refuses it (it allocates and
-    calls the host every iteration) — so the <b>bridge</b> got faster instead, in five steps: a member name
+    calls the host every iteration) — so the <b>bridge</b> got faster instead, in seven steps: a member name
     crosses the ABI once as an integer (interning); scalar arguments cross without JSON
     (<code>setItem(k,v)</code>, <code>fillRect(…)</code>); Web Storage skips JS entirely via Gecko's C++
     <code>Storage</code>; replies come back <em>typed</em>, not as JSON; and finally the <b>engine adopted
     UTF-16 (WTF-16) strings</b> — the same encoding as Gecko and V8. So strings now cross with <em>no
     conversion at all</em>: an argument is a zero-copy view of the engine's own buffer, a reply is a plain
     copy of the host's code units. No UTF-8 intermediary, no JSON, no per-character re-encoding — the whole
-    string tax is gone. (These native numbers are measured with browser telemetry/region/search services
+    string tax is gone. Then two more: <b>object handles ride the fast path</b> (a ref crosses as a number
+    plus a mask bit, so <code>appendChild(el)</code> and <code>getRandomValues(buf)</code> stopped falling
+    back to reflective JSON — crypto 63→32&nbsp;ms), and hot DOM/canvas operations are now <b>direct C++ on
+    unwrapped natives</b>: a handle is unwrapped once to its Gecko object, then fillRect / appendChild /
+    textContent never enter JS at all (dom 59→31, canvas 21→14&nbsp;ms). Separately,
+    <code>JSON.stringify/parse</code> on pure data is now served by the <b>engine's own writer</b> — no
+    bridge call, no double serialization (json 88→28&nbsp;ms) — and the interpreter fused template strings
+    into a single-allocation join (1.4× on interpolation-heavy loops). (These native numbers are measured with browser telemetry/region/search services
     disabled, so background CPU no longer steals from the timed loop — the same quiet footing the stock
     browsers already had.) The earlier interned/scalar A/B on the fork, same build, back-to-back:</p>
   <div class="legend">
@@ -222,12 +229,12 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:21.0,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:11.7 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:63.0,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:18.5 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:59.0,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:41.7 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:88.0,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:24.3 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:78.0,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:34.8 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:93.0,  mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:19.5 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:14.0,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:26.8 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:32.0,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:11.4 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:31.0,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.0 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:28.0,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:8.8 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:79.0,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:27.4 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:104.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:21.1 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
