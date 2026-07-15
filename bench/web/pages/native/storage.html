@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native storage</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: Web Storage. A set + get roundtrip each iteration,
+// two bridge calls that reach the real localStorage.
+import { console } from "std:console";
+import { time } from "std:time";
+import { localStorage } from "browser:dom";
+
+const N: int32 = 20000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        localStorage.setItem("mersey.bench", `value-${i}`);
+        const got = localStorage.getItem("mersey.bench");
+        if (got != null) {
+            sum = sum + got.length;
+        }
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT storage ${t1 - t0} ${c}`);
+
+</script>
+</body>

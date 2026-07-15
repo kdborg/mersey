@@ -1,0 +1,350 @@
+<title>Mersey — web-platform benchmarks</title>
+<style>
+  :root {
+    --bg: #f7f9fa;
+    --panel: #ffffff;
+    --ink: #10191c;
+    --ink-soft: #4a5a60;
+    --ink-faint: #839499;
+    --line: #dde5e8;
+    --line-soft: #eaf0f2;
+    --accent: #0a97c4;
+    /* series */
+    --js: #9aa7ad;         /* the browser's own engine — neutral */
+    --poly: #b06fd8;       /* WASM polyfill */
+    --native: #0f9e88;     /* engine in the fork — Mersey's own */
+    --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
+      --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
+      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --native: #2bc0a6;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
+    --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
+    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --native: #2bc0a6;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f9fa; --panel: #ffffff; --ink: #10191c; --ink-soft: #4a5a60;
+    --ink-faint: #839499; --line: #dde5e8; --line-soft: #eaf0f2;
+    --accent: #0a97c4; --js: #9aa7ad; --poly: #b06fd8; --native: #0f9e88;
+    --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: clamp(1.2rem, 4vw, 3.5rem) clamp(1rem, 4vw, 2rem) 5rem; }
+  header { margin-bottom: 2.5rem; }
+  .eyebrow {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 .8rem;
+  }
+  h1 {
+    font-size: clamp(1.7rem, 4.5vw, 2.6rem); line-height: 1.08; margin: 0 0 .7rem;
+    letter-spacing: -.02em; text-wrap: balance; font-weight: 640;
+  }
+  .lede { color: var(--ink-soft); font-size: 1.06rem; max-width: 62ch; margin: 0; }
+  h2 {
+    font-size: 1.18rem; letter-spacing: -.01em; margin: 3.2rem 0 .4rem; font-weight: 620;
+  }
+  h2 + .note { margin-top: 0; }
+  .note { color: var(--ink-soft); font-size: .92rem; max-width: 68ch; margin: .3rem 0 1.4rem; }
+
+  /* headline cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1rem; margin-top: 2rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 1.2rem 1.25rem; box-shadow: var(--shadow);
+  }
+  .card .k { font-family: var(--mono); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+  .card .v { font-size: 2rem; font-weight: 660; letter-spacing: -.02em; margin: .35rem 0 .1rem; font-variant-numeric: tabular-nums; }
+  .card .v small { font-size: .95rem; font-weight: 500; color: var(--ink-soft); }
+  .card .d { font-size: .86rem; color: var(--ink-soft); }
+  .card.hero .v { color: var(--native); }
+
+  /* legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 1.2rem 0 .4rem; font-size: .85rem; }
+  .legend span { display: inline-flex; align-items: center; gap: .45rem; color: var(--ink-soft); }
+  .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.native { background: var(--native); }
+
+  /* chart */
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.4rem 1.4rem 1rem; box-shadow: var(--shadow); }
+  .wl { margin: 0 0 1.15rem; }
+  .wl:last-child { margin-bottom: .3rem; }
+  .wl-name { font-family: var(--mono); font-size: .8rem; color: var(--ink); margin-bottom: .45rem; display: flex; justify-content: space-between; }
+  .wl-name b { font-weight: 600; }
+  .wl-name em { font-style: normal; color: var(--ink-faint); }
+  .bars { display: grid; gap: 5px; }
+  .bar-row { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: .6rem; }
+  .bar-lab { font-family: var(--mono); font-size: .7rem; color: var(--ink-faint); text-align: right; }
+  .track { position: relative; height: 20px; }
+  .bar {
+    height: 100%; border-radius: 4px; min-width: 2px;
+    display: flex; align-items: center; justify-content: flex-end;
+    transition: width .8s cubic-bezier(.2,.7,.2,1);
+  }
+  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.native { background: var(--native); }
+  .bar .val { font-family: var(--mono); font-size: .68rem; color: #fff; padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .bar .val.out { color: var(--ink-soft); position: absolute; left: calc(100% + 6px); }
+
+  /* table */
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; background: var(--panel); font-size: .88rem; }
+  th, td { padding: .6rem .8rem; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; font-family: var(--mono); font-size: .82rem; }
+  thead th { font-weight: 600; color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: .78rem; letter-spacing: .02em; }
+  tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+  td.num { font-family: var(--mono); }
+  .best { color: var(--native); font-weight: 600; }
+
+  /* caveats */
+  .caveats { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; padding: 1.1rem 1.3rem; margin-top: 1.4rem; }
+  .caveats ul { margin: .3rem 0 0; padding-left: 1.1rem; }
+  .caveats li { margin: .5rem 0; color: var(--ink-soft); font-size: .9rem; }
+  .caveats b { color: var(--ink); font-weight: 600; }
+  code { font-family: var(--mono); font-size: .85em; background: var(--line-soft); padding: .08em .4em; border-radius: 5px; }
+  footer { margin-top: 3rem; padding-top: 1.4rem; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: .82rem; }
+</style>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Mersey · engine benchmarks</p>
+    <h1>Plain JS, WASM polyfill, and native Mersey — compute and the web platform</h1>
+    <p class="lede">The same programs written once in JavaScript and once in Mersey, run three ways in two
+      browsers: a compute kernel that exercises the new Cranelift JIT, and six web-platform workloads —
+      Web Storage, JSON, URL, Web Crypto, Canvas 2D, DOM — that exercise the bridge. Identical work,
+      verified by matching checksums; the only variable is <em>what executes the code</em>.</p>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>Compute — where the JIT lands</h2>
+  <p class="note">A hot integer kernel (40M iterations, no allocation, no web calls) — the case the
+    Tier-1 JIT compiles to native code. This is a different workload from the six below: those are
+    <em>host-bound</em> (dominated by web-API calls); this one is <em>compute-bound</em>. <b>Log scale</b>,
+    self-timed, lower is faster.</p>
+  <div class="legend">
+    <span><i class="sw js"></i> plain JS (JIT)</span>
+    <span><i class="sw native"></i> native — Mersey in the fork (Cranelift JIT)</span>
+    <span><i class="sw poly"></i> polyfill — Mersey on WASM (interpreter)</span>
+  </div>
+  <div class="chart" id="computechart"></div>
+  <p class="note">Wiring Cranelift into the fork puts native Mersey <b>within 1.4× of hand-written JS</b>
+    and <b>~150–620× ahead of the WASM polyfill</b>, which has no JIT. On the same kernel the JIT is 65×
+    the interpreter in the standalone engine (97&nbsp;ms vs 6.3&nbsp;s). The JIT does nothing for the
+    host-bound workloads below — it refuses functions that allocate or call the host — which is why the
+    two stories are separate.</p>
+
+  <h2>Time per web-platform workload</h2>
+  <p class="note">Wall-clock of the workload loop, self-timed inside the language (startup excluded),
+    median of 3 runs. <b>Log scale</b> — each gridline is 10× — because plain JS and the engine are orders
+    of magnitude apart. Firefox figures; Chromium is comparable (full numbers below).</p>
+  <div class="legend">
+    <span><i class="sw js"></i> plain JS — browser engine, JIT</span>
+    <span><i class="sw poly"></i> polyfill — Mersey on WASM</span>
+    <span><i class="sw native"></i> native — Mersey in the fork</span>
+  </div>
+  <div class="chart" id="timechart"></div>
+
+  <h2>Memory per workload</h2>
+  <p class="note">PSS of the whole browser process tree, workload page minus a blank page (Firefox).
+    PSS counts shared libraries once, so a new renderer process doesn't inflate the delta. The polyfill
+    delta <em>includes</em> the WASM engine loaded into the page; the native engine is compiled into the
+    browser, so its delta is workload allocation only.</p>
+  <div class="chart" id="memchart"></div>
+
+  <h2>Every number</h2>
+  <p class="note">Time in milliseconds (lower is faster); memory in MiB (PSS delta vs blank).
+    Green marks the faster of the two Mersey paths.</p>
+  <div class="scroll"><table id="fulltable"></table></div>
+
+  <h2>Making native faster: two separate levers</h2>
+  <p class="note">Compute and web-platform code have different bottlenecks, so they got different work.
+    <b>Compute</b> got the <b>JIT</b>: Cranelift is now compiled into the fork (24 vendored crates, two
+    latent version-unification bugs in Gecko's own hashbrown/bitflags shims fixed along the way), and it
+    delivers the 65× above. <b>Web-platform</b> code is host-bound — the JIT refuses it (it allocates and
+    calls the host every iteration) — so the <b>bridge</b> got faster instead, in four steps: a member name
+    crosses the ABI once as an integer (interning); scalar arguments cross without JSON
+    (<code>setItem(k,v)</code>, <code>fillRect(…)</code>); Web Storage skips JS entirely via Gecko's C++
+    <code>Storage</code>; and — most recently — <b>strings and replies stop round-tripping through UTF-8 and
+    JSON</b>. The engine is UTF-32 and Gecko is UTF-16, so arguments now cross as UTF-32 (zero-copy from the
+    engine) and replies come back <em>typed</em> as UTF-16 (zero-copy from <code>nsString</code>) — one
+    conversion instead of three, and no reply parsing. That last step alone cut canvas 56→29, DOM 108→68,
+    and URL 207→155&nbsp;ms. The earlier interned/scalar A/B on the fork, same build, back-to-back:</p>
+  <div class="legend">
+    <span><i class="sw native"></i> fast paths on</span>
+    <span><i class="sw js"></i> reflective JSON (fast paths off)</span>
+  </div>
+  <div class="chart" id="abchart"></div>
+
+  <h2>How to read this honestly</h2>
+  <div class="caveats">
+    <ul>
+      <li><b>The bridge fast paths help where the hot calls are scalars.</b> URL (1.36×) and canvas
+        (1.33×) gain most; JSON (0.95×, within noise) gains nothing because its argument is an object that
+        still needs serializing. This is the win available without abandoning the universal reflective
+        bridge.</li>
+      <li><b>Direct C++ shifts the bottleneck rather than removing it.</b> Web Storage now bypasses JS
+        entirely, yet it is still ~4× slower than the browser's own <code>localStorage</code> (which calls
+        the same C++). Bypassing JS only bought ~1.15× over the interned bridge — because the remaining cost
+        is no longer the crossing, it is the Tier-0 interpreter loop plus per-call string marshalling and
+        reply parsing. Which means, for a bridge that is now fast, the JIT finally becomes the lever.</li>
+      <li><b>The JIT is done, and it is huge — for compute.</b> Cranelift in the fork makes an arithmetic
+        kernel 65× the interpreter and competitive with JS. It stays out of the web-platform loops by
+        design (they allocate and call the host every iteration), so the two levers don't overlap: JIT for
+        compute, bridge for web APIs.</li>
+      <li><b>The memory baselines differ on purpose.</b> The polyfill pays a per-page engine tax of
+        ~40–52 MB (WASM module + heap); the native engine adds none, because it ships inside the browser —
+        and native's footprint is the lowest of the three.</li>
+      <li><b>Native is Firefox-only so far.</b> The Chromium fork needs the same bridge port before it can
+        be measured.</li>
+    </ul>
+  </div>
+
+  <footer>
+    6 workloads × 3 implementations × 2 browsers. Stock browsers driven by Playwright; native measured in
+    the Gecko fork (<code>~/gecko/obj-mersey</code>). Raw data in <code>bench/web/results.*.json</code>;
+    harness in <code>bench/web/</code>.
+  </footer>
+</div>
+
+<script>
+  const DATA = {
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:29.0,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:13.9 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:90.0,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:14.1 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:68.0,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:34.2 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:121.0, mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:14.3 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:122.0, mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:18.4 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:155.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:27.0 },
+  };
+  // Controlled A/B on the fork (same build, back-to-back): the interned +
+  // multi-scalar bridge fast paths vs the fully reflective JSON path.
+  const BRIDGE_AB = {
+    url:     { fast:188, slow:256 },
+    canvas:  { fast:43,  slow:57 },
+    dom:     { fast:93,  slow:110 },
+    crypto:  { fast:84,  slow:96 },
+    storage: { fast:171, slow:191 },
+    json:    { fast:113, slow:107 },
+  };
+  // Compute-bound kernel (its own workload class — the JIT's target).
+  const COMPUTE = { fjs: 111, cjs: 94, native: 139, cpoly: 19184, fpoly: 80326 };
+  const WL = Object.keys(DATA);
+
+  // ---- headline cards ----
+  const geomean = (xs) => Math.exp(xs.reduce((a, x) => a + Math.log(x), 0) / xs.length);
+  const polyOverJs = geomean(WL.map((w) => DATA[w].fpoly / DATA[w].fjs));
+  const nativeOverPoly = geomean(WL.map((w) => DATA[w].fpoly / DATA[w].native));
+  const engineTax = (WL.reduce((a, w) => a + (DATA[w].mcpoly - DATA[w].mcjs), 0) / WL.length);
+  const cards = [
+    { k: "Compute: native JIT vs JS", v: (COMPUTE.native / COMPUTE.fjs).toFixed(1) + "×", d: "of hand-written JS — Cranelift JIT in the fork", hero: true },
+    { k: "Compute: JIT vs polyfill", v: Math.round(COMPUTE.fpoly / COMPUTE.native) + "×", d: "faster than Mersey-on-WASM (no JIT)" },
+    { k: "Web workloads: native vs polyfill", v: nativeOverPoly.toFixed(1) + "×", d: "faster, geomean — host-bound, bridge-optimized" },
+    { k: "Polyfill engine tax", v: "~" + engineTax.toFixed(0) + " MB", d: "extra memory per page; native pays none" },
+  ];
+  document.getElementById("cards").innerHTML = cards.map((c) => `
+    <div class="card${c.hero ? " hero" : ""}">
+      <div class="k">${c.k}</div>
+      <div class="v">${c.v}</div>
+      <div class="d">${c.d}</div>
+    </div>`).join("");
+
+  // ---- compute chart (log scale, ms) ----
+  {
+    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native — Cranelift JIT"], ["poly", "fpoly", "polyfill — WASM (Firefox)"]];
+    const lmin = 50, lmax = 100000;
+    const lpct = (v) => Math.max(2, (Math.log10(v) - Math.log10(lmin)) / (Math.log10(lmax) - Math.log10(lmin)) * 100);
+    const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v + " ms";
+    document.getElementById("computechart").innerHTML = `<div class="bars">` + rows.map(([cls, key, lab]) => {
+      const v = COMPUTE[key], pct = lpct(v);
+      return `<div class="bar-row"><div class="bar-lab">${cls}</div>
+        <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+          <span class="val${pct < 26 ? " out" : ""}">${fmt(v)}</span></div></div></div>`;
+    }).join("") + `</div>`;
+  }
+
+  // ---- log-scale time chart (Firefox) ----
+  const LOG_MIN = 1, LOG_MAX = 600;
+  const logPct = (v) => Math.max(2, (Math.log10(v) - Math.log10(LOG_MIN)) / (Math.log10(LOG_MAX) - Math.log10(LOG_MIN)) * 100);
+  const timeSeries = [["js", "fjs"], ["poly", "fpoly"], ["native", "native"]];
+  document.getElementById("timechart").innerHTML = WL.map((w) => `
+    <div class="wl">
+      <div class="wl-name"><b>${w}</b><em>ms · Firefox</em></div>
+      <div class="bars">
+        ${timeSeries.map(([cls, key]) => {
+          const v = DATA[w][key];
+          const pct = logPct(v);
+          return `<div class="bar-row">
+            <div class="bar-lab">${cls}</div>
+            <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+              <span class="val${pct < 22 ? " out" : ""}">${v}</span></div></div>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`).join("");
+
+  // ---- memory chart (Firefox), linear ----
+  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mnative]));
+  const memSeries = [["js", "mfjs"], ["poly", "mfpoly"], ["native", "mnative"]];
+  document.getElementById("memchart").innerHTML = WL.map((w) => `
+    <div class="wl">
+      <div class="wl-name"><b>${w}</b><em>MiB · Firefox</em></div>
+      <div class="bars">
+        ${memSeries.map(([cls, key]) => {
+          const v = DATA[w][key];
+          const pct = Math.max(2, v / memMax * 100);
+          return `<div class="bar-row">
+            <div class="bar-lab">${cls}</div>
+            <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+              <span class="val${pct < 16 ? " out" : ""}">${v}</span></div></div>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`).join("");
+
+  // ---- bridge A/B chart (fork, fast paths on vs reflective) ----
+  const abMax = Math.max(...Object.values(BRIDGE_AB).flatMap((d) => [d.fast, d.slow]));
+  const abOrder = ["url", "canvas", "dom", "crypto", "storage", "json"];
+  document.getElementById("abchart").innerHTML = abOrder.map((w) => {
+    const d = BRIDGE_AB[w];
+    const ratio = (d.slow / d.fast).toFixed(2);
+    const row = (cls, v) => {
+      const pct = Math.max(2, (v / abMax) * 100);
+      return `<div class="bar-row"><div class="bar-lab">${cls === "native" ? "fast" : "reflect"}</div>
+        <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+          <span class="val${pct < 12 ? " out" : ""}">${v}</span></div></div></div>`;
+    };
+    return `<div class="wl">
+      <div class="wl-name"><b>${w}</b><em>${ratio}×</em></div>
+      <div class="bars">${row("native", d.fast)}${row("js", d.slow)}</div>
+    </div>`;
+  }).join("");
+
+  // ---- full table ----
+  const cols = [
+    ["Chromium JS", "cjs", "mcjs"], ["Chromium poly", "cpoly", "mcpoly"],
+    ["Firefox JS", "fjs", "mfjs"], ["Firefox poly", "fpoly", "mfpoly"],
+    ["Fork native", "native", "mnative"],
+  ];
+  let thead = "<thead><tr><th>workload</th>" + cols.map((c) => `<th>${c[0]}<br><span style="font-weight:400;color:var(--ink-faint)">ms · MiB</span></th>`).join("") + "</tr></thead>";
+  let tbody = "<tbody>" + WL.map((w) => {
+    const d = DATA[w];
+    const nativeFaster = d.native < d.fpoly && d.native < d.cpoly;
+    return `<tr><td>${w}</td>` + cols.map((c) => {
+      const t = d[c[1]], m = d[c[2]];
+      const mark = (c[1] === "native" && nativeFaster) ? " class=\"best\"" : "";
+      return `<td class="num"><span${mark}>${t}</span> · <span style="color:var(--ink-faint)">${m}</span></td>`;
+    }).join("") + "</tr>";
+  }).join("") + "</tbody>";
+  document.getElementById("fulltable").innerHTML = thead + tbody;
+</script>

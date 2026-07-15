@@ -40,10 +40,43 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 2u
+#define MSY_ABI_VERSION 5u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
+
+/* A call/constructor argument that crosses without JSON: a number (is_num != 0)
+ * or a UTF-8 string (is_num == 0; str/str_len valid). */
+typedef struct {
+    int32_t is_num;
+    double num;
+    const char *str;
+    size_t str_len;
+} msy_scalar;
+
+/* Wide-string fast path (ABI v5). The engine's strings are UTF-32; a UTF-16
+ * host (Gecko) is UTF-16. These cross the two without the UTF-8 intermediary
+ * and without JSON: arguments are UTF-32 (the engine's own form, zero-copy),
+ * replies are typed and carry strings as UTF-16 (the host's own form). */
+
+/* An argument: a number, or a UTF-32 string (code points; str32_len in code
+ * points). is_num != 0 selects the number. */
+typedef struct {
+    int32_t is_num;
+    double num;
+    const uint32_t *str32;
+    size_t str32_len;
+} msy_arg32;
+
+/* A typed reply, filled by the host. `str16` (when present) is UTF-16, valid
+ * until the next call across the boundary on this context. */
+typedef struct {
+    int32_t tag;           /* 0 null  1 num  2 str16  3 ref  4 bool  5 err(str16)
+                            * 6 complex (not a scalar — caller uses the JSON op) */
+    double num;            /* tag 1: number; tag 3: handle; tag 4: 0/1 */
+    const uint16_t *str16; /* tag 2 / tag 5: UTF-16 text */
+    size_t str16_len;      /* in UTF-16 code units */
+} msy_reply;
 
 /* Context-creation flags. */
 #define MSY_FLAG_NO_JIT 0x1u /* Tier 0 only: never map executable pages. */
@@ -111,6 +144,47 @@ typedef struct {
                                 size_t *out_len);
     void (*dom_add_listener)(void *data, const char *id, size_t id_len,
                              const char *event, size_t event_len, uint32_t cb);
+
+    /* ---- interned bridge fast paths (ABI v3) --------------------------- */
+    /* A member/method name crosses the ABI once; afterwards only its id
+     * does, and scalar values skip JSON entirely. A host that leaves these
+     * NULL (or returns UINT32_MAX from web_intern) is transparently served
+     * by the reflective web_get/web_set/web_call above — same replies.
+     *
+     * web_intern: map a name to a stable id, or UINT32_MAX to decline. */
+    uint32_t (*web_intern)(void *data, const char *name, size_t len);
+    /* Read target[name_id]. */
+    const char *(*web_get_id)(void *data, int64_t target, uint32_t name_id,
+                              size_t *out_len);
+    /* target[name_id] = string / number, no JSON. */
+    const char *(*web_set_str)(void *data, int64_t target, uint32_t name_id,
+                               const char *v, size_t v_len, size_t *out_len);
+    const char *(*web_set_num)(void *data, int64_t target, uint32_t name_id,
+                               double v, size_t *out_len);
+    /* target[name_id](arg) with a single string argument. */
+    const char *(*web_call_str)(void *data, int64_t target, uint32_t name_id,
+                                const char *arg, size_t arg_len,
+                                size_t *out_len);
+    /* target[name_id](args…) and new Ctor(args…) with all-scalar arguments,
+     * no JSON. An empty reply (out_len 0, non-NULL) means "not implemented,
+     * use the reflective web_call/web_new instead". */
+    const char *(*web_call_scalars)(void *data, int64_t target, uint32_t name_id,
+                                    const msy_scalar *args, size_t argc,
+                                    size_t *out_len);
+    const char *(*web_new_scalars)(void *data, uint32_t ctor_id,
+                                   const msy_scalar *args, size_t argc,
+                                   size_t *out_len);
+
+    /* ---- wide-string fast paths (ABI v5) ------------------------------- */
+    /* target[name_id], target[name_id] = value, target[name_id](args…), with
+     * UTF-32 arguments and a typed UTF-16 reply. NULL declines (the engine uses
+     * the UTF-8 ops above; identical results). */
+    void (*web_get_u16)(void *data, int64_t target, uint32_t name_id,
+                        msy_reply *out);
+    void (*web_set_u16)(void *data, int64_t target, uint32_t name_id,
+                        const msy_arg32 *value, msy_reply *out);
+    void (*web_call_u16)(void *data, int64_t target, uint32_t name_id,
+                         const msy_arg32 *args, size_t argc, msy_reply *out);
 } msy_host_table;
 
 /* Create a context backed by `host` (the table is copied). Check

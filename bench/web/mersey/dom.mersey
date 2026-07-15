@@ -1,0 +1,25 @@
+// Web-platform workload: DOM mutation. Create an element, set its text, and
+// append it — three bridge calls plus a real layout node each iteration.
+import { console } from "std:console";
+import { time } from "std:time";
+import { document } from "browser:dom";
+
+const N: int32 = 10000;
+const body = document.body as Element;
+
+function work(n: int32): int32 {
+    let i = 0;
+    while (i < n) {
+        const el = document.createElement("div") as HTMLElement;
+        el.textContent = `item ${i}`;
+        body.appendChild(el);
+        i += 1;
+    }
+    return n;
+}
+
+work(500);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT dom ${t1 - t0} ${c}`);

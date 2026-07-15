@@ -1,0 +1,58 @@
+[
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 29,
+    "rss": 14221,
+    "checksum": 20000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 139,
+    "rss": 17346,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 90,
+    "rss": 14468,
+    "checksum": 320000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 68,
+    "rss": 35002,
+    "checksum": 10000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 121,
+    "rss": 14597,
+    "checksum": 848890
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 122,
+    "rss": 18812,
+    "checksum": 208890
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 155,
+    "rss": 27650,
+    "checksum": 537780
+  }
+]

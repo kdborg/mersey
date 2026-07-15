@@ -1,0 +1,25 @@
+// Web-platform workload: Web Crypto. Fill a buffer with random bytes each
+// iteration — a bridge call that reaches the real CSPRNG.
+import { console } from "std:console";
+import { time } from "std:time";
+import { crypto } from "browser:dom";
+
+const N: int32 = 20000;
+const buf = new Uint8Array(16);
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        crypto.getRandomValues(buf);
+        sum = sum + buf.length;
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT crypto ${t1 - t0} ${c}`);

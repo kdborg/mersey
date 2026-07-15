@@ -1,0 +1,33 @@
+// Compute-bound workload: a hot integer kernel with no allocation and no host
+// calls — exactly what the Tier-1 JIT compiles to native code. This is where
+// native should beat both the interpreter and plain JS's warm-up.
+import { console } from "std:console";
+import { time } from "std:time";
+
+function mix(n: int32, seed: int32): int32 {
+    let h = seed;
+    let i = 0;
+    while (i < n) {
+        h = (h ^ (h << 13)) + i;
+        h = h ^ (h >> 7);
+        h = h * 31 + 1;
+        i += 1;
+    }
+    return h;
+}
+
+function work(rounds: int32): int32 {
+    let acc = 0;
+    let r = 0;
+    while (r < rounds) {
+        acc = acc ^ mix(20000, r);
+        r += 1;
+    }
+    return acc;
+}
+
+work(200); // warm up (trigger the native tier)
+const t0 = time.monotonic();
+const c = work(2000);
+const t1 = time.monotonic();
+console.log(`RESULT compute ${t1 - t0} ${c}`);

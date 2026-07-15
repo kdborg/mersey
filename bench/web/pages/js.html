@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mersey bench — plain JS</title>
+<body>
+<script type="module">
+  const wl = new URLSearchParams(location.search).get("wl");
+  const mod = await import(`/bench/web/js/${wl}.js`);
+  if (mod.setup) mod.setup();
+  mod.work(Math.min(1000, mod.N)); // warm up
+  const t0 = performance.now();
+  const checksum = mod.work(mod.N);
+  const t1 = performance.now();
+  const heap = performance.memory ? performance.memory.usedJSHeapSize : 0;
+  console.log(`RESULT ${wl} ${t1 - t0} ${checksum} heap=${heap}`);
+  globalThis.__benchDone = true;
+</script>

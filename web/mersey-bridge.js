@@ -95,6 +95,18 @@ export function makeBridge(globalObject, invokeCallback) {
   const ok = (value) => JSON.stringify({ ok: encodeAny(value) });
   const err = (e) => JSON.stringify({ err: String(e && e.message ? e.message : e) });
 
+  // Wide-string path: hand the host a value it can type by inspection. A scalar
+  // stays a scalar; a host object becomes {r: handle} (a ref); a top-level array
+  // becomes {j: json} (rare — the host parses it). No JSON for the common cases.
+  const wideResult = (v) => {
+    if (v === null || v === undefined) return null;
+    const t = typeof v;
+    if (t === "string" || t === "number" || t === "boolean") return v;
+    if (t === "bigint") return v.toString();
+    if (Array.isArray(v)) return { j: JSON.stringify(encodeAny(v)) };
+    return { r: handleFor(v) };
+  };
+
   // Interned member names: a name crosses the boundary once, then it is an
   // integer id — no TextDecoder per call.
   const names = [];
@@ -151,6 +163,66 @@ export function makeBridge(globalObject, invokeCallback) {
       } catch (e) {
         return err(e);
       }
+    },
+    // Interned multi-scalar call: target[nameId](...args), args already decoded
+    // JS scalars (numbers/strings). No JSON, for setItem(k,v), fillRect(…), etc.
+    callScalars(target, nameId, ...args) {
+      try {
+        const obj = handles[target];
+        const method = names[nameId];
+        if (obj == null) return err(`stale handle ${target}`);
+        const c = bound(obj, method, CALLS, "c");
+        if (c) return ok(c(obj, args));
+        const fn = obj[method];
+        if (typeof fn !== "function") return err(`${method} is not a function`);
+        return ok(fn.apply(obj, args));
+      } catch (e) {
+        return err(e);
+      }
+    },
+    // Interned constructor with scalar args: new names[ctorId](...args).
+    newScalars(ctorId, ...args) {
+      try {
+        const name = names[ctorId];
+        const c = useBindings ? CTORS.get(name) : null;
+        if (c) return ok(c(args));
+        const Ctor = name.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
+        if (typeof Ctor !== "function") return err(`${name} is not a constructor`);
+        return ok(new Ctor(...args));
+      } catch (e) {
+        return err(e);
+      }
+    },
+    // Wide-string fast path: return the *raw* value (no JSON) for the host to
+    // type by inspection — a scalar as itself, a host object as {r: handle}
+    // (→ a ref), a top-level array as {j: json} (rare), and throw on error.
+    // The host passes/receives strings as UTF-16, matching Gecko natively.
+    getWide(target, nameId) {
+      const obj = handles[target];
+      if (obj == null) throw new Error(`stale handle ${target}`);
+      const prop = names[nameId];
+      const g = bound(obj, prop, GETS, "g");
+      const v = g ? g(obj) : obj[prop];
+      return wideResult(typeof v === "function" && !g ? v.bind(obj) : v);
+    },
+    setWide(target, nameId, value) {
+      const obj = handles[target];
+      if (obj == null) throw new Error(`stale handle ${target}`);
+      const prop = names[nameId];
+      const s = bound(obj, prop, SETS, "s");
+      if (s) s(obj, value);
+      else obj[prop] = value;
+      return null;
+    },
+    callWide(target, nameId, ...args) {
+      const obj = handles[target];
+      if (obj == null) throw new Error(`stale handle ${target}`);
+      const method = names[nameId];
+      const c = bound(obj, method, CALLS, "c");
+      if (c) return wideResult(c(obj, args));
+      const fn = obj[method];
+      if (typeof fn !== "function") throw new Error(`${method} is not a function`);
+      return wideResult(fn.apply(obj, args));
     },
     global(name) {
       // Ambient globals only: the engine already gates this by import.

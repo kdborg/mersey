@@ -36,6 +36,83 @@ use webjson::Json;
 
 // ---- host interface ---------------------------------------------------------
 
+/// A call/constructor argument that needs no JSON: a number or a string. The
+/// multi-scalar fast paths (web_call_scalars, web_new_scalars) carry these
+/// directly, so `setItem(k, v)`, `fillRect(x, y, w, h)` and `new URL(s)` do not
+/// build and parse an args array.
+pub enum WebScalar<'a> {
+    Num(f64),
+    Str(&'a str),
+}
+
+/// Owned form, so a string argument outlives the borrow handed to the host.
+enum OwnedScalar {
+    Num(f64),
+    Str(String),
+}
+
+/// Every argument as a scalar, or None if any is not (an object, an array, a
+/// host handle) — those still need the reflective JSON path.
+fn as_scalars(args: &[Value]) -> Option<Vec<OwnedScalar>> {
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        out.push(match a {
+            Value::Str(s) => OwnedScalar::Str(s.iter().collect()),
+            Value::I32(n) => OwnedScalar::Num(*n as f64),
+            Value::F64(f) => OwnedScalar::Num(*f),
+            Value::I64(n) => OwnedScalar::Num(*n as f64),
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
+fn scalar_ref(s: &OwnedScalar) -> WebScalar {
+    match s {
+        OwnedScalar::Num(n) => WebScalar::Num(*n),
+        OwnedScalar::Str(s) => WebScalar::Str(s),
+    }
+}
+
+/// An argument for the wide-string fast path. A string is the engine's own
+/// UTF-32 (`&[char]`), borrowed and passed to the host with zero copying and no
+/// UTF-8 encoding — the host does the one conversion it cannot avoid (to its
+/// native string form). See `Host::web_call_u16`.
+pub enum WebArg<'a> {
+    Num(f64),
+    Str(&'a [char]),
+}
+
+/// A typed reply from the wide-string fast path — no JSON for the common cases.
+/// Scalars come back decoded; strings arrive as the host's native UTF-16 and
+/// become the engine's UTF-32 here. `Json` carries the rare non-scalar result
+/// (an object or array) as tagged JSON, so a call is never re-executed.
+pub enum WebReply {
+    Null,
+    Num(f64),
+    Str(Vec<char>),
+    Ref(i64),
+    Bool(bool),
+    Err(String),
+    Json(String),
+}
+
+/// True for values the wide-string fast path can carry (scalars only).
+fn is_web_scalar(v: &Value) -> bool {
+    matches!(v, Value::Str(_) | Value::I32(_) | Value::F64(_) | Value::I64(_))
+}
+
+/// Borrow a scalar `Value` as a `WebArg` — the string case is zero-copy.
+fn value_as_webarg(v: &Value) -> WebArg {
+    match v {
+        Value::Str(s) => WebArg::Str(s),
+        Value::I32(n) => WebArg::Num(*n as f64),
+        Value::F64(f) => WebArg::Num(*f),
+        Value::I64(n) => WebArg::Num(*n as f64),
+        _ => WebArg::Num(0.0), // never reached: callers gate on is_web_scalar
+    }
+}
+
 /// Everything the interpreter can ask of the outside world. The CLI wires
 /// this to stdout; the browser build wires it to `console`/DOM via the
 /// loader (docs/architecture/browser-integration.md, Stage A).
@@ -126,6 +203,31 @@ pub trait Host {
     /// Call with a single string argument (`createElement("span")`, …).
     fn web_call_str(&mut self, _target: i64, _name_id: u32, _arg: &str) -> String {
         "{\"err\":\"no web bridge\"}".into()
+    }
+    /// Call with any number of scalar arguments, no JSON (`setItem(k, v)`,
+    /// `fillRect(x, y, w, h)`). An empty reply means "not supported, use the
+    /// reflective path" — so a host may implement only the ops it wants.
+    fn web_call_scalars(&mut self, _target: i64, _name_id: u32, _args: &[WebScalar]) -> String {
+        String::new()
+    }
+    /// Construct with scalar arguments, no JSON (`new URL(s)`). Empty reply =
+    /// "not supported, use the reflective web_new".
+    fn web_new_scalars(&mut self, _ctor_id: u32, _args: &[WebScalar]) -> String {
+        String::new()
+    }
+
+    // ---- wide-string fast paths (UTF-32 args in, UTF-16 reply out) ------
+    // The engine is UTF-32 and a UTF-16 host (Gecko) is UTF-16; these skip the
+    // UTF-8 intermediary and the JSON reply entirely. `None` = not supported,
+    // and the engine falls back to the UTF-8 ops above with identical results.
+    fn web_get_u16(&mut self, _target: i64, _name_id: u32) -> Option<WebReply> {
+        None
+    }
+    fn web_set_u16(&mut self, _target: i64, _name_id: u32, _value: &WebArg) -> Option<WebReply> {
+        None
+    }
+    fn web_call_u16(&mut self, _target: i64, _name_id: u32, _args: &[WebArg]) -> Option<WebReply> {
+        None
     }
     /// Snapshot a host iterable (NodeList, HTMLCollection, Set, …) as an
     /// array, so `for (const n of nodeList)` works.
@@ -6067,17 +6169,49 @@ impl Interp {
         }
     }
 
+    /// Build a Value straight from a typed reply — no JSON parse.
+    fn value_from_reply(&self, r: WebReply) -> VResult {
+        match r {
+            WebReply::Null => Ok(Value::Null),
+            WebReply::Num(n) => Ok(if n.fract() == 0.0 && n.abs() <= i32::MAX as f64 {
+                Value::I32(n as i32)
+            } else {
+                Value::F64(n)
+            }),
+            WebReply::Str(v) => Ok(Value::Str(Rc::new(v))),
+            WebReply::Ref(h) => Ok(Value::JsRef(h)),
+            WebReply::Bool(b) => Ok(Value::Bool(b)),
+            WebReply::Err(msg) => Err(self.throw("Error", msg)),
+            // Rare non-scalar result: parse the tagged JSON, as web_reply would.
+            WebReply::Json(s) => match webjson::parse(&s) {
+                Some(j) => Ok(self.from_web(&j)),
+                None => Err(self.throw("Error", format!("bad bridge reply: {s}"))),
+            },
+        }
+    }
+
     fn web_get(&mut self, target: i64, prop: &str) -> VResult {
-        let reply = match self.intern(prop) {
-            Some(id) => self.host.web_get_id(target, id),
-            None => self.host.web_get(target, prop),
-        };
+        if let Some(id) = self.intern(prop) {
+            // Wide-string fast path: UTF-16 reply, no UTF-8, no JSON.
+            if let Some(reply) = self.host.web_get_u16(target, id) {
+                return self.value_from_reply(reply);
+            }
+            let reply = self.host.web_get_id(target, id);
+            return self.web_reply(&reply);
+        }
+        let reply = self.host.web_get(target, prop);
         self.web_reply(&reply)
     }
 
     fn web_set(&mut self, target: i64, prop: &str, v: Value) -> Result<(), Thrown> {
         // Fast paths: a scalar value needs no JSON at all.
         if let Some(id) = self.intern(prop) {
+            // Wide-string fast path first (a string value crosses as UTF-32).
+            if is_web_scalar(&v) {
+                if let Some(reply) = self.host.web_set_u16(target, id, &value_as_webarg(&v)) {
+                    return self.value_from_reply(reply).map(|_| ());
+                }
+            }
             let reply = match &v {
                 Value::Str(s) => {
                     let text: String = s.iter().collect();
@@ -6100,14 +6234,32 @@ impl Interp {
     }
 
     fn web_call(&mut self, target: i64, method: &str, args: Vec<Value>) -> VResult {
-        // Fast path: one string argument (getElementById, createElement, …).
-        // Not for `method == ""`, which calls the handle itself (`fetch(url)`).
-        if args.len() == 1 && !method.is_empty() {
-            if let Value::Str(s) = &args[0] {
+        // Fast paths skip JSON entirely. Not for `method == ""`, which calls the
+        // handle itself (`fetch(url)`), and only when every argument is a scalar.
+        if !method.is_empty() && !args.is_empty() {
+            // Wide-string fast path: all-scalar args cross as UTF-32 (zero-copy
+            // strings), the reply comes back typed as UTF-16 — no JSON either way.
+            if args.iter().all(is_web_scalar) {
                 if let Some(id) = self.intern(method) {
-                    let text: String = s.iter().collect();
-                    let reply = self.host.web_call_str(target, id, &text);
-                    return self.web_reply(&reply);
+                    let wargs: Vec<WebArg> = args.iter().map(value_as_webarg).collect();
+                    if let Some(reply) = self.host.web_call_u16(target, id, &wargs) {
+                        return self.value_from_reply(reply);
+                    }
+                }
+            }
+            if let Some(scalars) = as_scalars(&args) {
+                if let Some(id) = self.intern(method) {
+                    let refs: Vec<WebScalar> = scalars.iter().map(scalar_ref).collect();
+                    let reply = self.host.web_call_scalars(target, id, &refs);
+                    if !reply.is_empty() {
+                        return self.web_reply(&reply);
+                    }
+                    // Host declined multi-scalar; try the single-string op it may
+                    // still support (createElement, getItem, …).
+                    if let [OwnedScalar::Str(s)] = scalars.as_slice() {
+                        let reply = self.host.web_call_str(target, id, s);
+                        return self.web_reply(&reply);
+                    }
                 }
             }
         }
@@ -6140,6 +6292,18 @@ impl Interp {
     }
 
     fn web_new(&mut self, ctor: &str, args: Vec<Value>) -> VResult {
+        // Fast path: scalar constructor arguments cross without JSON (`new URL(s)`).
+        if !args.is_empty() {
+            if let Some(scalars) = as_scalars(&args) {
+                if let Some(id) = self.intern(ctor) {
+                    let refs: Vec<WebScalar> = scalars.iter().map(scalar_ref).collect();
+                    let reply = self.host.web_new_scalars(id, &refs);
+                    if !reply.is_empty() {
+                        return self.web_reply(&reply);
+                    }
+                }
+            }
+        }
         let a = self.args_json(&args);
         let reply = self.host.web_new(ctor, &a);
         self.web_reply(&reply)

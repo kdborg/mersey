@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mersey bench — WASM polyfill</title>
+<body>
+<script>
+  // Inject the requested workload as a Mersey script before the loader boots.
+  const wl = new URLSearchParams(location.search).get("wl");
+  const s = document.createElement("script");
+  s.type = "text/mersey";
+  s.src = `/bench/web/mersey/${wl}.mersey`;
+  s.setAttribute("data-allow", "random");
+  document.head.appendChild(s);
+</script>
+<script type="module" src="/web/mersey-loader.js" data-engine="/web/mersey_wasm.wasm"></script>
