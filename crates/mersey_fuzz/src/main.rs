@@ -210,10 +210,69 @@ fn run_mutation(iters: u64, rng: &mut Rng) -> u64 {
 /// arithmetic would have gone on reporting "no findings" about code it never
 /// wrote. A differential fuzzer is only worth what it generates.
 fn gen_program(rng: &mut Rng) -> String {
-    if rng.chance(50) {
-        return gen_object_program(rng);
+    match rng.below(3) {
+        0 => gen_object_program(rng),
+        1 => gen_string_program(rng),
+        _ => gen_numeric_program(rng),
     }
-    gen_numeric_program(rng)
+}
+
+/// Strings: literals, templates with integer interpolation, `.length`, and
+/// string locals reassigned across a loop — the surface Tier 1 gained this
+/// session (const strings from the pool, `str_join` for templates, and the
+/// string-slot marshalling that lets a string local survive an OSR). Output is
+/// the accumulated code-unit counts, which every tier must agree on.
+fn gen_string_program(rng: &mut Rng) -> String {
+    let mut s = String::from("import { console } from \"std:console\";\n");
+    let n_fns = 1 + rng.below(2);
+    for f in 0..n_fns {
+        s.push_str(&format!(
+            "function g{f}(n: int32): int32 {{\n    let sum = 0;\n    let i = 0;\n    while (i < n) {{\n"
+        ));
+        let stmts = 1 + rng.below(3);
+        for _ in 0..stmts {
+            gen_str_stmt(rng, &mut s);
+        }
+        s.push_str("        i = i + 1;\n    }\n    return sum;\n}\n");
+    }
+    s.push_str("let acc = 0;\n");
+    // Call each function twice at different bounds: the first pass warms/compiles,
+    // the second re-enters compiled from the top (lever 4) — both must agree.
+    let calls = 2 + rng.below(3);
+    for _ in 0..calls {
+        let f = rng.below(n_fns);
+        s.push_str(&format!(
+            "acc = (acc + g{f}({})) | 0;\nconsole.log(acc);\n",
+            1 + rng.below(600)
+        ));
+    }
+    s
+}
+
+fn gen_str_stmt(rng: &mut Rng, s: &mut String) {
+    match rng.below(4) {
+        // A template temporary, consumed straight by `.length`.
+        0 => s.push_str(&format!(
+            "        sum = sum + `p{}-${{i}}`.length;\n",
+            rng.below(9)
+        )),
+        // A template stored in a local (a string slot through the loop/OSR).
+        1 => s.push_str(&format!(
+            "        const s = `a${{i * {}}}b${{i + {}}}c`;\n        sum = sum + s.length;\n",
+            1 + rng.below(5),
+            rng.below(9)
+        )),
+        // A const-string local.
+        2 => s.push_str(&format!(
+            "        const t = \"lit{}word\";\n        sum = sum + t.length;\n",
+            rng.below(99)
+        )),
+        // A negative interpolation exercises the `-`/digit path of the join.
+        _ => s.push_str(&format!(
+            "        const u = `n${{0 - i}}m{}`;\n        sum = sum + u.length;\n",
+            rng.below(9)
+        )),
+    }
 }
 
 /// Objects: fields read and written, arrays indexed, methods called, subclasses
@@ -406,6 +465,9 @@ fn run_differential(iters: u64, rng: &mut Rng) -> u64 {
     let mut findings = 0;
     for i in 0..iters {
         let prog = gen_program(rng);
+        // A SIGSEGV in compiled code cannot be caught by `catch_unwind`; leave the
+        // current program on disk so a hard crash names its culprit.
+        let _ = std::fs::write("fuzz-current.mersey", &prog);
         let r = catch_unwind(AssertUnwindSafe(|| {
             // The generator produced something the checker rejects.
             let module = frontend(prog.as_bytes())?;
@@ -440,6 +502,25 @@ fn run_differential(iters: u64, rng: &mut Rng) -> u64 {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("all");
+    // `run <file>`: one program on all three tiers (JIT compiled aggressively).
+    // For reproducing and minimizing a fuzzer finding.
+    if mode == "run" {
+        let path = args.get(1).expect("run <file.mersey>");
+        let prog = std::fs::read(path).expect("read");
+        let module = frontend(&prog).expect("checker rejected the program");
+        let tree = execute(module, Tier::Tree);
+        let vm = execute(module, Tier::Vm);
+        let jit = execute(module, Tier::Jit);
+        println!("tree: {tree:?}");
+        println!("vm:   {vm:?}");
+        println!("jit:  {jit:?}");
+        if jit != tree || vm != tree {
+            eprintln!("DIVERGENCE");
+            std::process::exit(1);
+        }
+        println!("agree");
+        return;
+    }
     let iters: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0xC0FFEE);
     let mut rng = Rng(seed | 1);
@@ -450,6 +531,14 @@ fn main() {
         findings += run_mutation(iters, &mut rng);
     }
     if mode == "diff" || mode == "all" {
+        // NOTE: Tier 1 leaks each compiled `JITModule` on purpose (its code pages
+        // must outlive every call into them — see mersey_jit). One program
+        // compiles a bounded set of functions, so a real embedding leaks a
+        // bounded amount; but this harness compiles a *distinct* program every
+        // iteration, so a few thousand iterations exhaust the executable-page
+        // maps and the process is killed (SIGSEGV) — not a divergence, an
+        // out-of-address-space. Keep the default (2000) safe; run many *seeds* at
+        // a safe count for more coverage rather than one huge count.
         println!("differential fuzzing: {iters} iterations…");
         findings += run_differential(iters, &mut rng);
     }
