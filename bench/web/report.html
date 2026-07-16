@@ -126,6 +126,11 @@
       Mersey→WASM compute tier), and the native fork — over a compute kernel and six web-platform
       workloads. Identical work, verified by matching checksums; the only variable is <em>what executes
       the code</em>.</p>
+    <p class="note" style="margin-top:.6rem">Every native number here is the <b>Tier-1 JIT</b>, and the
+      JIT is held to the interpreter's answer: a differential fuzzer runs generated programs — numeric,
+      object, and string — on the tree-walker, the bytecode VM, and the JIT, and fails on any
+      disagreement. The speed below is <em>compiled</em> speed that produces the <em>same</em> result as
+      the reference engine, thousands of programs over.</p>
   </header>
 
   <div class="cards" id="cards"></div>
