@@ -75,6 +75,72 @@ fn scalar_ref(s: &OwnedScalar) -> WebScalar {
 }
 
 /// An argument for the wide-string fast path. A string is the engine's own
+/// Compile-time-stable ids for the typed web-binding fast path (`Host::web_bind`).
+///
+/// A web method whose receiver type and argument shape are known at compile time
+/// does not need to cross the bridge as an interned name that the host then
+/// string-dispatches. It crosses as one of these small integers, and the host
+/// switches straight to the C++ method. The ids are a fixed contract shared with
+/// the fork (mirrored in `mersey.h`) — only ever append, never renumber.
+///
+/// Only *numeric-argument* methods are here: those are the ones the Tier-1 JIT
+/// compiles (a canvas draw loop), which is where removing the per-call intern +
+/// marshal + string-dispatch actually shows up. String-argument methods stay on
+/// the reflective path, which the JIT does not compile anyway.
+pub mod webbind {
+    pub const CANVAS2D_FILLRECT: u32 = 1;
+    pub const CANVAS2D_CLEARRECT: u32 = 2;
+    pub const CANVAS2D_STROKERECT: u32 = 3;
+    pub const CANVAS2D_RECT: u32 = 4;
+    pub const CANVAS2D_MOVETO: u32 = 5;
+    pub const CANVAS2D_LINETO: u32 = 6;
+    pub const CANVAS2D_TRANSLATE: u32 = 7;
+    pub const CANVAS2D_SCALE: u32 = 8;
+    pub const CANVAS2D_ROTATE: u32 = 9;
+
+    /// A method name and its argument count → a numeric bind id, or `None` when
+    /// the method has no typed fast path. Name-based rather than type-based: the
+    /// JIT applies it only to host-object (`JsRef`) receivers, and the host
+    /// verifies the receiver's actual type before taking the fast path, so a
+    /// same-named method on a different object simply falls back — never wrong.
+    pub fn numeric(method: &str, argc: u8) -> Option<u32> {
+        Some(match (method, argc) {
+            ("fillRect", 4) => CANVAS2D_FILLRECT,
+            ("clearRect", 4) => CANVAS2D_CLEARRECT,
+            ("strokeRect", 4) => CANVAS2D_STROKERECT,
+            ("rect", 4) => CANVAS2D_RECT,
+            ("moveTo", 2) => CANVAS2D_MOVETO,
+            ("lineTo", 2) => CANVAS2D_LINETO,
+            ("translate", 2) => CANVAS2D_TRANSLATE,
+            ("scale", 2) => CANVAS2D_SCALE,
+            ("rotate", 1) => CANVAS2D_ROTATE,
+            _ => return None,
+        })
+    }
+}
+
+/// A host reply, laid out exactly as the C `msy_reply` (and
+/// `mersey_capi::MsyReply`). The typed-binding fast path (`WebBindFn`) reads only
+/// the tag — 5 is a thrown error, anything else a success whose value the
+/// compiled call discards — so the JIT can call the host directly and still tell
+/// the two apart without decoding the reply.
+#[repr(C)]
+pub struct WebReplyRaw {
+    pub tag: i32,
+    pub num: f64,
+    pub str16: *const u16,
+    pub str16_len: usize,
+}
+
+/// The host's `web_bind` entry as a raw C function pointer the compiled tier can
+/// call directly — no interpreter reentry, no dynamic `Host` dispatch. Same ABI
+/// as the C host table's `web_bind` field; `mersey_capi` hands it over through
+/// `Host::web_bind_raw`. Kept as a plain (not `unsafe`) `extern "C" fn` so this
+/// crate stays free of `unsafe`; the one caller that invokes it (the JIT's
+/// `heap.rs`) owns the safety argument.
+pub type WebBindFn =
+    extern "C" fn(*mut core::ffi::c_void, i64, u32, *const f64, usize, *mut WebReplyRaw);
+
 /// UTF-16 (`&[u16]`), borrowed straight from the engine's string buffer and
 /// passed to the host with zero copying and no conversion — Gecko/V8 are UTF-16
 /// too, so both sides now speak the same encoding. See `Host::web_call_u16`.
@@ -115,6 +181,18 @@ fn is_web_scalar(v: &Value) -> bool {
             | Value::Null
             | Value::JsRef(_)
     )
+}
+
+/// A `WebArg` back to a `Value`, for the general `web_call` fallback when the
+/// host declines the interned wide path. The inverse of `value_as_webarg`.
+fn webarg_to_value(a: &WebArg) -> Value {
+    match a {
+        WebArg::Num(f) => Value::F64(*f),
+        WebArg::Str(units) => Value::Str(Rc::new(units.to_vec())),
+        WebArg::Ref(h) => Value::JsRef(*h),
+        WebArg::Bool(b) => Value::Bool(*b),
+        WebArg::Null => Value::Null,
+    }
 }
 
 /// Borrow a scalar `Value` as a `WebArg` — the string case is zero-copy.
@@ -250,6 +328,25 @@ pub trait Host {
     fn web_new_u16(&mut self, _ctor_id: u32, _args: &[WebArg]) -> Option<WebReply> {
         None
     }
+    /// The typed-binding fast path: a compiled numeric web method identified by
+    /// a compile-time-stable `bind_id` (see `webbind`), its arguments already
+    /// `f64`. No interned name, no argument marshalling, no string dispatch —
+    /// the host switches on the id and calls the C++ method directly, checking
+    /// the receiver's type and falling back to the reflective path itself on a
+    /// mismatch. A host that has no such fast path returns `None`, and the
+    /// caller uses the ordinary `web_call_u16`.
+    fn web_bind(&mut self, _target: i64, _bind_id: u32, _args: &[f64]) -> Option<WebReply> {
+        None
+    }
+    /// The `web_bind` entry as a raw C function pointer plus its host data, so
+    /// the compiled tier can call it *directly* — skipping the interpreter
+    /// reentry and the dynamic dispatch that `web_bind` would go through. A host
+    /// that has no C-level binding (or none at all) returns `None`, and the JIT
+    /// uses the ordinary `web_bind` shim path. Only the error case (tag 5) then
+    /// needs the interpreter, to build and stash the thrown value.
+    fn web_bind_raw(&self) -> Option<(WebBindFn, *mut core::ffi::c_void)> {
+        None
+    }
     /// Snapshot a host iterable (NodeList, HTMLCollection, Set, …) as an
     /// array, so `for (const n of nodeList)` works.
     fn web_iterate(&mut self, _target: i64) -> String {
@@ -290,6 +387,13 @@ type Str = Rc<Vec<u16>>;
 /// A Rust string as the engine's UTF-16 form.
 pub(crate) fn utf16(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
+}
+
+/// Append a decimal integer to a UTF-16 buffer, exactly as the bytecode VM's
+/// `TemplateJoin` does — the JIT's string-join shim calls this so a compiled
+/// `` `…${i}` `` produces byte-identical output.
+pub fn append_int_utf16(out: &mut Vec<u16>, v: i64) {
+    vm::append_int_u16(out, v);
 }
 
 /// The engine's UTF-16 string as a Rust `String`. Lossy only on lone surrogates
@@ -442,7 +546,9 @@ pub mod repr {
     pub const TAG_I32: u8 = 2;
     pub const TAG_I64: u8 = 3;
     pub const TAG_F64: u8 = 7;
+    pub const TAG_STRING: u8 = 9;
     pub const TAG_ARRAY: u8 = 12;
+    pub const TAG_JSREF: u8 = 21;
     pub const TAG_INSTANCE: u8 = 18;
 }
 
@@ -1010,6 +1116,10 @@ pub struct Interp {
     pub jit: Option<JitHook>,
     /// Owns every value Tier 1 code allocates, for the duration of one call.
     jit_arena: Arena,
+    /// A thrown value stashed by a compiled host call that failed: the shim
+    /// cannot unwind through compiled code, so it records the error and traps,
+    /// and `after_jit` raises this at the trapping instruction's position.
+    jit_host_error: Option<Thrown>,
     /// Keyed by (chunk, receiver class): the same method body compiled against
     /// two classes is two different compilations, because what its own calls
     /// resolve to need not be the same.
@@ -1053,6 +1163,19 @@ pub enum JitArg {
 pub struct Arena {
     slots: Vec<Option<Value>>,
     free: Vec<usize>,
+    /// The interpreter itself, valid only for the duration of one compiled
+    /// call — set before entering compiled code and cleared after. Compiled
+    /// code that makes a host call (a numeric builtin or web-method call)
+    /// reaches the real host, the globals, and the interpreter's own web-call
+    /// logic through this pointer, so the JIT is no longer confined to
+    /// allocation-free, host-free bodies. Reentrant, like every host callback.
+    pub(crate) interp: Option<*mut Interp>,
+    /// The host's `web_bind` entry as a raw C function pointer plus its data, set
+    /// alongside `interp` for the duration of one compiled call. When present,
+    /// the typed-binding shim calls it directly instead of reentering the
+    /// interpreter — the whole point of the fast path. Storing the pointers is
+    /// safe; only the JIT calls through them.
+    pub(crate) web_bind: Option<(WebBindFn, *mut core::ffi::c_void)>,
 }
 
 impl Arena {
@@ -1101,6 +1224,19 @@ impl Arena {
     pub fn clear(&mut self) {
         self.slots.clear();
         self.free.clear();
+    }
+
+    /// The interpreter for the current compiled call, if one is set. The JIT's
+    /// host-call shims read this; returning the raw pointer is safe, only
+    /// dereferencing it (inside a shim, which the interpreter guarantees is
+    /// reached during a live call) is not.
+    pub fn interp_ptr(&self) -> Option<*mut Interp> {
+        self.interp
+    }
+
+    /// The host's direct `web_bind` entry for this call, if any (see the field).
+    pub fn web_bind_fn(&self) -> Option<(WebBindFn, *mut core::ffi::c_void)> {
+        self.web_bind
     }
 }
 
@@ -1152,6 +1288,9 @@ pub enum TrapReason {
     /// system says this cannot happen; compiled code checks anyway, because the
     /// alternative to checking is reading an integer as a pointer.
     BadTag,
+    /// A compiled host call threw. The value is stashed on the interpreter
+    /// (`jit_host_error`), because a shim cannot unwind through native frames.
+    HostError,
 }
 
 /// What one value at the Tier 1 boundary is.
@@ -1164,6 +1303,10 @@ pub enum JitSlot {
     Obj(Rc<ClassDef>),
     /// An array of these.
     Arr(Rc<FieldTy>),
+    /// A UTF-16 string, or `null`.
+    Str,
+    /// A host-object handle (`JsRef`): one word, the handle id.
+    Web,
 }
 
 /// One function in a compiled group: its bytecode, and everything about its
@@ -1228,7 +1371,37 @@ pub trait JitEnv {
     /// A class's constructor as a compilable function, `None` if it has none
     /// (then `new` takes no arguments and only the field defaults run).
     fn ctor(&self, cls: &Rc<ClassDef>) -> Option<Option<JitFn>>;
+
+    /// True if `name` binds the `std:time` namespace at the top level. Its
+    /// `now()`/`monotonic()` are zero-argument numeric host calls, which
+    /// compiled code makes directly through the arena's interp pointer rather
+    /// than bailing to the interpreter. This is the first host call the JIT
+    /// tier compiles; the web-object calls follow the same shim path.
+    fn is_time_ns(&self, name: &str) -> bool;
+
+    /// True if `name` is a top-level binding that currently holds a host object
+    /// (a `JsRef` — a canvas context, an element). Compiled code reads its
+    /// handle fresh each time and calls methods on it directly. The value's
+    /// *kind* is fixed by the checker (a `JsRef`-typed binding is always a
+    /// `JsRef`), so reading it at run time is sound even for a reassignable
+    /// binding — only the handle can change, and reading it live gets the
+    /// current one.
+    fn is_web_global(&self, name: &str) -> bool;
+
+    /// True if `name` is bound to the `std:math` namespace. Its numeric methods
+    /// (`sqrt`, `floor`, `min`, …) lower to machine instructions instead of a
+    /// call, so a math-heavy loop compiles rather than bailing the whole
+    /// function to the interpreter.
+    fn is_math_ns(&self, name: &str) -> bool;
+
+    /// The interned id a web method name *already* has, if any. By the time a
+    /// web loop compiles it has run thousands of interpreted iterations, each of
+    /// which interned its method names — so the id is known here, read-only, and
+    /// compiled code can carry it instead of interning on every call. Returns
+    /// `None` for a name never yet interned (then the shim interns lazily).
+    fn interned_web(&self, name: &str) -> Option<u32>;
 }
+
 
 /// Native code for one root function *and everything it calls*.
 ///
@@ -1317,6 +1490,23 @@ impl JitEnv for InterpEnv<'_> {
             return None;
         }
         Some(cls)
+    }
+    fn is_time_ns(&self, name: &str) -> bool {
+        matches!(env_get(&self.i.globals, name),
+            Some(Value::Namespace(ns)) if ns.name == "time")
+    }
+    fn is_web_global(&self, name: &str) -> bool {
+        matches!(env_get(&self.i.globals, name), Some(Value::JsRef(_)))
+    }
+    fn is_math_ns(&self, name: &str) -> bool {
+        matches!(env_get(&self.i.globals, name),
+            Some(Value::Namespace(ns)) if ns.name == "math")
+    }
+    fn interned_web(&self, name: &str) -> Option<u32> {
+        match self.i.interned.get(name) {
+            Some(&id) if id != u32::MAX => Some(id),
+            _ => None,
+        }
     }
     fn ctor(&self, cls: &Rc<ClassDef>) -> Option<Option<JitFn>> {
         let Some(data) = cls.ctor_data() else {
@@ -1505,9 +1695,18 @@ fn jit_arg(v: &Value, slot: &JitSlot) -> Option<JitArg> {
             ok.then(|| JitArg::Ptr(Rc::as_ptr(i) as *const u8))
         }
         (Value::Array(a), JitSlot::Arr(_)) => Some(JitArg::Ptr(Rc::as_ptr(a) as *const u8)),
-        // A null object or array is a null pointer, which compiled code checks
-        // before it dereferences — exactly as the interpreter does.
-        (Value::Null, JitSlot::Obj(_) | JitSlot::Arr(_)) => Some(JitArg::Ptr(std::ptr::null())),
+        // A string crosses as the address of its `Rc<Vec<u16>>` contents; the
+        // entry wrapper derives the data pointer and length from it, as it does
+        // an object's fields. A borrow — the caller (or the OSR clone) owns it.
+        (Value::Str(s), JitSlot::Str) => Some(JitArg::Ptr(Rc::as_ptr(s) as *const u8)),
+        // A host handle is one word — the id itself. A null handle is 0.
+        (Value::JsRef(h), JitSlot::Web) => Some(JitArg::I64(*h)),
+        (Value::Null, JitSlot::Web) => Some(JitArg::I64(0)),
+        // A null object, array, or string is a null pointer, which compiled code
+        // checks before it dereferences — exactly as the interpreter does.
+        (Value::Null, JitSlot::Obj(_) | JitSlot::Arr(_) | JitSlot::Str) => {
+            Some(JitArg::Ptr(std::ptr::null()))
+        }
         _ => None,
     }
 }
@@ -1537,7 +1736,12 @@ const JIT_THRESHOLD: u32 = 64;
 /// at the loop header. A function called once around a long loop never becomes
 /// hot by call count — the counter only ever reaches 1 — so the loop's own
 /// back edge is what has to trigger it.
-const OSR_THRESHOLD: u32 = 5_000;
+///
+/// Low enough that a warm-up pass (the conventional `work(1000)` before a timed
+/// run) compiles the function, so the timed run enters it already compiled from
+/// the top (see `try_osr`, which marks the chunk hot). 500 iterations is still a
+/// genuinely hot loop — worth the one-time Cranelift compile.
+const OSR_THRESHOLD: u32 = 500;
 
 /// How deep compiled code may recurse before handing the call back. The
 /// interpreter's own limit (`MAX_CALL_DEPTH`) then raises the `RangeError`
@@ -1587,6 +1791,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         gc_pending: false,
         jit: None,
         jit_arena: Arena::default(),
+        jit_host_error: None,
         jit_cache: HashMap::new(),
         call_counts: HashMap::new(),
     }
@@ -3276,6 +3481,215 @@ impl Interp {
 
 
 
+    /// `time.now()` / `time.monotonic()` from compiled code.
+    pub fn jit_time_ms(&mut self, epoch: bool) -> f64 {
+        self.host.time_ms(epoch)
+    }
+
+    /// The handle a top-level web global currently holds (0 if it is somehow not
+    /// a host object — impossible for a `JsRef`-typed binding, but the web call
+    /// on handle 0 would simply fail and be raised like any host error).
+    pub fn jit_global_web(&self, name: &str) -> i64 {
+        match env_get(&self.globals, name) {
+            Some(Value::JsRef(h)) => h,
+            _ => 0,
+        }
+    }
+
+    /// A numeric-argument web method call whose result compiled code discards
+    /// (`ctx.fillRect(x, y, w, h)`). The fast path builds the `WebArg`s on the
+    /// stack (no heap for the common ≤8-argument case) and takes the same
+    /// interned wide path the interpreter's `web_call` takes for all-scalar
+    /// args, so behaviour is identical. Returns 0 on success; on a thrown error
+    /// it stashes the value for `after_jit` and returns 1, since a shim cannot
+    /// unwind through native frames.
+    pub fn jit_web_call_num(&mut self, target: i64, name: &str, args: &[f64]) -> i64 {
+        if args.len() <= 8 {
+            if let Some(id) = self.intern(name) {
+                let n = args.len();
+                let buf: [WebArg; 8] =
+                    std::array::from_fn(|k| WebArg::Num(if k < n { args[k] } else { 0.0 }));
+                if let Some(reply) = self.host.web_call_u16(target, id, &buf[..n]) {
+                    return match reply {
+                        WebReply::Err(msg) => {
+                            let t = self.throw("Error", msg);
+                            self.jit_host_error = Some(t);
+                            1
+                        }
+                        _ => 0,
+                    };
+                }
+            }
+        }
+        // The host declined the wide path (or too many args): fall back to the
+        // interpreter's general web_call, so nothing is ever left unhandled.
+        let vals: Vec<Value> = args.iter().map(|f| Value::F64(*f)).collect();
+        match self.web_call(target, name, vals) {
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
+    /// The typed-binding fast path for a compiled numeric web call
+    /// (`ctx.fillRect(…)` as bind id `CANVAS2D_FILLRECT`). No intern, no
+    /// `WebArg` marshalling, no string dispatch: the id and the `f64` arguments
+    /// cross straight to the host. If the host has no typed binding at all
+    /// (`web_bind` returns `None`), fall back to the ordinary interned path by
+    /// name so nothing is ever left unhandled. Same error protocol as
+    /// `jit_web_call_num` (0 ok, 1 threw-and-stashed).
+    pub fn jit_web_bind(&mut self, target: i64, bind_id: u32, name: &str, args: &[f64]) -> i64 {
+        if let Some(reply) = self.host.web_bind(target, bind_id, args) {
+            return match reply {
+                WebReply::Err(msg) => {
+                    let t = self.throw("Error", msg);
+                    self.jit_host_error = Some(t);
+                    1
+                }
+                _ => 0,
+            };
+        }
+        self.jit_web_call_num(target, name, args)
+    }
+
+    /// A web method call from compiled code whose result is a string (or null)
+    /// captured by the caller (`getItem(k)`). Returns the reply value; a thrown
+    /// call returns `None` after stashing the error. The shim turns the value
+    /// into an arena-owned string for compiled code.
+    pub fn jit_web_call_str_value(
+        &mut self,
+        target: i64,
+        id: u32,
+        name: &str,
+        args: &[WebArg],
+    ) -> Option<Value> {
+        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        if let Some(id) = id {
+            if let Some(reply) = self.host.web_call_u16(target, id, args) {
+                return match reply {
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        None
+                    }
+                    other => match self.value_from_reply(other) {
+                        Ok(v) => Some(v),
+                        Err(t) => {
+                            self.jit_host_error = Some(t);
+                            None
+                        }
+                    },
+                };
+            }
+        }
+        let vals: Vec<Value> = args.iter().map(webarg_to_value).collect();
+        match self.web_call(target, name, vals) {
+            Ok(v) => Some(v),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                None
+            }
+        }
+    }
+
+    /// A numeric-valued web property read from compiled code (`buf.length`).
+    /// Reuses the interpreter's `web_get`; a non-numeric or missing result comes
+    /// back as 0 (the compiled site only asks for properties the checker typed
+    /// as integers). Errors are stashed and signalled by returning `i64::MIN`,
+    /// which the caller treats as "threw".
+    pub fn jit_web_get_num(&mut self, target: i64, id: u32, name: &str) -> i64 {
+        // With a pre-interned id, read the property straight through the host's
+        // wide-get path — no intern, no `web_get` string dispatch.
+        if id != u32::MAX {
+            if let Some(reply) = self.host.web_get_u16(target, id) {
+                return match reply {
+                    WebReply::Num(n) => n as i64,
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        i64::MIN
+                    }
+                    _ => 0,
+                };
+            }
+        }
+        match self.web_get(target, name) {
+            Ok(Value::I32(n)) => n as i64,
+            Ok(Value::I64(n)) => n,
+            Ok(Value::F64(f)) => f as i64,
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                i64::MIN
+            }
+        }
+    }
+
+    /// A web property set from compiled code (`el.textContent = str`). With a
+    /// pre-interned id it crosses the wide-set path directly. Same 0/1 protocol.
+    pub fn jit_web_set(&mut self, target: i64, id: u32, name: &str, value: &WebArg) -> i64 {
+        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        if let Some(id) = id {
+            if let Some(reply) = self.host.web_set_u16(target, id, value) {
+                return match reply {
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        1
+                    }
+                    _ => 0,
+                };
+            }
+        }
+        match self.web_set(target, name, webarg_to_value(value)) {
+            Ok(()) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
+    /// A web method call from compiled code whose arguments are already built
+    /// (numbers, host handles, strings) and whose result is discarded
+    /// (`getRandomValues(buf)`, `appendChild(el)`). Same 0/1 protocol as
+    /// `jit_web_call_num`.
+    pub fn jit_web_call_args(&mut self, target: i64, id: u32, name: &str, args: &[WebArg]) -> i64 {
+        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        if let Some(id) = id {
+            if let Some(reply) = self.host.web_call_u16(target, id, args) {
+                return match reply {
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        1
+                    }
+                    _ => 0,
+                };
+            }
+        }
+        let vals: Vec<Value> = args.iter().map(webarg_to_value).collect();
+        match self.web_call(target, name, vals) {
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
+    /// Build and stash the thrown value for a host error the *direct* binding
+    /// path reported (reply tag 5). That path skips the interpreter, so it comes
+    /// back here only to construct the throw — no second call to the host — and
+    /// returns 1, the same "threw" signal `jit_web_bind` uses.
+    pub fn jit_stash_host_error(&mut self, msg: &[u16]) -> i64 {
+        let t = self.throw("Error", utf16_to_string(msg));
+        self.jit_host_error = Some(t);
+        1
+    }
+
     /// This closure's compiled body, compiling it once on first use.
     fn chunk_of(&mut self, c: &Closure) -> Option<Rc<vm::Chunk>> {
         if let Some(cached) = c.data.chunk.borrow().clone() {
@@ -3377,8 +3791,17 @@ impl Interp {
             }
         }
         // The arena owns everything this call allocates, and is cleared on every
-        // way out — that is the whole memory story of a compiled call.
+        // way out — that is the whole memory story of a compiled call. The interp
+        // pointer is live only across this one call: a compiled host call reaches
+        // the interpreter through it, and it is cleared the moment we return so no
+        // stale pointer can outlive the borrow.
+        let ip: *mut Interp = self;
+        let wb = self.host.web_bind_raw();
+        self.jit_arena.interp = Some(ip);
+        self.jit_arena.web_bind = wb;
         let r = (compiled.code.call)(&jargs, &mut self.jit_arena);
+        self.jit_arena.interp = None;
+        self.jit_arena.web_bind = None;
         self.jit_arena.clear();
         match jit_value(r, ret_bool) {
             Ok(v) => Ok(Some(v)),
@@ -3425,6 +3848,13 @@ impl Interp {
                 self.throw("TypeError", msg)
             }
             TrapReason::BadTag => self.throw("TypeError", "value is not of its declared type"),
+            // A compiled host call threw: raise exactly what it recorded, at the
+            // position of the call, so it is indistinguishable from the
+            // interpreter having made the same call.
+            TrapReason::HostError => self
+                .jit_host_error
+                .take()
+                .unwrap_or_else(|| self.throw("Error", "host call failed")),
         })
     }
 
@@ -3468,6 +3898,12 @@ impl Interp {
         if !self.assumptions_hold(&compiled) || !compiled.code.osr_entries.contains(&target) {
             return Ok(None);
         }
+        // This function is now compiled. Mark it hot so the *next* call enters the
+        // compiled body from the top rather than interpreting until the loop's OSR
+        // point again — a function called around a long loop otherwise re-pays the
+        // pre-OSR interpretation on every call (the timed run after a warm-up call,
+        // the classic case). The compilation is cached; this only changes the entry.
+        chunk.hot.set(self.jit_threshold);
         // The compiled code uses the interpreter's own frame layout, so resuming
         // is a straight transfer of the locals it is already holding — every one
         // of which must be what the code compiled them as.
@@ -3502,7 +3938,13 @@ impl Interp {
             };
             locals.push(a);
         }
+        let ip: *mut Interp = self;
+        let wb = self.host.web_bind_raw();
+        self.jit_arena.interp = Some(ip);
+        self.jit_arena.web_bind = wb;
         let r = (compiled.code.osr)(&locals, target, &mut self.jit_arena);
+        self.jit_arena.interp = None;
+        self.jit_arena.web_bind = None;
         self.jit_arena.clear();
         match jit_value(r, ret_bool) {
             Ok(v) => Ok(Some(v)),
@@ -6114,30 +6556,46 @@ impl Interp {
     /// Output matches JS for the values it accepts: insertion-ordered keys,
     /// shortest round-trip numbers, `null` for non-finite.
     fn pure_json(v: &Value, out: &mut String) -> bool {
+        use std::fmt::Write as _;
         match v {
             Value::Null => out.push_str("null"),
             Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Value::I32(n) => out.push_str(&n.to_string()),
-            Value::I64(n) => out.push_str(&n.to_string()),
-            Value::U32(n) => out.push_str(&n.to_string()),
-            Value::U64(n) => out.push_str(&n.to_string()),
+            // `write!` formats the integer straight into `out`'s buffer; the
+            // `&n.to_string()` it replaces heap-allocated a String per scalar,
+            // which in a stringify-heavy loop is the bulk of the allocation.
+            Value::I32(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Value::I64(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Value::U32(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Value::U64(n) => {
+                let _ = write!(out, "{n}");
+            }
             Value::F32(f) => {
                 let f = *f as f64;
                 if f.is_finite() {
-                    out.push_str(&format!("{f}"));
+                    let _ = write!(out, "{f}");
                 } else {
                     out.push_str("null");
                 }
             }
             Value::F64(f) => {
                 if f.is_finite() {
-                    out.push_str(&format!("{f}"));
+                    let _ = write!(out, "{f}");
                 } else {
                     out.push_str("null");
                 }
             }
-            Value::Char(c) => webjson::write_str(out, &c.to_string()),
-            Value::Str(s) => webjson::write_str(out, &utf16_to_string(s)),
+            Value::Char(c) => {
+                let mut buf = [0u16; 2];
+                webjson::write_str_u16(out, c.encode_utf16(&mut buf));
+            }
+            // Escape straight from the engine's UTF-16, no UTF-8 String first.
+            Value::Str(s) => webjson::write_str_u16(out, s),
             Value::Array(a) => {
                 out.push('[');
                 for (i, item) in a.borrow().iter().enumerate() {
@@ -6428,8 +6886,20 @@ impl Interp {
             // strings), the reply comes back typed as UTF-16 — no JSON either way.
             if args.iter().all(is_web_scalar) {
                 if let Some(id) = self.intern(method) {
-                    let wargs: Vec<WebArg> = args.iter().map(value_as_webarg).collect();
-                    if let Some(reply) = self.host.web_call_u16(target, id, &wargs) {
+                    // The arguments cross on the stack, not through a fresh heap
+                    // `Vec` per call — this is the hottest web path (getItem,
+                    // fillRect, …), run tens of thousands of times a frame.
+                    let reply = if args.len() <= 8 {
+                        let mut buf: [WebArg; 8] = std::array::from_fn(|_| WebArg::Null);
+                        for (k, a) in args.iter().enumerate() {
+                            buf[k] = value_as_webarg(a);
+                        }
+                        self.host.web_call_u16(target, id, &buf[..args.len()])
+                    } else {
+                        let wargs: Vec<WebArg> = args.iter().map(value_as_webarg).collect();
+                        self.host.web_call_u16(target, id, &wargs)
+                    };
+                    if let Some(reply) = reply {
                         return self.value_from_reply(reply);
                     }
                 }
@@ -8059,4 +8529,89 @@ fn unescape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod json_bench {
+    //! Isolates the per-iteration engine cost of the `json` web benchmark
+    //! (`JSON.stringify({ lang: "mersey", version: i, ok: true })`) so the
+    //! serialization path can be tuned without a fork rebuild. Run with:
+    //!   cargo test -p mersey_interp --release json_bench -- --nocapture --ignored
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn json_hot_loop() {
+        const N: i32 = 20000;
+        const OUTER: u32 = 40;
+        // The string literal `"mersey"` is const-pooled in the real workload —
+        // a single shared Rc, not re-encoded each iteration.
+        let mersey: Rc<Vec<u16>> = Rc::new(utf16("mersey"));
+        let phase = |label: &str, mut body: Box<dyn FnMut() -> usize>| {
+            let mut best = f64::INFINITY;
+            let mut sum = 0usize;
+            for _ in 0..OUTER {
+                let t = Instant::now();
+                for _ in 0..N {
+                    sum = sum.wrapping_add(body());
+                }
+                best = best.min(t.elapsed().as_nanos() as f64 / N as f64);
+            }
+            println!(
+                "  {label:22} best {best:7.1} ns/iter  ({:5.2} ms/{N})  sum={sum}",
+                best * N as f64 / 1.0e6
+            );
+        };
+
+        // (a) record build only.
+        {
+            let m = mersey.clone();
+            let mut i = 0i32;
+            phase("record build", Box::new(move || {
+                let rec = new_record(vec![
+                    ("lang".to_string(), Value::Str(m.clone())),
+                    ("version".to_string(), Value::I32(i)),
+                    ("ok".to_string(), Value::Bool(true)),
+                ]);
+                i = i.wrapping_add(1);
+                match &rec { Value::Record(r) => r.borrow().len(), _ => 0 }
+            }));
+        }
+        // (b) serialize a pre-built record to a String.
+        {
+            let rec = new_record(vec![
+                ("lang".to_string(), Value::Str(mersey.clone())),
+                ("version".to_string(), Value::I32(12345)),
+                ("ok".to_string(), Value::Bool(true)),
+            ]);
+            phase("serialize (prebuilt)", Box::new(move || {
+                let mut out = String::new();
+                Interp::pure_json(&rec, &mut out);
+                out.len()
+            }));
+        }
+        // (c) utf8 -> utf16 conversion of the output.
+        {
+            let out = String::from("{\"lang\":\"mersey\",\"version\":12345,\"ok\":true}");
+            phase("utf16 convert", Box::new(move || Rc::new(utf16(&out)).len()));
+        }
+        // (d) the whole loop, as the workload runs it.
+        {
+            let m = mersey.clone();
+            let mut i = 0i32;
+            phase("full (build+ser+u16)", Box::new(move || {
+                let rec = new_record(vec![
+                    ("lang".to_string(), Value::Str(m.clone())),
+                    ("version".to_string(), Value::I32(i)),
+                    ("ok".to_string(), Value::Bool(true)),
+                ]);
+                i = i.wrapping_add(1);
+                let mut out = String::new();
+                Interp::pure_json(&rec, &mut out);
+                Rc::new(utf16(&out)).len()
+            }));
+        }
+        let _ = mersey;
+    }
 }

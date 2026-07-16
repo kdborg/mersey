@@ -87,9 +87,39 @@ async function boot() {
     try {
       await import(url);
       return 0;
+    } catch (e) {
+      // A page whose CSP forbids blob: scripts cannot run transpiled modules —
+      // fall back to the WASM engine, which executes without a script element
+      // and so inside the page's policy. Slower, still correct.
+      if (e instanceof TypeError) {
+        return engine.run(source);
+      }
+      throw e;
     } finally {
       URL.revokeObjectURL(url);
     }
+  };
+  // A module graph as real ES modules: every module becomes a blob URL, and
+  // the "mersey-mod:<spec>" placeholder specifiers are rewritten to the blob
+  // URL of the module they name. Modules arrive dependency-first, so each
+  // rewrite only needs URLs already minted; the entry imports last.
+  const runJsGraph = async (spec, source, fetcher) => {
+    const { modules } = await engine.transpileGraph(spec, source, fetcher);
+    const urls = {};
+    const rtJs = engine.runtimeJs() + "\nexport { $rt };";
+    urls["%rt%"] = URL.createObjectURL(new Blob([rtJs], { type: "text/javascript" }));
+    for (const m of modules) {
+      const js = m.js.replace(/"mersey-mod:([^"]+)"/g, (_, dep) => {
+        const u = urls[dep];
+        if (!u) throw new Error(`unresolved module \`${dep}\``);
+        return JSON.stringify(u);
+      });
+      urls[m.spec] = URL.createObjectURL(new Blob([js], { type: "text/javascript" }));
+    }
+    // Dynamic import() resolves through this map at run time.
+    globalThis.__merseyModUrls = urls;
+    await import(urls[spec]);
+    return 0;
   };
   for (const tag of document.querySelectorAll('script[type="text/mersey"]')) {
     // Capabilities are granted by the page, per script, and denied otherwise
@@ -109,10 +139,16 @@ async function boot() {
         const integrity = tag.getAttribute("integrity");
         const source = await fetchWithIntegrity(spec, integrity, "module");
         // Imported modules are governed by the same policy.
-        if (backend === "js" && !/from\s+"\.\.?\/|import\("\.\.?\//.test(source)) {
-          // Single-module source: the JS backend runs it at JS speed. A module
-          // graph still goes through the WASM engine's loader.
-          status = await runJs(source);
+        if (backend === "js") {
+          const fetcher = async (url) => {
+            if (!cspAllows(url)) {
+              throw new Error(`refused by Content-Security-Policy: ${url}`);
+            }
+            return fetchWithIntegrity(url, null, "import");
+          };
+          status = /from\s+"\.\.?\/|import\("\.\.?\//.test(source)
+            ? await runJsGraph(spec, source, fetcher)
+            : await runJs(source);
         } else {
           status = await engine.runGraph(spec, source, async (url) => {
             if (!cspAllows(url)) {

@@ -242,6 +242,24 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
       if (out.startsWith("!")) throw new Error(out.slice(1));
       return out;
     },
+    /// Transpile a whole module graph: fetches the closed graph exactly as
+    /// runGraph does, checks it as one program, and returns
+    /// { modules: [{spec, js}], lazy } dependency-first.
+    async transpileGraph(entrySpec, entrySource, fetchModule) {
+      const load = fetchModule ?? (async (u) => (await fetch(u)).text());
+      const { modules, lazy } = await loadGraph(entrySpec, entrySource, load);
+      const payload = JSON.stringify({ entry: entrySpec, modules });
+      const [ptr, len] = writeStr(payload);
+      const packed = exports.msy_transpile_graph(ptr, len);
+      const out = readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
+      if (out.startsWith("!")) throw new Error(out.slice(1));
+      return { modules: JSON.parse(out).modules, lazy };
+    },
+    /// The standalone runtime module text ($rt), shared by a graph's modules.
+    runtimeJs() {
+      const packed = exports.msy_rt_js();
+      return readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
+    },
     /// Run one module (no relative imports).
     run(source) {
       sources.set("<script>", source);

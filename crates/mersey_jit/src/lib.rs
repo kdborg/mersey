@@ -87,6 +87,16 @@ enum Ty {
     Obj(u32),
     /// An array of these.
     Arr(Elem),
+    /// A UTF-16 string: a data pointer, a length, and an arena handle (nonzero
+    /// only for a *built* string this value owns; zero for one borrowed from the
+    /// const pool). Immutable, so it is never a field or an array element — only
+    /// a temporary, a local, or a web-call argument.
+    Str,
+    /// A host-object handle (a `JsRef`): one machine word, the handle id. What
+    /// `createElement`/`new URL` return and a local holds — and what a web call
+    /// or property access on that local uses as its receiver. The host owns the
+    /// object; the handle is just an id, so no arena ownership.
+    Web,
 }
 
 /// What an array holds. Not `Ty`, because `Ty` would have to box itself: an array
@@ -119,7 +129,7 @@ impl Ty {
             Ty::I32 | Ty::Bool => types::I32,
             Ty::I64 => types::I64,
             Ty::F64 => types::F64,
-            Ty::Obj(_) | Ty::Arr(_) => types::I64,
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web => types::I64,
         }
     }
 
@@ -142,7 +152,7 @@ impl Ty {
     /// cannot allocate one.
     fn width(self) -> usize {
         match self {
-            Ty::Obj(_) | Ty::Arr(_) => 3,
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str => 3,
             _ => 1,
         }
     }
@@ -150,7 +160,7 @@ impl Ty {
     /// The machine types one of these occupies, in order.
     fn parts(self) -> Vec<types::Type> {
         match self {
-            Ty::Obj(_) | Ty::Arr(_) => vec![types::I64, types::I64, types::I64],
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str => vec![types::I64, types::I64, types::I64],
             t => vec![t.cl()],
         }
     }
@@ -177,6 +187,8 @@ impl Ty {
             Ty::Bool => repr::TAG_BOOL,
             Ty::Obj(_) => repr::TAG_INSTANCE,
             Ty::Arr(_) => repr::TAG_ARRAY,
+            Ty::Str => repr::TAG_STRING,
+            Ty::Web => repr::TAG_JSREF,
         }
     }
 }
@@ -217,6 +229,7 @@ const R_DEPTH: i64 = 2;
 const R_BOUNDS: i64 = 3;
 const R_NULL: i64 = 4;
 const R_TAG: i64 = 5;
+const R_HOST: i64 = 6;
 
 /// "Start at the top". Loop headers are bytecode positions and 0 is a legal one,
 /// so the normal entry cannot be 0.
@@ -290,6 +303,8 @@ impl Group<'_> {
             JitSlot::F64 => Ty::F64,
             JitSlot::Obj(c) => Ty::Obj(self.class_idx(c)),
             JitSlot::Arr(e) => Ty::Arr(self.elem_of(e)?),
+            JitSlot::Str => Ty::Str,
+            JitSlot::Web => Ty::Web,
         })
     }
 
@@ -425,6 +440,45 @@ struct Plan {
     owned_slots: Vec<bool>,
     /// Bytecode positions of `arr.length`.
     length_at: Vec<usize>,
+    /// Bytecode position of a `time.now()`/`time.monotonic()` → `true` for the
+    /// epoch clock (`now`), `false` for monotonic. A numeric host call.
+    time_at: HashMap<usize, bool>,
+    /// Name ids that load the `std:time` namespace (a host-call receiver).
+    time_ns_names: std::collections::HashSet<u16>,
+    /// Name id → the web global's name, for the ones a `LoadName` reads as a
+    /// host object. The leaked name backs the string constant codegen embeds.
+    web_globals: HashMap<u16, &'static str>,
+    /// Bytecode position of a numeric web method call → (method name, argc). A
+    /// discarded-result call on a host object (`ctx.fillRect(...)`).
+    web_call_at: HashMap<usize, (&'static str, u8)>,
+    /// The subset of `web_call_at` whose (method, argc) has a typed binding id
+    /// (`webbind::numeric`): those emit the lean `web_bind` call instead of the
+    /// interned `web_call_num` one.
+    web_bind_at: HashMap<usize, u32>,
+    /// A web method call with mixed argument kinds (a handle or string arg, not
+    /// just numbers) whose result is discarded → the typed `web_call_v` path.
+    /// Carries the method name and each argument's kind.
+    /// (method name, pre-interned id or `u32::MAX`, argument kinds).
+    web_call_v_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)>,
+    /// A web call whose string result is captured (`getItem`) → `web_call_str_v`.
+    web_call_str_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)>,
+    /// A web call whose *handle* result is captured (`createElement`) — same
+    /// `web_call_str_v` shim, the handle read from the first out word.
+    web_call_ref_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)>,
+    /// A numeric-valued web property read (`buf.length`) → `web_get_num`:
+    /// (property name, pre-interned id or `u32::MAX`).
+    web_get_at: HashMap<usize, (&'static str, u32)>,
+    /// A web property set (`el.textContent = str`): (property name, id, value
+    /// type — `Str` or a numeric).
+    web_set_at: HashMap<usize, (&'static str, u32, Ty)>,
+    /// Name ids bound to the `std:math` namespace (a `LoadName` reads it as a
+    /// bare receiver marker, not a value).
+    math_ns_names: std::collections::HashSet<u16>,
+    /// Bytecode position of a `std:math` call → the instruction it lowers to.
+    math_at: HashMap<usize, MathOp>,
+    /// Bytecode positions of an explicit `as float64` cast — a widening cast
+    /// that cannot throw, so compiled code performs it directly.
+    cast_f64: std::collections::HashSet<usize>,
     depths: Vec<Option<i32>>,
     /// The operand-stack types at each jump target, so a block's parameters can
     /// be given the right ones.
@@ -465,13 +519,77 @@ enum TSlot {
     /// what `if (n.left != null)` is, and which object code is *made* of.
     Null,
     Callee(usize),
+    /// The `std:time` namespace: not a value, only a receiver for the numeric
+    /// host calls `now()` / `monotonic()`.
+    TimeNs,
+    /// A host object (`JsRef`) read from a top-level web global — a receiver for
+    /// a numeric web method call. Carries the name id so codegen can read the
+    /// live handle.
+    Web(u16),
+    /// The `std:math` namespace: a receiver whose numeric methods lower to
+    /// machine instructions, not calls.
+    MathNs,
 }
 
 fn tval(s: TSlot) -> Option<Ty> {
     match s {
         TSlot::Val(t, _) => Some(t),
-        TSlot::Null | TSlot::Callee(_) => None,
+        TSlot::Null | TSlot::Callee(_) | TSlot::TimeNs | TSlot::Web(_) | TSlot::MathNs => None,
     }
+}
+
+/// The kind of an argument crossing to a typed web call (`web_call_v`), in the
+/// order the descriptor packs them.
+#[derive(Clone, Copy, PartialEq)]
+enum ArgKind {
+    Num,
+    Ref,
+    Str,
+}
+
+/// Web methods whose result is a (nullable) string, so a compiled call captures
+/// it as a `Ty::Str`. Named methods only — the host still verifies the receiver,
+/// and a same-named method returning something else would produce a null string,
+/// so the set is kept to ones that unambiguously return a string.
+fn web_returns_string(method: &str) -> bool {
+    matches!(method, "getItem" | "getAttribute")
+}
+
+/// Web methods whose result is a host-object handle, captured as a `Ty::Web`
+/// value. As `web_returns_string`, the host verifies the receiver, and a method
+/// that returned something else would come back as a null handle.
+fn web_returns_handle(method: &str) -> bool {
+    matches!(
+        method,
+        "createElement" | "appendChild" | "getElementById" | "querySelector"
+    )
+}
+
+/// A web-call/get/set receiver: a hoisted global (`TSlot::Web`) or a handle
+/// value (`Ty::Web`, e.g. an element from `createElement`).
+fn is_web_recv(t: &TSlot) -> bool {
+    matches!(t, TSlot::Web(_)) || tval(*t) == Some(Ty::Web)
+}
+
+/// A `std:math` call the JIT lowers to instructions instead of a host call.
+/// The set is exactly the operations with an exact, IEEE-clean match to the
+/// interpreter: the single-instruction rounders and `sqrt`, `abs` for `float64`
+/// only (integer `abs` wraps, a different result), and `min`/`max` for two
+/// `float64`s lowered as the interpreter's own `<`-fold so NaN and ±0 agree.
+/// `round` (ties-away) and the libm calls (`exp`, `sin`, …) are deliberately
+/// absent — they have no single instruction that matches the interpreter.
+#[derive(Clone, Copy, PartialEq)]
+enum MathOp {
+    /// `float64` argument, `float64` result — a widening arg is converted first.
+    Sqrt,
+    Floor,
+    Ceil,
+    Trunc,
+    /// `float64` argument only (integer `abs` wraps).
+    Abs,
+    /// Two `float64` arguments; lowered as `arg1 < arg0 ? …` per the interpreter.
+    Min,
+    Max,
 }
 
 fn prov(s: TSlot) -> Prov {
@@ -520,6 +638,19 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
     let mut clone_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut length_at: Vec<usize> = Vec::new();
+    let mut time_at: HashMap<usize, bool> = HashMap::new();
+    let mut time_ns_names: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    let mut web_globals: HashMap<u16, &'static str> = HashMap::new();
+    let mut web_call_at: HashMap<usize, (&'static str, u8)> = HashMap::new();
+    let mut web_bind_at: HashMap<usize, u32> = HashMap::new();
+    let mut web_call_v_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
+    let mut web_call_str_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
+    let mut web_call_ref_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
+    let mut web_get_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut web_set_at: HashMap<usize, (&'static str, u32, Ty)> = HashMap::new();
+    let mut math_ns_names: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    let mut math_at: HashMap<usize, MathOp> = HashMap::new();
+    let mut cast_f64: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut block_types: HashMap<usize, Vec<Ty>> = HashMap::new();
     let mut ret: Option<Ty> = if sig.void { None } else { Some(sig.ret) };
 
@@ -557,6 +688,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // `x != null` every tree and list is written with actually comes
                 // from.
                 Value::Null => TSlot::Null,
+                // A string literal: borrowed from the const pool, which the
+                // compiled code keeps alive. Stable — the buffer never moves.
+                Value::Str(_) => TSlot::Val(Ty::Str, Prov::Stable),
                 _ => return None,
             }),
             Op::LoadSlot(s) => {
@@ -611,10 +745,23 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             }
             Op::LoadName(ni) => {
                 let name = chunk.names[ni as usize].as_str();
-                let f = g.env.function(name)?;
-                let idx = g.add(f)?;
-                callee.insert(ni, idx);
-                stack.push(TSlot::Callee(idx)); // a function, not a value
+                if g.env.is_time_ns(name) {
+                    time_ns_names.insert(ni);
+                    stack.push(TSlot::TimeNs); // a host-call receiver, not a value
+                } else if g.env.is_math_ns(name) {
+                    math_ns_names.insert(ni);
+                    stack.push(TSlot::MathNs); // an intrinsic receiver, not a value
+                } else if g.env.is_web_global(name) {
+                    web_globals.entry(ni).or_insert_with(|| {
+                        Box::leak(name.to_string().into_boxed_str())
+                    });
+                    stack.push(TSlot::Web(ni)); // a host-object receiver
+                } else {
+                    let f = g.env.function(name)?;
+                    let idx = g.add(f)?;
+                    callee.insert(ni, idx);
+                    stack.push(TSlot::Callee(idx)); // a function, not a value
+                }
             }
             Op::StoreName(_) | Op::DeclareName(_) => return None,
             Op::Null => stack.push(TSlot::Null),
@@ -668,12 +815,24 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // the int32 kernel for these operators (§3.3 promotes two int32s to
             // int32; add wraps). Division is *not* here: it can trap, and an
             // untyped one keeps its interpreter path.
+            // `` `…${i}…` `` — build one string from its parts. Only string and
+            // integer parts are lowered (they append with no `display` call and
+            // cannot throw); a float, bool, or Display class part bails.
+            Op::TemplateJoin(n) => {
+                for _ in 0..n {
+                    let t = tval(stack.pop()?)?;
+                    if !matches!(t, Ty::Str | Ty::I32 | Ty::I64) {
+                        return None;
+                    }
+                }
+                stack.push(TSlot::Val(Ty::Str, Prov::Stable));
+            }
             Op::Bin(op) => {
                 let r = stack.pop()?;
                 let l = stack.pop()?;
                 match (l, r) {
                     (TSlot::Null, TSlot::Val(t, _)) | (TSlot::Val(t, _), TSlot::Null) => {
-                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_))
+                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str)
                             || !matches!(op, BinOp::Eq | BinOp::Ne)
                         {
                             return None;
@@ -695,6 +854,19 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             Op::GetMember(ni, _) => {
                 let name = chunk.names[ni as usize].as_str();
                 let base = stack.pop()?;
+                // A property of a host object (`buf.length`). Only integer-valued
+                // properties are lowered — a string or handle property would need
+                // the checker's type here; `length` is always an integer.
+                if let TSlot::Web(_) = base {
+                    if name == "length" {
+                        let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                        let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                        web_get_at.insert(pc, (nm, id));
+                        stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                        continue;
+                    }
+                    return None;
+                }
                 match tval(base)? {
                     Ty::Obj(ci) => {
                         let cls = g.classes[ci as usize].clone();
@@ -718,13 +890,35 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         length_at.push(pc);
                         stack.push(TSlot::Val(Ty::I32, Prov::Stable));
                     }
+                    // A non-null string's code-unit count: the middle machine
+                    // value, no null check (a nullable string is not this tier's).
+                    Ty::Str if name == "length" => {
+                        length_at.push(pc);
+                        stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                    }
                     _ => return None,
                 }
             }
             Op::SetMember(ni, _) => {
                 let name = chunk.names[ni as usize].as_str();
-                let v = tval(stack.pop()?)?;
-                let Ty::Obj(ci) = tval(stack.pop()?)? else {
+                let vslot = stack.pop()?;
+                let recv = stack.pop()?;
+                // A web property set (`el.textContent = str`). String or scalar
+                // value; the receiver is a global or a `Ty::Web` handle.
+                if is_web_recv(&recv) {
+                    let vt = tval(vslot)?;
+                    if vt != Ty::Str && !vt.is_num() {
+                        return None;
+                    }
+                    let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                    let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                    web_set_at.insert(pc, (nm, id, vt));
+                    g.writes = true;
+                    stack.push(vslot);
+                    continue;
+                }
+                let v = tval(vslot)?;
+                let Ty::Obj(ci) = tval(recv)? else {
                     return None;
                 };
                 let cls = g.classes[ci as usize].clone();
@@ -785,12 +979,97 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             }
             Op::CallMethod(ni, n) => {
                 let name = chunk.names[ni as usize].to_string();
-                let mut args: Vec<Ty> = Vec::new();
+                let mut arg_slots: Vec<TSlot> = Vec::new();
                 for _ in 0..n {
-                    args.push(tval(stack.pop()?)?);
+                    arg_slots.push(stack.pop()?);
                 }
-                args.reverse();
-                let Ty::Obj(ci) = tval(stack.pop()?)? else {
+                arg_slots.reverse();
+                let recv = stack.pop()?;
+                if recv == TSlot::TimeNs {
+                    // A numeric host call: `time.now()` / `time.monotonic()`,
+                    // no arguments, an `f64` result.
+                    if n != 0 || !(name == "now" || name == "monotonic") {
+                        return None;
+                    }
+                    time_at.insert(pc, name == "now");
+                    stack.push(TSlot::Val(Ty::F64, Prov::Stable));
+                    continue;
+                }
+                if recv == TSlot::MathNs {
+                    // A `std:math` intrinsic. The result is always `float64`; the
+                    // argument-type rules keep the compiled result identical to
+                    // the interpreter's (see `MathOp`).
+                    let argt = |k: usize| tval(arg_slots[k]);
+                    let op = match (name.as_str(), n) {
+                        // Coerce any numeric arg to f64 — as the interpreter does.
+                        ("sqrt", 1) if argt(0).is_some_and(|t| t.is_num()) => MathOp::Sqrt,
+                        ("floor", 1) if argt(0).is_some_and(|t| t.is_num()) => MathOp::Floor,
+                        ("ceil", 1) if argt(0).is_some_and(|t| t.is_num()) => MathOp::Ceil,
+                        ("trunc", 1) if argt(0).is_some_and(|t| t.is_num()) => MathOp::Trunc,
+                        // f64 only: integer `abs`/`min`/`max` keep integer type.
+                        ("abs", 1) if argt(0) == Some(Ty::F64) => MathOp::Abs,
+                        ("min", 2) if argt(0) == Some(Ty::F64) && argt(1) == Some(Ty::F64) => {
+                            MathOp::Min
+                        }
+                        ("max", 2) if argt(0) == Some(Ty::F64) && argt(1) == Some(Ty::F64) => {
+                            MathOp::Max
+                        }
+                        _ => return None,
+                    };
+                    math_at.insert(pc, op);
+                    stack.push(TSlot::Val(Ty::F64, Prov::Stable));
+                    continue;
+                }
+                // A web receiver is a hoisted global (`TSlot::Web`) or a handle
+                // value (`Ty::Web` — the result of an earlier `createElement`).
+                if is_web_recv(&recv) {
+                    // A web method call on a host object. Each argument is a
+                    // number, a host handle (global or `Ty::Web` value), or a
+                    // string — the kinds that cross as a `WebArg`. All-numeric
+                    // takes the lean typed-binding path; anything with a handle or
+                    // string arg takes the general `web_call_v` path. The result
+                    // is captured as a string / handle where the method returns
+                    // one, else discarded.
+                    let mut kinds: Vec<ArgKind> = Vec::with_capacity(n as usize);
+                    for a in &arg_slots {
+                        let k = if matches!(a, TSlot::Web(_)) || tval(*a) == Some(Ty::Web) {
+                            ArgKind::Ref
+                        } else if tval(*a) == Some(Ty::Str) {
+                            ArgKind::Str
+                        } else if tval(*a).map(|t| t.is_num()).unwrap_or(false) {
+                            ArgKind::Num
+                        } else {
+                            return None;
+                        };
+                        kinds.push(k);
+                    }
+                    let nm: &'static str = Box::leak(name.into_boxed_str());
+                    // The interned id is already known (warmup interned it); carry
+                    // it so the compiled call skips the per-call intern.
+                    let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                    if web_returns_string(nm) {
+                        web_call_str_at.insert(pc, (nm, id, kinds));
+                        stack.push(TSlot::Val(Ty::Str, Prov::Stable));
+                    } else if web_returns_handle(nm) {
+                        web_call_ref_at.insert(pc, (nm, id, kinds));
+                        stack.push(TSlot::Val(Ty::Web, Prov::Stable));
+                    } else if kinds.iter().all(|k| *k == ArgKind::Num) {
+                        web_call_at.insert(pc, (nm, n));
+                        if let Some(bid) = mersey_interp::webbind::numeric(nm, n) {
+                            web_bind_at.insert(pc, bid);
+                        }
+                        stack.push(TSlot::Null);
+                    } else {
+                        web_call_v_at.insert(pc, (nm, id, kinds));
+                        stack.push(TSlot::Null);
+                    }
+                    continue;
+                }
+                let mut args: Vec<Ty> = Vec::new();
+                for a in arg_slots {
+                    args.push(tval(a)?);
+                }
+                let Ty::Obj(ci) = tval(recv)? else {
                     return None;
                 };
                 let cls = g.classes[ci as usize].clone();
@@ -851,6 +1130,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     return None;
                 }
                 stack.push(TSlot::Val(ty_of(num)?, Prov::Stable));
+            }
+            // An explicit `x as float64`: a widening/rounding cast that cannot
+            // throw. Int targets (which `as` may throw or wrap on) and float32
+            // (no register type) are left to the interpreter.
+            Op::CastOp(ti, _) => {
+                let src = tval(stack.pop()?)?;
+                if !src.is_num() {
+                    return None;
+                }
+                match chunk.types[ti as usize] {
+                    mersey_front::ast::TypeExpr::Named { name, .. } if name == "float64" => {}
+                    _ => return None,
+                }
+                cast_f64.insert(pc);
+                stack.push(TSlot::Val(Ty::F64, Prov::Stable));
             }
             Op::Un(u) => {
                 let t = tval(stack.pop()?)?;
@@ -953,7 +1247,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let owned_slots: Vec<bool> = slots
         .iter()
         .zip(stored.iter())
-        .map(|(t, st)| matches!(t, Ty::Obj(_)) && *st)
+        // A string slot is owned too: on OSR its interpreter value is cloned into
+        // the arena (the frame is abandoned), so the compiled release on
+        // overwrite has a real reference to let go of.
+        .map(|(t, st)| matches!(t, Ty::Obj(_) | Ty::Str) && *st)
         .collect();
     // Where each slot's registers begin. An object or array slot is three
     // registers, so a slot number is no longer a variable number.
@@ -978,6 +1275,19 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         clone_at,
         owned_slots,
         length_at,
+        time_at,
+        time_ns_names,
+        web_globals,
+        web_call_at,
+        web_bind_at,
+        web_call_v_at,
+        web_call_str_at,
+        web_call_ref_at,
+        web_get_at,
+        web_set_at,
+        math_ns_names,
+        math_at,
+        cast_f64,
         depths,
         block_types,
         ret: ret.unwrap_or(sig.ret),
@@ -1040,6 +1350,16 @@ struct Shims {
     alloc: FuncId,
     clone_obj: FuncId,
     release: FuncId,
+    host_time: FuncId,
+    global_web: FuncId,
+    web_call_num: FuncId,
+    str_join: FuncId,
+    str_vec_parts: FuncId,
+    web_get_num: FuncId,
+    web_call_v: FuncId,
+    web_call_str_v: FuncId,
+    web_set_v: FuncId,
+    web_bind_call: FuncId,
 }
 
 fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
@@ -1084,6 +1404,16 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_alloc", heap::alloc as *const u8);
     builder.symbol("msy_clone_obj", heap::clone_obj as *const u8);
     builder.symbol("msy_release", heap::release as *const u8);
+    builder.symbol("msy_host_time", heap::host_time as *const u8);
+    builder.symbol("msy_global_web", heap::global_web as *const u8);
+    builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
+    builder.symbol("msy_web_bind_call", heap::web_bind_call as *const u8);
+    builder.symbol("msy_str_join", heap::str_join as *const u8);
+    builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
+    builder.symbol("msy_web_get_num", heap::web_get_num as *const u8);
+    builder.symbol("msy_web_call_v", heap::web_call_v as *const u8);
+    builder.symbol("msy_web_call_str_v", heap::web_call_str_v as *const u8);
+    builder.symbol("msy_web_set_v", heap::web_set_v as *const u8);
     let mut module = JITModule::new(builder);
     let ptr_ty = module.target_config().pointer_type();
 
@@ -1227,6 +1557,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                     R_DEPTH => TrapReason::Depth,
                     R_BOUNDS => TrapReason::Bounds,
                     R_NULL => TrapReason::NullAccess,
+                    R_HOST => TrapReason::HostError,
                     _ => TrapReason::BadTag,
                 },
                 pc: detail[1] as usize,
@@ -1299,6 +1630,8 @@ fn boundary(t: Ty, classes: &[Rc<ClassDef>]) -> JitSlot {
         // are checked where they are read, one cell at a time, because that is the
         // only place it can be done without walking the whole thing.
         Ty::Arr(_) => JitSlot::Arr(Rc::new(FieldTy::Opaque)),
+        Ty::Str => JitSlot::Str,
+        Ty::Web => JitSlot::Web,
         _ => JitSlot::I32,
     }
 }
@@ -1327,6 +1660,21 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         clone_obj: one("msy_clone_obj", Some(types::I64), 2)?,
         // (arena, handle)
         release: one("msy_release", None, 2)?,
+        // (arena, epoch) -> milliseconds; the JIT's first host call.
+        host_time: one("msy_host_time", Some(types::F64), 2)?,
+        // (arena, name_ptr, name_len) -> handle
+        global_web: one("msy_global_web", Some(types::I64), 3)?,
+        // (arena, target, name_ptr, name_len, args_ptr, argc) -> 0 ok / 1 threw
+        web_call_num: one("msy_web_call_num", Some(types::I64), 6)?,
+        // (arena, target, bind_id, name_ptr, name_len, args_ptr, argc) -> 0/1
+        web_bind_call: one("msy_web_bind_call", Some(types::I64), 7)?,
+        // (arena, parts_ptr, n, out) -> writes (ptr, len, handle)
+        str_join: one("msy_str_join", None, 4)?,
+        str_vec_parts: one("msy_str_vec_parts", None, 2)?,
+        web_get_num: one("msy_web_get_num", Some(types::I64), 5)?,
+        web_call_v: one("msy_web_call_v", Some(types::I64), 7)?,
+        web_call_str_v: one("msy_web_call_str_v", Some(types::I64), 8)?,
+        web_set_v: one("msy_web_set_v", Some(types::I64), 8)?,
     })
 }
 
@@ -1390,6 +1738,7 @@ fn wrapper(
         let inst_slots = module.declare_func_in_func(shims.inst_slots, b.func);
         let arr_data = module.declare_func_in_func(shims.arr_data, b.func);
         let arr_len = module.declare_func_in_func(shims.arr_len, b.func);
+        let str_vec_parts = module.declare_func_in_func(shims.str_vec_parts, b.func);
         let mut args: Vec<ClValue> = Vec::with_capacity(root.n_vars as usize + 2);
         for (i, t) in root.slots.iter().enumerate() {
             let live = is_osr || root.entry_live[i];
@@ -1426,6 +1775,27 @@ fn wrapper(
                     args.push(p);
                     args.push(data);
                     args.push(len);
+                }
+                // A string: the frame holds the `Rc<Vec<u16>>` address; derive its
+                // data pointer and length (once, here) into a scratch slot, and
+                // carry the arena handle from the second cell.
+                Ty::Str => {
+                    let p = b.ins().load(ptr_ty, MemFlags::trusted(), slots_ptr, at);
+                    let scratch = b.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            16,
+                            3,
+                        ),
+                    );
+                    let sp = b.ins().stack_addr(ptr_ty, scratch, 0);
+                    b.ins().call(str_vec_parts, &[p, sp]);
+                    let data = b.ins().load(ptr_ty, MemFlags::trusted(), sp, 0);
+                    let len = b.ins().load(types::I64, MemFlags::trusted(), sp, 8);
+                    let h = b.ins().load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
+                    args.push(data);
+                    args.push(len);
+                    args.push(h);
                 }
                 t => args.push(b.ins().load(t.cl(), MemFlags::trusted(), slots_ptr, at)),
             }
@@ -1484,6 +1854,15 @@ enum SlotV {
     /// The literal `null`. See `TSlot::Null`.
     Null,
     Callee(usize),
+    /// The `std:time` namespace receiver (see `TSlot::TimeNs`): no registers.
+    TimeNs,
+    /// A host-object receiver: its handle, live in a register.
+    Web(ClValue),
+    /// The `std:math` namespace receiver (see `TSlot::MathNs`): no registers.
+    MathNs,
+    /// A UTF-16 string: data pointer, length, and arena handle (nonzero only for
+    /// a built string this value owns). See `Ty::Str`.
+    Str(ClValue, ClValue, ClValue),
 }
 
 impl SlotV {
@@ -1493,7 +1872,10 @@ impl SlotV {
             SlotV::Val(v, _) => vec![v],
             SlotV::Obj(p, b, h) => vec![p, b, h],
             SlotV::Arr(p, d, l, _) => vec![p, d, l],
-            SlotV::Null | SlotV::Callee(_) => Vec::new(),
+            SlotV::Str(p, l, h) => vec![p, l, h],
+            SlotV::Null | SlotV::Callee(_) | SlotV::TimeNs | SlotV::Web(_) | SlotV::MathNs => {
+                Vec::new()
+            }
         }
     }
 
@@ -1502,6 +1884,9 @@ impl SlotV {
         match self {
             SlotV::Obj(p, _, _) => Some(p),
             SlotV::Arr(p, _, _, _) => Some(p),
+            // A string's data pointer is 0 exactly when the string is null, so it
+            // is what a `str != null` compares.
+            SlotV::Str(p, _, _) => Some(p),
             _ => None,
         }
     }
@@ -1510,6 +1895,7 @@ impl SlotV {
     fn handle(self) -> Option<ClValue> {
         match self {
             SlotV::Obj(_, _, h) => Some(h),
+            SlotV::Str(_, _, h) => Some(h),
             _ => None,
         }
     }
@@ -1573,6 +1959,15 @@ fn translate(
         alloc: module.declare_func_in_func(shims.alloc, b.func),
         clone_obj: module.declare_func_in_func(shims.clone_obj, b.func),
         release: module.declare_func_in_func(shims.release, b.func),
+        host_time: module.declare_func_in_func(shims.host_time, b.func),
+        global_web: module.declare_func_in_func(shims.global_web, b.func),
+        web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
+        web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
+        str_join: module.declare_func_in_func(shims.str_join, b.func),
+        web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
+        web_call_v: module.declare_func_in_func(shims.web_call_v, b.func),
+        web_call_str_v: module.declare_func_in_func(shims.web_call_str_v, b.func),
+        web_set_v: module.declare_func_in_func(shims.web_set_v, b.func),
         scratch: b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
             cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
             24,
@@ -1601,6 +1996,23 @@ fn translate(
     let entry_pc = b.block_params(entry)[p.n_vars as usize];
     let state_ptr = b.block_params(entry)[p.n_vars as usize + 1];
     let arena_ptr = b.block_params(entry)[p.n_vars as usize + 2];
+
+    // Hoist the web-global receivers. A global cannot be reassigned inside
+    // compiled code — the JIT bails on every `StoreName` — so `ctx`'s handle is
+    // invariant for the whole call. Read each one once, here in the entry block
+    // (which dominates every body and OSR-target block), instead of paying the
+    // `global_web` shim on every loop iteration. `SlotV::Web` has no machine
+    // parts, so it never crossed a block edge anyway; the cached value, defined
+    // in `entry`, is in scope wherever `LoadName` later pushes it.
+    let web_handles: HashMap<u16, ClValue> = p
+        .web_globals
+        .iter()
+        .map(|(&ni, name)| {
+            let (nptr, nlen) = str_const(b, name);
+            let call = b.ins().call(shim.global_web, &[arena_ptr, nptr, nlen]);
+            (ni, b.inst_results(call)[0])
+        })
+        .collect();
 
     // A block at every jump target, its parameters typed by `plan`.
     let mut blocks: HashMap<usize, cranelift_codegen::ir::Block> = HashMap::new();
@@ -1668,6 +2080,17 @@ fn translate(
                     Value::I64(n) => SlotV::Val(b.ins().iconst(types::I64, *n), Ty::I64),
                     Value::F64(f) => SlotV::Val(b.ins().f64const(*f), Ty::F64),
                     Value::Null => SlotV::Null,
+                    // A string literal: its buffer lives in the const pool, which
+                    // `JitCode.chunks` keeps alive for the code's whole lifetime,
+                    // so its address is a constant. Handle 0 — a borrow, nothing
+                    // to release.
+                    Value::Str(rc) => {
+                        let units: &[u16] = rc;
+                        let ptr = b.ins().iconst(types::I64, units.as_ptr() as i64);
+                        let len = b.ins().iconst(types::I64, units.len() as i64);
+                        let h = b.ins().iconst(types::I64, 0);
+                        SlotV::Str(ptr, len, h)
+                    }
                     _ => unreachable!("plan"),
                 };
                 stack.push(s);
@@ -1686,6 +2109,14 @@ fn translate(
                         SlotV::Obj(ptr, fields, zero)
                     }
                     Ty::Arr(e) => SlotV::Arr(v(0, b), v(1, b), v(2, b), e),
+                    // A load is a borrow, as for an object: ptr and len, but the
+                    // copy carries handle 0 — the slot keeps its own.
+                    Ty::Str => {
+                        let ptr = v(0, b);
+                        let len = v(1, b);
+                        let zero = b.ins().iconst(types::I64, 0);
+                        SlotV::Str(ptr, len, zero)
+                    }
                     t => SlotV::Val(v(0, b), t),
                 });
             }
@@ -1708,12 +2139,89 @@ fn translate(
                     release_if_owned(b, shim.release, arena_ptr, old);
                     v = SlotV::Obj(ptr, fields, h);
                 }
+                if let SlotV::Str(ptr, len, h) = v {
+                    // A built string owns an arena handle; overwriting the slot
+                    // releases the one it held. A borrowed (const) string carries
+                    // handle 0, so this is a no-op for it.
+                    let old = b.use_var(Variable::from_u32(p.var_at[s as usize] + 2));
+                    release_if_owned(b, shim.release, arena_ptr, old);
+                    v = SlotV::Str(ptr, len, h);
+                }
                 for (j, part) in v.parts().into_iter().enumerate() {
                     b.def_var(Variable::from_u32(at + j as u32), part);
                 }
             }
             // The only name left in a compiled function: the one it calls.
-            Op::LoadName(ni) => stack.push(SlotV::Callee(*p.callee.get(&ni)?)),
+            Op::LoadName(ni) => {
+                if p.time_ns_names.contains(&ni) {
+                    stack.push(SlotV::TimeNs);
+                } else if p.math_ns_names.contains(&ni) {
+                    stack.push(SlotV::MathNs);
+                } else if let Some(&h) = web_handles.get(&ni) {
+                    // The handle was read once at entry (see the hoist above);
+                    // reuse it rather than calling the shim each iteration.
+                    stack.push(SlotV::Web(h));
+                } else {
+                    stack.push(SlotV::Callee(*p.callee.get(&ni)?));
+                }
+            }
+            // `` `…${i}…` ``: write each part as a `StrPart` (kind, a, b) into a
+            // stack buffer and call `str_join`, which allocates the result into
+            // the arena and returns (ptr, len, handle). The parts are consumed;
+            // an owned one (a nested built string) is released after the join.
+            Op::TemplateJoin(n) => {
+                let n = n as usize;
+                let mut parts: Vec<(i64, ClValue, ClValue)> = Vec::with_capacity(n);
+                let mut consumed: Vec<ClValue> = Vec::new();
+                for _ in 0..n {
+                    match stack.pop()? {
+                        SlotV::Str(ptr, len, h) => {
+                            consumed.push(h);
+                            parts.push((0, ptr, len));
+                        }
+                        SlotV::Val(v, t) if t == Ty::I32 || t == Ty::I64 => {
+                            let v64 = if t == Ty::I64 {
+                                v
+                            } else {
+                                b.ins().sextend(types::I64, v)
+                            };
+                            let zero = b.ins().iconst(types::I64, 0);
+                            parts.push((1, v64, zero));
+                        }
+                        _ => return None,
+                    }
+                }
+                parts.reverse();
+                let desc = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (n.max(1) as u32) * 24,
+                    3,
+                ));
+                let desc_ptr = b.ins().stack_addr(types::I64, desc, 0);
+                for (k, (kind, a, bb)) in parts.iter().enumerate() {
+                    let off = (k * 24) as i32;
+                    let kv = b.ins().iconst(types::I64, *kind);
+                    b.ins().store(MemFlags::trusted(), kv, desc_ptr, off);
+                    b.ins().store(MemFlags::trusted(), *a, desc_ptr, off + 8);
+                    b.ins().store(MemFlags::trusted(), *bb, desc_ptr, off + 16);
+                }
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let nv = b.ins().iconst(types::I64, n as i64);
+                b.ins()
+                    .call(shim.str_join, &[arena_ptr, desc_ptr, nv, out_ptr]);
+                for h in consumed {
+                    release_if_owned(b, shim.release, arena_ptr, h);
+                }
+                let ptr = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let len = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let h = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(ptr, len, h));
+            }
             Op::Null => stack.push(SlotV::Null),
             Op::Bin(binop) => {
                 let r = stack.pop()?;
@@ -1740,14 +2248,40 @@ fn translate(
             }
 
             // ---- the heap ------------------------------------------------------
-            Op::GetMember(_, _) if p.length_at.contains(&pc) => {
-                let SlotV::Arr(_, _, len, _) = stack.pop()? else {
+            // A numeric web property read (`buf.length`): the receiver's handle,
+            // the property name as a string constant, the integer back. A thrown
+            // read comes back as i64::MIN and traps like an interpreted one.
+            Op::GetMember(_, _) if p.web_get_at.contains_key(&pc) => {
+                let (name, id) = *p.web_get_at.get(&pc)?;
+                let SlotV::Web(handle) = stack.pop()? else {
                     return None;
                 };
-                // A null array has no length: reading one is the same `TypeError`
-                // the interpreter raises, not a number.
-                let null = b.ins().icmp_imm(IntCC::SignedLessThan, len, 0);
-                guard(b, ctx, null, R_NULL, pc, None);
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let call = b.ins().call(shim.web_get_num, &[arena_ptr, handle, id_v, nptr, nlen]);
+                let v = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            Op::GetMember(_, _) if p.length_at.contains(&pc) => {
+                let len = match stack.pop()? {
+                    // A null array has no length: reading one is the same
+                    // `TypeError` the interpreter raises, not a number.
+                    SlotV::Arr(_, _, len, _) => {
+                        let null = b.ins().icmp_imm(IntCC::SignedLessThan, len, 0);
+                        guard(b, ctx, null, R_NULL, pc, None);
+                        len
+                    }
+                    // A (non-null) string's code-unit count: the middle value.
+                    // A built temporary owns its handle — reading its length is
+                    // the end of it, so let it go (a borrow's handle 0 no-ops).
+                    SlotV::Str(_, len, h) => {
+                        release_if_owned(b, shim.release, arena_ptr, h);
+                        len
+                    }
+                    _ => return None,
+                };
                 stack.push(SlotV::Val(b.ins().ireduce(types::I32, len), Ty::I32));
             }
             Op::GetMember(_, _) => {
@@ -1760,6 +2294,39 @@ fn translate(
                 let at = (slot as usize * repr::SIZE) as i32;
                 let v = load_cell(b, ctx, pc, base, at, t, &shim);
                 stack.push(v);
+            }
+            // A web property set (`el.textContent = str`): the value crosses as a
+            // string (kind 2) or a number (kind 0); the receiver is a global or a
+            // `Ty::Web` handle. The assignment's value is pushed back as its
+            // result (a later `Pop` releases a built string).
+            Op::SetMember(_, _) if p.web_set_at.contains_key(&pc) => {
+                let (name, id, _vt) = *p.web_set_at.get(&pc)?;
+                let vslot = stack.pop()?;
+                let recv = match stack.pop()? {
+                    SlotV::Web(h) => h,
+                    SlotV::Val(h, Ty::Web) => h,
+                    _ => return None,
+                };
+                let zero = b.ins().iconst(types::I64, 0);
+                let (kind, a, bb) = match vslot {
+                    SlotV::Str(ptr, len, _) => (2i64, ptr, len),
+                    SlotV::Val(v, t) if t.is_num() => {
+                        let f = convert(b, v, t, Ty::F64);
+                        (0i64, b.ins().bitcast(types::I64, MemFlags::new(), f), zero)
+                    }
+                    _ => return None,
+                };
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let kind_v = b.ins().iconst(types::I64, kind);
+                let call = b.ins().call(
+                    shim.web_set_v,
+                    &[arena_ptr, recv, id_v, nptr, nlen, kind_v, a, bb],
+                );
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(vslot);
             }
             Op::SetMember(_, _) => {
                 let (slot, t) = *p.field_at.get(&pc)?;
@@ -1795,6 +2362,190 @@ fn translate(
                 stack.push(SlotV::Val(v, t));
             }
 
+            // A numeric web method call whose result is discarded
+            // (`ctx.fillRect(x, y, w, h)`): pop the numeric args as f64 into a
+            // stack buffer, read the receiver's live handle, and call the shim,
+            // which reuses the interpreter's own web-call path. A thrown error
+            // comes back as 1 and traps here, so it surfaces exactly as an
+            // interpreted call's would.
+            // A web call with a handle or string argument, result discarded:
+            // pack each argument into a `WebArgDesc` (kind, a, b) on a stack
+            // buffer and call `web_call_v`. An owned string argument (a built
+            // template) is released after the call.
+            // A web call whose string result is captured (`getItem(k)`): the same
+            // argument descriptor as `web_call_v`, but the reply is read back as a
+            // (possibly null) string — data pointer, length, arena handle.
+            Op::CallMethod(_, _) if p.web_call_str_at.contains_key(&pc) => {
+                let (name, id, kinds) = p.web_call_str_at.get(&pc)?.clone();
+                let (recv, desc_ptr, n, owned) = build_web_desc(b, &mut stack, &kinds)?;
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let nv = b.ins().iconst(types::I64, n as i64);
+                let call = b.ins().call(
+                    shim.web_call_str_v,
+                    &[arena_ptr, recv, id_v, nptr, nlen, desc_ptr, nv, out_ptr],
+                );
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                for h in owned {
+                    release_if_owned(b, shim.release, arena_ptr, h);
+                }
+                let sptr = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let slen = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(sptr, slen, sh));
+            }
+            // A web call whose handle result is captured (`createElement`): the
+            // same shim writes the handle id to the first out word.
+            Op::CallMethod(_, _) if p.web_call_ref_at.contains_key(&pc) => {
+                let (name, id, kinds) = p.web_call_ref_at.get(&pc)?.clone();
+                let (recv, desc_ptr, n, owned) = build_web_desc(b, &mut stack, &kinds)?;
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let nv = b.ins().iconst(types::I64, n as i64);
+                let call = b.ins().call(
+                    shim.web_call_str_v,
+                    &[arena_ptr, recv, id_v, nptr, nlen, desc_ptr, nv, out_ptr],
+                );
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                for h in owned {
+                    release_if_owned(b, shim.release, arena_ptr, h);
+                }
+                let handle = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                stack.push(SlotV::Val(handle, Ty::Web));
+            }
+            Op::CallMethod(_, _) if p.web_call_v_at.contains_key(&pc) => {
+                let (name, id, kinds) = p.web_call_v_at.get(&pc)?.clone();
+                let (recv, desc_ptr, n, owned) = build_web_desc(b, &mut stack, &kinds)?;
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let nv = b.ins().iconst(types::I64, n as i64);
+                let call = b.ins().call(
+                    shim.web_call_v,
+                    &[arena_ptr, recv, id_v, nptr, nlen, desc_ptr, nv],
+                );
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                for h in owned {
+                    release_if_owned(b, shim.release, arena_ptr, h);
+                }
+                stack.push(SlotV::Null);
+            }
+            Op::CallMethod(_, _) if p.web_call_at.contains_key(&pc) => {
+                let (name, argc) = *p.web_call_at.get(&pc)?;
+                let mut fargs: Vec<ClValue> = Vec::with_capacity(argc as usize);
+                for _ in 0..argc {
+                    let (v, t) = scalar(stack.pop()?)?;
+                    fargs.push(convert(b, v, t, Ty::F64));
+                }
+                fargs.reverse();
+                let SlotV::Web(handle) = stack.pop()? else {
+                    return None;
+                };
+                let slot = b.create_sized_stack_slot(
+                    cranelift_codegen::ir::StackSlotData::new(
+                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                        (argc as u32).max(1) * 8,
+                        3,
+                    ),
+                );
+                let args_ptr = b.ins().stack_addr(types::I64, slot, 0);
+                for (k, a) in fargs.iter().enumerate() {
+                    b.ins()
+                        .store(MemFlags::trusted(), *a, args_ptr, (k * 8) as i32);
+                }
+                let (nptr, nlen) = str_const(b, name);
+                let argc_v = b.ins().iconst(types::I64, argc as i64);
+                // A method with a typed binding id takes the lean `web_bind`
+                // route (id + raw args, no interned name, no marshalling); the
+                // name is still passed so the host can fall back if it has no
+                // typed binding. Everything else stays on the interned path.
+                let call = match p.web_bind_at.get(&pc) {
+                    Some(&bid) => {
+                        let bid_v = b.ins().iconst(types::I64, bid as i64);
+                        b.ins().call(
+                            shim.web_bind_call,
+                            &[arena_ptr, handle, bid_v, nptr, nlen, args_ptr, argc_v],
+                        )
+                    }
+                    None => b.ins().call(
+                        shim.web_call_num,
+                        &[arena_ptr, handle, nptr, nlen, args_ptr, argc_v],
+                    ),
+                };
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(SlotV::Null);
+            }
+            // A numeric host call: `time.now()` / `time.monotonic()`. The
+            // receiver is the time-namespace marker (no registers); the shim
+            // reads the host the interpreter set on the arena and returns f64.
+            Op::CallMethod(_, _) if p.time_at.contains_key(&pc) => {
+                let SlotV::TimeNs = stack.pop()? else {
+                    return None;
+                };
+                let epoch = b.ins().iconst(
+                    types::I64,
+                    if *p.time_at.get(&pc)? { 1 } else { 0 },
+                );
+                let call = b.ins().call(shim.host_time, &[arena_ptr, epoch]);
+                let ms = b.inst_results(call)[0];
+                stack.push(SlotV::Val(ms, Ty::F64));
+            }
+            // A `std:math` intrinsic: lowered to instructions, no call. The
+            // receiver is the math-namespace marker (no registers).
+            Op::CallMethod(_, _) if p.math_at.contains_key(&pc) => {
+                let op = *p.math_at.get(&pc)?;
+                let argc = if matches!(op, MathOp::Min | MathOp::Max) { 2 } else { 1 };
+                let mut fargs: Vec<ClValue> = Vec::with_capacity(argc);
+                for _ in 0..argc {
+                    let (v, t) = scalar(stack.pop()?)?;
+                    fargs.push(convert(b, v, t, Ty::F64));
+                }
+                fargs.reverse(); // [arg0, arg1]
+                let SlotV::MathNs = stack.pop()? else {
+                    return None;
+                };
+                let r = match op {
+                    MathOp::Sqrt => b.ins().sqrt(fargs[0]),
+                    MathOp::Floor => b.ins().floor(fargs[0]),
+                    MathOp::Ceil => b.ins().ceil(fargs[0]),
+                    MathOp::Trunc => b.ins().trunc(fargs[0]),
+                    MathOp::Abs => b.ins().fabs(fargs[0]),
+                    // The interpreter folds left: take arg1 iff `(arg1 < arg0)`
+                    // for min, iff `!(arg1 < arg0)` for max. `fcmp LessThan` is
+                    // false for a NaN operand, so NaN and ±0 come out identical
+                    // to the interpreter (which compares with the same `<`).
+                    MathOp::Min | MathOp::Max => {
+                        let (a0, a1) = (fargs[0], fargs[1]);
+                        let lt = b.ins().fcmp(FloatCC::LessThan, a1, a0);
+                        let take_a1 = if op == MathOp::Min {
+                            lt
+                        } else {
+                            b.ins().icmp_imm(IntCC::Equal, lt, 0) // !lt
+                        };
+                        b.ins().select(take_a1, a1, a0)
+                    }
+                };
+                stack.push(SlotV::Val(r, Ty::F64));
+            }
             Op::Call(n) | Op::CallMethod(_, n) => {
                 let is_method = matches!(op, Op::CallMethod(..));
                 let f = if is_method {
@@ -1821,6 +2572,15 @@ fn translate(
                         _ => return None,
                     }
                 };
+
+                // Inline a small straight-line arithmetic leaf (`add3`, `step`):
+                // its body is expanded here, erasing the call, the frame marshal,
+                // and the depth guard. The wins V8's inliner gets for free.
+                if !is_method && this.is_none() && inlinable(plans, f, 1) {
+                    let r = inline_body(b, plans, f, &args, 1)?;
+                    stack.push(r);
+                    continue;
+                }
 
                 // Recursion is bounded here, not by the hardware. Native frames
                 // would otherwise run off the end of the stack, and the guard page
@@ -2042,6 +2802,11 @@ fn translate(
                 let out = convert(b, v, from, to);
                 stack.push(SlotV::Val(out, to));
             }
+            Op::CastOp(_, _) if p.cast_f64.contains(&pc) => {
+                let (v, from) = scalar(stack.pop()?)?;
+                let out = convert(b, v, from, Ty::F64);
+                stack.push(SlotV::Val(out, Ty::F64));
+            }
             Op::BinNum(binop, num) => {
                 let t = ty_of(num)?;
                 let (r, _) = scalar(stack.pop()?)?;
@@ -2228,6 +2993,15 @@ struct ShimRefs {
     alloc: cranelift_codegen::ir::FuncRef,
     clone_obj: cranelift_codegen::ir::FuncRef,
     release: cranelift_codegen::ir::FuncRef,
+    host_time: cranelift_codegen::ir::FuncRef,
+    global_web: cranelift_codegen::ir::FuncRef,
+    web_call_num: cranelift_codegen::ir::FuncRef,
+    web_bind_call: cranelift_codegen::ir::FuncRef,
+    str_join: cranelift_codegen::ir::FuncRef,
+    web_get_num: cranelift_codegen::ir::FuncRef,
+    web_call_v: cranelift_codegen::ir::FuncRef,
+    web_call_str_v: cranelift_codegen::ir::FuncRef,
+    web_set_v: cranelift_codegen::ir::FuncRef,
     /// Where the engine writes an object's address and its fields back to.
     scratch: cranelift_codegen::ir::StackSlot,
 }
@@ -2431,9 +3205,176 @@ fn truthy(b: &mut FunctionBuilder, v: ClValue, t: Ty) -> ClValue {
     }
 }
 
+/// A `&'static str` as (ptr, len) machine constants — the plan leaks the string,
+/// so its address is stable for as long as the compiled code that names it.
+fn str_const(b: &mut FunctionBuilder, s: &str) -> (ClValue, ClValue) {
+    let ptr = b.ins().iconst(types::I64, s.as_ptr() as i64);
+    let len = b.ins().iconst(types::I64, s.len() as i64);
+    (ptr, len)
+}
+
 /// The C conversions (§3.3), as instructions rather than as a reason to refuse
 /// the function. An integer widens or truncates; a float rounds toward zero, and
 /// saturates rather than trapping on a value no integer can hold.
+/// Pop a web call's arguments and receiver and lay the arguments out as a
+/// `WebArgDesc` array on a stack slot — shared by the discarded-result
+/// (`web_call_v`) and string-result (`web_call_str_v`) paths. Returns the
+/// receiver handle, the descriptor pointer, the argument count, and the handles
+/// of any owned string arguments (built templates) the caller must release after
+/// the call.
+fn build_web_desc(
+    b: &mut FunctionBuilder,
+    stack: &mut Vec<SlotV>,
+    kinds: &[ArgKind],
+) -> Option<(ClValue, ClValue, usize, Vec<ClValue>)> {
+    let n = kinds.len();
+    let mut descs: Vec<(i64, ClValue, ClValue)> = Vec::with_capacity(n);
+    let mut owned: Vec<ClValue> = Vec::new();
+    for k in kinds.iter().rev() {
+        match (*k, stack.pop()?) {
+            (ArgKind::Num, v) => {
+                let (val, t) = scalar(v)?;
+                let f = convert(b, val, t, Ty::F64);
+                let bits = b.ins().bitcast(types::I64, MemFlags::new(), f);
+                let zero = b.ins().iconst(types::I64, 0);
+                descs.push((0, bits, zero));
+            }
+            (ArgKind::Ref, SlotV::Web(h)) => {
+                let zero = b.ins().iconst(types::I64, 0);
+                descs.push((1, h, zero));
+            }
+            (ArgKind::Ref, SlotV::Val(h, Ty::Web)) => {
+                let zero = b.ins().iconst(types::I64, 0);
+                descs.push((1, h, zero));
+            }
+            (ArgKind::Str, SlotV::Str(ptr, len, h)) => {
+                owned.push(h);
+                descs.push((2, ptr, len));
+            }
+            _ => return None,
+        }
+    }
+    descs.reverse();
+    let recv = match stack.pop()? {
+        SlotV::Web(h) => h,
+        SlotV::Val(h, Ty::Web) => h,
+        _ => return None,
+    };
+    let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+        (n.max(1) as u32) * 24,
+        3,
+    ));
+    let desc_ptr = b.ins().stack_addr(types::I64, slot, 0);
+    for (j, (kind, a, bb)) in descs.iter().enumerate() {
+        let off = (j * 24) as i32;
+        let kv = b.ins().iconst(types::I64, *kind);
+        b.ins().store(MemFlags::trusted(), kv, desc_ptr, off);
+        b.ins().store(MemFlags::trusted(), *a, desc_ptr, off + 8);
+        b.ins().store(MemFlags::trusted(), *bb, desc_ptr, off + 16);
+    }
+    Some((recv, desc_ptr, n, owned))
+}
+
+/// The inliner's budget: how deep leaf-into-leaf expansion goes, and how many
+/// bytecode ops a callee may have. Small — the point is to erase the call
+/// overhead of tiny helpers (`add3`, `step`), not to duplicate large bodies.
+const INLINE_DEPTH: usize = 3;
+const INLINE_MAX_OPS: usize = 48;
+
+/// A callee simple enough to inline: a **straight-line arithmetic leaf** — only
+/// slot, const and integer/float `BinNum` ops (no `Div`/`Rem`, which fault and
+/// would need a guard) and *recursively inlinable* calls, ending in a `Return`.
+/// No branches, no heap, no host: anything else and it stays a real call.
+fn inlinable(plans: &[Plan], f: usize, depth: usize) -> bool {
+    if depth > INLINE_DEPTH {
+        return false;
+    }
+    let ch = &plans[f].chunk;
+    if ch.code.len() > INLINE_MAX_OPS {
+        return false;
+    }
+    let ops_ok = ch.code.iter().all(|op| match op {
+        Op::LoadSlot(_)
+        | Op::StoreSlot(_)
+        | Op::Const(_)
+        | Op::LoadName(_)
+        | Op::Call(_)
+        | Op::Return
+        | Op::ReturnNull => true,
+        Op::BinNum(bop, _) => !matches!(bop, BinOp::Div | BinOp::Rem),
+        _ => false,
+    });
+    ops_ok && plans[f].callee.values().all(|&c| inlinable(plans, c, depth + 1))
+}
+
+/// Expand an inlinable callee at a call site: mini-evaluate its straight-line
+/// body with `args` bound to its parameters and produce the result value. The
+/// arithmetic lowers through the very same `lower_bin` the normal path uses, so
+/// an inlined call is bit-identical to a real one — just without the call, the
+/// frame, or the depth guard. Returns `None` on anything the pre-check would not
+/// have accepted (so a `true` from `inlinable` means this succeeds).
+fn inline_body(b: &mut FunctionBuilder, plans: &[Plan], f: usize, args: &[SlotV], depth: usize) -> Option<SlotV> {
+    if depth > INLINE_DEPTH {
+        return None;
+    }
+    let ch = plans[f].chunk.clone();
+    let mut locals: Vec<Option<SlotV>> = vec![None; ch.n_slots as usize];
+    for (k, a) in args.iter().enumerate() {
+        *locals.get_mut(k)? = Some(*a);
+    }
+    let mut stack: Vec<SlotV> = Vec::new();
+    for op in ch.code.iter() {
+        match *op {
+            Op::LoadSlot(s) => stack.push((*locals.get(s as usize)?)?),
+            Op::StoreSlot(s) => {
+                let v = stack.pop()?;
+                *locals.get_mut(s as usize)? = Some(v);
+            }
+            Op::Const(ci) => {
+                let s = match &ch.consts[ci as usize] {
+                    Value::I32(n) => SlotV::Val(b.ins().iconst(types::I32, *n as i64), Ty::I32),
+                    Value::Bool(t) => SlotV::Val(b.ins().iconst(types::I32, *t as i64), Ty::Bool),
+                    Value::I64(n) => SlotV::Val(b.ins().iconst(types::I64, *n), Ty::I64),
+                    Value::F64(x) => SlotV::Val(b.ins().f64const(*x), Ty::F64),
+                    _ => return None,
+                };
+                stack.push(s);
+            }
+            Op::BinNum(bop, num) => {
+                if matches!(bop, BinOp::Div | BinOp::Rem) {
+                    return None;
+                }
+                let (r, _) = scalar(stack.pop()?)?;
+                let (l, _) = scalar(stack.pop()?)?;
+                let t = ty_of(num)?;
+                let (v, rt) = lower_bin(b, bop, l, r, t);
+                stack.push(SlotV::Val(v, rt));
+            }
+            Op::LoadName(ni) => {
+                let c = *plans[f].callee.get(&ni)?;
+                stack.push(SlotV::Callee(c));
+            }
+            Op::Call(n) => {
+                let mut cargs: Vec<SlotV> = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    cargs.push(stack.pop()?);
+                }
+                cargs.reverse();
+                let SlotV::Callee(cf) = stack.pop()? else {
+                    return None;
+                };
+                let r = inline_body(b, plans, cf, &cargs, depth + 1)?;
+                stack.push(r);
+            }
+            Op::Return => return stack.pop(),
+            Op::ReturnNull => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn convert(b: &mut FunctionBuilder, v: ClValue, from: Ty, to: Ty) -> ClValue {
     if from == to || (from.is_int() && to.is_int() && from.cl() == to.cl()) {
         return v;

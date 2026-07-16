@@ -74,17 +74,43 @@ pub fn write(out: &mut String, v: &Json) {
 pub fn write_str(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+        write_char(out, c);
+    }
+    out.push('"');
+}
+
+/// The escape of one scalar into an already-open JSON string. Factored out so
+/// the UTF-8 and UTF-16 writers escape identically.
+#[inline]
+fn write_char(out: &mut String, c: char) {
+    match c {
+        '"' => out.push_str("\\\""),
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\u{8}' => out.push_str("\\b"),
+        '\u{c}' => out.push_str("\\f"),
+        c if (c as u32) < 0x20 => {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let n = c as u32;
+            out.push_str("\\u00");
+            out.push(HEX[((n >> 4) & 0xf) as usize] as char);
+            out.push(HEX[(n & 0xf) as usize] as char);
         }
+        c => out.push(c),
+    }
+}
+
+/// Escape a UTF-16 string straight into `out`, without first materializing it
+/// as a `String`. The JSON hot path (`pure_json`) holds its strings as the
+/// engine's own `&[u16]`; this saves the per-string UTF-8 allocation that
+/// `utf16_to_string` would make. Lone surrogates become U+FFFD, matching the
+/// lossy decode the old path used.
+pub fn write_str_u16(out: &mut String, s: &[u16]) {
+    out.push('"');
+    for c in char::decode_utf16(s.iter().copied()) {
+        write_char(out, c.unwrap_or('\u{FFFD}'));
     }
     out.push('"');
 }

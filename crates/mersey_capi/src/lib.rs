@@ -28,7 +28,7 @@ use mersey_interp::{embed, new_interp, Host, Interp, WebScalar};
 
 /// Bumped whenever the table layout or a boundary contract changes. The
 /// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 6;
+pub const MSY_ABI_VERSION: u32 = 7;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).
@@ -129,6 +129,10 @@ pub struct MsyHostTable {
         Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg16, usize, *mut MsyReply)>,
     pub web_new_u16:
         Option<extern "C" fn(*mut c_void, u32, *const MsyArg16, usize, *mut MsyReply)>,
+    // typed-binding fast path (ABI v7): a compiled numeric web method as a
+    // compile-time id + raw f64 args, no name and no MsyArg16 marshalling.
+    pub web_bind:
+        Option<extern "C" fn(*mut c_void, i64, u32, *const f64, usize, *mut MsyReply)>,
 }
 
 /// A UTF-16 argument, field for field with `msy_arg16` in include/mersey.h.
@@ -140,6 +144,13 @@ pub struct MsyArg16 {
     pub num: f64,
     pub str16: *const u16,
     pub str16_len: usize,
+}
+
+impl Default for MsyArg16 {
+    fn default() -> Self {
+        // `null` (kind 4): the fill value for the unused tail of a stack buffer.
+        MsyArg16 { kind: 4, num: 0.0, str16: std::ptr::null(), str16_len: 0 }
+    }
 }
 
 /// A typed reply, field for field with `msy_reply` in include/mersey.h.
@@ -464,9 +475,19 @@ impl Host for CHost {
         args: &[mersey_interp::WebArg],
     ) -> Option<mersey_interp::WebReply> {
         let f = self.table.web_call_u16?;
-        let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
+        // On the stack for the common small-arity call — no heap `Vec` per web
+        // call, matching the engine's own stack-array marshalling upstream.
         let mut reply = MsyReply::default();
-        f(self.table.data, target, name_id, cargs.as_ptr(), cargs.len(), &mut reply);
+        if args.len() <= 8 {
+            let mut cargs: [MsyArg16; 8] = std::array::from_fn(|_| MsyArg16::default());
+            for (k, a) in args.iter().enumerate() {
+                cargs[k] = to_msy_arg16(a);
+            }
+            f(self.table.data, target, name_id, cargs.as_ptr(), args.len(), &mut reply);
+        } else {
+            let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
+            f(self.table.data, target, name_id, cargs.as_ptr(), cargs.len(), &mut reply);
+        }
         Some(read_msy_reply(&reply))
     }
     fn web_new_u16(
@@ -479,6 +500,34 @@ impl Host for CHost {
         let mut reply = MsyReply::default();
         f(self.table.data, ctor_id, cargs.as_ptr(), cargs.len(), &mut reply);
         Some(read_msy_reply(&reply))
+    }
+    fn web_bind(&mut self, target: i64, bind_id: u32, args: &[f64]) -> Option<mersey_interp::WebReply> {
+        let f = self.table.web_bind?;
+        let mut reply = MsyReply::default();
+        f(self.table.data, target, bind_id, args.as_ptr(), args.len(), &mut reply);
+        Some(read_msy_reply(&reply))
+    }
+    fn web_bind_raw(
+        &self,
+    ) -> Option<(mersey_interp::WebBindFn, *mut std::ffi::c_void)> {
+        let f = self.table.web_bind?;
+        // `MsyReply` and `mersey_interp::WebReplyRaw` are the same `#[repr(C)]`
+        // layout (asserted below), so the two function pointers differ only in
+        // the name of their last argument's pointee — same ABI. Reinterpreting
+        // one as the other lets the JIT call the host with no interpreter reentry
+        // and no `dyn Host` dispatch.
+        const _: () = {
+            assert!(
+                std::mem::size_of::<MsyReply>()
+                    == std::mem::size_of::<mersey_interp::WebReplyRaw>()
+            );
+            assert!(
+                std::mem::align_of::<MsyReply>()
+                    == std::mem::align_of::<mersey_interp::WebReplyRaw>()
+            );
+        };
+        let raw: mersey_interp::WebBindFn = unsafe { std::mem::transmute(f) };
+        Some((raw, self.table.data))
     }
 
     // ---- time + entropy --------------------------------------------------

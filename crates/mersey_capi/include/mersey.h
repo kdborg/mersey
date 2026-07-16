@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 6u
+#define MSY_ABI_VERSION 7u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -194,7 +194,28 @@ typedef struct {
      * object comes back as tag 3). */
     void (*web_new_u16)(void *data, uint32_t ctor_id, const msy_arg16 *args,
                         size_t argc, msy_reply *out);
+    /* Typed-binding fast path (ABI v7). A compiled numeric web method crosses as
+     * a compile-time-stable bind id (see the MSY_BIND_* constants) plus its
+     * arguments as raw doubles — no interned name, no msy_arg16 marshalling. The
+     * host switches on the id straight to the C++ method, verifies the
+     * receiver's type, and falls back to the reflective path itself on a
+     * mismatch. May be NULL: the engine then uses web_call_u16. */
+    void (*web_bind)(void *data, int64_t target, uint32_t bind_id,
+                     const double *args, size_t argc, msy_reply *out);
 } msy_host_table;
+
+/* Typed-binding ids (ABI v7). Append only; never renumber. Numeric-argument
+ * web methods the Tier-1 JIT compiles — a canvas draw loop is the case that
+ * matters. Kept in lock-step with mersey_interp::webbind. */
+#define MSY_BIND_CANVAS2D_FILLRECT   1u
+#define MSY_BIND_CANVAS2D_CLEARRECT  2u
+#define MSY_BIND_CANVAS2D_STROKERECT 3u
+#define MSY_BIND_CANVAS2D_RECT       4u
+#define MSY_BIND_CANVAS2D_MOVETO     5u
+#define MSY_BIND_CANVAS2D_LINETO     6u
+#define MSY_BIND_CANVAS2D_TRANSLATE  7u
+#define MSY_BIND_CANVAS2D_SCALE      8u
+#define MSY_BIND_CANVAS2D_ROTATE     9u
 
 /* Create a context backed by `host` (the table is copied). Check
  * msy_abi_version() first; installing a mismatched table is undefined. */

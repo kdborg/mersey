@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native calls</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Call-overhead kernel: small functions called hot (the WASM tier makes these
+// direct wasm-to-wasm calls).
+import { console } from "std:console";
+import { time } from "std:time";
+
+function add3(a: int32, b: int32, c: int32): int32 { return a + b + c; }
+function step(h: int32, i: int32): int32 { return add3(h ^ (h << 5), i, h >> 3); }
+function run(n: int32): int32 {
+    let h = 7;
+    let i = 0;
+    while (i < n) { h = step(h, i); i += 1; }
+    return h;
+}
+
+run(1000);
+const t0 = time.monotonic();
+const c = run(20000000);
+const t1 = time.monotonic();
+console.log(`RESULT calls ${t1 - t0} ${c}`);
+
+</script>
+</body>

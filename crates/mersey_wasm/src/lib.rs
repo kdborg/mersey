@@ -328,6 +328,61 @@ pub extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
     ((pptr as u64) << 32) | plen as u64
 }
 
+/// Transpile a whole module graph. Payload and reply are JSON:
+///   in:  {"entry": "...", "modules": [{"spec": "...", "source": "..."}, ...]}
+///   out: {"modules": [{"spec": "...", "js": "..."}, ...]}   (or "!diags")
+/// Modules arrive dependency-first (the loader's own order) and are checked
+/// as one program, so cross-module types resolve exactly as the engine's.
+#[no_mangle]
+pub extern "C" fn msy_transpile_graph(ptr: *const u8, len: usize) -> u64 {
+    use mersey_interp::webjson::{self, Json};
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let payload = String::from_utf8_lossy(bytes);
+    let text = (|| -> String {
+        let Some(j) = webjson::parse(&payload) else {
+            return "!bad transpile payload".to_string();
+        };
+        let mut mods: Vec<(String, String)> = Vec::new();
+        if let Some(Json::Arr(items)) = j.get("modules") {
+            for m in items {
+                let spec = m.get("spec").and_then(|v| v.as_str()).unwrap_or_default();
+                let src = m.get("source").and_then(|v| v.as_str()).unwrap_or_default();
+                mods.push((spec.to_string(), src.to_string()));
+            }
+        }
+        let out = mersey_js::transpile_graph(&mods);
+        if !out.diagnostics.is_empty() {
+            return format!("!{}", out.diagnostics.join("\n"));
+        }
+        let arr = Json::Arr(
+            out.modules
+                .into_iter()
+                .map(|(spec, js)| {
+                    Json::Obj(vec![
+                        ("spec".to_string(), Json::Str(spec)),
+                        ("js".to_string(), Json::Str(js)),
+                    ])
+                })
+                .collect(),
+        );
+        let mut s = String::new();
+        webjson::write(&mut s, &Json::Obj(vec![("modules".to_string(), arr)]));
+        s
+    })();
+    let boxed = text.into_bytes().into_boxed_slice();
+    let plen = boxed.len();
+    let pptr = Box::leak(boxed).as_ptr();
+    ((pptr as u64) << 32) | plen as u64
+}
+
+/// The JS runtime prelude, standalone — the loader turns it into the shared
+/// runtime module every transpiled graph module imports $rt from.
+#[no_mangle]
+pub extern "C" fn msy_rt_js() -> u64 {
+    let text = mersey_js::RUNTIME.as_bytes();
+    ((text.as_ptr() as u64) << 32) | text.len() as u64
+}
+
 #[no_mangle]
 pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
     std::panic::set_hook(Box::new(|info| {

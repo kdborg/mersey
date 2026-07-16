@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native mathk</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+import { console } from "std:console";
+import { time } from "std:time";
+import { math } from "std:math";
+function dist(n: int32): float64 {
+    let acc = 0.0; let i = 0;
+    while (i < n) {
+        const x = (i % 100) as float64;
+        acc = acc + math.sqrt(x * x + 2.0) + math.max(acc * 0.0, math.abs(0.0 - x));
+        i += 1;
+    }
+    return acc;
+}
+dist(1000);
+const t0 = time.monotonic(); const c = dist(5000000); const t1 = time.monotonic();
+console.log(`RESULT mathk ${t1 - t0} ${c > 0.0}`);
+
+</script>
+</body>

@@ -128,7 +128,7 @@ async function runPage(pageFile, profileDir, expectResult = true) {
     };
     child.stdout.on("data", (b) => {
       out += b.toString();
-      const m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(out);
+      const m = /RESULT (\S+) ([\d.]+) (\S+)/.exec(out);
       if (m && !result) result = { ms: Number(m[2]), checksum: Number(m[3]) };
     });
     child.on("error", (e) => { console.error("spawn error", e.message); finish(); });

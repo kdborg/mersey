@@ -251,6 +251,14 @@ export function makeBridge(globalObject, invokeCallback) {
     handleObj(h) {
       return handles[h];
     },
+    // A C++-created object (negative handle) escaping to a JS-path API: the
+    // host materialized its reflector and registers it under the SAME handle,
+    // so every path — lookups and re-encoding — sees one identity.
+    adopt(h, obj) {
+      handles[h] = obj;
+      byObject.set(obj, h);
+      return null;
+    },
     global(name) {
       // Ambient globals only: the engine already gates this by import.
       return name in globalObject ? handleFor(globalObject[name]) : -1;

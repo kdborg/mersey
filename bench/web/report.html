@@ -11,7 +11,8 @@
     --accent: #0a97c4;
     /* series */
     --js: #9aa7ad;         /* the browser's own engine — neutral */
-    --poly: #b06fd8;       /* WASM polyfill */
+    --poly: #b06fd8;       /* WASM-interpreter polyfill */
+    --tjs: #c8871c;        /* transpiled-JS polyfill (with its WASM tier) */
     --native: #0f9e88;     /* engine in the fork — Mersey's own */
     --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
@@ -21,20 +22,20 @@
     :root {
       --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
       --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --native: #2bc0a6;
+      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
     }
   }
   :root[data-theme="dark"] {
     --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
     --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --native: #2bc0a6;
+    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
   }
   :root[data-theme="light"] {
     --bg: #f7f9fa; --panel: #ffffff; --ink: #10191c; --ink-soft: #4a5a60;
     --ink-faint: #839499; --line: #dde5e8; --line-soft: #eaf0f2;
-    --accent: #0a97c4; --js: #9aa7ad; --poly: #b06fd8; --native: #0f9e88;
+    --accent: #0a97c4; --js: #9aa7ad; --poly: #b06fd8; --tjs: #c8871c; --native: #0f9e88;
     --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
   }
   * { box-sizing: border-box; }
@@ -76,7 +77,7 @@
   .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 1.2rem 0 .4rem; font-size: .85rem; }
   .legend span { display: inline-flex; align-items: center; gap: .45rem; color: var(--ink-soft); }
   .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.native { background: var(--native); }
+  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); }
 
   /* chart */
   .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.4rem 1.4rem 1rem; box-shadow: var(--shadow); }
@@ -94,7 +95,7 @@
     display: flex; align-items: center; justify-content: flex-end;
     transition: width .8s cubic-bezier(.2,.7,.2,1);
   }
-  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.native { background: var(--native); }
+  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.tjs { background: var(--tjs); } .bar.native { background: var(--native); }
   .bar .val { font-family: var(--mono); font-size: .68rem; color: #fff; padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .bar .val.out { color: var(--ink-soft); position: absolute; left: calc(100% + 6px); }
 
@@ -120,10 +121,11 @@
   <header>
     <p class="eyebrow">Mersey · engine benchmarks</p>
     <h1>Plain JS, WASM polyfill, and native Mersey — compute and the web platform</h1>
-    <p class="lede">The same programs written once in JavaScript and once in Mersey, run three ways in two
-      browsers: a compute kernel that exercises the new Cranelift JIT, and six web-platform workloads —
-      Web Storage, JSON, URL, Web Crypto, Canvas 2D, DOM — that exercise the bridge. Identical work,
-      verified by matching checksums; the only variable is <em>what executes the code</em>.</p>
+    <p class="lede">The same programs written once in JavaScript and once in Mersey, run four ways in two
+      browsers — plain JS, the WASM-interpreter polyfill, the transpiled-JS polyfill (with its
+      Mersey→WASM compute tier), and the native fork — over a compute kernel and six web-platform
+      workloads. Identical work, verified by matching checksums; the only variable is <em>what executes
+      the code</em>.</p>
   </header>
 
   <div class="cards" id="cards"></div>
@@ -136,34 +138,83 @@
   <div class="legend">
     <span><i class="sw js"></i> plain JS (JIT)</span>
     <span><i class="sw native"></i> native — Mersey in the fork (Cranelift JIT)</span>
-    <span><i class="sw poly"></i> polyfill — Mersey on WASM (interpreter)</span>
+    <span><i class="sw tjs"></i> polyfill — transpiled JS + Mersey→WASM tier</span>
+    <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
   </div>
   <div class="chart" id="computechart"></div>
-  <p class="note">Wiring Cranelift into the fork puts native Mersey <b>within 1.4× of hand-written JS</b>
-    and <b>~150–620× ahead of the WASM polyfill</b>, which has no JIT. On the same kernel the JIT is 65×
-    the interpreter in the standalone engine (97&nbsp;ms vs 6.3&nbsp;s). The JIT does nothing for the
-    host-bound workloads below — it refuses functions that allocate or call the host — which is why the
-    two stories are separate.</p>
+  <p class="note">Wiring Cranelift into the fork puts native Mersey <b>at or ahead of hand-written JS</b>
+    on the compute kernel (104 vs 111&nbsp;ms) and <b>~150–800× ahead of the WASM polyfill</b>, which has no
+    JIT. The JIT gained two things this round: <b><code>std:math</code> intrinsics</b> (sqrt/min/max/… lower
+    to machine instructions — <code>mathk</code> fell from 1913&nbsp;ms interpreted to 36&nbsp;ms, ~53×),
+    and a <b>leaf-function inliner</b> (a small helper's body is expanded at the call site, bit-identical to
+    a real call — the <code>calls</code> kernel, 20M nested calls, fell 68→25&nbsp;ms, 2.7×). It also
+    compiles the web loops below (see the web note), so its reach is no longer compute-only.</p>
 
   <h2>The new polyfill: Mersey transpiled to JavaScript</h2>
   <p class="note">The polyfill grew a second execution mode: the same front end (same checker, same
     diagnostics) now emits <em>JavaScript</em> at load time, and the browser's own JIT runs it — the
     WASM interpreter stays as the conformance vehicle. Gated by the full runtime conformance suite
     (<b>31/31 goldens pass</b>, matching the engine byte for byte) and the same workload checksums.
+    Module graphs link as real ES modules (the engine's Mersey-written std: modules transpile into the
+    graph too), dynamic <code>import()</code> works, capabilities stay enforced (<code>data-allow</code>),
+    and a page whose CSP forbids blob: scripts falls back to the WASM engine automatically. Browser suites:
+    platform 21/21, harness 44/44, modules 4/4, browser 46/46, lazy/random/pixels/security/sw all green —
+    remaining gaps are custom-element <code>attach</code> semantics and Mersey stack traces (source maps).
     The result in stock browsers, no fork needed:</p>
   <div class="scroll"><table id="tjstable"></table></div>
   <p class="note">On web-platform workloads the transpiled polyfill is <b>at hand-written-JS speed</b>
-    (within noise; sometimes ahead), <b>10–60× the WASM interpreter</b>. On compute it is ~1.5–2× JS
-    (the integer-wrapping semantics cost) — and <b>~130–530× the WASM interpreter</b>. This is what ships
-    as the Stage-A polyfill; the engine-in-browser remains Stage B.</p>
+    (within noise; sometimes ahead), <b>10–60× the WASM interpreter</b>. Compute got its own compiler:
+    the polyfill's <b>Mersey→WASM tier</b> compiles typed numeric functions (the same subset the native
+    Cranelift JIT accepts) to a real WebAssembly module — <code>int32</code>/<code>int64</code> as machine
+    types, no <code>|0</code> shims — and the JS backend binds the exports. Chromium compute:
+    <b>92&nbsp;ms, ahead of hand-written JS (94)</b> and ~210× the WASM interpreter; Firefox: 150&nbsp;ms
+    (measured in a full Firefox build — Playwright's bundled Firefox runs WASM without its optimizing
+    tier and reports 657&nbsp;ms, a harness artifact, checksums identical). Gated by the same 31/31
+    conformance goldens with the tier active. This is what ships as the Stage-A polyfill; the
+    engine-in-browser remains Stage B.</p>
+  <p class="note">The compiler then got an optimization round — a <b>leaf-function inliner</b>
+    (the wins a JS JIT's inliner gets for free, done at compile time for wasm) and
+    <b><code>std:math</code> intrinsics</b> (<code>sqrt</code>/<code>abs</code>/<code>floor</code>/<code>min</code>/<code>max</code>
+    lower to single f64 opcodes instead of host calls). Four kernels, Chromium, checksums identical
+    everywhere:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>kernel</th><th>Mersey→WASM</th><th>native Cranelift JIT</th><th>note</th></tr></thead>
+    <tbody>
+      <tr><td>compute (int mix)</td><td class="num"><span class="best">92</span></td><td class="num">98</td><td>ahead of hand-written JS (94)</td></tr>
+      <tr><td>fcompute (float orbit)</td><td class="num"><span class="best">110</span></td><td class="num">205</td><td>1.9× the native JIT</td></tr>
+      <tr><td>calls (hot small fns)</td><td class="num"><span class="best">49</span></td><td class="num">66</td><td>the inliner at work (73 before)</td></tr>
+      <tr><td>mathk (sqrt/abs/max)</td><td class="num"><span class="best">30</span></td><td class="num">1,914</td><td>intrinsics; the native JIT bails on math.* and interprets</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">On compute, the Mersey→WASM compiler is now the fastest way to run Mersey anywhere —
+    faster than the engine's own native JIT on three of four kernels, at parity on the fourth, and it
+    runs in every stock browser.</p>
 
   <h2>Time per web-platform workload</h2>
   <p class="note">Wall-clock of the workload loop, self-timed inside the language (startup excluded),
     median of 3 runs. <b>Log scale</b> — each gridline is 10× — because plain JS and the engine are orders
     of magnitude apart. Firefox figures; Chromium is comparable (full numbers below).</p>
+  <p class="note" style="border-left:3px solid var(--native); padding-left:.8rem">
+    <b>The Tier-1 JIT now compiles the web loops.</b> A warm-up pass compiles the function, so the timed
+    run enters it already compiled from the top — these bars reflect true compiled speed (canvas fell
+    12→6.4&nbsp;ms, crypto 17→9&nbsp;ms once this landed). The web workloads then split cleanly in two.
+    <br><b>Cheap-op loops — native matches or beats JS.</b> Where the per-iteration host op is light and
+    native's direct-C++ path is leaner than V8's binding, removing interpreter dispatch and the per-call
+    intern lets native <i>undercut</i> the JS engine: interleaved A/B shows <b>crypto BEATS JS</b>
+    (native/JS 0.88× median — <code>getRandomValues</code> fills a C++ buffer with no JS typed-array),
+    and <b>canvas matches JS</b> (~1.0–1.17×).
+    <br><b>Heavy shared-op loops — parity is the floor.</b> <code>storage</code> (localStorage backend),
+    <code>url</code> (Gecko's URL parser) and <code>dom</code> (<code>createElement</code>/<code>appendChild</code>
+    build real layout nodes) are dominated by C++ work <i>both engines call identically</i>. Their loops
+    compile correctly now, but that removes only the ~180&nbsp;ns of dispatch on top of a ~1–2&nbsp;µs
+    shared op, so they stay ~2×. That gap is the shared platform work, not the engine.
+    <br>On <b>compute</b>, native <i>beats</i> JS (103 vs 111&nbsp;ms) — no bindings, no shared backend —
+    and the JIT's <code>std:math</code> intrinsics took <code>mathk</code> from 1913&nbsp;ms (interpreted)
+    to <b>36&nbsp;ms (~53×)</b>.</p>
   <div class="legend">
     <span><i class="sw js"></i> plain JS — browser engine, JIT</span>
-    <span><i class="sw poly"></i> polyfill — Mersey on WASM</span>
+    <span><i class="sw tjs"></i> polyfill — transpiled JS (+WASM tier)</span>
+    <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
     <span><i class="sw native"></i> native — Mersey in the fork</span>
   </div>
   <div class="chart" id="timechart"></div>
@@ -194,12 +245,24 @@
     copy of the host's code units. No UTF-8 intermediary, no JSON, no per-character re-encoding — the whole
     string tax is gone. Then two more: <b>object handles ride the fast path</b> (a ref crosses as a number
     plus a mask bit, so <code>appendChild(el)</code> and <code>getRandomValues(buf)</code> stopped falling
-    back to reflective JSON — crypto 63→32&nbsp;ms), and hot DOM/canvas operations are now <b>direct C++ on
+    back to reflective JSON), and hot DOM/canvas operations are now <b>direct C++ on
     unwrapped natives</b>: a handle is unwrapped once to its Gecko object, then fillRect / appendChild /
-    textContent never enter JS at all (dom 59→31, canvas 21→14&nbsp;ms). Separately,
+    textContent never enter JS at all (canvas 21→15&nbsp;ms). Separately,
     <code>JSON.stringify/parse</code> on pure data is now served by the <b>engine's own writer</b> — no
     bridge call, no double serialization (json 88→28&nbsp;ms) — and the interpreter fused template strings
-    into a single-allocation join (1.4× on interpolation-heavy loops). (These native numbers are measured with browser telemetry/region/search services
+    into a single-allocation join (1.4× on interpolation-heavy loops). The latest step closes the last big
+    gap: <b>object <em>creation</em> stays in C++ too</b>. <code>new URL(s)</code>, <code>createElement</code>
+    and <code>new Uint8Array(n)</code> build the Gecko object (or a byte buffer) directly and hand back a
+    <em>negative handle</em> that never enters JS — every subsequent read (<code>url.pathname</code>,
+    <code>getRandomValues(buf)</code>) dispatches on it in C++. A JS reflector is materialized once, lazily,
+    only if such an object ever escapes to an API the fast paths don't cover. This is what URL and DOM were
+    waiting on — their objects used to be born in JS and drag every operation back there
+    (<b>url 104→54, dom 31→15, crypto 32→16&nbsp;ms</b>). These C++-created objects live in a
+    freelist-indexed slot vector — creation, every property read, and release are O(1) with no
+    per-object allocation, which matters when a frame creates and drops thousands of them (storage,
+    which never left C++, also settled to 68&nbsp;ms). A correctness note from the same pass: once such a
+    buffer escapes to JS its bytes become a separate copy, so <code>getRandomValues</code> on an
+    escaped buffer now fills the JS array rather than diverging from it. (These native numbers are measured with browser telemetry/region/search services
     disabled, so background CPU no longer steals from the timed loop — the same quiet footing the stock
     browsers already had.) The earlier interned/scalar A/B on the fork, same build, back-to-back:</p>
   <div class="legend">
@@ -241,12 +304,12 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:14.0,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:26.8 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:32.0,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:11.4 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:31.0,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.0 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:28.0,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:8.8 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:79.0,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:27.4 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:104.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:21.1 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.5,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:9.1,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:16.1,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:24.0,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:57.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:48.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
@@ -261,7 +324,7 @@
   // The transpiled-JS polyfill (Mersey -> JS at load time, browser JIT runs it).
   const TJS = {
     canvas:  { c: 5.1,  f: 7.0 },
-    compute: { c: 190.8, f: 150.3 },
+    compute: { c: 92.0, f: 150.3 },
     crypto:  { c: 8.6,  f: 9.7 },
     dom:     { c: 4.4,  f: 9.6 },
     json:    { c: 2.1,  f: 5.0 },
@@ -269,7 +332,7 @@
     url:     { c: 21.9, f: 27.6 },
   };
   // Compute-bound kernel (its own workload class — the JIT's target).
-  const COMPUTE = { fjs: 111, cjs: 94, native: 102, cpoly: 19184, fpoly: 80326 };
+  const COMPUTE = { fjs: 111, cjs: 94, native: 101, cpoly: 19184, fpoly: 80326, ctjs: 92, ftjs: 150 };
   const WL = Object.keys(DATA);
 
   // ---- headline cards ----
@@ -292,7 +355,7 @@
 
   // ---- compute chart (log scale, ms) ----
   {
-    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native — Cranelift JIT"], ["poly", "fpoly", "polyfill — WASM (Firefox)"]];
+    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native — Cranelift JIT"], ["tjs", "ftjs", "polyfill — transpiled + WASM tier"], ["poly", "fpoly", "polyfill — WASM interpreter"]];
     const lmin = 50, lmax = 100000;
     const lpct = (v) => Math.max(2, (Math.log10(v) - Math.log10(lmin)) / (Math.log10(lmax) - Math.log10(lmin)) * 100);
     const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v + " ms";
@@ -307,7 +370,7 @@
   // ---- log-scale time chart (Firefox) ----
   const LOG_MIN = 1, LOG_MAX = 600;
   const logPct = (v) => Math.max(2, (Math.log10(v) - Math.log10(LOG_MIN)) / (Math.log10(LOG_MAX) - Math.log10(LOG_MIN)) * 100);
-  const timeSeries = [["js", "fjs"], ["poly", "fpoly"], ["native", "native"]];
+  const timeSeries = [["js", "fjs"], ["tjs", "ftjs"], ["poly", "fpoly"], ["native", "native"]];
   document.getElementById("timechart").innerHTML = WL.map((w) => `
     <div class="wl">
       <div class="wl-name"><b>${w}</b><em>ms · Firefox</em></div>
@@ -325,8 +388,8 @@
     </div>`).join("");
 
   // ---- memory chart (Firefox), linear ----
-  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mnative]));
-  const memSeries = [["js", "mfjs"], ["poly", "mfpoly"], ["native", "mnative"]];
+  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mftjs, DATA[w].mnative]));
+  const memSeries = [["js", "mfjs"], ["tjs", "mftjs"], ["poly", "mfpoly"], ["native", "mnative"]];
   document.getElementById("memchart").innerHTML = WL.map((w) => `
     <div class="wl">
       <div class="wl-name"><b>${w}</b><em>MiB · Firefox</em></div>
@@ -377,8 +440,10 @@
 
   // ---- full table ----
   const cols = [
-    ["Chromium JS", "cjs", "mcjs"], ["Chromium poly", "cpoly", "mcpoly"],
-    ["Firefox JS", "fjs", "mfjs"], ["Firefox poly", "fpoly", "mfpoly"],
+    ["Chromium JS", "cjs", "mcjs"], ["Chromium WASM poly", "cpoly", "mcpoly"],
+    ["Chromium JS poly", "ctjs", "mctjs"],
+    ["Firefox JS", "fjs", "mfjs"], ["Firefox WASM poly", "fpoly", "mfpoly"],
+    ["Firefox JS poly", "ftjs", "mftjs"],
     ["Fork native", "native", "mnative"],
   ];
   let thead = "<thead><tr><th>workload</th>" + cols.map((c) => `<th>${c[0]}<br><span style="font-weight:400;color:var(--ink-faint)">ms · MiB</span></th>`).join("") + "</tr></thead>";

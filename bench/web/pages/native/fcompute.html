@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native fcompute</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Float compute kernel: the f64 lane of the WASM tier.
+import { console } from "std:console";
+import { time } from "std:time";
+
+function orbit(steps: int32, dt: float64): float64 {
+    let x = 1.0; let y = 0.0; let vx = 0.0; let vy = 1.0;
+    let i = 0;
+    while (i < steps) {
+        const r2 = x * x + y * y;
+        const inv = 1.0 / (r2 * r2 * 0.5 + 0.5);
+        vx = vx - x * inv * dt;
+        vy = vy - y * inv * dt;
+        x = x + vx * dt;
+        y = y + vy * dt;
+        i += 1;
+    }
+    return x * x + y * y;
+}
+
+orbit(10000, 0.001);
+const t0 = time.monotonic();
+let acc = 0.0;
+let r = 0;
+while (r < 400) { acc = acc + orbit(20000, 0.001); r += 1; }
+const t1 = time.monotonic();
+console.log(`RESULT fcompute ${t1 - t0} ${acc > 0.0}`);
+
+</script>
+</body>

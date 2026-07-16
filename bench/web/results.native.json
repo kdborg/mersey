@@ -2,57 +2,81 @@
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "calls",
+    "ms": 25.50658300000009,
+    "rss": 14369,
+    "checksum": 452320592
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "canvas",
-    "ms": 14,
-    "rss": 27430,
+    "ms": 4.515083000000004,
+    "rss": 16483,
     "checksum": 20000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 102,
-    "rss": 3620,
+    "ms": 100.64479100000005,
+    "rss": 18676,
     "checksum": 1765835917
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 32,
-    "rss": 11701,
+    "ms": 9.145417000000009,
+    "rss": 14062,
     "checksum": 320000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "dom",
-    "ms": 31,
-    "rss": 32720,
+    "ms": 16.067416999999978,
+    "rss": 24280,
     "checksum": 10000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "fcompute",
+    "ms": 119.97770799999995,
+    "rss": 20873,
+    "checksum": null
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "json",
-    "ms": 28,
-    "rss": 9026,
+    "ms": 24.047665999999992,
+    "rss": 24122,
     "checksum": 848890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "mathk",
+    "ms": 36.29358400000007,
+    "rss": 17229,
+    "checksum": null
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "storage",
-    "ms": 79,
-    "rss": 28079,
+    "ms": 57.913749999999936,
+    "rss": 25008,
     "checksum": 208890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 104,
-    "rss": 21566,
+    "ms": 48.038625000000025,
+    "rss": 15317,
     "checksum": 537780
   }
 ]

@@ -30,12 +30,121 @@ use mersey_front::check::{self, DefaultVal, IntKind, Num};
 use mersey_front::parser;
 use mersey_front::source::SourceFile;
 
+pub mod wasmgen;
+
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+fn sig_tag(n: mersey_front::check::Num) -> &'static str {
+    use mersey_front::check::{IntKind, Num};
+    match n {
+        Num::Int(IntKind::U64) => "u64",
+        Num::Int(IntKind::I64) => "i64",
+        Num::Int(IntKind::U32) => "u32",
+        Num::Int(_) => "i32",
+        Num::F32 => "f32",
+        Num::F64 => "f64",
+    }
+}
+
 /// The JS runtime prelude every transpiled module carries.
 pub const RUNTIME: &str = include_str!("rt.js");
 
 pub struct Output {
     pub js: String,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// One self-contained module: runtime prepended, body wrapped in
+    /// $rt.main so an uncaught error prints the engine's line.
+    Single,
+    /// One module of a graph: a real ES module — `import`/`export` statements
+    /// with `mersey-mod:<spec>` placeholder specifiers the loader rewrites to
+    /// blob URLs; $rt is imported from the shared runtime module.
+    Module,
+}
+
+pub struct GraphOutput {
+    /// (spec, js) in the order given (dependency-first from the loader).
+    pub modules: Vec<(String, String)>,
+    pub diagnostics: Vec<String>,
+}
+
+/// Transpile a whole module graph (dependency-first, entry last), checked as
+/// one program so cross-module types resolve — exactly as the engine checks it.
+pub fn transpile_graph(mods: &[(String, String)]) -> GraphOutput {
+    let mut parsed_mods: Vec<(String, &'static Module)> = Vec::new();
+    let mut diagnostics = Vec::new();
+    // The `std:` modules written in Mersey are part of every graph — the
+    // engine embeds them, and so does the JS backend: they are checked AND
+    // emitted, so `import { ok } from "std:result"` links like any module.
+    let mut all: Vec<(String, String)> = Vec::new();
+    for spec in mersey_front::stdlib::source_modules() {
+        if let Some(text) = mersey_front::stdlib::source(spec) {
+            all.push((spec.to_string(), text.to_string()));
+        }
+    }
+    all.extend(mods.iter().cloned());
+    let mods = &all;
+    for (spec, source) in mods {
+        let sf = SourceFile {
+            name: spec.clone(),
+            text: source.clone(),
+        };
+        let parsed = parser::parse(&sf);
+        for d in &parsed.diagnostics {
+            diagnostics.push(format!("{spec}: {d}"));
+        }
+        parsed_mods.push((spec.clone(), Box::leak(Box::new(parsed.module))));
+    }
+    if !diagnostics.is_empty() {
+        return GraphOutput {
+            modules: Vec::new(),
+            diagnostics,
+        };
+    }
+    for (spec, out) in check::check_graph(&parsed_mods) {
+        for d in &out.diagnostics {
+            diagnostics.push(format!("{spec}: {d}"));
+        }
+    }
+    if !diagnostics.is_empty() {
+        return GraphOutput {
+            modules: Vec::new(),
+            diagnostics,
+        };
+    }
+    let modules = parsed_mods
+        .iter()
+        .map(|(spec, module)| {
+            let mut e = Emit {
+                out: String::new(),
+                indent: 0,
+                mode: Mode::Module,
+                spec: spec.clone(),
+                wasm_fns: std::collections::HashSet::new(),
+            };
+            e.module(module);
+            (spec.clone(), e.out)
+        })
+        .collect();
+    GraphOutput {
+        modules,
+        diagnostics: Vec::new(),
+    }
 }
 
 /// Transpile one self-contained module. Diagnostics are the checker's own —
@@ -63,6 +172,9 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
     let mut e = Emit {
         out: String::new(),
         indent: 0,
+        mode: Mode::Single,
+        spec: name.to_string(),
+        wasm_fns: std::collections::HashSet::new(),
     };
     e.module(module);
     let mut js = String::new();
@@ -80,6 +192,10 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
 struct Emit {
     out: String,
     indent: usize,
+    mode: Mode,
+    spec: String,
+    /// Top-level functions the WASM tier compiled: bound from $w, not emitted.
+    wasm_fns: std::collections::HashSet<String>,
 }
 
 impl Emit {
@@ -93,12 +209,88 @@ impl Emit {
         self.out.push_str(s);
     }
 
+    /// Compile the numeric functions to WASM and emit the instantiation +
+    /// bindings. Returns true if a tier was emitted.
+    fn wasm_tier(&mut self, m: &Module) {
+        // A/B switch for measurement (CLI only; the browser build has no env).
+        if std::env::var_os("MERSEY_JS_NO_WASM").is_some() {
+            return;
+        }
+        let fns: Vec<&FnDecl> = m
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Decl(Decl::Function(f)) => Some(f),
+                Item::Export(e) => match &e.kind {
+                    ExportKind::Decl(Decl::Function(f)) => Some(f),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        // Names bound to std:math (aliases included): calls on them are
+        // intrinsic candidates.
+        let mut math_names = std::collections::HashSet::new();
+        for it in &m.items {
+            if let Item::Import(im) = it {
+                if im.from == "std:math" {
+                    if let Some(ImportClause::Named(list)) = &im.clause {
+                        for na in list {
+                            math_names
+                                .insert(na.alias.as_ref().unwrap_or(&na.name).text.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let Some(tier) = wasmgen::compile_with(&fns, &math_names) else {
+            return;
+        };
+        self.nl();
+        self.w("const $w = await $rt.wasm(\"");
+        self.w(&b64(&tier.bytes));
+        self.w("\", [");
+        for (i, ex) in tier.exports.iter().enumerate() {
+            if i > 0 {
+                self.w(", ");
+            }
+            self.w(&format!(
+                "[\"{}\",[{}],{}]",
+                ex.name,
+                ex.params
+                    .iter()
+                    .map(|k| format!("\"{}\"", sig_tag(*k)))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                match ex.ret {
+                    Some(k) => format!("\"{}\"", sig_tag(k)),
+                    None => "null".to_string(),
+                }
+            ));
+            self.wasm_fns.insert(ex.name.clone());
+        }
+        self.w("]);");
+    }
+
     fn module(&mut self, m: &Module) {
-        // The module body runs inside one try, so a thrown error prints the
-        // engine's own "runtime error:" line (the conformance harness compares
-        // stdout+stderr and the exit code).
+        if self.mode == Mode::Module {
+            // A real ES module: $rt from the shared runtime module, imports
+            // and exports at top level, statements run at import time.
+            self.w("import { $rt } from \"mersey-mod:%rt%\";");
+            self.wasm_tier(m);
+            for item in &m.items {
+                self.nl();
+                self.item(item);
+            }
+            self.w("\n");
+            return;
+        }
+        // Single module: the body runs inside one try, so a thrown error
+        // prints the engine's own "runtime error:" line (the conformance
+        // harness compares stdout+stderr and the exit code).
         self.w("$rt.main(async () => {");
         self.indent += 1;
+        self.wasm_tier(m);
         for item in &m.items {
             self.nl();
             self.item(item);
@@ -113,12 +305,35 @@ impl Emit {
             Item::Import(im) => self.import(im),
             Item::Decl(decl) => self.decl(decl),
             Item::Export(e) => match &e.kind {
-                ExportKind::Decl(d) => self.decl(d),
+                ExportKind::Decl(d) => {
+                    if self.mode == Mode::Module && !matches!(d, Decl::Interface(_) | Decl::TypeAlias(_)) {
+                        self.w("export ");
+                    }
+                    self.decl(d);
+                }
                 ExportKind::Var(v) => {
+                    if self.mode == Mode::Module {
+                        self.w("export ");
+                    }
                     self.var(v);
                     self.w(";");
                 }
-                ExportKind::Named { .. } => {}
+                ExportKind::Named { specs, from } => {
+                    if self.mode == Mode::Module && from.is_none() {
+                        self.w("export { ");
+                        for (i, na) in specs.iter().enumerate() {
+                            if i > 0 {
+                                self.w(", ");
+                            }
+                            self.w(&na.name.text);
+                            if let Some(a) = &na.alias {
+                                self.w(" as ");
+                                self.w(&a.text);
+                            }
+                        }
+                        self.w(" };");
+                    }
+                }
             },
             Item::Stmt(s) => self.stmt(s),
         }
@@ -140,7 +355,26 @@ impl Emit {
             Some(ImportClause::Namespace(n)) => vec![("*".to_string(), n.text.clone())],
             None => vec![],
         };
-        if let Some(std_name) = spec.strip_prefix("std:") {
+        if self.mode == Mode::Module
+            && spec.starts_with("std:")
+            && mersey_front::stdlib::source(spec).is_some()
+        {
+            // A std module written in Mersey: a real import; its transpiled
+            // JS is in the graph under its own spec.
+            self.w("import { ");
+            for (i, (name, bound)) in names.iter().enumerate() {
+                if i > 0 {
+                    self.w(", ");
+                }
+                self.w(name);
+                if bound != name {
+                    self.w(" as ");
+                    self.w(bound);
+                }
+            }
+            self.w(&format!(" }} from \"mersey-mod:{spec}\";"));
+            self.nl();
+        } else if let Some(std_name) = spec.strip_prefix("std:") {
             for (name, bound) in &names {
                 if name == "*" {
                     self.w(&format!("const {bound} = $rt.std[\"{std_name}\"];"));
@@ -158,6 +392,35 @@ impl Emit {
                 ));
                 self.nl();
             }
+        } else if self.mode == Mode::Module {
+            // A relative import: a real ES import with a placeholder specifier
+            // the loader rewrites to the module's blob URL. The spec resolves
+            // against this module's own spec, as the engine's loader does.
+            let resolved = mersey_front::graph::resolve_module(&self.spec, spec);
+            match &im.clause {
+                Some(ImportClause::Named(list)) => {
+                    self.w("import { ");
+                    for (i, na) in list.iter().enumerate() {
+                        if i > 0 {
+                            self.w(", ");
+                        }
+                        self.w(&na.name.text);
+                        if let Some(a) = &na.alias {
+                            self.w(" as ");
+                            self.w(&a.text);
+                        }
+                    }
+                    self.w(&format!(" }} from \"mersey-mod:{resolved}\";"));
+                }
+                Some(ImportClause::Namespace(n)) => {
+                    self.w(&format!(
+                        "import * as {} from \"mersey-mod:{resolved}\";",
+                        n.text
+                    ));
+                }
+                None => self.w(&format!("import \"mersey-mod:{resolved}\";")),
+            }
+            self.nl();
         } else {
             self.w(&format!(
                 "throw new TypeError(\"module `{spec}` was not loaded (resolved to `{spec}`)\");"
@@ -176,6 +439,11 @@ impl Emit {
     }
 
     fn fn_decl(&mut self, f: &FnDecl) {
+        if self.wasm_fns.contains(&f.name.text) {
+            // Compiled by the WASM tier; bind the export in its place.
+            self.w(&format!("const {0} = $w.{0};", f.name.text));
+            return;
+        }
         let is_gen = body_has_yield(&f.body);
         self.w(match (f.is_async, is_gen) {
             (true, true) => "async function* ",
@@ -969,9 +1237,22 @@ impl Emit {
                 self.args(args);
             }
             Expr::ImportCall(inner) => {
-                self.w("$rt.dynImport(");
-                self.expr(inner);
-                self.w(")");
+                // A literal specifier resolves now (the graph is closed, §4.5);
+                // the runtime maps it to the module's URL at run time.
+                if let Expr::Lit {
+                    kind: LitKind::Str,
+                    text,
+                    ..
+                } = inner.as_ref()
+                {
+                    let raw = mersey_front::ast::string_value(text);
+                    let resolved = mersey_front::graph::resolve_module(&self.spec, &raw);
+                    self.w(&format!("$rt.dynImport(\"mersey-mod:{resolved}\")"));
+                } else {
+                    self.w("$rt.dynImport(");
+                    self.expr(inner);
+                    self.w(")");
+                }
             }
             Expr::Yield { value, .. } => {
                 self.w("(yield");
@@ -1158,6 +1439,8 @@ impl Emit {
                 self.expr(r);
                 self.w(")");
             }
+            // f64: plain JS arithmetic — no dispatch, the JIT's own fast path.
+            Some(Num::F64) => self.plain(l, r, js),
             _ => {
                 // No numeric op type: string concat, bigint/bigdec arithmetic,
                 // or plain f64. `add` dispatches by value; the rest are f64 or

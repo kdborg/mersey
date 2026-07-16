@@ -226,7 +226,7 @@ const $rt = (() => {
       case "bool": return typeof v === "boolean";
       case "char": return typeof v === "string" && [...v].length === 1;
       case "null": return v === null;
-      case "unknown": return true;
+      case "unknown": case "JsAny": return true;
       case "int": case "int32": case "int8": case "int16":
       case "uint8": case "uint16": case "uint32":
         return typeof v === "number" && Number.isInteger(v);
@@ -607,6 +607,8 @@ const $rt = (() => {
       slice: (b, s, e) => b.slice(s, e),
       toArray: (b) => [...b],
       encodeUtf8: (s) => utf8enc.encode(s),
+      fromHost: (x) => new Uint8Array(x.buffer.slice(x.byteOffset, x.byteOffset + x.byteLength)),
+      toHost: (b) => new Uint8ClampedArray(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)),
       decodeUtf8: (b) => {
         try {
           return new TextDecoder("utf-8", { fatal: true }).decode(b);
@@ -660,8 +662,40 @@ const $rt = (() => {
   }
   const std_regex = { regex: { compile: (p, f) => new MerseyRegex(p, f) } };
 
+  const needCap = (name) => {
+    const allow = globalThis.__merseyAllow;
+    if (!allow || !allow.has(name)) {
+      throw new TypeError(`no \`${name}\` capability (run with --allow-${name})`);
+    }
+  };
+  const std_random = {
+    random: {
+      float: () => {
+        needCap("random");
+        const u = new Uint32Array(2);
+        crypto.getRandomValues(u);
+        // 53 random bits -> [0, 1)
+        return (u[0] * 0x200000 + (u[1] >>> 11)) / 0x20000000000000;
+      },
+      int: (lo, hi) => {
+        needCap("random");
+        const l = BigInt(lo), h = BigInt(hi);
+        const span = h - l + 1n;
+        const u = new BigUint64Array(1);
+        crypto.getRandomValues(u);
+        return l + (u[0] % span);
+      },
+      bytes: (n) => {
+        needCap("random");
+        const b = new Uint8Array(n);
+        crypto.getRandomValues(b);
+        return b;
+      },
+    },
+  };
   const std = {
-    console: std_console, math: std_math, time: std_time, parse: std_parse,
+    console: std_console,
+    random: std_random, math: std_math, time: std_time, parse: std_parse,
     json: std_json, format: std_format, gc: std_gc, caps: std_caps,
     env: std_env, fs: std_fs, async: std_async, bytes: std_bytes,
     regex: std_regex,
@@ -671,7 +705,13 @@ const $rt = (() => {
 
   // browser:dom — bind the real global, or a "not defined" thrower so the
   // error surfaces at USE, not import (feature detection, like the engine).
+  const WEB_NATIVES = {
+    // Handles are GC'd by the JS engine itself; release is free.
+    release: () => {},
+    performance: typeof performance !== "undefined" ? performance : undefined,
+  };
   const web = (name) => {
+    if (name in WEB_NATIVES && WEB_NATIVES[name] !== undefined) return WEB_NATIVES[name];
     if (name in globalThis) return globalThis[name];
     return new Proxy(function () {}, {
       get() { throw new TypeError(`\`${name}\` is not defined`); },
@@ -680,8 +720,42 @@ const $rt = (() => {
     });
   };
 
-  const dynImport = () => {
-    throw new TypeError("dynamic import needs the module-graph loader");
+  // The WASM compute tier: decode, instantiate, and wrap the exports so the
+  // boundary matches Mersey — unsigned results re-normalized, the only
+  // possible trap (integer division by zero) rethrown as the engine's error.
+  const wasm = async (b64, sigs) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const { instance } = await WebAssembly.instantiate(bytes);
+    const out = {};
+    for (const [name, params, ret] of sigs) {
+      const f = instance.exports[name];
+      out[name] = (...a) => {
+        try {
+          const r = f(...a);
+          if (ret === "u32") return r >>> 0;
+          if (ret === "u64") return BigInt.asUintN(64, r);
+          return ret === null ? null : r;
+        } catch (e) {
+          if (e instanceof WebAssembly.RuntimeError) {
+            throw new RangeError("division by zero");
+          }
+          throw e;
+        }
+      };
+    }
+    return out;
+  };
+
+  const dynImport = (spec) => {
+    // A literal specifier was already rewritten to its blob URL by the loader;
+    // anything else resolves through the published module map.
+    if (spec.startsWith("blob:")) return import(spec);
+    const map = globalThis.__merseyModUrls;
+    const url = map && map[spec];
+    if (!url) throw new TypeError(`module \`${spec}\` was not loaded`);
+    return import(url);
   };
 
   const stdGet = (mod) => {
@@ -697,6 +771,6 @@ const $rt = (() => {
     wI64, wU64, wI32, wU32, wI16, wU16, wI8, wU8, wF64,
     cast, castRef, is, eq, add, arith, ord, index, iter, call, get, dflt, kindOf,
     classes, std: new Proxy(std, { get: (t, k) => stdGet(k) }),
-    web, bigdec, dynImport, main, uncaught, print,
+    web, bigdec, dynImport, wasm, main, uncaught, print,
   };
 })();

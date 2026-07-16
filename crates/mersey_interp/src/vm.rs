@@ -117,8 +117,9 @@ impl Chunk {
 }
 
 /// Append a decimal integer straight into a UTF-16 buffer — no String, no
-/// intermediate allocation. The hot case of `${i}` in a template.
-fn append_int_u16(out: &mut Vec<u16>, mut v: i64) {
+/// intermediate allocation. The hot case of `${i}` in a template. `pub(crate)`
+/// so the JIT's string-join shim formats integers exactly as the VM does.
+pub(crate) fn append_int_u16(out: &mut Vec<u16>, mut v: i64) {
     if v < 0 {
         out.push(u16::from(b'-'));
         // i64::MIN negates onto itself; split off the last digit first.

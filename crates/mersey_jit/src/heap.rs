@@ -22,7 +22,8 @@
 use std::rc::Rc;
 
 use mersey_interp::{
-    alloc_instance, array_data, gc::GcCell, instance_slots, Arena, ClassDef, Instance, Value,
+    alloc_instance, append_int_utf16, array_data, gc::GcCell, instance_slots, Arena, ClassDef,
+    Instance, Value, WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -121,6 +122,105 @@ pub(crate) unsafe extern "C" fn cell_arr(cell: *const Value, out: *mut u64) {
         *out = p;
         *out.add(1) = data as u64;
         *out.add(2) = len as u64;
+    }
+}
+
+/// A string slot's data pointer and length, derived at entry from the address
+/// the frame holds — `Rc::as_ptr` of an `Rc<Vec<u16>>`, i.e. a `*const Vec<u16>`.
+/// The wrapper does this once, exactly as it derives an object's fields from its
+/// address, rather than passing the length through the (two-cell) frame. `out`
+/// receives (data pointer, length); a null address gives (0, 0).
+///
+/// # Safety
+/// `p` is null or the address of a live `Vec<u16>` the caller (the arena, after
+/// the OSR clone) holds a reference to for the call.
+pub(crate) unsafe extern "C" fn str_vec_parts(p: *const Vec<u16>, out: *mut u64) {
+    let (data, len) = if p.is_null() {
+        (0u64, 0u64)
+    } else {
+        let v: &Vec<u16> = unsafe { &*p };
+        (v.as_ptr() as u64, v.len() as u64)
+    };
+    unsafe {
+        *out = data;
+        *out.add(1) = len;
+    }
+}
+
+/// One part of a template to join. `kind` 0 is a string (`a` = UTF-16 data
+/// pointer, `b` = length); `kind` 1 is an integer (`a` = the value). Laid out to
+/// match what the codegen writes into a stack slot, one `StrPart` per template
+/// part.
+#[repr(C)]
+pub(crate) struct StrPart {
+    pub kind: i64,
+    pub a: i64,
+    pub b: i64,
+}
+
+/// Build one string from `n` template parts and hand it to the arena — the
+/// compiled form of `TemplateJoin`. This *allocates* (a `Vec<u16>` and its `Rc`),
+/// which almost nothing compiled does; it is sound for the same reason `alloc`
+/// is: the arena owns the result, the handle names it, and the sweep at the end
+/// of the call frees it if compiled code never stored it anywhere lasting. A
+/// string is not GC-tracked (it forms no cycles), so this creates no edge the
+/// cycle collector could see — the collector's graph is unchanged.
+///
+/// Integers are formatted exactly as the VM's `TemplateJoin` (`append_int_utf16`),
+/// so the compiled and interpreted results are byte-identical. `out` receives
+/// (data pointer, length, arena handle).
+///
+/// # Safety
+/// `parts` points at `n` valid `StrPart`s; each string part's `(a, b)` is a live
+/// UTF-16 slice for the call. `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn str_join(
+    arena: *mut Arena,
+    parts: *const StrPart,
+    n: usize,
+    out: *mut u64,
+) {
+    let parts = unsafe { std::slice::from_raw_parts(parts, n) };
+    let mut buf: Vec<u16> = Vec::new();
+    for p in parts {
+        match p.kind {
+            0 => {
+                let s = unsafe { std::slice::from_raw_parts(p.a as *const u16, p.b as usize) };
+                buf.extend_from_slice(s);
+            }
+            1 => append_int_utf16(&mut buf, p.a),
+            _ => {}
+        }
+    }
+    let rc = std::rc::Rc::new(buf);
+    let ptr = rc.as_ptr() as u64;
+    let len = rc.len() as u64;
+    let handle = unsafe { &mut *arena }.keep(Value::Str(rc));
+    unsafe {
+        *out = ptr;
+        *out.add(1) = len;
+        *out.add(2) = handle;
+    }
+}
+
+/// The string a heap cell holds: its UTF-16 data pointer and its length in code
+/// units. Unlike an array or instance a string is a plain `Rc<Vec<u16>>` with no
+/// GC cell, so the data address is read directly. A borrowed const string: its
+/// buffer lives in the chunk's const pool, which outlives the call. `out`
+/// receives (data, len); a cell that is not a string gives (0, 0).
+///
+/// # Safety
+/// As `cell_arr`.
+pub(crate) unsafe extern "C" fn cell_str(cell: *const Value, out: *mut u64) {
+    let (ptr, len) = match unsafe { &*cell } {
+        Value::Str(rc) => {
+            let s: &[u16] = rc;
+            (s.as_ptr() as u64, s.len() as u64)
+        }
+        _ => (0, 0),
+    };
+    unsafe {
+        *out = ptr;
+        *out.add(1) = len;
     }
 }
 
@@ -233,5 +333,278 @@ mod tests {
     #[test]
     fn value_layout_is_what_compiled_code_assumes() {
         assert!(super::layout_holds());
+    }
+}
+
+/// The host-call shims all reach the interpreter through the pointer it set on
+/// the arena for exactly this call (`interp_ptr`).
+///
+/// # Safety
+/// `arena` must point at the live `Arena` the current compiled call was entered
+/// with; the interpreter sets `interp_ptr` before entry and clears it after, and
+/// the interpreter frame that made the call is suspended, so a reentrant
+/// `&mut Interp` here does not alias a live one.
+pub(crate) unsafe extern "C" fn host_time(arena: *mut Arena, epoch: i64) -> f64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_time_ms(epoch != 0),
+            None => 0.0,
+        }
+    }
+}
+
+/// The current handle of a top-level web global (`ctx`, `body`), read live.
+///
+/// # Safety
+/// As `host_time`; `name_ptr`/`name_len` name a valid UTF-8 slice (a string
+/// constant embedded in the compiled body) that outlives the call.
+pub(crate) unsafe extern "C" fn global_web(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_global_web(name),
+            None => 0,
+        }
+    }
+}
+
+/// A numeric-argument web method call whose result is discarded
+/// (`ctx.fillRect(x, y, w, h)`). Returns 0 on success, 1 if it threw (the
+/// interpreter stashed the error and the compiled body then traps).
+///
+/// # Safety
+/// As `global_web`; `args_ptr`/`argc` name a valid `f64` slice for the call.
+pub(crate) unsafe extern "C" fn web_call_num(
+    arena: *mut Arena,
+    target: i64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const f64,
+    argc: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = std::slice::from_raw_parts(args_ptr, argc);
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_call_num(target, name, args),
+            None => 0,
+        }
+    }
+}
+
+/// A numeric-valued web property read (`buf.length`): reuses the interpreter's
+/// `web_get`. Returns the integer, or `i64::MIN` if the read threw (the error is
+/// stashed for `after_jit`).
+///
+/// # Safety
+/// As `web_call_num`; `name_ptr`/`name_len` name a valid UTF-8 slice.
+pub(crate) unsafe extern "C" fn web_get_num(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_get_num(target, id, name),
+            None => 0,
+        }
+    }
+}
+
+/// One argument to a typed web call. `kind` 0 = number (`a` holds the `f64`
+/// bits), 1 = host handle (`a` = handle), 2 = string (`a` = UTF-16 pointer,
+/// `b` = length). Matches what the web-call codegen writes into a stack slot.
+#[repr(C)]
+pub(crate) struct WebArgDesc {
+    pub kind: i64,
+    pub a: i64,
+    pub b: i64,
+}
+
+/// A web method call from compiled code with mixed argument kinds (numbers,
+/// handles, strings) whose result is discarded — `getRandomValues(buf)`,
+/// `appendChild(el)`, `setItem(k, v)`. Decodes the descriptor into `WebArg`s and
+/// hands them to the interpreter's own call path. Same 0/1 return as
+/// `web_call_num`.
+///
+/// # Safety
+/// As `web_call_num`; each string descriptor's `(a, b)` is a live UTF-16 slice
+/// for the call, and `desc`/`argc` name a valid `WebArgDesc` array.
+pub(crate) unsafe extern "C" fn web_call_v(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    desc: *const WebArgDesc,
+    argc: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let descs = std::slice::from_raw_parts(desc, argc);
+        let mut args: Vec<WebArg> = Vec::with_capacity(argc);
+        for d in descs {
+            args.push(match d.kind {
+                0 => WebArg::Num(f64::from_bits(d.a as u64)),
+                1 => WebArg::Ref(d.a),
+                2 => WebArg::Str(std::slice::from_raw_parts(d.a as *const u16, d.b as usize)),
+                _ => WebArg::Null,
+            });
+        }
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_call_args(target, id, name, &args),
+            None => 0,
+        }
+    }
+}
+
+/// A web method call whose result is a string, captured by compiled code
+/// (`getItem(k)`). Same argument descriptor as `web_call_v`; `out` receives
+/// (data pointer, length, arena handle) — all zero for a null result — and the
+/// return is 0 on success, 1 if the call threw. The result string is kept in the
+/// arena so its handle names it and the sweep frees it.
+///
+/// # Safety
+/// As `web_call_v`; `out` points at three writable words.
+pub(crate) unsafe extern "C" fn web_call_str_v(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    desc: *const WebArgDesc,
+    argc: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let descs = std::slice::from_raw_parts(desc, argc);
+        let mut args: Vec<WebArg> = Vec::with_capacity(argc);
+        for d in descs {
+            args.push(match d.kind {
+                0 => WebArg::Num(f64::from_bits(d.a as u64)),
+                1 => WebArg::Ref(d.a),
+                2 => WebArg::Str(std::slice::from_raw_parts(d.a as *const u16, d.b as usize)),
+                _ => WebArg::Null,
+            });
+        }
+        *out = 0;
+        *out.add(1) = 0;
+        *out.add(2) = 0;
+        match (*arena).interp_ptr() {
+            Some(ip) => match (*ip).jit_web_call_str_value(target, id, name, &args) {
+                None => 1, // threw
+                Some(Value::Str(rc)) => {
+                    let s: &[u16] = &rc;
+                    let data = s.as_ptr() as u64;
+                    let len = s.len() as u64;
+                    let handle = (*arena).keep(Value::Str(rc));
+                    *out = data;
+                    *out.add(1) = len;
+                    *out.add(2) = handle;
+                    0
+                }
+                // A host handle (`createElement`): the id itself in the first
+                // word; a `Ty::Web` result reads only that.
+                Some(Value::JsRef(h)) => {
+                    *out = h as u64;
+                    0
+                }
+                // Null or another reply: a null string / null handle (0,0,0).
+                Some(_) => 0,
+            },
+            None => 0,
+        }
+    }
+}
+
+/// A web property set from compiled code (`el.textContent = str`). The value is
+/// one `WebArgDesc`-style triple: `kind` 0 a number (`a` = f64 bits), 2 a string
+/// (`a` = ptr, `b` = len). Same 0/1 return as `web_call_v`.
+///
+/// # Safety
+/// As `web_call_v`; a string value's `(a, b)` is a live UTF-16 slice for the call.
+pub(crate) unsafe extern "C" fn web_set_v(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    kind: i64,
+    a: i64,
+    b: i64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let value = match kind {
+            0 => WebArg::Num(f64::from_bits(a as u64)),
+            2 => WebArg::Str(std::slice::from_raw_parts(a as *const u16, b as usize)),
+            _ => WebArg::Null,
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_set(target, id, name, &value),
+            None => 0,
+        }
+    }
+}
+
+/// The typed-binding fast path (`ctx.fillRect(...)` as a bind id): a numeric web
+/// call that crosses as a compile-time id, not an interned name. `name`/`name_len`
+/// still name the method, used only if the host has no typed binding and the call
+/// falls back to the interned path. Same return protocol as `web_call_num`.
+///
+/// # Safety
+/// As `web_call_num`.
+pub(crate) unsafe extern "C" fn web_bind_call(
+    arena: *mut Arena,
+    target: i64,
+    bind_id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const f64,
+    argc: usize,
+) -> i64 {
+    unsafe {
+        // The fast path, and the reason this binding exists: call the host's
+        // `web_bind` entry *directly*, with no interpreter reentry and no dynamic
+        // `Host` dispatch. The compiled call discards the result, so only a
+        // thrown host error (reply tag 5) needs anything more — and even then
+        // only to build and stash the throw, never a second call to the host.
+        if let Some((f, data)) = (*arena).web_bind_fn() {
+            let mut reply = WebReplyRaw {
+                tag: 0,
+                num: 0.0,
+                str16: std::ptr::null(),
+                str16_len: 0,
+            };
+            f(data, target, bind_id, args_ptr, argc, &mut reply);
+            if reply.tag != 5 {
+                return 0;
+            }
+            let msg: &[u16] = if reply.str16.is_null() || reply.str16_len == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(reply.str16, reply.str16_len)
+            };
+            return match (*arena).interp_ptr() {
+                Some(ip) => (*ip).jit_stash_host_error(msg),
+                None => 1,
+            };
+        }
+        // No direct binding (a host that leaves `web_bind` null): the ordinary
+        // interned path, which is always correct.
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = std::slice::from_raw_parts(args_ptr, argc);
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_bind(target, bind_id, name, args),
+            None => 0,
+        }
     }
 }
