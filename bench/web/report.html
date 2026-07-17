@@ -203,11 +203,13 @@
     <b>The Tier-1 JIT now compiles the web loops.</b> A warm-up pass compiles the function, so the timed
     run enters it already compiled from the top — these bars reflect true compiled speed (canvas fell
     12→6.4&nbsp;ms, crypto 17→9&nbsp;ms once this landed). The web workloads then split cleanly in two.
-    <br><b>Cheap-op loops — native matches or beats JS.</b> Where the per-iteration host op is light and
-    native's direct-C++ path is leaner than V8's binding, removing interpreter dispatch and the per-call
-    intern lets native <i>undercut</i> the JS engine: interleaved A/B shows <b>crypto BEATS JS</b>
-    (native/JS 0.88× median — <code>getRandomValues</code> fills a C++ buffer with no JS typed-array),
-    and <b>canvas matches JS</b> (~1.0–1.17×).
+    <br><b>Pure-engine loops — native beats JS.</b> Where the work is the engine's own — no shared C++
+    backend — removing interpreter dispatch lets native <i>undercut</i> the JS engine: <b>json beats
+    Firefox JS</b> (3.2 vs 3.6&nbsp;ms, the <code>JSON.stringify</code>→template fusion below) and
+    <b>canvas matches it</b> (4.4 vs 4.6&nbsp;ms). <code>crypto</code> is a wash — an interleaved same-build
+    A/B has put native slightly ahead (<code>getRandomValues</code> fills a C++ buffer with no JS
+    typed-array), but the cross-run table has Firefox JS a shade faster (8.1 vs 10.4&nbsp;ms); it is close
+    enough that which side wins depends on the run.
     <br><b>Heavy shared-op loops — parity is the floor.</b> <code>storage</code> (localStorage backend),
     <code>url</code> (Gecko's URL parser) and <code>dom</code> (<code>createElement</code>/<code>appendChild</code>
     build real layout nodes) are dominated by C++ work <i>both engines call identically</i>. The last two
