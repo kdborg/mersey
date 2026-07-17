@@ -1,0 +1,72 @@
+[
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "calls",
+    "ms": 25.105999991297722,
+    "rss": 17626,
+    "checksum": "452320592\","
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": null
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 98.3910000026226,
+    "rss": 20882,
+    "checksum": "1765835917\","
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": null
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": null
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "fcompute",
+    "ms": 111.02099999785423,
+    "rss": 17616,
+    "checksum": "true\","
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 5.795000001788139,
+    "rss": 17346,
+    "checksum": "848890\","
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "mathk",
+    "ms": 32.66799999773502,
+    "rss": 17539,
+    "checksum": "true\","
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": null
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": null
+  }
+]
