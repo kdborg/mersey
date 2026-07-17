@@ -230,11 +230,11 @@
     <span><i class="sw cnative"></i> native·cr — Mersey in the Chromium fork</span>
   </div>
   <p class="note" style="margin:-.2rem 0 .6rem">Chromium native is the same engine in the other fork, with a
-    direct-C++ Blink bridge on the interned typed fast paths — url/dom/crypto now land within
-    <b>~1.3–1.8×</b> of the Firefox fork. <code>storage</code> lives in Blink's modules layer, which the
-    core runner can't depend on directly; a small core→modules hook reaches it (checksum matches, but the
-    adapter re-resolves the store each call, so it's slower for now). <code>canvas</code> is the last
-    <b>n/a</b>, awaiting the same hook. See the Chromium note at the bottom.</p>
+    direct-C++ Blink bridge on the interned typed fast paths — url/dom/crypto/canvas land within
+    <b>~1.3–2.6×</b> of the Firefox fork. <code>storage</code> and <code>canvas</code> live in Blink's
+    modules layer, which the core runner can't depend on directly; a small core→modules hook reaches both
+    (checksums match). <code>storage</code> is the slow one — its adapter re-resolves the store on every
+    call. All six web workloads now run in both forks. See the Chromium note at the bottom.</p>
   <div class="chart" id="timechart"></div>
 
   <h2>Memory per workload</h2>
@@ -320,11 +320,15 @@
         the Gecko fork on <code>calls</code>/<code>compute</code>/<code>fcompute</code>/<code>mathk</code>,
         runs <code>json</code> via the fusion), and its Blink script runner now grows a <em>direct-C++</em>
         web bridge: <code>url</code> (via <code>KURL</code>), <code>dom</code> (createElement/appendChild/
-        textContent on real Blink nodes), and <code>crypto</code> (a native byte buffer +
-        <code>getRandomValues</code>) run — and on the interned typed fast paths (a name crosses once as an id,
-        then scalars cross typed with no JSON) they land at <b>55 / 24 / 18&nbsp;ms</b>, ~1.3–1.8× the Gecko
-        fork's 41/13/10 and checksums verified. <code>storage</code> and <code>canvas</code> live in Blink's
-        <code>modules/</code> layer, which <code>core</code> can't depend on, so they need a core→modules hook.
+        textContent on real Blink nodes), <code>crypto</code> (a native byte buffer +
+        <code>getRandomValues</code>), and <code>canvas</code> (<code>getContext</code>/<code>fillRect</code>)
+        run — and on the interned typed fast paths (a name crosses once as an id, then scalars cross typed
+        with no JSON) url/dom/crypto/canvas land at <b>66 / 25 / 16 / 11&nbsp;ms</b>, ~1.3–2.6× the Gecko
+        fork and checksums verified. <code>storage</code> and <code>canvas</code> live in Blink's
+        <code>modules/</code> layer, which <code>core</code> can't depend on, so both go through a
+        <em>core→modules hook</em> (core declares a function-pointer table; <code>ModulesInitializer</code>
+        fills it). All six web workloads now run in both forks; <code>storage</code> (283&nbsp;ms) is the
+        outlier — its adapter re-resolves the store each call.
         Harness: <code>run-native-chromium.mjs</code>; data: <code>results.native.chromium.json</code>.</li>
     </ul>
   </div>
@@ -338,11 +342,11 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:null,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
     crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5 },
     dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5 },
     json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:243.6,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:282.7,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
     url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
