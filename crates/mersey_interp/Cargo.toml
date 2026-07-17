@@ -7,6 +7,12 @@ description = "Mersey MVP tree-walking interpreter (the bytecode VM replaces thi
 
 [dependencies]
 mersey_front = { path = "../mersey_front" }
+# On-demand native-stack growth for the tree-walker, whose Mersey calls recurse
+# on the Rust stack (the VM/JIT loop instead). Without it the reference tier hits
+# a fixed stack budget dozens of frames in, while the VM reaches MAX_CALL_DEPTH —
+# so the tiers disagreed on deep recursion. `maybe_grow` lets the tree-walker
+# reach the same depth limit. No-ops on targets that cannot grow the stack.
+stacker = "0.1"
 
 [lints]
 workspace = true

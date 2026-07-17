@@ -145,3 +145,52 @@ fn runtime_conformance() {
         failures.join("\n")
     );
 }
+
+/// `JSON.stringify({literal})` is fused into a template by the bytecode compiler
+/// (skipping the record allocation and interpreted serializer). Its output must
+/// be byte-identical to what `JSON.stringify` produces — same key/string escaping
+/// (`webjson`) and same integer formatting. These run on the VM/JIT fused path
+/// (no web bridge needed, since the platform serializer is never called) and are
+/// asserted against hand-written JSON, which is the contract. Escaping edge cases
+/// (`"`, `\`, control chars, non-ASCII) and every bakeable scalar kind plus a
+/// dynamic int are covered.
+#[test]
+fn json_stringify_fusion_matches_spec() {
+    let cases: &[(&str, &str)] = &[
+        // The web benchmark's shape: constant string, dynamic int, constant bool.
+        (
+            r#"const i = 7; console.log(JSON.stringify({ lang: "mersey", version: i, ok: true }));"#,
+            r#"{"lang":"mersey","version":7,"ok":true}"#,
+        ),
+        // Every bakeable scalar kind, in source order (which the fusion preserves).
+        (
+            r#"console.log(JSON.stringify({ s: "x", n: 100, b: false, z: null }));"#,
+            r#"{"s":"x","n":100,"b":false,"z":null}"#,
+        ),
+        // String escaping must match `webjson::write_char`: quote, backslash,
+        // newline and tab.
+        (
+            r#"console.log(JSON.stringify({ t: "a\"b\\c\n\td" }));"#,
+            "{\"t\":\"a\\\"b\\\\c\\n\\td\"}",
+        ),
+        // Non-ASCII passes through raw (JSON permits it), as `pure_json` does.
+        (
+            r#"console.log(JSON.stringify({ e: "héllo→" }));"#,
+            r#"{"e":"héllo→"}"#,
+        ),
+        // Multiple dynamic ints interleaved with constants.
+        (
+            r#"const a = 1; const b = 20000; console.log(JSON.stringify({ p: a, q: "mid", r: b }));"#,
+            r#"{"p":1,"q":"mid","r":20000}"#,
+        ),
+    ];
+    for (src, want) in cases {
+        let prog = format!("import {{ console }} from \"std:console\";\nimport {{ JSON }} from \"browser:dom\";\n{src}\n");
+        let want_line = format!("{want}\n");
+        // Both the VM and the AST tree-walker compile through the same bytecode
+        // compiler for the record… but only the VM path uses the fused template;
+        // run the VM path and hold it to the written contract.
+        let vm_out = run_program_with(prog.as_bytes(), "json-fusion.mersey", true);
+        assert_eq!(vm_out, want_line, "VM fused JSON for: {src}");
+    }
+}

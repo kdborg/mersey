@@ -555,6 +555,91 @@ pub(crate) unsafe extern "C" fn web_set_v(
     }
 }
 
+/// A host constructor from compiled code (`new URL(s)`). Decodes the argument
+/// descriptor (as `web_call_v`) and hands it to the interpreter's `web_new`; the
+/// resulting handle is written to `out[0]` (0 for a null result), and the return
+/// is 0 on success, 1 if it threw. `id` is the pre-interned constructor id, or
+/// `u32::MAX` to intern `name` lazily.
+///
+/// # Safety
+/// As `web_call_v`; `out` points at one writable word.
+pub(crate) unsafe extern "C" fn web_new_v(
+    arena: *mut Arena,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    desc: *const WebArgDesc,
+    argc: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let descs = std::slice::from_raw_parts(desc, argc);
+        let mut args: Vec<WebArg> = Vec::with_capacity(argc);
+        for d in descs {
+            args.push(match d.kind {
+                0 => WebArg::Num(f64::from_bits(d.a as u64)),
+                1 => WebArg::Ref(d.a),
+                2 => WebArg::Str(std::slice::from_raw_parts(d.a as *const u16, d.b as usize)),
+                _ => WebArg::Null,
+            });
+        }
+        *out = 0;
+        match (*arena).interp_ptr() {
+            Some(ip) => match (*ip).jit_web_new_value(id, name, &args) {
+                None => 1, // threw
+                Some(Value::JsRef(h)) => {
+                    *out = h as u64;
+                    0
+                }
+                Some(_) => 0, // null / non-handle: a null handle
+            },
+            None => 0,
+        }
+    }
+}
+
+/// A string-valued web property read from compiled code (`url.pathname`). Like
+/// `web_get_num`, but the result is a string: `out` receives (data pointer,
+/// length, arena handle), all zero for a null result, and the return is 0 on
+/// success, 1 if the read threw. The string is kept in the arena so its handle
+/// names it for the sweep.
+///
+/// # Safety
+/// As `web_get_num`; `out` points at three writable words.
+pub(crate) unsafe extern "C" fn web_get_str_v(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        *out = 0;
+        *out.add(1) = 0;
+        *out.add(2) = 0;
+        match (*arena).interp_ptr() {
+            Some(ip) => match (*ip).jit_web_get_str_value(target, id, name) {
+                None => 1, // threw
+                Some(Value::Str(rc)) => {
+                    let s: &[u16] = &rc;
+                    let data = s.as_ptr() as u64;
+                    let len = s.len() as u64;
+                    let handle = (*arena).keep(Value::Str(rc));
+                    *out = data;
+                    *out.add(1) = len;
+                    *out.add(2) = handle;
+                    0
+                }
+                Some(_) => 0, // null / non-string: a null string
+            },
+            None => 0,
+        }
+    }
+}
+
 /// The typed-binding fast path (`ctx.fillRect(...)` as a bind id): a numeric web
 /// call that crosses as a compile-time id, not an interned name. `name`/`name_len`
 /// still name the method, used only if the host has no typed binding and the call

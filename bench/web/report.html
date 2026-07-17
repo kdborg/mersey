@@ -210,9 +210,12 @@
     and <b>canvas matches JS</b> (~1.0–1.17×).
     <br><b>Heavy shared-op loops — parity is the floor.</b> <code>storage</code> (localStorage backend),
     <code>url</code> (Gecko's URL parser) and <code>dom</code> (<code>createElement</code>/<code>appendChild</code>
-    build real layout nodes) are dominated by C++ work <i>both engines call identically</i>. Their loops
-    compile correctly now, but that removes only the ~180&nbsp;ns of dispatch on top of a ~1–2&nbsp;µs
-    shared op, so they stay ~2×. That gap is the shared platform work, not the engine.
+    build real layout nodes) are dominated by C++ work <i>both engines call identically</i>. The last two
+    now compile the <em>whole</em> loop: the JIT learned <code>new URL(s)</code> and string component reads
+    (<code>url.pathname</code>/<code>search</code>), and that a handle cast (<code>el as HTMLElement</code>)
+    is a no-op — the ops that used to bail the function to the interpreter. Removing that dispatch took
+    <b>url 51→41 and dom 14→13&nbsp;ms</b>, but it is only ~180&nbsp;ns saved on top of a ~1–2&nbsp;µs shared
+    op, so they stay ~1.5–2×. That remaining gap is the shared platform work, not the engine.
     <br>On <b>compute</b>, native <i>beats</i> JS (103 vs 111&nbsp;ms) — no bindings, no shared backend —
     and the JIT's <code>std:math</code> intrinsics took <code>mathk</code> from 1913&nbsp;ms (interpreted)
     to <b>36&nbsp;ms (~53×)</b>.</p>
@@ -255,7 +258,15 @@
     textContent never enter JS at all (canvas 21→15&nbsp;ms). Separately,
     <code>JSON.stringify/parse</code> on pure data is now served by the <b>engine's own writer</b> — no
     bridge call, no double serialization (json 88→28&nbsp;ms) — and the interpreter fused template strings
-    into a single-allocation join (1.4× on interpolation-heavy loops). The latest step closes the last big
+    into a single-allocation join (1.4× on interpolation-heavy loops). The last json step goes further:
+    the compiler now <b>fuses <code>JSON.stringify({literal})</code> straight into template bytecode</b> at
+    compile time — the constant keys and scalar values are baked into string fragments (byte-for-byte the
+    same escaping the writer uses), and integer fields become dynamic parts — so the object literal is never
+    built and the serializer never runs. What was an interpreted record-allocate-then-serialize loop is now
+    a <b>Tier-1 JIT-compiled string join</b>, and json drops <b>24→3.3&nbsp;ms — under Firefox's own
+    <code>JSON.stringify</code> (3.6&nbsp;ms)</b>. The fusion is guarded by the type checker (only the real
+    JSON global, only bakeable-constant or int32/int64 fields), so a shadowed <code>JSON</code> or a
+    dynamic-string field falls back to the writer unchanged. The latest step closes the last big
     gap: <b>object <em>creation</em> stays in C++ too</b>. <code>new URL(s)</code>, <code>createElement</code>
     and <code>new Uint8Array(n)</code> build the Gecko object (or a byte buffer) directly and hand back a
     <em>negative handle</em> that never enters JS — every subsequent read (<code>url.pathname</code>,
@@ -309,12 +320,12 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.5,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:9.1,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:16.1,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:24.0,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:57.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:48.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.

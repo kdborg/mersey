@@ -1087,9 +1087,6 @@ pub struct Interp {
     /// interfaces, wanted only for their type — but *using* one as a value is
     /// the error, and this is what makes that error say why.
     absent_globals: HashSet<String>,
-    /// Stack address at the last host boundary — the base the budget measures
-    /// growth from. See `STACK_BUDGET`.
-    stack_base: usize,
     /// Execute compiled bytecode where available (Tier 0); AST fallback
     /// otherwise. Off = pure tree-walking (differential-test oracle).
     pub use_vm: bool,
@@ -1388,6 +1385,13 @@ pub trait JitEnv {
     /// current one.
     fn is_web_global(&self, name: &str) -> bool;
 
+    /// True if `new name(...)` would go to the host constructor path (`web_new`)
+    /// rather than instantiate a Mersey class — i.e. `name` is not a plain class
+    /// binding, is not a namespaced path, and is not the `Map`/`Set` builtin.
+    /// Mirrors `new_named` exactly so the compiled `new` throws or succeeds where
+    /// the interpreter would.
+    fn new_is_web(&self, name: &str) -> bool;
+
     /// True if `name` is bound to the `std:math` namespace. Its numeric methods
     /// (`sqrt`, `floor`, `min`, …) lower to machine instructions instead of a
     /// call, so a math-heavy loop compiles rather than bailing the whole
@@ -1497,6 +1501,20 @@ impl JitEnv for InterpEnv<'_> {
     }
     fn is_web_global(&self, name: &str) -> bool {
         matches!(env_get(&self.i.globals, name), Some(Value::JsRef(_)))
+    }
+    fn new_is_web(&self, name: &str) -> bool {
+        // A namespaced `new geo.Point(…)` resolves through an import; leave it to
+        // the interpreter.
+        if name.contains('.') {
+            return false;
+        }
+        // `Map`/`Set` with no binding are the builtin containers, not host `new`.
+        if (name == "Map" || name == "Set") && env_get(&self.i.globals, name).is_none() {
+            return false;
+        }
+        // Anything not bound to a Mersey class goes to `web_new` (a bound URL,
+        // WebSocket, Uint8Array, or an unbound name the host may still know).
+        !matches!(env_get(&self.i.globals, name), Some(Value::Class(_)))
     }
     fn is_math_ns(&self, name: &str) -> bool {
         matches!(env_get(&self.i.globals, name),
@@ -1779,7 +1797,6 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         pending_graph: None,
         lazy_modules: HashMap::new(),
         absent_globals: HashSet::new(),
-        stack_base: stack_here(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
@@ -2089,8 +2106,6 @@ impl Interp {
     /// Execute a module graph (dependency-first). Each module gets its own
     /// scope; imports link to the exporting module's evaluated bindings.
     pub fn run_graph(&mut self, modules: Vec<(String, &'static Module)>) -> Result<(), Thrown> {
-        // The host may call in at any stack depth: measure growth from here.
-        self.stack_base = stack_here();
         self.run_modules(modules)?;
         self.maybe_collect();
         Ok(())
@@ -2219,8 +2234,6 @@ impl Interp {
     }
 
     pub fn run_module(&mut self, module: &'static Module) -> Result<(), Thrown> {
-        // The host may call in at any stack depth: measure growth from here.
-        self.stack_base = stack_here();
         self.run_module_inner(module)?;
         Ok(())
     }
@@ -2824,8 +2837,6 @@ impl Interp {
 
     /// Driver entry point for host event callbacks (Stage A DOM events).
     pub fn invoke_callback(&mut self, id: u32) -> Result<(), Thrown> {
-        // The host may call in at any stack depth: measure growth from here.
-        self.stack_base = stack_here();
         let cb = match self.callbacks.get(id as usize) {
             Some(v) => v.clone(),
             None => return self.type_error(format!("unknown callback #{id}")),
@@ -3189,16 +3200,27 @@ impl Interp {
     // ---- calls --------------------------------------------------------------------
 
     fn call_closure(&mut self, c: &Closure, args: Vec<Value>) -> VResult {
-        // Both tiers recurse on the Rust stack for a Mersey call, so unbounded
-        // Mersey recursion would overflow it — and a stack overflow is a
-        // process abort, not an exception a program can handle. In a renderer
-        // that is a crash on hostile input (§5.2), so the depth is a budget the
-        // engine enforces: past it, an ordinary catchable error.
-        if self.depth >= MAX_CALL_DEPTH || self.stack_base.abs_diff(stack_here()) > STACK_BUDGET {
+        // The tree-walker recurses on the Rust stack for a Mersey call (the VM
+        // and JIT loop instead, and reach `MAX_CALL_DEPTH`). Unbounded recursion
+        // would overflow the Rust stack — a process abort, not a catchable
+        // exception — so the depth is a budget the engine enforces: past it, an
+        // ordinary `RangeError`. `MAX_CALL_DEPTH` is the single limit both tiers
+        // share, so they agree on exactly which recursions throw.
+        if self.depth >= MAX_CALL_DEPTH {
             return Err(self.throw("RangeError", "maximum call depth exceeded"));
         }
         self.depth += 1;
-        let out = self.call_closure_inner(c, args);
+        // Grow the native stack on demand so the tree-walker can actually reach
+        // `MAX_CALL_DEPTH`: its per-Mersey-frame Rust stack is large (a match arm
+        // over every expression/statement), so a fixed stack would run out dozens
+        // of frames in — long before the depth limit, and long before the VM
+        // does. `maybe_grow` allocates a fresh segment only when the remaining
+        // stack dips below the red zone; on targets that cannot grow, it runs in
+        // place (the depth limit still bounds recursion). Chosen so a segment
+        // holds many frames and the red zone clears several.
+        let out = stacker::maybe_grow(512 * 1024, 4 * 1024 * 1024, || {
+            self.call_closure_inner(c, args)
+        });
         self.depth -= 1;
         out
     }
@@ -3648,6 +3670,75 @@ impl Interp {
             Err(t) => {
                 self.jit_host_error = Some(t);
                 1
+            }
+        }
+    }
+
+    /// A host-constructor call from compiled code (`new URL(s)`). Interns the
+    /// constructor name (or uses a pre-interned id), takes the same wide-arg
+    /// `web_new` path the interpreter's `new_named` reaches for any non-class
+    /// name, and returns the resulting handle value. `None` on a throw (stashed).
+    pub fn jit_web_new_value(&mut self, id: u32, name: &str, args: &[WebArg]) -> Option<Value> {
+        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        if let Some(id) = id {
+            if let Some(reply) = self.host.web_new_u16(id, args) {
+                return match reply {
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        None
+                    }
+                    other => match self.value_from_reply(other) {
+                        Ok(v) => Some(v),
+                        Err(t) => {
+                            self.jit_host_error = Some(t);
+                            None
+                        }
+                    },
+                };
+            }
+        }
+        // The wide path is unavailable: fall back to the interpreter's own
+        // `new_named`/`web_new` (UTF-8 scalar or reflective), so behaviour is
+        // identical to the uncompiled call.
+        let vals: Vec<Value> = args.iter().map(webarg_to_value).collect();
+        match self.web_new(name, vals) {
+            Ok(v) => Some(v),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                None
+            }
+        }
+    }
+
+    /// A string-valued web property read from compiled code (`url.pathname`).
+    /// Reuses the interpreter's `web_get`; a non-string or missing result comes
+    /// back as `None`-string (the compiled site only asks for properties known to
+    /// return strings). `None` signals a throw (stashed for `after_jit`).
+    pub fn jit_web_get_str_value(&mut self, target: i64, id: u32, name: &str) -> Option<Value> {
+        if id != u32::MAX {
+            if let Some(reply) = self.host.web_get_u16(target, id) {
+                return match reply {
+                    WebReply::Err(msg) => {
+                        let t = self.throw("Error", msg);
+                        self.jit_host_error = Some(t);
+                        None
+                    }
+                    other => match self.value_from_reply(other) {
+                        Ok(v) => Some(v),
+                        Err(t) => {
+                            self.jit_host_error = Some(t);
+                            None
+                        }
+                    },
+                };
+            }
+        }
+        match self.web_get(target, name) {
+            Ok(v) => Some(v),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                None
             }
         }
     }
@@ -6972,8 +7063,6 @@ impl Interp {
 
     /// Fire a callback with host-supplied arguments (event objects etc.).
     pub fn invoke_callback_json(&mut self, id: u32, args_json: &str) -> Result<(), Thrown> {
-        // The host may call in at any stack depth: measure growth from here.
-        self.stack_base = stack_here();
         let args = match webjson::parse(args_json) {
             Some(Json::Arr(items)) => items.iter().map(|i| self.from_web(i)).collect(),
             _ => Vec::new(),
@@ -8031,30 +8120,13 @@ fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>
 }
 
 /// Every name a pattern binds (`let [a, b] = …`, `let {x} = …`).
-/// A hard cap on Mersey call depth, as a backstop to the stack-usage guard
-/// below. It exists so the limit is *deterministic* — the same program throws
-/// at the same depth regardless of build or platform.
+/// A hard cap on Mersey call depth: the single limit every tier enforces, so a
+/// program throws `RangeError` at the same depth on the tree-walker, the VM, and
+/// the JIT alike. The tree-walker recurses on the Rust stack and grows it on
+/// demand (`stacker::maybe_grow` in `call_closure`) to actually reach this depth;
+/// the VM/JIT loop and count frames directly. It is deterministic by design —
+/// the same program throws at the same depth regardless of build or platform.
 const MAX_CALL_DEPTH: usize = 3_000;
-
-/// How much Rust stack the engine will let a Mersey program consume before it
-/// throws.
-///
-/// Counting frames is the obvious guard and the wrong one: a debug build's
-/// interpreter frames are several times fatter than a release build's, and a
-/// browser worker's stack is a fraction of a native thread's — so any fixed
-/// frame count is either uselessly small somewhere or fatally large somewhere
-/// else. What actually matters is bytes, so the engine measures them: it notes
-/// the stack address at the host boundary and compares against it on every
-/// call. 512 KB fits inside the smallest stack the engine runs on (a browser
-/// worker's, once the host has taken its share) with room for the deepest
-/// single frame to complete.
-const STACK_BUDGET: usize = 512 * 1024;
-
-/// The current stack address, near enough for a budget check.
-fn stack_here() -> usize {
-    let probe = 0u8;
-    std::hint::black_box(&probe) as *const u8 as usize
-}
 
 /// Resolve an `at`-style index against a length: negative counts from the end,
 /// and anything outside the range is `None` rather than a panic or a wrap.

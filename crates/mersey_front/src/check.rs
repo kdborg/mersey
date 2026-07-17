@@ -84,6 +84,40 @@ thread_local! {
     /// address of its declared `TypeExpr`. See [`DefaultVal`].
     static DEFAULTS: RefCell<std::collections::HashMap<usize, DefaultVal>> =
         RefCell::new(std::collections::HashMap::new());
+    /// Call nodes the checker proved are `<the JSON global>.stringify(...)` —
+    /// the receiver's static type is [`Type::Namespace(Ns::Json)`], so this is
+    /// the real `JSON`, not a value that happens to be spelled `JSON`. Keyed by
+    /// the address of the callee (the `JSON.stringify` member expression). The
+    /// bytecode compiler reads this to fuse a stringify of an object literal into
+    /// a template, soundly: a shadowed `JSON` never lands here.
+    static JSON_STRINGIFY: RefCell<std::collections::HashSet<usize>> =
+        RefCell::new(std::collections::HashSet::new());
+    /// Record-field value expressions the checker proved are `int32`/`int64`,
+    /// inside a fusable `JSON.stringify({literal})`. Their decimal template
+    /// rendering is byte-identical to `JSON`'s, so the compiler may emit them as
+    /// dynamic template parts. Keyed by the value expression's address.
+    static JSON_DYN_INT: RefCell<std::collections::HashSet<usize>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Record that this callee is a genuine `JSON.stringify` (receiver typed
+/// `Namespace(Ns::Json)`) whose sole object-literal argument is fully fusable,
+/// keyed by the callee expression's address.
+fn note_json_stringify(callee: &Expr) {
+    JSON_STRINGIFY.with(|m| m.borrow_mut().insert(node_id(callee)));
+}
+
+/// Whether this callee is a genuine, fusable `JSON.stringify` the checker
+/// resolved against the real JSON global. Sound: a local shadowing `JSON` has a
+/// different static type and is never recorded here.
+pub fn is_json_stringify(callee: &Expr) -> bool {
+    JSON_STRINGIFY.with(|m| m.borrow().contains(&node_id(callee)))
+}
+
+/// Whether this record-field value is an `int32`/`int64` the checker authorized
+/// as a dynamic template part in a fused `JSON.stringify`.
+pub fn is_json_dyn_int(value: &Expr) -> bool {
+    JSON_DYN_INT.with(|m| m.borrow().contains(&node_id(value)))
 }
 
 /// What an uninitialized binding holds the moment it exists.
@@ -5578,6 +5612,22 @@ impl Checker {
         // console/document natives get bespoke signatures.
         if let Expr::Member { obj, name, .. } = callee {
             let ot = self.check_expr(obj, None);
+            // `JSON.stringify({literal})` where the receiver is statically the
+            // JSON global — either `std:json` (`Namespace(Ns::Json)`) or the
+            // `browser:dom` `__JSON` interface object. Check the argument once,
+            // then (if every field is a bakeable constant or an int32/int64)
+            // authorize the compiler to fuse it into a template. Non-fusable
+            // shapes fall through to the ordinary path unmarked.
+            let is_json_global = match strip_null(&ot) {
+                Type::Namespace(Ns::Json) => true,
+                Type::Iface(iid, _) => self.ifaces[iid].name == "__JSON",
+                _ => false,
+            };
+            if is_json_global && name == "stringify" && args.len() == 1 && !args[0].spread {
+                let arg_ty = self.check_expr(&args[0].expr, None);
+                self.try_authorize_json_fusion(callee, &args[0].expr, &arg_ty);
+                return Type::Str;
+            }
             match (&strip_null(&ot), name.as_str()) {
                 (Type::Namespace(Ns::Console), "log") => {
                     for a in args {
@@ -5627,6 +5677,52 @@ impl Checker {
         }
         let fty = self.check_expr(callee, None);
         self.invoke(&fty, type_args, args, pos_of(callee), optional)
+    }
+
+    /// Decide whether `JSON.stringify(arg)` may be fused into a template, and if
+    /// so record the authorization. Fusable only when `arg` is an object literal
+    /// whose every field is either a bakeable scalar literal (string, bool, null,
+    /// integer) or a dynamic value the checker typed `int32`/`int64` — the only
+    /// dynamic values whose decimal template rendering is byte-identical to what
+    /// `JSON.stringify` would emit. `arg_ty` is the record's already-checked type,
+    /// carrying the per-field types this decision needs.
+    fn try_authorize_json_fusion(&mut self, callee: &Expr, arg: &Expr, arg_ty: &Type) {
+        let Expr::Record(fields) = arg else { return };
+        let Type::Record(fs) = strip_null(arg_ty) else {
+            return;
+        };
+        let mut dyn_ints: Vec<usize> = Vec::new();
+        for f in fields {
+            let RecordField::Named { name, value } = f else {
+                return; // a spread field — bail
+            };
+            // A bakeable scalar literal (string, bool, null, integer) is const-folded
+            // into the template fragment by the compiler; nothing to authorize.
+            let is_bakeable_lit = matches!(
+                value,
+                Some(Expr::Lit { kind, .. })
+                    if matches!(kind, LitKind::Str | LitKind::Bool | LitKind::Null | LitKind::Int)
+            );
+            if is_bakeable_lit {
+                continue;
+            }
+            // Otherwise the value must render as an int32/int64. Look its checked
+            // type up by name — `Type::Record` does not preserve source order.
+            let Some(v) = value else { return }; // `{ x }` shorthand — bail
+            let Some(rf) = fs.iter().find(|rf| rf.name == name.text) else {
+                return;
+            };
+            match num_of(&strip_null(&rf.ty)) {
+                Some(Num::Int(IntKind::I32)) | Some(Num::Int(IntKind::I64)) => {
+                    dyn_ints.push(node_id(v));
+                }
+                _ => return,
+            }
+        }
+        for id in dyn_ints {
+            JSON_DYN_INT.with(|m| m.borrow_mut().insert(id));
+        }
+        note_json_stringify(callee);
     }
 
     /// If `name` has WebIDL overloads (`name$1`, `name$2`, …), pick the first

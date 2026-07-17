@@ -468,6 +468,16 @@ struct Plan {
     /// A numeric-valued web property read (`buf.length`) → `web_get_num`:
     /// (property name, pre-interned id or `u32::MAX`).
     web_get_at: HashMap<usize, (&'static str, u32)>,
+    /// A string-valued web property read (`url.pathname`) → `web_get_str_v`,
+    /// captured as a `Ty::Str`. (property name, pre-interned id or `u32::MAX`).
+    web_get_str_at: HashMap<usize, (&'static str, u32)>,
+    /// A host-constructor `new` (`new URL(s)`) → `web_new_v`, result captured as
+    /// a `Ty::Web` handle. (constructor name, pre-interned id or `u32::MAX`,
+    /// argument kinds).
+    web_new_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)>,
+    /// A cast of a host handle to a reference type (`createElement(…) as
+    /// HTMLElement`): a runtime no-op, the handle passes straight through.
+    cast_web: std::collections::HashSet<usize>,
     /// A web property set (`el.textContent = str`): (property name, id, value
     /// type — `Str` or a numeric).
     web_set_at: HashMap<usize, (&'static str, u32, Ty)>,
@@ -565,6 +575,54 @@ fn web_returns_handle(method: &str) -> bool {
     )
 }
 
+/// A primitive type name a cast converts to or rejects (numbers, `string`,
+/// `bool`, `char`, `bigint`, `bigdec`). Anything else is a reference name (a
+/// class or a web interface), and casting a host handle to one is a runtime
+/// no-op — the interpreter passes the handle straight through.
+fn is_scalar_cast_target(name: &str) -> bool {
+    matches!(
+        name,
+        "int8"
+            | "int16"
+            | "int32"
+            | "int"
+            | "int64"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint"
+            | "uint64"
+            | "float32"
+            | "float64"
+            | "string"
+            | "bool"
+            | "char"
+            | "bigint"
+            | "bigdec"
+    )
+}
+
+/// Web properties whose value is a string, so a compiled read captures a
+/// `Ty::Str`. As `web_returns_string`, the host verifies the receiver and a
+/// same-named property returning something else would come back a null string —
+/// so the set is the URL/Location components, which are unambiguously strings.
+fn web_prop_is_string(name: &str) -> bool {
+    matches!(
+        name,
+        "pathname"
+            | "search"
+            | "href"
+            | "hash"
+            | "host"
+            | "hostname"
+            | "protocol"
+            | "port"
+            | "origin"
+            | "username"
+            | "password"
+    )
+}
+
 /// A web-call/get/set receiver: a hoisted global (`TSlot::Web`) or a handle
 /// value (`Ty::Web`, e.g. an element from `createElement`).
 fn is_web_recv(t: &TSlot) -> bool {
@@ -647,10 +705,13 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut web_call_str_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
     let mut web_call_ref_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
     let mut web_get_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut web_get_str_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut web_new_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
     let mut web_set_at: HashMap<usize, (&'static str, u32, Ty)> = HashMap::new();
     let mut math_ns_names: std::collections::HashSet<u16> = std::collections::HashSet::new();
     let mut math_at: HashMap<usize, MathOp> = HashMap::new();
     let mut cast_f64: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut cast_web: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut block_types: HashMap<usize, Vec<Ty>> = HashMap::new();
     let mut ret: Option<Ty> = if sig.void { None } else { Some(sig.ret) };
 
@@ -774,6 +835,34 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // import discards this code wholesale.
             Op::NewNamed(ni, argc) => {
                 let name = chunk.names[ni as usize].as_str();
+                // A host constructor (`new URL(s)`): not a Mersey class, so it
+                // takes the `web_new` path and hands back a `Ty::Web` handle. The
+                // arguments cross as `WebArg`s, exactly like a `web_call_v` call.
+                if g.env.class_for_new(name).is_none() && g.env.new_is_web(name) {
+                    let mut arg_slots: Vec<TSlot> = Vec::with_capacity(argc as usize);
+                    for _ in 0..argc {
+                        arg_slots.push(stack.pop()?);
+                    }
+                    arg_slots.reverse();
+                    let mut kinds: Vec<ArgKind> = Vec::with_capacity(argc as usize);
+                    for a in &arg_slots {
+                        let k = if matches!(a, TSlot::Web(_)) || tval(*a) == Some(Ty::Web) {
+                            ArgKind::Ref
+                        } else if tval(*a) == Some(Ty::Str) {
+                            ArgKind::Str
+                        } else if tval(*a).map(|t| t.is_num()).unwrap_or(false) {
+                            ArgKind::Num
+                        } else {
+                            return None;
+                        };
+                        kinds.push(k);
+                    }
+                    let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                    let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                    web_new_at.insert(pc, (nm, id, kinds));
+                    stack.push(TSlot::Val(Ty::Web, Prov::Stable));
+                    continue;
+                }
                 let cls = g.env.class_for_new(name)?;
                 let ci = g.class_idx(&cls);
                 let ctor = g.env.ctor(&cls)?;
@@ -857,12 +946,20 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // A property of a host object (`buf.length`). Only integer-valued
                 // properties are lowered — a string or handle property would need
                 // the checker's type here; `length` is always an integer.
-                if let TSlot::Web(_) = base {
+                if is_web_recv(&base) {
                     if name == "length" {
                         let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
                         let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
                         web_get_at.insert(pc, (nm, id));
                         stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                        continue;
+                    }
+                    // A string component of a host object (`url.pathname`).
+                    if web_prop_is_string(name) {
+                        let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                        let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                        web_get_str_at.insert(pc, (nm, id));
+                        stack.push(TSlot::Val(Ty::Str, Prov::Stable));
                         continue;
                     }
                     return None;
@@ -1135,7 +1232,23 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // throw. Int targets (which `as` may throw or wrap on) and float32
             // (no register type) are left to the interpreter.
             Op::CastOp(ti, _) => {
-                let src = tval(stack.pop()?)?;
+                let base = stack.pop()?;
+                // A host handle cast to a reference type (`el as HTMLElement`) is
+                // a no-op: the interpreter passes the handle through unchanged.
+                // Only a scalar target would convert or throw — leave those to it.
+                if matches!(base, TSlot::Web(_)) || tval(base) == Some(Ty::Web) {
+                    match chunk.types[ti as usize] {
+                        mersey_front::ast::TypeExpr::Named { name, .. }
+                            if !is_scalar_cast_target(name) =>
+                        {
+                            cast_web.insert(pc);
+                            stack.push(TSlot::Val(Ty::Web, Prov::Stable));
+                            continue;
+                        }
+                        _ => return None,
+                    }
+                }
+                let src = tval(base)?;
                 if !src.is_num() {
                     return None;
                 }
@@ -1284,10 +1397,13 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         web_call_str_at,
         web_call_ref_at,
         web_get_at,
+        web_get_str_at,
+        web_new_at,
         web_set_at,
         math_ns_names,
         math_at,
         cast_f64,
+        cast_web,
         depths,
         block_types,
         ret: ret.unwrap_or(sig.ret),
@@ -1356,6 +1472,8 @@ struct Shims {
     str_join: FuncId,
     str_vec_parts: FuncId,
     web_get_num: FuncId,
+    web_get_str_v: FuncId,
+    web_new_v: FuncId,
     web_call_v: FuncId,
     web_call_str_v: FuncId,
     web_set_v: FuncId,
@@ -1411,6 +1529,8 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_join", heap::str_join as *const u8);
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
     builder.symbol("msy_web_get_num", heap::web_get_num as *const u8);
+    builder.symbol("msy_web_get_str_v", heap::web_get_str_v as *const u8);
+    builder.symbol("msy_web_new_v", heap::web_new_v as *const u8);
     builder.symbol("msy_web_call_v", heap::web_call_v as *const u8);
     builder.symbol("msy_web_call_str_v", heap::web_call_str_v as *const u8);
     builder.symbol("msy_web_set_v", heap::web_set_v as *const u8);
@@ -1672,6 +1792,10 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         str_join: one("msy_str_join", None, 4)?,
         str_vec_parts: one("msy_str_vec_parts", None, 2)?,
         web_get_num: one("msy_web_get_num", Some(types::I64), 5)?,
+        // (arena, target, id, name_ptr, name_len, out) -> writes (ptr, len, handle)
+        web_get_str_v: one("msy_web_get_str_v", Some(types::I64), 6)?,
+        // (arena, id, name_ptr, name_len, desc, argc, out) -> writes the handle
+        web_new_v: one("msy_web_new_v", Some(types::I64), 7)?,
         web_call_v: one("msy_web_call_v", Some(types::I64), 7)?,
         web_call_str_v: one("msy_web_call_str_v", Some(types::I64), 8)?,
         web_set_v: one("msy_web_set_v", Some(types::I64), 8)?,
@@ -1965,6 +2089,8 @@ fn translate(
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
         str_join: module.declare_func_in_func(shims.str_join, b.func),
         web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
+        web_get_str_v: module.declare_func_in_func(shims.web_get_str_v, b.func),
+        web_new_v: module.declare_func_in_func(shims.web_new_v, b.func),
         web_call_v: module.declare_func_in_func(shims.web_call_v, b.func),
         web_call_str_v: module.declare_func_in_func(shims.web_call_str_v, b.func),
         web_set_v: module.declare_func_in_func(shims.web_set_v, b.func),
@@ -2263,6 +2389,34 @@ fn translate(
                 let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
                 guard(b, ctx, threw, R_HOST, pc, None);
                 stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            // A string-valued web property (`url.pathname`): the shim writes the
+            // captured string's (ptr, len, arena handle) into a 3-word out slot.
+            Op::GetMember(_, _) if p.web_get_str_at.contains_key(&pc) => {
+                let (name, id) = *p.web_get_str_at.get(&pc)?;
+                let handle = match stack.pop()? {
+                    SlotV::Web(h) => h,
+                    SlotV::Val(h, Ty::Web) => h,
+                    _ => return None,
+                };
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let call = b
+                    .ins()
+                    .call(shim.web_get_str_v, &[arena_ptr, handle, id_v, nptr, nlen, out_ptr]);
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                let sptr = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let slen = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(sptr, slen, sh));
             }
             Op::GetMember(_, _) if p.length_at.contains(&pc) => {
                 let len = match stack.pop()? {
@@ -2669,6 +2823,34 @@ fn translate(
             // Allocation: the engine makes the instance (fields folded, containers
             // fresh, GC informed), the arena owns it, and the constructor runs as
             // an ordinary compiled call on the new object.
+            // A host constructor (`new URL(s)`): build the args, call `web_new`,
+            // capture the handle. No receiver and no depth guard — it is a host
+            // call, not a Mersey frame.
+            Op::NewNamed(_, _) if p.web_new_at.contains_key(&pc) => {
+                let (name, id, kinds) = p.web_new_at.get(&pc)?.clone();
+                let (desc_ptr, n, owned) = build_web_args(b, &mut stack, &kinds)?;
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let nv = b.ins().iconst(types::I64, n as i64);
+                let call = b.ins().call(
+                    shim.web_new_v,
+                    &[arena_ptr, id_v, nptr, nlen, desc_ptr, nv, out_ptr],
+                );
+                let failed = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                for h in owned {
+                    release_if_owned(b, shim.release, arena_ptr, h);
+                }
+                let handle = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                stack.push(SlotV::Val(handle, Ty::Web));
+            }
             Op::NewNamed(_, n) => {
                 let (ci, ctor) = *p.new_at.get(&pc)?;
                 let mut args: Vec<SlotV> = Vec::with_capacity(n as usize);
@@ -2806,6 +2988,16 @@ fn translate(
                 let (v, from) = scalar(stack.pop()?)?;
                 let out = convert(b, v, from, Ty::F64);
                 stack.push(SlotV::Val(out, Ty::F64));
+            }
+            // `el as HTMLElement`: a host handle cast to a reference type. The
+            // handle is unchanged — re-type the slot to `Ty::Web` and move on.
+            Op::CastOp(_, _) if p.cast_web.contains(&pc) => {
+                let handle = match stack.pop()? {
+                    SlotV::Web(h) => h,
+                    SlotV::Val(h, Ty::Web) => h,
+                    _ => return None,
+                };
+                stack.push(SlotV::Val(handle, Ty::Web));
             }
             Op::BinNum(binop, num) => {
                 let t = ty_of(num)?;
@@ -2999,6 +3191,8 @@ struct ShimRefs {
     web_bind_call: cranelift_codegen::ir::FuncRef,
     str_join: cranelift_codegen::ir::FuncRef,
     web_get_num: cranelift_codegen::ir::FuncRef,
+    web_get_str_v: cranelift_codegen::ir::FuncRef,
+    web_new_v: cranelift_codegen::ir::FuncRef,
     web_call_v: cranelift_codegen::ir::FuncRef,
     web_call_str_v: cranelift_codegen::ir::FuncRef,
     web_set_v: cranelift_codegen::ir::FuncRef,
@@ -3222,11 +3416,15 @@ fn str_const(b: &mut FunctionBuilder, s: &str) -> (ClValue, ClValue) {
 /// receiver handle, the descriptor pointer, the argument count, and the handles
 /// of any owned string arguments (built templates) the caller must release after
 /// the call.
-fn build_web_desc(
+/// Pop `kinds.len()` arguments off the operand stack and lay them out as a
+/// `WebArgDesc` array on a fresh stack slot, returning (desc pointer, count,
+/// owned string handles to release after the call). Shared by every web call
+/// and by `web_new` — the receiver, if any, is popped separately by the caller.
+fn build_web_args(
     b: &mut FunctionBuilder,
     stack: &mut Vec<SlotV>,
     kinds: &[ArgKind],
-) -> Option<(ClValue, ClValue, usize, Vec<ClValue>)> {
+) -> Option<(ClValue, usize, Vec<ClValue>)> {
     let n = kinds.len();
     let mut descs: Vec<(i64, ClValue, ClValue)> = Vec::with_capacity(n);
     let mut owned: Vec<ClValue> = Vec::new();
@@ -3255,11 +3453,6 @@ fn build_web_desc(
         }
     }
     descs.reverse();
-    let recv = match stack.pop()? {
-        SlotV::Web(h) => h,
-        SlotV::Val(h, Ty::Web) => h,
-        _ => return None,
-    };
     let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
         cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
         (n.max(1) as u32) * 24,
@@ -3273,6 +3466,20 @@ fn build_web_desc(
         b.ins().store(MemFlags::trusted(), *a, desc_ptr, off + 8);
         b.ins().store(MemFlags::trusted(), *bb, desc_ptr, off + 16);
     }
+    Some((desc_ptr, n, owned))
+}
+
+fn build_web_desc(
+    b: &mut FunctionBuilder,
+    stack: &mut Vec<SlotV>,
+    kinds: &[ArgKind],
+) -> Option<(ClValue, ClValue, usize, Vec<ClValue>)> {
+    let (desc_ptr, n, owned) = build_web_args(b, stack, kinds)?;
+    let recv = match stack.pop()? {
+        SlotV::Web(h) => h,
+        SlotV::Val(h, Ty::Web) => h,
+        _ => return None,
+    };
     Some((recv, desc_ptr, n, owned))
 }
 

@@ -324,7 +324,8 @@ pub(crate) fn compile_fn_in(
 /// engine or an embedder to remember to install — and therefore nothing to
 /// forget, which would mean silently wrong arithmetic.
 pub(crate) use mersey_front::check::{
-    coercion_for, coercion_for_name, local_type_for, op_type_for, result_coercion_for,
+    coercion_for, coercion_for_name, is_json_dyn_int, is_json_stringify, local_type_for,
+    op_type_for, result_coercion_for,
 };
 
 /// Convert a number to a declared numeric type. The C conversions (§3.3):
@@ -357,6 +358,43 @@ pub fn convert_num(v: &Value, to: Num) -> Value {
         Num::Int(IntKind::U16) => Value::I32(i as u16 as i32),
         Num::Int(IntKind::U32) => Value::U32(if is_float { f as u32 } else { i as u32 }),
         Num::Int(IntKind::U64) => Value::U64(if is_float { f as u64 } else { i as u64 }),
+    }
+}
+
+/// Append a constant scalar literal's JSON form to `out`, returning whether it
+/// did. Only string, bool, null, and integer literals bake — and each writes
+/// the exact bytes `pure_json` would (via `webjson` for strings, plain decimal
+/// for integers). Everything else (floats, chars, bigints) returns `false`
+/// unwritten, so the caller can bail. On `false` nothing is appended.
+fn bake_json_literal(kind: LitKind, text: &str, out: &mut String) -> bool {
+    use std::fmt::Write as _;
+    match kind {
+        LitKind::Null => {
+            out.push_str("null");
+            true
+        }
+        LitKind::Bool => match parse_literal(kind, text) {
+            Ok(Value::Bool(b)) => {
+                out.push_str(if b { "true" } else { "false" });
+                true
+            }
+            _ => false,
+        },
+        LitKind::Str => match parse_literal(kind, text) {
+            Ok(Value::Str(s)) => {
+                crate::webjson::write_str_u16(out, &s);
+                true
+            }
+            _ => false,
+        },
+        LitKind::Int => match parse_literal(kind, text) {
+            Ok(Value::I32(n)) => write!(out, "{n}").is_ok(),
+            Ok(Value::I64(n)) => write!(out, "{n}").is_ok(),
+            Ok(Value::U32(n)) => write!(out, "{n}").is_ok(),
+            Ok(Value::U64(n)) => write!(out, "{n}").is_ok(),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -2072,7 +2110,77 @@ impl C {
         }
     }
 
+    /// Emit `JSON.stringify({fields})` as a template, or return `false` without
+    /// touching the bytecode. Constant scalars bake into fragments with the exact
+    /// escaping `pure_json`/`webjson` use, so the bytes match; the checker-proven
+    /// int32/int64 fields become dynamic parts whose decimal rendering also
+    /// matches. The whole plan is built first, so a mid-way bail emits nothing.
+    fn emit_json_template(&mut self, fields: &'static [RecordField]) -> bool {
+        enum Part {
+            Text(String),
+            Int(&'static Expr),
+        }
+        let mut parts: Vec<Part> = Vec::new();
+        let mut cur = String::from("{");
+        for (idx, f) in fields.iter().enumerate() {
+            let RecordField::Named { name, value } = f else {
+                return false;
+            };
+            let Some(v) = value else { return false };
+            if idx > 0 {
+                cur.push(',');
+            }
+            crate::webjson::write_str(&mut cur, &name.text);
+            cur.push(':');
+            let baked = matches!(v, Expr::Lit { kind, text, .. }
+                if bake_json_literal(*kind, text, &mut cur));
+            if !baked {
+                // Not a bakeable constant: only a checker-authorized int32/int64
+                // may render dynamically and still match `JSON.stringify`.
+                if is_json_dyn_int(v) {
+                    parts.push(Part::Text(std::mem::take(&mut cur)));
+                    parts.push(Part::Int(v));
+                } else {
+                    return false;
+                }
+            }
+        }
+        cur.push('}');
+        parts.push(Part::Text(cur));
+        if parts.len() > u8::MAX as usize {
+            return false;
+        }
+        for p in &parts {
+            match p {
+                Part::Text(s) => {
+                    let i = self.konst(Value::Str(Rc::new(crate::utf16(s))));
+                    self.emit(Op::Const(i));
+                }
+                Part::Int(e) => self.expr(e),
+            }
+        }
+        self.emit(Op::TemplateJoin(parts.len() as u8));
+        true
+    }
+
     fn call(&mut self, callee: &'static Expr, args: &'static [ArrayElem], optional: bool) {
+        // `JSON.stringify({literal})` the checker proved fusable: emit the JSON as
+        // a template (constant fragments baked exactly as `pure_json` would, plus
+        // int32/int64 fields as dynamic parts). This skips the record allocation
+        // and the interpreted `pure_json`, and — unlike either — the template
+        // both interpreted and JIT-compiled. Falls through untouched if the
+        // literal turns out to hold anything the checker did not authorize.
+        if is_json_stringify(callee) {
+            if let [ArrayElem {
+                spread: false,
+                expr: Expr::Record(fields),
+            }] = args
+            {
+                if self.emit_json_template(fields) {
+                    return;
+                }
+            }
+        }
         if let Expr::Member {
             obj,
             name,
@@ -2563,8 +2671,11 @@ fn exec(
             }
             // Mersey's own depth limit, counting the frames in this loop
             // as well as the Rust ones below it (§5.2: hostile input must
-            // not be able to end the process).
-            if i.depth + calls.len() + 1 >= crate::MAX_CALL_DEPTH {
+            // not be able to end the process). Counts frames already present
+            // (no `+ 1` for the one about to be pushed) so the throw lands at
+            // exactly the same depth as the tree-walker's `call_closure`, which
+            // checks `depth >= MAX` before adding its frame.
+            if i.depth + calls.len() >= crate::MAX_CALL_DEPTH {
                 let t = i.throw("RangeError", "maximum call depth exceeded");
                 throwing!(Err::<(), _>(t));
             }
