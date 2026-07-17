@@ -3,8 +3,8 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "calls",
-    "ms": 25.105999991297722,
-    "rss": 17626,
+    "ms": 24.92800000309944,
+    "rss": 14945,
     "checksum": "452320592\","
   },
   {
@@ -17,8 +17,8 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 98.3910000026226,
-    "rss": 20882,
+    "ms": 100.3910000026226,
+    "rss": 14799,
     "checksum": "1765835917\","
   },
   {
@@ -37,24 +37,24 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "fcompute",
-    "ms": 111.02099999785423,
-    "rss": 17616,
+    "ms": 116.55600000917912,
+    "rss": 15249,
     "checksum": "true\","
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "json",
-    "ms": 5.795000001788139,
-    "rss": 17346,
+    "ms": 6.312999993562698,
+    "rss": 15050,
     "checksum": "848890\","
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "mathk",
-    "ms": 32.66799999773502,
-    "rss": 17539,
+    "ms": 32.26900000870228,
+    "rss": 14978,
     "checksum": "true\","
   },
   {
@@ -67,6 +67,8 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "url",
-    "ms": null
+    "ms": 259.37399999797344,
+    "rss": 23278,
+    "checksum": "537780\","
   }
 ]
