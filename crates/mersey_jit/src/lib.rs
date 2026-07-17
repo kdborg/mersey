@@ -471,6 +471,14 @@ struct Plan {
     /// A string-valued web property read (`url.pathname`) → `web_get_str_v`,
     /// captured as a `Ty::Str`. (property name, pre-interned id or `u32::MAX`).
     web_get_str_at: HashMap<usize, (&'static str, u32)>,
+    /// A string web property read whose result flows straight into `.length`
+    /// (`url.pathname.length`) → `web_get_str_len_v`: the length crosses back
+    /// without the string being kept. The following `GetMember(length)` is folded
+    /// in and skipped (see `folded`). (property name, pre-interned id).
+    web_get_str_len_at: HashMap<usize, (&'static str, u32)>,
+    /// Op indices folded into a preceding op and skipped by both passes (the
+    /// `.length` consumed by `web_get_str_len_at`).
+    folded: std::collections::HashSet<usize>,
     /// A host-constructor `new` (`new URL(s)`) → `web_new_v`, result captured as
     /// a `Ty::Web` handle. (constructor name, pre-interned id or `u32::MAX`,
     /// argument kinds).
@@ -706,6 +714,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut web_call_ref_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
     let mut web_get_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut web_get_str_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut web_get_str_len_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut folded: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut web_new_at: HashMap<usize, (&'static str, u32, Vec<ArgKind>)> = HashMap::new();
     let mut web_set_at: HashMap<usize, (&'static str, u32, Ty)> = HashMap::new();
     let mut math_ns_names: std::collections::HashSet<u16> = std::collections::HashSet::new();
@@ -732,6 +742,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut stack: Vec<TSlot> = Vec::new();
     let mut reachable = true;
     for (pc, op) in chunk.code.iter().enumerate() {
+        // Folded into the previous op (a `.length` a web-string read absorbed).
+        if folded.contains(&pc) {
+            continue;
+        }
         if let Some(want) = block_types.get(&pc) {
             stack = want.iter().map(|t| TSlot::Val(*t, Prov::Stable)).collect();
             reachable = true;
@@ -958,6 +972,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     if web_prop_is_string(name) {
                         let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
                         let id = g.env.interned_web(nm).unwrap_or(u32::MAX);
+                        // If the very next op reads `.length` off this string and
+                        // nothing else, fold the two into a length-only read — the
+                        // host's string is never kept in the arena.
+                        if let Some(Op::GetMember(ni2, _)) = chunk.code.get(pc + 1) {
+                            // Not if a jump lands on the `.length` — folding it away
+                            // would leave that block without its operand.
+                            if chunk.names[*ni2 as usize] == "length"
+                                && !block_types.contains_key(&(pc + 1))
+                            {
+                                web_get_str_len_at.insert(pc, (nm, id));
+                                folded.insert(pc + 1);
+                                stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                                continue;
+                            }
+                        }
                         web_get_str_at.insert(pc, (nm, id));
                         stack.push(TSlot::Val(Ty::Str, Prov::Stable));
                         continue;
@@ -1398,6 +1427,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         web_call_ref_at,
         web_get_at,
         web_get_str_at,
+        web_get_str_len_at,
+        folded,
         web_new_at,
         web_set_at,
         math_ns_names,
@@ -1473,6 +1504,7 @@ struct Shims {
     str_vec_parts: FuncId,
     web_get_num: FuncId,
     web_get_str_v: FuncId,
+    web_get_str_len_v: FuncId,
     web_new_v: FuncId,
     web_call_v: FuncId,
     web_call_str_v: FuncId,
@@ -1530,6 +1562,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
     builder.symbol("msy_web_get_num", heap::web_get_num as *const u8);
     builder.symbol("msy_web_get_str_v", heap::web_get_str_v as *const u8);
+    builder.symbol("msy_web_get_str_len_v", heap::web_get_str_len_v as *const u8);
     builder.symbol("msy_web_new_v", heap::web_new_v as *const u8);
     builder.symbol("msy_web_call_v", heap::web_call_v as *const u8);
     builder.symbol("msy_web_call_str_v", heap::web_call_str_v as *const u8);
@@ -1794,6 +1827,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         web_get_num: one("msy_web_get_num", Some(types::I64), 5)?,
         // (arena, target, id, name_ptr, name_len, out) -> writes (ptr, len, handle)
         web_get_str_v: one("msy_web_get_str_v", Some(types::I64), 6)?,
+        // (arena, target, id, name_ptr, name_len) -> length, or i64::MIN if threw
+        web_get_str_len_v: one("msy_web_get_str_len_v", Some(types::I64), 5)?,
         // (arena, id, name_ptr, name_len, desc, argc, out) -> writes the handle
         web_new_v: one("msy_web_new_v", Some(types::I64), 7)?,
         web_call_v: one("msy_web_call_v", Some(types::I64), 7)?,
@@ -2090,6 +2125,7 @@ fn translate(
         str_join: module.declare_func_in_func(shims.str_join, b.func),
         web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
         web_get_str_v: module.declare_func_in_func(shims.web_get_str_v, b.func),
+        web_get_str_len_v: module.declare_func_in_func(shims.web_get_str_len_v, b.func),
         web_new_v: module.declare_func_in_func(shims.web_new_v, b.func),
         web_call_v: module.declare_func_in_func(shims.web_call_v, b.func),
         web_call_str_v: module.declare_func_in_func(shims.web_call_str_v, b.func),
@@ -2184,6 +2220,11 @@ fn translate(
     let mut reachable = false;
 
     for (pc, op) in chunk.code.iter().enumerate() {
+        // Folded into the previous op during analysis (a `.length` absorbed by a
+        // web-string read); it emits nothing of its own.
+        if p.folded.contains(&pc) {
+            continue;
+        }
         if let Some(&blk) = blocks.get(&pc) {
             if reachable {
                 let args = flatten(&stack)?;
@@ -2385,6 +2426,25 @@ fn translate(
                 let (nptr, nlen) = str_const(b, name);
                 let id_v = b.ins().iconst(types::I64, id as i64);
                 let call = b.ins().call(shim.web_get_num, &[arena_ptr, handle, id_v, nptr, nlen]);
+                let v = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            // `url.pathname.length`: the string read and the `.length` folded into
+            // one — the host returns just the code-unit count, nothing is kept.
+            Op::GetMember(_, _) if p.web_get_str_len_at.contains_key(&pc) => {
+                let (name, id) = *p.web_get_str_len_at.get(&pc)?;
+                let handle = match stack.pop()? {
+                    SlotV::Web(h) => h,
+                    SlotV::Val(h, Ty::Web) => h,
+                    _ => return None,
+                };
+                let (nptr, nlen) = str_const(b, name);
+                let id_v = b.ins().iconst(types::I64, id as i64);
+                let call = b
+                    .ins()
+                    .call(shim.web_get_str_len_v, &[arena_ptr, handle, id_v, nptr, nlen]);
                 let v = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
                 guard(b, ctx, threw, R_HOST, pc, None);
@@ -3192,6 +3252,7 @@ struct ShimRefs {
     str_join: cranelift_codegen::ir::FuncRef,
     web_get_num: cranelift_codegen::ir::FuncRef,
     web_get_str_v: cranelift_codegen::ir::FuncRef,
+    web_get_str_len_v: cranelift_codegen::ir::FuncRef,
     web_new_v: cranelift_codegen::ir::FuncRef,
     web_call_v: cranelift_codegen::ir::FuncRef,
     web_call_str_v: cranelift_codegen::ir::FuncRef,

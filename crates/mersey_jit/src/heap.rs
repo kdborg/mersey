@@ -640,6 +640,30 @@ pub(crate) unsafe extern "C" fn web_get_str_v(
     }
 }
 
+/// The length of a string-valued web property, without materializing the string
+/// (`url.pathname.length`). Like `web_get_num`, but the host reply is a string
+/// and only its code-unit count crosses back — no arena keep for a string the
+/// compiled code would drop next instruction. Returns the length, or `i64::MIN`
+/// if the read (or a null `.length`) threw.
+///
+/// # Safety
+/// As `web_get_num`.
+pub(crate) unsafe extern "C" fn web_get_str_len_v(
+    arena: *mut Arena,
+    target: i64,
+    id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_web_get_str_len(target, id, name),
+            None => 0,
+        }
+    }
+}
+
 /// The typed-binding fast path (`ctx.fillRect(...)` as a bind id): a numeric web
 /// call that crosses as a compile-time id, not an interned name. `name`/`name_len`
 /// still name the method, used only if the host has no typed binding and the call

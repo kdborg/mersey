@@ -3743,6 +3743,53 @@ impl Interp {
         }
     }
 
+    /// The length of a string-valued web property, without materializing the
+    /// string (`url.pathname.length`). The compiler fuses the read and the
+    /// `.length` when the string flows straight into it, so the arena never keeps
+    /// a string it would drop next instruction. A null result throws the same
+    /// `TypeError` reading `.length` off `null` would; errors return `i64::MIN`.
+    pub fn jit_web_get_str_len(&mut self, target: i64, id: u32, name: &str) -> i64 {
+        let reply = if id != u32::MAX {
+            self.host.web_get_u16(target, id)
+        } else {
+            None
+        };
+        let value = match reply {
+            Some(WebReply::Str(v)) => return v.len() as i64,
+            Some(WebReply::Null) => Value::Null,
+            Some(WebReply::Err(msg)) => {
+                let t = self.throw("Error", msg);
+                self.jit_host_error = Some(t);
+                return i64::MIN;
+            }
+            Some(other) => match self.value_from_reply(other) {
+                Ok(v) => v,
+                Err(t) => {
+                    self.jit_host_error = Some(t);
+                    return i64::MIN;
+                }
+            },
+            // No wide path: fall back to the interpreter's string `web_get`.
+            None => match self.web_get(target, name) {
+                Ok(v) => v,
+                Err(t) => {
+                    self.jit_host_error = Some(t);
+                    return i64::MIN;
+                }
+            },
+        };
+        match value {
+            Value::Str(s) => s.len() as i64,
+            // `.length` off a non-string (a null property) is the same throw the
+            // two-op interpreter path would raise on the `GetMember(length)`.
+            other => {
+                let t = self.throw("TypeError", format!("cannot read `length` of {}", kind_of(&other)));
+                self.jit_host_error = Some(t);
+                i64::MIN
+            }
+        }
+    }
+
     /// A web method call from compiled code whose arguments are already built
     /// (numbers, host handles, strings) and whose result is discarded
     /// (`getRandomValues(buf)`, `appendChild(el)`). Same 0/1 protocol as
