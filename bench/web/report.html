@@ -308,12 +308,15 @@
       <li><b>The memory baselines differ on purpose.</b> The polyfill pays a per-page engine tax of
         ~40–52 MB (WASM module + heap); the native engine adds none, because it ships inside the browser —
         and native's footprint is the lowest of the three.</li>
-      <li><b>Chromium native runs the engine, but not the web APIs.</b> The Chromium fork hosts the engine
-        and runs the compute/pure-engine workloads (measured: it edges the Gecko fork on <code>calls</code>,
-        <code>compute</code>, <code>fcompute</code>, <code>mathk</code>, and runs <code>json</code> via the
-        fusion) — but its script runner has <em>no web bridge</em> (231 lines vs Gecko's 1640), so
-        canvas/crypto/dom/storage/url can't run there yet. The universal bridge has to be ported to Blink
-        for a full Chromium column. Harness: <code>run-native-chromium.mjs</code>; data:
+      <li><b>Chromium native: engine + a growing web bridge.</b> The Chromium fork hosts the engine (it edges
+        the Gecko fork on <code>calls</code>/<code>compute</code>/<code>fcompute</code>/<code>mathk</code>,
+        runs <code>json</code> via the fusion), and its Blink script runner now grows a <em>direct-C++</em>
+        web bridge: <code>url</code> (via <code>KURL</code>) and <code>dom</code> (createElement/appendChild/
+        textContent on real Blink nodes) run — 259 and 125&nbsp;ms, correct. They are slow because the bridge
+        is <em>reflective</em> (JSON marshalling per op); the <code>_u16</code>/bind fast paths that give the
+        Gecko fork its 41/13&nbsp;ms are the follow-up. <code>storage</code> and <code>canvas</code> live in
+        Blink's <code>modules/</code> layer, which <code>core</code> can't depend on, so they need a
+        core→modules hook. Harness: <code>run-native-chromium.mjs</code>; data:
         <code>results.native.chromium.json</code>.</li>
     </ul>
   </div>
