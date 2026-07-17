@@ -106,7 +106,9 @@ async function runPage(pageFile, profileDir, expectResult = true) {
     const scan = (b) => {
       out += b.toString();
       // The RESULT line, wherever it lands (stdout echo or Blink console on stderr).
-      const m = /RESULT (\S+) ([\d.]+) (\S+)/.exec(out);
+      // Blink's console wraps the message in quotes ("RESULT …", source: …),
+      // so stop the checksum at the first space, quote, or comma.
+      const m = /RESULT (\S+) ([\d.]+) ([^\s",]+)/.exec(out);
       if (m && !result) result = { ms: Number(m[2]), checksum: m[3] };
     };
     child.stdout.on("data", scan);

@@ -3,9 +3,9 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "calls",
-    "ms": 24.415999993681908,
-    "rss": 16063,
-    "checksum": "452320592\","
+    "ms": 23.864999994635582,
+    "rss": 16052,
+    "checksum": "452320592"
   },
   {
     "browser": "chromium-fork",
@@ -17,62 +17,64 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 96.87199999392033,
-    "rss": 16686,
-    "checksum": "1765835917\","
+    "ms": 97.87399999797344,
+    "rss": 16093,
+    "checksum": "1765835917"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 17.550999999046326,
-    "rss": 16477,
-    "checksum": "320000\","
+    "ms": 17.008000001311302,
+    "rss": 15790,
+    "checksum": "320000"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "dom",
-    "ms": 23.819999992847443,
-    "rss": 140321,
-    "checksum": "10000\","
+    "ms": 23.60199999809265,
+    "rss": 134532,
+    "checksum": "10000"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "fcompute",
-    "ms": 112.57199999690056,
-    "rss": 15936,
-    "checksum": "true\","
+    "ms": 112.77099999785423,
+    "rss": 15777,
+    "checksum": "true"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "json",
-    "ms": 5.969999998807907,
-    "rss": 16221,
-    "checksum": "848890\","
+    "ms": 10.993000000715256,
+    "rss": 16869,
+    "checksum": "848890"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "mathk",
-    "ms": 32.79999999701977,
-    "rss": 16583,
-    "checksum": "true\","
+    "ms": 32.80899998545647,
+    "rss": 15885,
+    "checksum": "true"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "storage",
-    "ms": null
+    "ms": 243.5769999921322,
+    "rss": 22305,
+    "checksum": "208890"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 54.996999993920326,
-    "rss": 23641,
-    "checksum": "537780\","
+    "ms": 55.19099999964237,
+    "rss": 24570,
+    "checksum": "537780"
   }
 ]
