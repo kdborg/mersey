@@ -242,6 +242,19 @@
     note at the bottom.</p>
   <div class="chart" id="timechart"></div>
 
+  <h2>Same host — engine vs engine, the confound removed</h2>
+  <p class="note">The chart above pits the native fork against JS/poly/tjs measured in <b>stock release
+    browsers over http</b>. But the fork is a <em>developer</em> build — <code>dcheck_always_on</code> plus
+    libc++ extensive hardening, not <code>is_official_build</code> — served over <code>file://</code>, so
+    those cross-way bars mix build config and origin with the thing we actually want to compare, the engine.
+    Below, every bar is measured <b>in the same fork, over <code>file://</code></b>: hand-written JS versus
+    the Mersey JIT, back to back. Native leads five of the six web workloads — up to 8× on <code>url</code> —
+    and runs even with JS on <code>dom</code> and the compute kernel; the stock-JS bars above were
+    <em>underselling</em> it. One caveat remains: the Mersey engine <code>.so</code>
+    is a release build while the fork's V8 carries DCHECKs, so these margins still flatter native somewhat;
+    the sign is solid, the exact multiple is soft.</p>
+  <div class="chart" id="samehostchart"></div>
+
   <h2>Memory per workload</h2>
   <p class="note">PSS of the whole browser process tree, workload page minus a blank page (Firefox).
     PSS counts shared libraries once, so a new renderer process doesn't inflate the delta. The polyfill
@@ -305,15 +318,24 @@
   <h2>How to read this honestly</h2>
   <div class="caveats">
     <ul>
+      <li><b>Native and stock JS aren't the same build — the same-host panel is the fair read.</b> The
+        native fork is a developer build (<code>dcheck_always_on</code> + libc++ extensive hardening, not
+        <code>is_official_build</code>) served over <code>file://</code>; the JS/poly/tjs bars use stock
+        release browsers over http, which run the identical work 4–22× faster. So the cross-way
+        web-platform bars <em>understate</em> native. Measured in the same fork over <code>file://</code>,
+        native leads five of the six web workloads (url ~8×, json/crypto/storage ~2–3×, canvas ~1.6×) and
+        runs even with JS on <code>dom</code> (1.1×) and the compute kernel. Remaining asymmetry: the engine
+        <code>.so</code> is release while the fork's V8 is DCHECK'd, so the exact multiples are soft.</li>
+      <li><b>Storage's cost is the platform, not the bridge.</b> Caching the resolved
+        <code>StorageArea</code> took it 283→218&nbsp;ms; swapping the real <code>CachedStorageArea</code>
+        for an in-process map (same marshalling) drops it to ~38&nbsp;ms — faster than the Firefox fork — so
+        the bridge and engine are lean. The rest is Chromium's <code>file://</code> localStorage backend (a
+        mojo <code>Put</code> per <code>setItem</code>), slow for everyone: plain JS over the same origin
+        takes ~500&nbsp;ms, so native already beats it 2×. A platform floor, not a JIT lever.</li>
       <li><b>The bridge fast paths help where the hot calls are scalars.</b> URL (1.36×) and canvas
         (1.33×) gain most; JSON (0.95×, within noise) gains nothing because its argument is an object that
         still needs serializing. This is the win available without abandoning the universal reflective
         bridge.</li>
-      <li><b>Direct C++ shifts the bottleneck rather than removing it.</b> Web Storage now bypasses JS
-        entirely, yet it is still ~4× slower than the browser's own <code>localStorage</code> (which calls
-        the same C++). Bypassing JS only bought ~1.15× over the interned bridge — because the remaining cost
-        is no longer the crossing, it is the Tier-0 interpreter loop plus per-call string marshalling and
-        reply parsing. Which means, for a bridge that is now fast, the JIT finally becomes the lever.</li>
       <li><b>The JIT is done, and it is huge — for compute.</b> Cranelift in the fork makes an arithmetic
         kernel 65× the interpreter and competitive with JS. It stays out of the web-platform loops by
         design (they allocate and call the host every iteration), so the two levers don't overlap: JIT for
@@ -370,6 +392,20 @@
     crypto:  { fast:84,  slow:96 },
     storage: { fast:171, slow:191 },
     json:    { fast:113, slow:107 },
+  };
+  // Same-host fairness panel: hand-written JS vs the Mersey JIT, BOTH measured in
+  // the Chromium fork (DCHECK + hardened, is_official_build=false) over file://,
+  // headless=new, n=3 medians. Removes the origin (http vs file://) and browser-
+  // build (stock release vs fork) confounds baked into the cross-way chart above.
+  // Data: results.samehost.json. Ordered by native's margin, ties last (honest).
+  const SAMEHOST = {
+    url:     { native: 53.9,  js: 443.9 },
+    json:    { native: 5.7,   js: 15.7 },
+    crypto:  { native: 17.3,  js: 38.8 },
+    storage: { native: 217.9, js: 435.6 },
+    canvas:  { native: 11.6,  js: 18.4 },
+    dom:     { native: 26.1,  js: 28.9 },
+    compute: { native: 97.5,  js: 96.5 },
   };
   // The transpiled-JS polyfill (Mersey -> JS at load time, browser JIT runs it).
   const TJS = {
@@ -445,6 +481,25 @@
         }).join("")}
       </div>
     </div>`).join("");
+
+  // ---- same-host fairness chart (fork, file://, JS vs native) ----
+  document.getElementById("samehostchart").innerHTML = Object.keys(SAMEHOST).map((w) => {
+    const d = SAMEHOST[w];
+    const ratio = d.js / d.native;
+    const tag = ratio >= 1.15 ? `native ${ratio.toFixed(1)}× faster`
+              : ratio >= 0.9 ? "≈ parity"
+              : `JS ${(1 / ratio).toFixed(1)}× faster`;
+    const row = (cls, key, lab) => {
+      const v = d[key], pct = logPct(v);
+      return `<div class="bar-row"><div class="bar-lab">${lab}</div>
+        <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+          <span class="val${pct < 22 ? " out" : ""}">${v}</span></div></div></div>`;
+    };
+    return `<div class="wl">
+      <div class="wl-name"><b>${w}</b><em>${tag}</em></div>
+      <div class="bars">${row("cnative", "native", "native")}${row("js", "js", "JS")}</div>
+    </div>`;
+  }).join("");
 
   // ---- memory chart (Firefox), linear ----
   const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mftjs, DATA[w].mnative]));
