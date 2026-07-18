@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native events</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: DOM events. Each iteration constructs an Event (a
+// bridge `new`) and dispatches it synchronously — the listener re-enters the
+// engine from the host, so this measures the callback path both directions.
+import { console } from "std:console";
+import { time } from "std:time";
+import { document, Event, Element, HTMLElement } from "browser:dom";
+
+const N: int32 = 10000;
+const el = document.createElement("div") as HTMLElement;
+(document.body as Element).appendChild(el);
+let count = 0;
+el.addEventListener("bench", () => {
+    count += 1;
+});
+
+function work(n: int32): int32 {
+    count = 0;
+    let i = 0;
+    while (i < n) {
+        el.dispatchEvent(new Event("bench"));
+        i += 1;
+    }
+    return count;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT events ${t1 - t0} ${c}`);
+
+</script>
+</body>

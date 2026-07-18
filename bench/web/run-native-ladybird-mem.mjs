@@ -30,7 +30,8 @@ const PYTHON = process.env.PYTHON || "python3";
 const REPEATS = Number(process.env.MEM_REPEATS || 5);
 const POLL_MS = Number(process.env.POLL_MS || 8);
 const PER_TEST_TIMEOUT = 20;
-const WEB_WORKLOADS = ["canvas", "crypto", "dom", "json", "storage", "url"];
+// fetch excluded for the same reason as the time runner (file:// + async RESULT).
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "storage", "timers", "url"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : WEB_WORKLOADS;
 
 if (!existsSync(TEST_WEB)) {

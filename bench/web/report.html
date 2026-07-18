@@ -136,8 +136,9 @@
     <h1>Plain JS, WASM polyfill, and native Mersey — compute and the web platform</h1>
     <p class="lede">The same programs written once in JavaScript and once in Mersey, run four ways across
       three browsers — plain JS, the WASM-interpreter polyfill, the transpiled-JS polyfill (with its
-      Mersey→WASM compute tier), and the native fork — over a compute kernel and six web-platform
-      workloads. The three stock browsers are <b>Chromium</b> (V8), <b>Firefox</b> (SpiderMonkey), and
+      Mersey→WASM compute tier), and the native fork — over a compute kernel and twelve web-platform
+      workloads (Web Storage, JSON, URL, Web Crypto, Canvas 2D, DOM mutation, DOM events, CSSOM,
+      selector queries, TextEncoder/Decoder, timers, and fetch). The three stock browsers are <b>Chromium</b> (V8), <b>Firefox</b> (SpiderMonkey), and
       <b>Servo</b> (SpiderMonkey, its own web platform). Identical work, verified by matching checksums;
       the only variable is <em>what executes the code</em>.</p>
     <p class="note" style="margin-top:.6rem">Every native number here is the <b>Tier-1 JIT</b>, and the
@@ -151,7 +152,7 @@
 
   <h2>Compute — where the JIT lands</h2>
   <p class="note">A hot integer kernel (40M iterations, no allocation, no web calls) — the case the
-    Tier-1 JIT compiles to native code. This is a different workload from the six below: those are
+    Tier-1 JIT compiles to native code. This is a different workload from the twelve below: those are
     <em>host-bound</em> (dominated by web-API calls); this one is <em>compute-bound</em>. <b>Log scale</b>,
     self-timed, lower is faster.</p>
   <div class="legend">
@@ -494,12 +495,18 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:18.6, msnative:29.0, lbnative:9.8, mcnative:21.3, mlbnative:22.6 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:18.3, msnative:20.8, lbnative:26.4, mcnative:15.6, mlbnative:26.3 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:31.9, msnative:58.8, lbnative:29.1, mcnative:136.5, mlbnative:225.6 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.0, msnative:18.2, lbnative:1.4, mcnative:15.6, mlbnative:14.8 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:1953, msnative:18.7, lbnative:10089, mcnative:21.8, mlbnative:35.2 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:38.0, msnative:24.4, lbnative:54.5, mcnative:22.8, mlbnative:28.2 },
+    canvas: { cjs:2.8, mcjs:18.5, cpoly:77.6, mcpoly:72.3, fjs:4.9, mfjs:44.7, fpoly:193.8, mfpoly:99.8, ctjs:3.1, mctjs:62.5, ftjs:6.3, mftjs:82.6, sjs:2.8, msjs:20.0, spoly:72.2, mspoly:68.5, stjs:4.5, mstjs:70.8, native:4.9, mnative:16.2, snative:18.0, msnative:31.9, lbnative:9.5, mlbnative:24.3, cnative:10.6, mcnative:22.6 },
+    crypto: { cjs:9.7, mcjs:97.8, cpoly:112.1, mcpoly:68.5, fjs:8.3, mfjs:46.7, fpoly:252.7, mfpoly:90.7, ctjs:8.8, mctjs:58.7, ftjs:10.1, mftjs:86.9, sjs:2.5, msjs:4.0, spoly:79.2, mspoly:59.5, stjs:4.4, mstjs:58.0, native:8.5, mnative:19.3, snative:22.0, msnative:21.1, lbnative:26.4, mlbnative:28.8, cnative:15.7, mcnative:18.3 },
+    cssom: { cjs:5.2, mcjs:16.3, cpoly:160.3, mcpoly:82.5, fjs:9.3, mfjs:47.4, fpoly:431.3, mfpoly:0.7, ctjs:10.7, mctjs:59.1, ftjs:14.3, mftjs:93.7, sjs:11.3, msjs:5.2, spoly:153.2, mspoly:59.4, stjs:17.4, mstjs:59.6, native:61.1, mnative:13.9, snative:26.3, msnative:19.3, lbnative:45.9, mlbnative:22.7, cnative:78.5, mcnative:27.9 },
+    dom: { cjs:3.3, mcjs:57.0, cpoly:103.9, mcpoly:105.1, fjs:6.1, mfjs:63.0, fpoly:224.6, mfpoly:103.4, ctjs:7.0, mctjs:98.9, ftjs:8.8, mftjs:105.5, sjs:12.5, msjs:29.0, spoly:85.4, mspoly:100.3, stjs:17.1, mstjs:108.9, native:9.7, mnative:34.7, snative:19.0, msnative:72.8, lbnative:27.2, mlbnative:227.6, cnative:22.2, mcnative:84.2 },
+    encoding: { cjs:10.3, mcjs:25.5, cpoly:96.7, mcpoly:83.4, fjs:2.7, mfjs:47.1, fpoly:228.4, mfpoly:93.2, ctjs:10.9, mctjs:67.4, ftjs:3.9, mftjs:91.2, sjs:4.5, msjs:4.5, spoly:78.5, mspoly:68.5, stjs:6.9, mstjs:57.0, native:27.4, mnative:21.3, snative:29.3, msnative:23.8, lbnative:36.0, mlbnative:30.7, cnative:27.1, mcnative:21.2 },
+    events: { cjs:5.0, mcjs:20.2, cpoly:111.3, mcpoly:74.4, fjs:11.3, mfjs:31.6, fpoly:243.4, mfpoly:86.7, ctjs:5.2, mctjs:63.2, ftjs:12.3, mftjs:95.4, sjs:8.1, msjs:8.3, spoly:91.4, mspoly:63.0, stjs:9.5, mstjs:61.1, native:51.7, mnative:29.5, snative:24.1, msnative:23.5, lbnative:39.8, mlbnative:30.5, cnative:29.8, mcnative:25.0 },
+    fetch: { cjs:117.5, mcjs:16.4, cpoly:154.0, mcpoly:52.0, fjs:131.8, mfjs:52.6, fpoly:142.3, mfpoly:94.1, ctjs:113.9, mctjs:57.3, ftjs:132.0, mftjs:87.8, sjs:33.1, msjs:7.9, spoly:42.1, mspoly:61.8, stjs:36.7, mstjs:57.5, native:482.7, mnative:7.5, snative:39.2, msnative:22.9 },
+    json: { cjs:1.9, mcjs:16.9, cpoly:27.0, mcpoly:48.5, fjs:3.7, mfjs:46.6, fpoly:118.1, mfpoly:92.0, ctjs:1.8, mctjs:59.7, ftjs:5.0, mftjs:91.3, sjs:3.7, msjs:3.8, spoly:26.1, mspoly:57.7, stjs:5.0, mstjs:59.5, native:3.3, mnative:13.4, snative:1.0, msnative:18.4, lbnative:1.4, mlbnative:18.0, cnative:6.1, mcnative:17.6 },
+    query: { cjs:4.7, mcjs:27.1, cpoly:30.5, mcpoly:71.9, fjs:6.2, mfjs:52.2, fpoly:45.8, mfpoly:93.1, ctjs:5.2, mctjs:63.7, ftjs:6.5, mftjs:94.8, sjs:9.3, msjs:22.3, spoly:25.9, mspoly:78.6, stjs:11.3, mstjs:72.5, native:12.5, mnative:26.9, snative:11.3, msnative:33.9, lbnative:9.5, mlbnative:25.5, cnative:11.0, mcnative:26.3 },
+    storage: { cjs:65.5, mcjs:32.8, cpoly:256.7, mcpoly:88.9, fjs:32.9, mfjs:57.9, fpoly:394.9, mfpoly:90.0, ctjs:80.4, mctjs:68.9, ftjs:35.2, mftjs:87.2, sjs:1958.8, msjs:4.8, spoly:2339.1, mspoly:55.4, stjs:3372.9, mstjs:56.5, native:53.4, mnative:30.8, snative:2010.6, msnative:18.8, lbnative:9667.4, mlbnative:33.6, cnative:225.9, mcnative:24.8 },
+    timers: { cjs:12.2, mcjs:27.7, cpoly:147.9, mcpoly:86.1, fjs:24.5, mfjs:61.2, fpoly:394.4, mfpoly:112.7, ctjs:12.2, mctjs:65.5, ftjs:24.0, mftjs:100.4, sjs:9.9, msjs:7.5, spoly:107.9, mspoly:62.7, stjs:9.3, mstjs:61.2, native:105.0, mnative:32.9, snative:49.7, msnative:20.5, lbnative:138.8, mlbnative:36.4, cnative:180.6, mcnative:24.9 },
+    url: { cjs:20.0, mcjs:37.4, cpoly:187.8, mcpoly:99.7, fjs:26.8, mfjs:57.1, fpoly:466.6, mfpoly:101.3, ctjs:18.5, mctjs:74.0, ftjs:27.8, mftjs:98.4, sjs:11.5, msjs:9.0, spoly:137.3, mspoly:60.8, stjs:13.2, mstjs:62.2, native:37.0, mnative:24.7, snative:21.7, msnative:25.6, lbnative:52.4, mlbnative:30.0, cnative:56.3, mcnative:28.3 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
@@ -719,7 +726,7 @@
 
   // ---- implementations-across-browsers chart (geomean, log scale) ----
   {
-    const COMMON = ["canvas", "crypto", "dom", "json", "url"];
+    const COMMON = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "timers", "url"];
     const gm = (key) => geomean(COMMON.map((w) => DATA[w][key]).filter((v) => v != null));
     const impls = [
       ["plain JS", { chromium: "cjs", firefox: "fjs", servobr: "sjs" }],

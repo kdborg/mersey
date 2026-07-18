@@ -47,7 +47,36 @@ use mersey_capi::{
     MsyReply, MsyScalar,
 };
 
+use std::collections::HashMap;
+
+use js::jsval::ObjectValue;
+use stylo_atoms::Atom;
+
+use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
+use crate::dom::bindings::codegen::Bindings::DOMTokenListBinding::DOMTokenListMethods;
+use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
+use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
+use crate::dom::bindings::codegen::Bindings::EventTargetBinding::EventTargetMethods;
+use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
+use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
+use crate::dom::bindings::codegen::Bindings::URLBinding::URLMethods;
+use crate::dom::bindings::codegen::UnionTypes::StringOrElementCreationOptions;
+use crate::dom::bindings::conversions::root_from_object;
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::cssstyledeclaration::CSSStyleDeclaration;
+use crate::dom::document::Document;
+use crate::dom::domtokenlist::DOMTokenList;
+use crate::dom::element::Element;
+use crate::dom::event::{Event, EventBubbles, EventCancelable};
+use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::htmlelement::HTMLElement;
+use crate::dom::node::Node;
+use crate::dom::nodelist::NodeList;
+use crate::dom::url::URL;
 use crate::realms::enter_auto_realm;
 
 /// The reflective bridge JS, generated from `web/mersey-bridge.js` (import
@@ -57,6 +86,68 @@ const BRIDGE_JS: &str = include_str!("bridge.js");
 /// Capabilities granted to the engine (spec §5.4). Matches the Gecko fork:
 /// the whole web surface is reachable, the engine still gates each API by import.
 const CAPS: &str = "[\"dom\",\"web\",\"time\",\"random\",\"net\",\"storage\"]";
+
+/// Hot methods with a direct-Rust path (the direct-DOM tier, ported from the
+/// Ladybird fork): the engine interns a name once, we classify it then, and the
+/// wide-path hooks switch on the id straight to the Servo DOM method — skipping
+/// the reflective bridge into SpiderMonkey entirely. `Index` is an indexed
+/// access (`nodes[i]` crosses as a digit-only property name).
+#[derive(Clone, Copy, PartialEq)]
+enum Hot {
+    None,
+    CtorUrl,          // new URL(str)              -> URL::Constructor
+    Pathname,         // url.pathname              -> URLMethods::Pathname
+    Search,           // url.search                -> URLMethods::Search
+    CreateElement,    // document.createElement(t) -> DocumentMethods::CreateElement
+    AppendChild,      // node.appendChild(child)   -> NodeMethods::AppendChild
+    TextContent,      // el.textContent (get+set)  -> NodeMethods::{Get,Set}TextContent
+    CtorEvent,        // new Event(type)           -> Event::new
+    DispatchEvent,    // el.dispatchEvent(ev)      -> EventTargetMethods::DispatchEvent
+    ClassName,        // el.className = s          -> ElementMethods::SetClassName
+    ClassList,        // el.classList              -> ElementMethods::ClassList
+    Contains,         // tokens.contains(s)        -> DOMTokenListMethods::Contains
+    Style,            // el.style                  -> HTMLElementMethods::Style
+    SetProperty,      // style.setProperty(p, v)   -> CSSStyleDeclarationMethods::SetProperty
+    GetPropertyValue, // style.getPropertyValue(p) -> CSSStyleDeclarationMethods::GetPropertyValue
+    QuerySelectorAll, // doc.querySelectorAll(sel) -> DocumentMethods::QuerySelectorAll
+    Length,           // nodes.length              -> NodeListMethods::Length
+    Index(u32),       // nodes[i]                  -> NodeListMethods::Item
+}
+
+/// Cached native pointers for a bridge handle, one slot per role. Servo DOM
+/// natives are boxed and never move (only the JS reflector does), and the
+/// bridge's handle table keeps the reflector — and so the native — alive until
+/// `web_release`, which invalidates this cache. Null = not resolved yet.
+#[derive(Clone, Copy)]
+struct Natives {
+    url: *const URL,
+    document: *const Document,
+    element: *const Element,
+    html: *const HTMLElement,
+    node: *const Node,
+    node_list: *const NodeList,
+    token_list: *const DOMTokenList,
+    style: *const CSSStyleDeclaration,
+    event: *const Event,
+    target: *const EventTarget,
+}
+
+impl Default for Natives {
+    fn default() -> Self {
+        Natives {
+            url: ptr::null(),
+            document: ptr::null(),
+            element: ptr::null(),
+            html: ptr::null(),
+            node: ptr::null(),
+            node_list: ptr::null(),
+            token_list: ptr::null(),
+            style: ptr::null(),
+            event: ptr::null(),
+            target: ptr::null(),
+        }
+    }
+}
 
 /// Per-thread engine runner. Reached through a raw pointer (see module doc).
 struct Runner {
@@ -69,6 +160,10 @@ struct Runner {
     scratch: String,
     /// Backing store for a typed UTF-16 reply (MsyReply::str16) on the wide path.
     reply16: Vec<u16>,
+    /// Direct-DOM tier: interned-name id → hot method, and handle → cached
+    /// native pointers (invalidated on web_release).
+    hot: Vec<Hot>,
+    natives: HashMap<i64, Natives>,
     start: Instant,
 }
 
@@ -292,10 +387,47 @@ unsafe fn reply(method: &CStr, args: &[JsArg], out_len: *mut usize) -> *const c_
 
 extern "C" fn host_web_intern(_data: *mut c_void, name: *const c_char, len: usize) -> u32 {
     let name = unsafe { str_from(name, len) };
-    match unsafe { call_bridge_vals(c"intern", &[JsArg::Str(name)]) } {
+    let id = match unsafe { call_bridge_vals(c"intern", &[JsArg::Str(name)]) } {
         Some(s) => s.parse::<f64>().map(|n| n as u32).unwrap_or(u32::MAX),
         None => u32::MAX,
+    };
+    // Classify the name once, so the wide-path hooks can dispatch a hot method
+    // to its direct-Rust path by id (the engine interns before it ever calls).
+    let r = runner_ptr();
+    if !r.is_null() && id != u32::MAX {
+        let hot = match name {
+            "URL" => Hot::CtorUrl,
+            "pathname" => Hot::Pathname,
+            "search" => Hot::Search,
+            "createElement" => Hot::CreateElement,
+            "appendChild" => Hot::AppendChild,
+            "textContent" => Hot::TextContent,
+            "Event" => Hot::CtorEvent,
+            "dispatchEvent" => Hot::DispatchEvent,
+            "className" => Hot::ClassName,
+            "classList" => Hot::ClassList,
+            "contains" => Hot::Contains,
+            "style" => Hot::Style,
+            "setProperty" => Hot::SetProperty,
+            "getPropertyValue" => Hot::GetPropertyValue,
+            "querySelectorAll" => Hot::QuerySelectorAll,
+            "length" => Hot::Length,
+            // A digit-only name is an indexed access (`nodes[i]`) crossing as a
+            // property read; dispatch it to NodeList::Item by value.
+            n if !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()) => {
+                Hot::Index(n.parse::<u32>().unwrap_or(0))
+            },
+            _ => Hot::None,
+        };
+        unsafe {
+            let hots = &mut (*r).hot;
+            while hots.len() <= id as usize {
+                hots.push(Hot::None);
+            }
+            hots[id as usize] = hot;
+        }
     }
+    id
 }
 
 extern "C" fn host_web_get_id(
@@ -445,6 +577,11 @@ extern "C" fn host_web_instanceof(_data: *mut c_void, target: i64, ctor: i64) ->
 }
 
 extern "C" fn host_web_release(_data: *mut c_void, target: i64) {
+    // Drop any cached native for this handle before the bridge forgets it.
+    let r = runner_ptr();
+    if !r.is_null() {
+        unsafe { (&mut (*r).natives).remove(&target) };
+    }
     let t = target.to_string();
     let mut dummy: usize = 0;
     unsafe { call_bridge_str(c"release", &[&t], &mut dummy) };
@@ -610,8 +747,401 @@ fn refs_mask(args: &[MsyArg16]) -> f64 {
     mask as f64
 }
 
+// ---- direct-DOM tier (the Ladybird fork's HotMethod dispatch, in Rust) ------
+// A hot method unwraps its receiver (and object args) to the Servo DOM native
+// once — the native is boxed and never moves; the bridge's handle table keeps
+// it alive until web_release — and calls the DOM method directly, with the
+// reflective wide path as fall-back on any type mismatch.
+
+/// A UTF-16 string argument as an owned Rust string.
+unsafe fn arg16_str(a: &MsyArg16) -> String {
+    String::from_utf16_lossy(std::slice::from_raw_parts(a.str16, a.str16_len))
+}
+
+/// `__merseyBridge.handleObj(handle)` — the JS object a handle names.
+unsafe fn bridge_handle_obj(cx: &mut JSContext, handle: i64) -> Option<*mut JSObject> {
+    let r = runner_ptr();
+    if r.is_null() {
+        return None;
+    }
+    let global = HandleObject::from_marked_location(&(*r).global);
+    rooted!(&in(cx) let mut bridge_val = UndefinedValue());
+    if !JS_GetProperty(cx, global, c"__merseyBridge".as_ptr(), bridge_val.handle_mut())
+        || !bridge_val.is_object()
+    {
+        return None;
+    }
+    rooted!(&in(cx) let bridge_obj = bridge_val.to_object());
+    rooted_vec!(let mut argv);
+    rooted!(&in(cx) let v = DoubleValue(handle as f64));
+    argv.push(v.get());
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let hva = js::jsapi::HandleValueArray::from(&argv);
+    if !JS_CallFunctionName(cx, bridge_obj.handle(), c"handleObj".as_ptr(), &hva, rval.handle_mut())
+        || !rval.is_object()
+    {
+        return None;
+    }
+    Some(rval.to_object())
+}
+
+/// `__merseyBridge.register(obj)` — keep a host-created object alive in the
+/// handle table and get its (deduped) handle back.
+unsafe fn bridge_register_object(cx: &mut JSContext, obj: *mut JSObject) -> i64 {
+    let r = runner_ptr();
+    if r.is_null() {
+        return -1;
+    }
+    let global = HandleObject::from_marked_location(&(*r).global);
+    rooted!(&in(cx) let mut bridge_val = UndefinedValue());
+    if !JS_GetProperty(cx, global, c"__merseyBridge".as_ptr(), bridge_val.handle_mut())
+        || !bridge_val.is_object()
+    {
+        return -1;
+    }
+    rooted!(&in(cx) let bridge_obj = bridge_val.to_object());
+    rooted_vec!(let mut argv);
+    rooted!(&in(cx) let v = ObjectValue(obj));
+    argv.push(v.get());
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let hva = js::jsapi::HandleValueArray::from(&argv);
+    if !JS_CallFunctionName(cx, bridge_obj.handle(), c"register".as_ptr(), &hva, rval.handle_mut())
+        || !rval.is_number()
+    {
+        return -1;
+    }
+    rval.to_number() as i64
+}
+
+/// Register a host-created native and reply with its ref; also pre-cache the
+/// native pointer under the new handle via `fill`.
+unsafe fn reply_ref<T: DomObject>(
+    cx: &mut JSContext,
+    root: &T,
+    fill: impl FnOnce(&mut Natives, *const T),
+    out: *mut MsyReply,
+) -> bool {
+    let obj = root.reflector().get_jsobject().get();
+    let h = bridge_register_object(cx, obj);
+    if h < 0 {
+        return false;
+    }
+    let r = runner_ptr();
+    fill((&mut (*r).natives).entry(h).or_default(), root as *const T);
+    *out = MsyReply::default();
+    (*out).tag = 3; // ref
+    (*out).num = h as f64;
+    true
+}
+
+macro_rules! resolver {
+    ($fn_name:ident, $ty:ty, $field:ident) => {
+        /// Resolve a handle to its native, cached per handle (invalidated on
+        /// web_release). The returned reference is valid for the current host
+        /// call: the handle table keeps the native alive.
+        unsafe fn $fn_name<'a>(cx: &mut JSContext, handle: i64) -> Option<&'a $ty> {
+            let r = runner_ptr();
+            if r.is_null() {
+                return None;
+            }
+            if let Some(n) = (&(*r).natives).get(&handle) {
+                if !n.$field.is_null() {
+                    return Some(&*n.$field);
+                }
+            }
+            let obj = bridge_handle_obj(cx, handle)?;
+            let root: DomRoot<$ty> = root_from_object::<$ty>(cx, obj).ok()?;
+            let p: *const $ty = &*root;
+            (&mut (*r).natives).entry(handle).or_default().$field = p;
+            Some(&*p)
+        }
+    };
+}
+
+resolver!(resolve_url, URL, url);
+resolver!(resolve_document, Document, document);
+resolver!(resolve_element, Element, element);
+resolver!(resolve_html, HTMLElement, html);
+resolver!(resolve_node, Node, node);
+resolver!(resolve_node_list, NodeList, node_list);
+resolver!(resolve_token_list, DOMTokenList, token_list);
+resolver!(resolve_style, CSSStyleDeclaration, style);
+resolver!(resolve_event, Event, event);
+resolver!(resolve_target, EventTarget, target);
+
+unsafe fn reply_none(out: *mut MsyReply) {
+    *out = MsyReply::default();
+    (*out).tag = 0;
+}
+
+unsafe fn reply_bool(out: *mut MsyReply, b: bool) {
+    *out = MsyReply::default();
+    (*out).tag = 4;
+    (*out).num = if b { 1.0 } else { 0.0 };
+}
+
+// new URL(str): parse and build the DOM URL directly, register it, and hand
+// back a ref — the pathname/search reads then hit the native cache.
+unsafe fn try_ctor_url(cx: &mut JSContext, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let r = runner_ptr();
+    let global = GlobalScope::from_object((*r).global);
+    let Ok(url) = <URL as URLMethods<crate::DomTypeHolder>>::Constructor(
+        cx,
+        &global,
+        None,
+        USVString(arg16_str(&args[0])),
+        None,
+    ) else {
+        return false;
+    };
+    reply_ref(cx, &*url, |n, p| n.url = p, out)
+}
+
+unsafe fn try_url_get(cx: &mut JSContext, target: i64, which: Hot, out: *mut MsyReply) -> bool {
+    let Some(url) = resolve_url(cx, target) else {
+        return false;
+    };
+    let s = if which == Hot::Pathname { url.Pathname() } else { url.Search() };
+    let r = runner_ptr();
+    fill_str16(r, out, 2, &s.0);
+    true
+}
+
+unsafe fn try_create_element(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(doc) = resolve_document(cx, target) else {
+        return false;
+    };
+    let options = StringOrElementCreationOptions::String(DOMString::new());
+    let Ok(el) = doc.CreateElement(cx, DOMString::from(arg16_str(&args[0])), options) else {
+        return false;
+    };
+    let node_ptr = el.upcast::<Node>() as *const Node;
+    reply_ref(
+        cx,
+        &*el,
+        |n, p| {
+            n.element = p;
+            n.node = node_ptr;
+        },
+        out,
+    )
+}
+
+unsafe fn try_append_child(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 2 {
+        return false;
+    }
+    let Some(parent) = resolve_node(cx, target) else {
+        return false;
+    };
+    let Some(child) = resolve_node(cx, args[0].num as i64) else {
+        return false;
+    };
+    if parent.AppendChild(cx, child).is_err() {
+        return false;
+    }
+    reply_none(out);
+    true
+}
+
+unsafe fn try_text_content_set(cx: &mut JSContext, target: i64, value: &MsyArg16, out: *mut MsyReply) -> bool {
+    if value.kind != 0 {
+        return false;
+    }
+    let Some(node) = resolve_node(cx, target) else {
+        return false;
+    };
+    if node.SetTextContent(cx, Some(DOMString::from(arg16_str(value)))).is_err() {
+        return false;
+    }
+    reply_none(out);
+    true
+}
+
+unsafe fn try_text_content_get(cx: &mut JSContext, target: i64, out: *mut MsyReply) -> bool {
+    let Some(node) = resolve_node(cx, target) else {
+        return false;
+    };
+    match node.GetTextContent() {
+        Some(s) => {
+            let r = runner_ptr();
+            fill_str16(r, out, 2, &s.str());
+        },
+        None => reply_none(out),
+    }
+    true
+}
+
+unsafe fn try_set_class_name(cx: &mut JSContext, target: i64, value: &MsyArg16, out: *mut MsyReply) -> bool {
+    if value.kind != 0 {
+        return false;
+    }
+    let Some(el) = resolve_element(cx, target) else {
+        return false;
+    };
+    el.SetClassName(cx, DOMString::from(arg16_str(value)));
+    reply_none(out);
+    true
+}
+
+unsafe fn try_class_list(cx: &mut JSContext, target: i64, out: *mut MsyReply) -> bool {
+    let Some(el) = resolve_element(cx, target) else {
+        return false;
+    };
+    let list = el.ClassList(cx);
+    reply_ref(cx, &*list, |n, p| n.token_list = p, out)
+}
+
+unsafe fn try_contains(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(list) = resolve_token_list(cx, target) else {
+        return false;
+    };
+    reply_bool(out, list.Contains(DOMString::from(arg16_str(&args[0]))));
+    true
+}
+
+unsafe fn try_style(cx: &mut JSContext, target: i64, out: *mut MsyReply) -> bool {
+    let Some(el) = resolve_html(cx, target) else {
+        return false;
+    };
+    let style = el.Style(cx);
+    reply_ref(cx, &*style, |n, p| n.style = p, out)
+}
+
+unsafe fn try_style_property(cx: &mut JSContext, target: i64, which: Hot, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(style) = resolve_style(cx, target) else {
+        return false;
+    };
+    let prop = DOMString::from(arg16_str(&args[0]));
+    if which == Hot::SetProperty {
+        if args.len() < 2 || args[1].kind != 0 {
+            return false;
+        }
+        let value = DOMString::from(arg16_str(&args[1]));
+        if style.SetProperty(cx, prop, value, DOMString::new()).is_err() {
+            return false;
+        }
+        reply_none(out);
+    } else {
+        let s = style.GetPropertyValue(prop);
+        let r = runner_ptr();
+        fill_str16(r, out, 2, &s.str());
+    }
+    true
+}
+
+unsafe fn try_query_selector_all(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(doc) = resolve_document(cx, target) else {
+        return false;
+    };
+    let Ok(list) = doc.QuerySelectorAll(cx, DOMString::from(arg16_str(&args[0]))) else {
+        return false;
+    };
+    reply_ref(cx, &*list, |n, p| n.node_list = p, out)
+}
+
+unsafe fn try_length(cx: &mut JSContext, target: i64, out: *mut MsyReply) -> bool {
+    let Some(list) = resolve_node_list(cx, target) else {
+        return false;
+    };
+    *out = MsyReply::default();
+    (*out).tag = 1;
+    (*out).num = list.Length() as f64;
+    true
+}
+
+unsafe fn try_index(cx: &mut JSContext, target: i64, index: u32, out: *mut MsyReply) -> bool {
+    let Some(list) = resolve_node_list(cx, target) else {
+        return false;
+    };
+    match list.Item(index) {
+        Some(node) => reply_ref(cx, &*node, |n, p| n.node = p, out),
+        None => {
+            reply_none(out);
+            true
+        },
+    }
+}
+
+unsafe fn try_ctor_event(cx: &mut JSContext, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let r = runner_ptr();
+    let global = GlobalScope::from_object((*r).global);
+    let ev = Event::new(
+        cx,
+        &global,
+        Atom::from(arg16_str(&args[0])),
+        EventBubbles::DoesNotBubble,
+        EventCancelable::NotCancelable,
+    );
+    reply_ref(cx, &*ev, |n, p| n.event = p, out)
+}
+
+unsafe fn try_dispatch_event(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 2 {
+        return false;
+    }
+    let Some(t) = resolve_target(cx, target) else {
+        return false;
+    };
+    let Some(ev) = resolve_event(cx, args[0].num as i64) else {
+        return false;
+    };
+    let Ok(not_cancelled) = t.DispatchEvent(cx, ev) else {
+        return false;
+    };
+    reply_bool(out, not_cancelled);
+    true
+}
+
+/// The hot classification of an interned id, if any.
+unsafe fn hot_of(name_id: u32) -> Hot {
+    let r = runner_ptr();
+    if r.is_null() {
+        return Hot::None;
+    }
+    (&(*r).hot).get(name_id as usize).copied().unwrap_or(Hot::None)
+}
+
 extern "C" fn host_web_get_u16(_d: *mut c_void, target: i64, name_id: u32, out: *mut MsyReply) {
-    unsafe { bridge_wide(c"getWide", &[target as f64, name_id as f64], &[], out) }
+    unsafe {
+        let hot = hot_of(name_id);
+        if hot != Hot::None {
+            if let Some(mut cx) = JSContext::get_from_thread() {
+                let cx = &mut cx;
+                let handled = match hot {
+                    Hot::Pathname | Hot::Search => try_url_get(cx, target, hot, out),
+                    Hot::TextContent => try_text_content_get(cx, target, out),
+                    Hot::ClassList => try_class_list(cx, target, out),
+                    Hot::Style => try_style(cx, target, out),
+                    Hot::Length => try_length(cx, target, out),
+                    Hot::Index(i) => try_index(cx, target, i, out),
+                    _ => false,
+                };
+                if handled {
+                    return;
+                }
+            }
+        }
+        bridge_wide(c"getWide", &[target as f64, name_id as f64], &[], out)
+    }
 }
 
 extern "C" fn host_web_set_u16(
@@ -623,6 +1153,22 @@ extern "C" fn host_web_set_u16(
 ) {
     unsafe {
         let slice = if value.is_null() { &[][..] } else { std::slice::from_ref(&*value) };
+        if !slice.is_empty() {
+            let hot = hot_of(name_id);
+            if hot == Hot::TextContent || hot == Hot::ClassName {
+                if let Some(mut cx) = JSContext::get_from_thread() {
+                    let cx = &mut cx;
+                    let handled = match hot {
+                        Hot::TextContent => try_text_content_set(cx, target, &slice[0], out),
+                        Hot::ClassName => try_set_class_name(cx, target, &slice[0], out),
+                        _ => false,
+                    };
+                    if handled {
+                        return;
+                    }
+                }
+            }
+        }
         bridge_wide(c"setWide", &[target as f64, name_id as f64, refs_mask(slice)], slice, out)
     }
 }
@@ -637,6 +1183,26 @@ extern "C" fn host_web_call_u16(
 ) {
     unsafe {
         let a = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        let hot = hot_of(name_id);
+        if hot != Hot::None {
+            if let Some(mut cx) = JSContext::get_from_thread() {
+                let cx = &mut cx;
+                let handled = match hot {
+                    Hot::CreateElement => try_create_element(cx, target, a, out),
+                    Hot::AppendChild => try_append_child(cx, target, a, out),
+                    Hot::DispatchEvent => try_dispatch_event(cx, target, a, out),
+                    Hot::Contains => try_contains(cx, target, a, out),
+                    Hot::SetProperty | Hot::GetPropertyValue => {
+                        try_style_property(cx, target, hot, a, out)
+                    },
+                    Hot::QuerySelectorAll => try_query_selector_all(cx, target, a, out),
+                    _ => false,
+                };
+                if handled {
+                    return;
+                }
+            }
+        }
         bridge_wide(c"callWide", &[target as f64, name_id as f64, refs_mask(a)], a, out)
     }
 }
@@ -650,6 +1216,20 @@ extern "C" fn host_web_new_u16(
 ) {
     unsafe {
         let a = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        let hot = hot_of(ctor_id);
+        if hot != Hot::None {
+            if let Some(mut cx) = JSContext::get_from_thread() {
+                let cx = &mut cx;
+                let handled = match hot {
+                    Hot::CtorUrl => try_ctor_url(cx, a, out),
+                    Hot::CtorEvent => try_ctor_event(cx, a, out),
+                    _ => false,
+                };
+                if handled {
+                    return;
+                }
+            }
+        }
         bridge_wide(c"newWide", &[ctor_id as f64, refs_mask(a)], a, out)
     }
 }
@@ -711,6 +1291,8 @@ unsafe fn ensure_runner(global_obj: *mut JSObject) -> *mut Runner {
         bridge_ready: false,
         scratch: String::new(),
         reply16: Vec::new(),
+        hot: Vec::new(),
+        natives: HashMap::new(),
         start: Instant::now(),
     }));
     RUNNER.with(|c| c.set(runner));

@@ -3,56 +3,104 @@
     "browser": "servo-fork",
     "impl": "native",
     "wl": "canvas",
-    "ms": 18.597249999999995,
-    "rss": 29712,
+    "ms": 17.957625,
+    "rss": 32644,
     "checksum": 20000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 18.337958,
-    "rss": 21296,
+    "ms": 22.021208,
+    "rss": 21600,
     "checksum": 320000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
+    "wl": "cssom",
+    "ms": 26.298667000000002,
+    "rss": 19776,
+    "checksum": 48000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
     "wl": "dom",
-    "ms": 31.866916999999994,
-    "rss": 60212,
+    "ms": 19.034167000000004,
+    "rss": 74520,
     "checksum": 10000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
+    "wl": "encoding",
+    "ms": 29.31370799999999,
+    "rss": 24376,
+    "checksum": 437780
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": 24.141084,
+    "rss": 24040,
+    "checksum": 10000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "fetch",
+    "ms": 39.23954100000001,
+    "rss": 23464,
+    "checksum": 20990
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
     "wl": "json",
-    "ms": 1.0408329999999992,
-    "rss": 18676,
+    "ms": 0.9522499999999923,
+    "rss": 18888,
     "checksum": 848890
   },
   {
     "browser": "servo-fork",
     "impl": "native",
+    "wl": "query",
+    "ms": 11.258125,
+    "rss": 34752,
+    "checksum": 214900
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
     "wl": "storage",
-    "ms": 1952.7750010000002,
-    "rss": 19192,
+    "ms": 2010.5685430000003,
+    "rss": 19252,
     "checksum": 208890
   },
   {
     "browser": "servo-fork",
     "impl": "native",
+    "wl": "timers",
+    "ms": 49.67054199999999,
+    "rss": 20952,
+    "checksum": 20000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
     "wl": "url",
-    "ms": 37.961125,
-    "rss": 25008,
+    "ms": 21.680333000000005,
+    "rss": 26216,
     "checksum": 537780
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 92.70824999999999,
-    "rss": 18440,
+    "ms": 90.519375,
+    "rss": 18960,
     "checksum": 1765835917
   }
 ]

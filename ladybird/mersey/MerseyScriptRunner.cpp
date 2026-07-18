@@ -6,7 +6,9 @@
 
 #include <LibWeb/Mersey/MerseyScriptRunner.h>
 
+#include <AK/AllOf.h>
 #include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
 #include <AK/Format.h>
 #include <AK/HashMap.h>
 #include <AK/StringBuilder.h>
@@ -17,19 +19,33 @@
 #include <AK/Vector.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/Runtime/AbstractOperations.h>
+#include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibJS/Runtime/DataView.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PrimitiveString.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Realm.h>
+#include <LibJS/Runtime/TypedArray.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/VM.h>
+#include <LibWeb/Bindings/TextDecoder.h>
+#include <LibWeb/CSS/CSSStyleDeclaration.h>
+#include <LibWeb/CSS/CSSStyleProperties.h>
 #include <LibWeb/Crypto/Crypto.h>
+#include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/ElementFactory.h>
+#include <LibWeb/DOM/Event.h>
+#include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/DOM/Node.h>
+#include <LibWeb/DOM/NodeList.h>
+#include <LibWeb/DOM/ParentNode.h>
 #include <LibWeb/DOMURL/DOMURL.h>
+#include <LibWeb/Encoding/TextDecoder.h>
+#include <LibWeb/Encoding/TextEncoder.h>
+#include <LibWeb/HTML/AttributeNames.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
 #include <LibWeb/Namespace.h>
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
@@ -57,13 +73,26 @@ static constexpr StringView CAPS = "[\"dom\",\"web\",\"time\",\"random\",\"net\"
 // straight to the C++ method — skipping the reflective bridge into LibJS entirely.
 enum class HotMethod : u8 {
     None,
-    GetRandomValues, // crypto.getRandomValues(buf) -> Crypto::get_random_values
-    CtorURL,         // new URL(str)               -> DOMURL::construct_impl
-    Pathname,        // url.pathname               -> DOMURL::pathname
-    Search,          // url.search                 -> DOMURL::search
-    CreateElement,   // document.createElement(t)  -> Document::create_element
-    AppendChild,     // node.appendChild(child)    -> Node::append_child
-    TextContent,     // el.textContent = s         -> Node::set_text_content
+    GetRandomValues,  // crypto.getRandomValues(buf) -> Crypto::get_random_values
+    CtorURL,          // new URL(str)               -> DOMURL::construct_impl
+    Pathname,         // url.pathname               -> DOMURL::pathname
+    Search,           // url.search                 -> DOMURL::search
+    CreateElement,    // document.createElement(t)  -> Document::create_element
+    AppendChild,      // node.appendChild(child)    -> Node::append_child
+    TextContent,      // el.textContent (get + set) -> Node::text_content / set_text_content
+    CtorEvent,        // new Event(type)            -> DOM::Event::create
+    DispatchEvent,    // el.dispatchEvent(ev)       -> EventTarget::dispatch_event
+    ClassName,        // el.className = s           -> Element::set_attribute_value(class)
+    ClassList,        // el.classList               -> Element::class_list
+    Contains,         // tokens.contains(s)         -> DOMTokenList::contains
+    Style,            // el.style                   -> Element::style_for_bindings
+    SetProperty,      // style.setProperty(p, v)    -> CSSStyleDeclaration::set_property
+    GetPropertyValue, // style.getPropertyValue(p)  -> CSSStyleDeclaration::get_property_value
+    QuerySelectorAll, // doc.querySelectorAll(sel)  -> ParentNode::query_selector_all
+    Length,           // nodes.length               -> NodeList::length
+    Index,            // nodes[i] (digit-only name) -> NodeList::item
+    Encode,           // enc.encode(s)              -> TextEncoder::encode
+    Decode,           // dec.decode(bytes)          -> TextDecoder::decode
 };
 
 // Per-realm engine runner, reached through a raw thread-local pointer (see the
@@ -89,6 +118,8 @@ struct Runner {
     // handle → JS object cache so a hot method's receiver/object args are
     // unwrapped once and reused across the loop (invalidated on web_release).
     Vector<HotMethod> hot;
+    // For HotMethod::Index: the parsed index the digit-only name spells.
+    Vector<uint32_t> hot_arg;
     HashMap<int64_t, GC::Ptr<JS::Object>> handle_cache;
     MonotonicTime start { MonotonicTime::now() };
 };
@@ -302,9 +333,44 @@ static uint32_t host_web_intern(void*, char const* name, size_t len)
             hot = HotMethod::AppendChild;
         else if (n == "textContent"sv)
             hot = HotMethod::TextContent;
-        while (runner->hot.size() <= id)
+        else if (n == "Event"sv)
+            hot = HotMethod::CtorEvent;
+        else if (n == "dispatchEvent"sv)
+            hot = HotMethod::DispatchEvent;
+        else if (n == "className"sv)
+            hot = HotMethod::ClassName;
+        else if (n == "classList"sv)
+            hot = HotMethod::ClassList;
+        else if (n == "contains"sv)
+            hot = HotMethod::Contains;
+        else if (n == "style"sv)
+            hot = HotMethod::Style;
+        else if (n == "setProperty"sv)
+            hot = HotMethod::SetProperty;
+        else if (n == "getPropertyValue"sv)
+            hot = HotMethod::GetPropertyValue;
+        else if (n == "querySelectorAll"sv)
+            hot = HotMethod::QuerySelectorAll;
+        else if (n == "length"sv)
+            hot = HotMethod::Length;
+        else if (n == "encode"sv)
+            hot = HotMethod::Encode;
+        else if (n == "decode"sv)
+            hot = HotMethod::Decode;
+        uint32_t index_arg = 0;
+        // A digit-only name is an indexed access crossing as a property read
+        // (`nodes[i]` interns "42"); dispatch it to NodeList::item by value.
+        if (hot == HotMethod::None && !n.is_empty() && n.length() <= 9
+            && all_of(n, [](char c) { return is_ascii_digit(c); })) {
+            hot = HotMethod::Index;
+            index_arg = n.to_number<u32>().value_or(0);
+        }
+        while (runner->hot.size() <= id) {
             runner->hot.append(HotMethod::None);
+            runner->hot_arg.append(0);
+        }
         runner->hot[id] = hot;
+        runner->hot_arg[id] = index_arg;
     }
     return id;
 }
@@ -458,14 +524,42 @@ static int64_t register_host_object(Runner*, JS::Object&);
 static bool try_url_get(Runner*, int64_t target, HotMethod, msy_reply*);
 static bool try_construct_url(Runner*, msy_arg16 const* args, size_t argc, msy_reply*);
 static bool try_set_text_content(Runner*, int64_t target, msy_arg16 const* value, msy_reply*);
+static bool try_text_content_get(Runner*, int64_t target, msy_reply*);
+static bool try_object_get(Runner*, int64_t target, HotMethod, msy_reply*); // classList / style
+static bool try_length_get(Runner*, int64_t target, msy_reply*);
+static bool try_index_get(Runner*, int64_t target, uint32_t index, msy_reply*);
+static bool try_set_class_name(Runner*, int64_t target, msy_arg16 const* value, msy_reply*);
 
 static void host_web_get_u16(void*, int64_t target, uint32_t name_id, msy_reply* out)
 {
     auto* runner = s_runner;
     if (runner && name_id < runner->hot.size()) {
-        auto hot = runner->hot[name_id];
-        if ((hot == HotMethod::Pathname || hot == HotMethod::Search) && try_url_get(runner, target, hot, out))
-            return;
+        switch (runner->hot[name_id]) {
+        case HotMethod::Pathname:
+        case HotMethod::Search:
+            if (try_url_get(runner, target, runner->hot[name_id], out))
+                return;
+            break;
+        case HotMethod::TextContent:
+            if (try_text_content_get(runner, target, out))
+                return;
+            break;
+        case HotMethod::ClassList:
+        case HotMethod::Style:
+            if (try_object_get(runner, target, runner->hot[name_id], out))
+                return;
+            break;
+        case HotMethod::Length:
+            if (try_length_get(runner, target, out))
+                return;
+            break;
+        case HotMethod::Index:
+            if (try_index_get(runner, target, runner->hot_arg[name_id], out))
+                return;
+            break;
+        default:
+            break;
+        }
     }
     GC::RootVector<JS::Value> args;
     args.append(JS::Value(static_cast<double>(target)));
@@ -477,8 +571,10 @@ static void host_web_set_u16(void*, int64_t target, uint32_t name_id, msy_arg16 
 {
     auto* runner = s_runner;
     if (!runner || !runner->realm) { *out = {}; return; }
-    if (name_id < runner->hot.size() && runner->hot[name_id] == HotMethod::TextContent) {
-        if (try_set_text_content(runner, target, value, out))
+    if (name_id < runner->hot.size()) {
+        if (runner->hot[name_id] == HotMethod::TextContent && try_set_text_content(runner, target, value, out))
+            return;
+        if (runner->hot[name_id] == HotMethod::ClassName && try_set_class_name(runner, target, value, out))
             return;
     }
     GC::RootVector<JS::Value> args;
@@ -654,6 +750,209 @@ static bool try_get_random_values(Runner* runner, int64_t target, msy_arg16 cons
     return true;
 }
 
+// Shared tail: register a host-created object and reply with its ref.
+static bool reply_ref(Runner* runner, JS::Object& obj, msy_reply* out)
+{
+    auto h = register_host_object(runner, obj);
+    if (h < 0)
+        return false;
+    *out = {};
+    out->tag = 3; // ref
+    out->num = static_cast<double>(h);
+    return true;
+}
+
+static Utf16String arg16_string(msy_arg16 const& a)
+{
+    return Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(a.str16), a.str16_len });
+}
+
+// el.textContent (get) on a cached node: direct C++.
+static bool try_text_content_get(Runner* runner, int64_t target, msy_reply* out)
+{
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::Node>(*obj))
+        return false;
+    auto text = as<Web::DOM::Node>(*obj).text_content();
+    if (!text.has_value()) {
+        *out = {};
+        out->tag = 0;
+        return true;
+    }
+    fill_str16(runner, out, 2, *text);
+    return true;
+}
+
+// el.classList / el.style: hand back the element's own sub-object as a ref
+// (the bridge dedups object → handle, so the loop sees a stable handle).
+static bool try_object_get(Runner* runner, int64_t target, HotMethod which, msy_reply* out)
+{
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::Element>(*obj))
+        return false;
+    auto& el = as<Web::DOM::Element>(*obj);
+    if (which == HotMethod::ClassList)
+        return reply_ref(runner, el.class_list(), out);
+    return reply_ref(runner, el.style_for_bindings(), out);
+}
+
+// nodes.length on a NodeList: direct C++.
+static bool try_length_get(Runner* runner, int64_t target, msy_reply* out)
+{
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::NodeList>(*obj))
+        return false;
+    *out = {};
+    out->tag = 1;
+    out->num = static_cast<double>(as<Web::DOM::NodeList>(*obj).length());
+    return true;
+}
+
+// nodes[i] on a NodeList (the engine crosses indexed access as a digit-named
+// property read): direct C++ item().
+static bool try_index_get(Runner* runner, int64_t target, uint32_t index, msy_reply* out)
+{
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::NodeList>(*obj))
+        return false;
+    auto const* node = as<Web::DOM::NodeList>(*obj).item(index);
+    if (!node) {
+        *out = {};
+        out->tag = 0;
+        return true;
+    }
+    return reply_ref(runner, const_cast<Web::DOM::Node&>(*node), out);
+}
+
+// el.className = s: the reflected class attribute, set directly.
+static bool try_set_class_name(Runner* runner, int64_t target, msy_arg16 const* value, msy_reply* out)
+{
+    if (!value || value->kind != 0)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::Element>(*obj))
+        return false;
+    as<Web::DOM::Element>(*obj).set_attribute_value(Web::HTML::AttributeNames::class_, arg16_string(*value));
+    *out = {};
+    out->tag = 0;
+    return true;
+}
+
+// tokens.contains(s) on a DOMTokenList: direct C++.
+static bool try_contains(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::DOMTokenList>(*obj))
+        return false;
+    auto token = arg16_string(args[0]);
+    *out = {};
+    out->tag = 4; // bool
+    out->num = as<Web::DOM::DOMTokenList>(*obj).contains(token.utf16_view()) ? 1 : 0;
+    return true;
+}
+
+// style.setProperty(p, v) / style.getPropertyValue(p): direct C++ into the
+// inline-style declaration.
+static bool try_style_property(Runner* runner, int64_t target, HotMethod which, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::CSS::CSSStyleDeclaration>(*obj))
+        return false;
+    auto& style = as<Web::CSS::CSSStyleDeclaration>(*obj);
+    auto prop = arg16_string(args[0]);
+    if (which == HotMethod::SetProperty) {
+        if (argc < 2 || args[1].kind != 0)
+            return false;
+        auto value = arg16_string(args[1]);
+        if (style.set_property(Utf16FlyString { prop }, value.utf16_view(), Utf16View {}).is_error())
+            return false;
+        *out = {};
+        out->tag = 0;
+        return true;
+    }
+    fill_str16(runner, out, 2, style.get_property_value(Utf16FlyString { prop }));
+    return true;
+}
+
+// doc.querySelectorAll(sel): run the real selector match and hand the NodeList
+// back as a ref, so length/index reads on it stay direct.
+static bool try_query_selector_all(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::ParentNode>(*obj))
+        return false;
+    auto sel = arg16_string(args[0]);
+    auto list_or = as<Web::DOM::ParentNode>(*obj).query_selector_all(sel.utf16_view());
+    if (list_or.is_error())
+        return false;
+    return reply_ref(runner, *list_or.release_value(), out);
+}
+
+// enc.encode(s): direct UTF-8 encode; the Uint8Array crosses as a ref.
+static bool try_encode(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::Encoding::TextEncoder>(*obj))
+        return false;
+    auto bytes = as<Web::Encoding::TextEncoder>(*obj).encode(arg16_string(args[0]));
+    return reply_ref(runner, *bytes, out);
+}
+
+// dec.decode(bytes) with a typed-array/ArrayBuffer handle: direct decode.
+static bool try_decode(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 2)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::Encoding::TextDecoder>(*obj))
+        return false;
+    auto buf_obj = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    if (!buf_obj || !(is<JS::TypedArrayBase>(*buf_obj) || is<JS::ArrayBuffer>(*buf_obj) || is<JS::DataView>(*buf_obj)))
+        return false;
+    auto source = Web::WebIDL::BufferSource::from_object(GC::Ref<JS::Object> { *buf_obj });
+    auto text_or = as<Web::Encoding::TextDecoder>(*obj).decode(source, {});
+    if (text_or.is_error())
+        return false;
+    fill_str16(runner, out, 2, text_or.release_value());
+    return true;
+}
+
+// el.dispatchEvent(ev): direct dispatch — the JS/Mersey listeners still run
+// (dispatch invokes them synchronously), only the bridge hop is skipped.
+static bool try_dispatch_event(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 2)
+        return false;
+    auto obj = resolve_handle_object(runner, target);
+    if (!obj || !is<Web::DOM::EventTarget>(*obj))
+        return false;
+    auto ev_obj = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    if (!ev_obj || !is<Web::DOM::Event>(*ev_obj))
+        return false;
+    bool not_cancelled = as<Web::DOM::EventTarget>(*obj).dispatch_event(as<Web::DOM::Event>(*ev_obj));
+    *out = {};
+    out->tag = 4; // bool
+    out->num = not_cancelled ? 1 : 0;
+    return true;
+}
+
+// new Event(type): build the event directly and hand back a ref.
+static bool try_construct_event(Runner* runner, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto ev = Web::DOM::Event::create(*runner->realm, Utf16FlyString { arg16_string(args[0]) });
+    return reply_ref(runner, *ev, out);
+}
+
 static void host_web_call_u16(void*, int64_t target, uint32_t name_id, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     auto* runner = s_runner;
@@ -671,6 +970,31 @@ static void host_web_call_u16(void*, int64_t target, uint32_t name_id, msy_arg16
             break;
         case HotMethod::AppendChild:
             if (try_append_child(runner, target, args, argc, out))
+                return;
+            break;
+        case HotMethod::DispatchEvent:
+            if (try_dispatch_event(runner, target, args, argc, out))
+                return;
+            break;
+        case HotMethod::Contains:
+            if (try_contains(runner, target, args, argc, out))
+                return;
+            break;
+        case HotMethod::SetProperty:
+        case HotMethod::GetPropertyValue:
+            if (try_style_property(runner, target, runner->hot[name_id], args, argc, out))
+                return;
+            break;
+        case HotMethod::QuerySelectorAll:
+            if (try_query_selector_all(runner, target, args, argc, out))
+                return;
+            break;
+        case HotMethod::Encode:
+            if (try_encode(runner, target, args, argc, out))
+                return;
+            break;
+        case HotMethod::Decode:
+            if (try_decode(runner, target, args, argc, out))
                 return;
             break;
         default:
@@ -691,8 +1015,10 @@ static void host_web_new_u16(void*, uint32_t ctor_id, msy_arg16 const* args, siz
 {
     auto* runner = s_runner;
     if (!runner || !runner->realm) { *out = {}; return; }
-    if (ctor_id < runner->hot.size() && runner->hot[ctor_id] == HotMethod::CtorURL) {
-        if (try_construct_url(runner, args, argc, out))
+    if (ctor_id < runner->hot.size()) {
+        if (runner->hot[ctor_id] == HotMethod::CtorURL && try_construct_url(runner, args, argc, out))
+            return;
+        if (runner->hot[ctor_id] == HotMethod::CtorEvent && try_construct_event(runner, args, argc, out))
             return;
     }
     auto& vm = runner->realm->vm();

@@ -27,7 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
   `${process.env.HOME}/servo-src/target/release/servoshell`;
 const REPEATS = 3;
-const WEB_WORKLOADS = ["canvas", "crypto", "dom", "json", "storage", "url"];
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killServo(); process.exit(3); });

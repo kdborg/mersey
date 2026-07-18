@@ -14,9 +14,17 @@ Rust→SpiderMonkey**: the host table's `web_*` hooks call the tested
 over a handle table) through `JS_CallFunctionName`, exactly as the WASM polyfill
 does. The interned **and** wide-string (`web_*_u16`, UTF-16 args/replies, no
 JSON) fast paths are wired — the same lever the Ladybird fork got — so the common
-get/set/call/new cross without JSON and object arguments stay off the JSON path;
-only the direct-C++ typed bindings (`web_bind` → the C++ method, no JS at all)
-are not built here yet.
+get/set/call/new cross without JSON and object arguments stay off the JSON path.
+The **direct-DOM tier** (the Ladybird fork's HotMethod dispatch, ported to Rust)
+is wired too: a hot interned name (URL ctor/pathname/search, createElement,
+appendChild, textContent, Event ctor, dispatchEvent, className, classList,
+contains, style, setProperty, getPropertyValue, querySelectorAll, length,
+indexed NodeList access) unwraps its receiver once via `root_from_object`,
+caches the boxed native's pointer per handle (Servo natives never move; the
+bridge handle table keeps them alive until `web_release`), and calls the DOM
+method directly — url 36.2 → 21.7 ms, cssom 52.5 → 26.3, dom 30.6 → 19.0,
+events 32.4 → 24.1, query 14.7 → 11.3, checksums unchanged. Only `web_bind`
+(the JIT's compile-time bind ids) is still `NULL` here.
 
 The Servo tree is not *in* this repo (a checkout is large). It lives beside it:
 

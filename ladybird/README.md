@@ -22,7 +22,12 @@ honest bootstrap — and then grew every faster tier the other forks have:
 (the JIT-compiled canvas loop → `fill_rect` with no JS), and a **direct-DOM** tier
 that unwraps hot receivers to their C++ types and calls the method directly
 (`getRandomValues`, `new URL`/`pathname`/`search`, `createElement`/`textContent`/
-`appendChild`). Ladybird's LibJS is **UTF-16** (`PrimitiveString`/`Utf16String`),
+`appendChild` — and, since the twelve-workload suite: `new Event`/`dispatchEvent`,
+`className`/`classList`/`contains`, `style`/`setProperty`/`getPropertyValue`,
+`querySelectorAll`/`length` + indexed NodeList access (a digit-only interned
+name), and `TextEncoder.encode`/`TextDecoder.decode`; cssom 125 → 46 ms,
+encoding 62 → 36, events 69 → 40, query 17.4 → 9.5, checksums unchanged).
+Ladybird's LibJS is **UTF-16** (`PrimitiveString`/`Utf16String`),
 so strings cross with no conversion; arguments are a `GC::RootVector`.
 
 The Ladybird tree is not *in* this repo (a checkout is large). It lives beside
