@@ -73,6 +73,12 @@ function makeBridge(globalObject, invokeCallback) {
     return { __ref__: handleFor(v) };
   };
 
+  // One wrapper per callback id. The engine keys ids by closure identity, so
+  // the same Mersey function is the same JS function on every crossing —
+  // `removeEventListener` removes, and a hot `setTimeout` loop doesn't
+  // allocate a wrapper per call.
+  const cbWrappers = new Map();
+
   // tagged JSON value -> JS value (callbacks become real functions)
   const decode = (v) => {
     if (v === null || typeof v !== "object") return v;
@@ -80,10 +86,13 @@ function makeBridge(globalObject, invokeCallback) {
     if ("__ref__" in v) return handles[v.__ref__];
     if ("__cb__" in v) {
       const id = v.__cb__;
+      const cached = cbWrappers.get(id);
+      if (cached) return cached;
       // A Mersey closure: JS calls it with real arguments (event objects,
       // resolved promise values, …), which cross back as handles.
       const fn = (...args) => invokeCallback(id, JSON.stringify(args.map(encode)));
       fn.__merseyCallback = id; // so the host can release it later
+      cbWrappers.set(id, fn);
       return fn;
     }
     const out = {};

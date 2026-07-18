@@ -3,7 +3,7 @@
     "browser": "ladybird",
     "impl": "js",
     "wl": "canvas",
-    "ms": 11.2,
+    "ms": 10.800000011920929,
     "rss": 0,
     "checksum": 20000
   },
@@ -11,31 +11,31 @@
     "browser": "ladybird",
     "impl": "js",
     "wl": "crypto",
-    "ms": 5.1,
-    "rss": 0,
+    "ms": 5.199999988079071,
+    "rss": 2050,
     "checksum": 320000
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "cssom",
-    "ms": 28.3,
-    "rss": 12057,
+    "ms": 29.5,
+    "rss": 15067,
     "checksum": 48000
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "dom",
-    "ms": 20.5,
-    "rss": 179995,
+    "ms": 21.900000005960464,
+    "rss": 165377,
     "checksum": 10000
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "encoding",
-    "ms": 17.4,
+    "ms": 18.900000005960464,
     "rss": 0,
     "checksum": 437780
   },
@@ -43,7 +43,7 @@
     "browser": "ladybird",
     "impl": "js",
     "wl": "events",
-    "ms": 6.9,
+    "ms": 8.699999988079071,
     "rss": 0,
     "checksum": 10000
   },
@@ -51,224 +51,224 @@
     "browser": "ladybird",
     "impl": "js",
     "wl": "json",
-    "ms": 21.4,
-    "rss": 0,
+    "ms": 20.799999982118607,
+    "rss": 645,
     "checksum": 848890
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "query",
-    "ms": 6.7,
-    "rss": 0,
+    "ms": 6.700000017881393,
+    "rss": 1718,
     "checksum": 214900
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "storage",
-    "ms": 4965,
-    "rss": 17473,
+    "ms": 5110.300000011921,
+    "rss": 19801,
     "checksum": 208890
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "timers",
-    "ms": 9.6,
-    "rss": 2875,
+    "ms": 9.900000005960464,
+    "rss": 1771,
     "checksum": 20000
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "url",
-    "ms": 56.9,
-    "rss": 20514,
+    "ms": 56.30000001192093,
+    "rss": 22571,
     "checksum": 537780
   },
   {
     "browser": "ladybird",
     "impl": "js",
     "wl": "compute",
-    "ms": 1748.6,
-    "rss": 3754,
+    "ms": 1741.5,
+    "rss": 7198,
     "checksum": 1765835917
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "canvas",
-    "ms": 27.8,
-    "rss": 340664,
+    "ms": 26.599999994039536,
+    "rss": 393987,
     "checksum": 20000
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 17.3,
-    "rss": 353819,
+    "ms": 16.600000023841858,
+    "rss": 375497,
     "checksum": 320000
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "cssom",
-    "ms": 63.6,
-    "rss": 397186,
+    "ms": 57.69999998807907,
+    "rss": 470926,
     "checksum": 48000
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "dom",
-    "ms": 43,
-    "rss": 390421,
+    "ms": 41.69999998807907,
+    "rss": 431792,
     "checksum": 10000
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "encoding",
-    "ms": 34.2,
-    "rss": 360297,
+    "ms": 31.900000005960464,
+    "rss": 397083,
     "checksum": 437780
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "events",
-    "ms": 16.1,
-    "rss": 487708,
+    "ms": 15.5,
+    "rss": 370885,
     "checksum": 10000
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "json",
-    "ms": 32.3,
-    "rss": 371557,
+    "ms": 30.900000005960464,
+    "rss": 432037,
     "checksum": 848890
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "query",
-    "ms": 10.9,
-    "rss": 461382,
+    "ms": 10.799999982118607,
+    "rss": 384573,
     "checksum": 214900
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "storage",
-    "ms": 14910.3,
-    "rss": 429623,
+    "ms": 14479.600000023842,
+    "rss": 463134,
     "checksum": 208890
-  },
-  {
-    "browser": "ladybird",
-    "impl": "tjs",
-    "wl": "url",
-    "ms": 64.1,
-    "rss": 433163,
-    "checksum": 537780
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "canvas",
-    "ms": 2585.8,
-    "rss": 411871,
-    "checksum": 20000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "crypto",
-    "ms": 3044,
-    "rss": 490430,
-    "checksum": 320000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "cssom",
-    "ms": 4877.3,
-    "rss": 472718,
-    "checksum": 48000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "dom",
-    "ms": 2536.8,
-    "rss": 457065,
-    "checksum": 10000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "encoding",
-    "ms": 2741.4,
-    "rss": 470063,
-    "checksum": 437780
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "events",
-    "ms": 2806.6,
-    "rss": 412534,
-    "checksum": 10000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "json",
-    "ms": 1728.8,
-    "rss": 367034,
-    "checksum": 848890
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "query",
-    "ms": 500.8,
-    "rss": 431122,
-    "checksum": 214900
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "storage",
-    "ms": 10796.3,
-    "rss": 350681,
-    "checksum": 208890
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "timers",
-    "ms": 3846.1,
-    "rss": 473769,
-    "checksum": 20000
-  },
-  {
-    "browser": "ladybird",
-    "impl": "poly",
-    "wl": "url",
-    "ms": 5270.6,
-    "rss": 452489,
-    "checksum": 537780
   },
   {
     "browser": "ladybird",
     "impl": "tjs",
     "wl": "timers",
     "ms": 10,
-    "rss": 463081,
+    "rss": 473730,
     "checksum": 20000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "tjs",
+    "wl": "url",
+    "ms": 64.09999999403954,
+    "rss": 472433,
+    "checksum": 537780
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "canvas",
+    "ms": 2511.300000011921,
+    "rss": 422102,
+    "checksum": 20000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "crypto",
+    "ms": 3056.7000000178814,
+    "rss": 456220,
+    "checksum": 320000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "cssom",
+    "ms": 4761.300000011921,
+    "rss": 462844,
+    "checksum": 48000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "dom",
+    "ms": 2467.199999988079,
+    "rss": 433498,
+    "checksum": 10000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "encoding",
+    "ms": 2659,
+    "rss": 441781,
+    "checksum": 437780
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "events",
+    "ms": 2867.7999999821186,
+    "rss": 411260,
+    "checksum": 10000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "json",
+    "ms": 482,
+    "rss": 384159,
+    "checksum": 848890
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "query",
+    "ms": 491.2000000178814,
+    "rss": 400259,
+    "checksum": 214900
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "storage",
+    "ms": 10746.300000011921,
+    "rss": 440777,
+    "checksum": 208890
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "timers",
+    "ms": 3708.5999999940395,
+    "rss": 457474,
+    "checksum": 20000
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "url",
+    "ms": 5343.100000023842,
+    "rss": 432141,
+    "checksum": 537780
   }
 ]

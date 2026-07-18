@@ -134,6 +134,15 @@ struct Runner {
     // the binding function.
     int64_t set_timeout_handle { INT64_MIN };
     int64_t clear_timeout_handle { INT64_MIN };
+    // One NativeFunction per callback id — the engine keys ids by closure
+    // identity, so the same Mersey function is the same JS function on every
+    // crossing (removeEventListener removes; a setTimeout/clearTimeout loop
+    // stops allocating a function per call). Rooted like the handle table and
+    // rebuilt with the realm. If a host ever calls
+    // msy_context_release_callback it must evict here too: the engine reuses
+    // released ids.
+    OwnPtr<GC::RootVector<JS::Value>> cb_wrappers;
+    HashMap<uint32_t, size_t> cb_wrapper_index;
     // Typed-binding fast path (web_bind): the canvas draw loop reuses one context,
     // so its C++ pointer is cached by handle — one unwrap amortized over the
     // loop, then every fillRect is a direct call. LibGC is non-moving and the
@@ -157,6 +166,8 @@ static void reset_handles(Runner* runner, JS::Realm& realm)
     runner->by_object.set(&global, 0);
     runner->set_timeout_handle = INT64_MIN;
     runner->clear_timeout_handle = INT64_MIN;
+    runner->cb_wrappers = make<GC::RootVector<JS::Value>>();
+    runner->cb_wrapper_index.clear();
     runner->canvas_handle = INT64_MIN;
     runner->canvas_ctx = nullptr;
 }
@@ -269,10 +280,13 @@ static void encode_value(Runner* runner, StringBuilder& out, JS::Value v)
 
 // A Mersey closure crossing into JS-shaped code (an event listener, a promise
 // reaction, a timer callback): a NativeFunction that encodes its arguments and
-// re-enters the engine — C++ end to end, no JS trampoline.
+// re-enters the engine — C++ end to end, no JS trampoline. One wrapper per id,
+// cached: ids are stable per closure, so identity survives crossings.
 static JS::Value make_callback(Runner* runner, uint32_t id)
 {
-    return JS::NativeFunction::create(*runner->realm, [runner, id](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+    if (auto idx = runner->cb_wrapper_index.get(id); idx.has_value())
+        return (*runner->cb_wrappers)[*idx];
+    auto fn = JS::NativeFunction::create(*runner->realm, [runner, id](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
         StringBuilder json;
         json.append('[');
         for (size_t i = 0; i < vm.argument_count(); ++i) {
@@ -285,6 +299,9 @@ static JS::Value make_callback(Runner* runner, uint32_t id)
         msy_context_invoke_args(runner->ctx, id, text.characters(), text.length());
         return JS::js_undefined();
     }, 0);
+    runner->cb_wrapper_index.set(id, runner->cb_wrappers->size());
+    runner->cb_wrappers->append(JS::Value(fn.ptr()));
+    return JS::Value(fn.ptr());
 }
 
 // A parsed JSON value back to a JS value. Practically infallible (the inputs
@@ -319,6 +336,51 @@ static JS::Value decode_json(Runner* runner, JsonValue const& v)
         (void)plain->create_data_property(JS::PropertyKey { Utf16String::from_utf8(key) }, member_value);
     });
     return plain;
+}
+
+// Handles only ever name objects (the bridge never allocates a handle for a
+// primitive), so the ToObject coercions on the host paths reduce to a check.
+// Local because JS::Value::to_object is not JS_API-exported in current trees.
+static JS::ThrowCompletionOr<GC::Ref<JS::Object>> target_object(JS::VM& vm, JS::Value tv)
+{
+    if (tv.is_object())
+        return GC::Ref { tv.as_object() };
+    return JS::throw_completion(JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8("value is not an object"sv))));
+}
+
+// Ordinary `instanceof` (prototype-chain walk against Ctor.prototype). Local
+// because JS::instance_of is not JS_API-exported in current trees; host types
+// don't customize Symbol.hasInstance, so the ordinary algorithm is the whole
+// story here.
+static JS::ThrowCompletionOr<bool> value_instance_of(JS::Value v, JS::Value ctor)
+{
+    if (!v.is_object() || !ctor.is_object())
+        return false;
+    auto proto_val = TRY(ctor.as_object().get(JS::PropertyKey { "prototype"_utf16_fly_string }));
+    if (!proto_val.is_object())
+        return false;
+    auto* proto = &proto_val.as_object();
+    for (auto* p = TRY(v.as_object().internal_get_prototype_of()); p; p = TRY(p->internal_get_prototype_of())) {
+        if (p == proto)
+            return true;
+    }
+    return false;
+}
+
+// Bind a method to its receiver, the bridge's `v.bind(obj)`. Not
+// JS::BoundFunction — that class is not JS_API-exported in current trees — but
+// an exported NativeFunction forwarding the call; the GC::Roots in the capture
+// keep callee and receiver alive for the wrapper's lifetime.
+static JS::Value bind_receiver(Runner* runner, JS::Value fn, JS::Value receiver)
+{
+    return JS::Value(JS::NativeFunction::create(*runner->realm,
+        [fn_root = GC::make_root(fn), recv_root = GC::make_root(receiver)](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+            GC::RootVector<JS::Value> args;
+            for (size_t i = 0; i < vm.argument_count(); ++i)
+                args.append(vm.argument(i));
+            return JS::call(vm, fn_root.value(), recv_root.value(), args.span());
+        },
+        0).ptr());
 }
 
 // ---- reply plumbing --------------------------------------------------------
@@ -443,12 +505,12 @@ static char const* host_web_get(void*, int64_t target, char const* prop, size_t 
     return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto v = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(StringView { prop, prop_len }) }));
         // A method read binds its receiver (the bridge's v.bind(obj)), so a
         // later call through the handle has its `this`.
         if (v.is_function())
-            v = JS::Value(TRY(JS::BoundFunction::create(*runner->realm, v.as_function(), tv, {})).ptr());
+            v = bind_receiver(runner, v, tv);
         return ok_reply(runner, v);
     });
 }
@@ -459,7 +521,7 @@ static char const* host_web_set(void*, int64_t target, char const* prop, size_t 
     return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto parsed = JsonValue::from_string(StringView { value_json, value_len });
         auto v = parsed.is_error() ? JS::js_null() : decode_json(runner, parsed.value());
         TRY(obj->set(JS::PropertyKey { Utf16String::from_utf8(StringView { prop, prop_len }) }, v,
@@ -516,7 +578,7 @@ static char const* host_web_call(void*, int64_t target, char const* method, size
                 return ByteString { "{\"err\":\"value is not a function\"}" };
             return ok_reply(runner, TRY(JS::call(vm, tv, JS::js_undefined(), args.span())));
         }
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(method_name) }));
         if (!fn.is_function())
             return ByteString::formatted("{{\"err\":\"{} is not a function\"}}", method_name);
@@ -531,7 +593,7 @@ static JS::ThrowCompletionOr<JS::Value> resolve_ctor(Runner* runner, StringView 
     JS::Value o { &runner->realm->global_object() };
     auto& vm = runner->realm->vm();
     for (auto segment : name.split_view('.')) {
-        auto obj = TRY(o.to_object(vm));
+        auto obj = TRY(target_object(vm, o));
         o = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(segment) }));
     }
     return o;
@@ -609,10 +671,11 @@ static int32_t host_web_instanceof(void*, int64_t target, int64_t ctor)
     if (!runner || !runner->realm)
         return 0;
     auto& vm = runner->realm->vm();
-    auto result = JS::instance_of(vm, handle_value(runner, target), handle_value(runner, ctor));
+    (void)vm;
+    auto result = value_instance_of(handle_value(runner, target), handle_value(runner, ctor));
     if (result.is_error())
         return 0;
-    return result.value().as_bool() ? 1 : 0;
+    return result.value() ? 1 : 0;
 }
 
 static void host_web_release(void*, int64_t target)
@@ -1204,10 +1267,10 @@ static void host_web_get_u16(void*, int64_t target, uint32_t name_id, msy_reply*
     wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto v = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }));
         if (v.is_function())
-            v = JS::Value(TRY(JS::BoundFunction::create(*runner->realm, v.as_function(), tv, {})).ptr());
+            v = bind_receiver(runner, v, tv);
         return v;
     }());
 }
@@ -1227,7 +1290,7 @@ static void host_web_set_u16(void*, int64_t target, uint32_t name_id, msy_arg16 
     wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto v = value ? arg16_to_value(runner, *value) : JS::js_null();
         TRY(obj->set(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }, v,
             JS::Object::ShouldThrowExceptions::Yes));
@@ -1299,7 +1362,7 @@ static void host_web_call_u16(void*, int64_t target, uint32_t name_id, msy_arg16
     wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }));
         if (!fn.is_function())
             return runner->realm->vm().throw_completion<JS::TypeError>(
@@ -1403,7 +1466,7 @@ static void host_web_bind(void*, int64_t target, uint32_t bind_id, double const*
     wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
-        auto obj = TRY(tv.to_object(vm));
+        auto obj = TRY(target_object(vm, tv));
         auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(name) }));
         if (!fn.is_function())
             return vm.throw_completion<JS::TypeError>(Utf16String::formatted("{} is not a function", name));

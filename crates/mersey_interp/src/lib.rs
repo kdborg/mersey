@@ -1049,6 +1049,14 @@ pub struct Interp {
     /// reaction). Cleared slots are reused, so a page that churns through
     /// listeners doesn't grow the table forever.
     free_callbacks: Vec<u32>,
+    /// Callback id per closure identity (`Rc`/static pointer). The same
+    /// closure crossing the bridge twice gets the same `{"__cb__":id}` — the
+    /// host can cache one wrapper per id, wrapper identity is stable (so
+    /// `removeEventListener` removes), and a hot arm/disarm loop
+    /// (`setTimeout`/`clearTimeout`) stops allocating a slot per call. The
+    /// table slot keeps the closure's `Rc` alive, so the key pointer cannot
+    /// be reused while the entry lives; `release_callback` evicts.
+    callback_ids: HashMap<usize, u32>,
     /// Shared prelude (built-in classes); every module scope descends from it.
     root: Env,
     globals: Env,
@@ -1784,6 +1792,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     Interp {
         host,
         free_callbacks: Vec::new(),
+        callback_ids: HashMap::new(),
         root,
         globals,
         callbacks: Vec::new(),
@@ -6824,12 +6833,24 @@ impl Interp {
                         .collect(),
                 )
             }
-            Value::Closure(_)
-            | Value::Native(_)
-            | Value::Resolve(..)
-            | Value::Reject(..)
-            | Value::AllSlot(..)
-            | Value::PromiseExec(..) => {
+            // Durable callables cross with a STABLE id (cached by closure
+            // identity): the host caches one wrapper per id, so the same
+            // Mersey function is the same JS function on every crossing.
+            Value::Closure(_) | Value::Native(_) => {
+                let key = Self::callback_key(v).expect("closure/native has identity");
+                let id = match self.callback_ids.get(&key) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.alloc_callback(v.clone());
+                        self.callback_ids.insert(key, id);
+                        id
+                    }
+                };
+                Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
+            }
+            // One-shot promise plumbing: a fresh slot per crossing (each
+            // carries per-instance settle state; never re-crosses).
+            Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
                 let id = self.alloc_callback(v.clone());
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
             }
@@ -6901,11 +6922,29 @@ impl Interp {
         }
     }
 
+    /// Identity key for a durable callable: the allocation the value shares
+    /// across clones. Stable while any clone is alive — and the callback
+    /// table's clone keeps it alive for exactly as long as the id is cached.
+    fn callback_key(v: &Value) -> Option<usize> {
+        match v {
+            Value::Closure(rc) => Some(Rc::as_ptr(rc) as usize),
+            Value::Native(p) => Some(*p as *const &'static str as usize),
+            _ => None,
+        }
+    }
+
     /// Release a callback the host will never invoke again (a removed
     /// listener, a settled promise reaction).
     pub fn release_callback(&mut self, id: u32) {
         if let Some(slot) = self.callbacks.get_mut(id as usize) {
             if !matches!(slot, Value::Null) {
+                // Evict a cached identity before the slot's clone (the thing
+                // keeping the key pointer unique) is dropped.
+                if let Some(key) = Self::callback_key(slot) {
+                    if self.callback_ids.get(&key) == Some(&id) {
+                        self.callback_ids.remove(&key);
+                    }
+                }
                 *slot = Value::Null;
                 self.free_callbacks.push(id);
             }

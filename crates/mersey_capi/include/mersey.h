@@ -253,7 +253,11 @@ uint32_t msy_context_invoke_args(msy_context *ctx, uint32_t cb,
 /* As above, with no arguments. */
 uint32_t msy_context_invoke(msy_context *ctx, uint32_t cb);
 /* The host is done with a callback (a listener was removed, a promise
- * settled): release its slot so the table doesn't grow for a page lifetime. */
+ * settled): release its slot so the table doesn't grow for a page lifetime.
+ * Callback ids are STABLE per Mersey closure (the same closure crosses with
+ * the same id), so hosts should cache one wrapper function per id — and a
+ * host that does and then calls this MUST evict that cache entry: the engine
+ * reuses released ids for later callbacks. */
 void msy_context_release_callback(msy_context *ctx, uint32_t cb);
 
 #ifdef __cplusplus
