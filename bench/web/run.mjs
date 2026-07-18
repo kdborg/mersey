@@ -17,7 +17,7 @@
 // page vs a blank page in the same browser — a coarse "tab memory" proxy that
 // is comparable across browsers and captures the WASM heap (which the JS-heap
 // counter does not).
-import { readFile, writeFile, readdir } from "node:fs/promises";
+import { readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
@@ -25,10 +25,12 @@ import { startServer } from "./server.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
 
-const WORKLOADS = (await readdir(join(here, "mersey")))
-  .filter((f) => f.endsWith(".mersey"))
-  .map((f) => f.replace(/\.mersey$/, ""))
-  .sort();
+const WORKLOADS = process.env.WL
+  ? process.env.WL.split(",")
+  : (await readdir(join(here, "mersey")))
+      .filter((f) => f.endsWith(".mersey"))
+      .map((f) => f.replace(/\.mersey$/, ""))
+      .sort();
 
 const REPEATS = 3;
 const PAGE_SIZE = 4096;
@@ -97,6 +99,12 @@ async function measure(launcher, label, origin, rssMatch) {
   const browser = await launcher.launch({ headless: true });
   for (const wl of WORKLOADS) {
     for (const impl of ["js", "poly"]) {
+      // Mersey-only workloads (calls, fcompute, mathk…) have no js/ twin;
+      // don't burn the 30s result deadline ×3 discovering that.
+      if (impl === "js" && !(await stat(join(here, "js", `${wl}.js`)).catch(() => null))) {
+        rows.push({ browser: label, impl, wl, ms: null });
+        continue;
+      }
       const samples = [];
       for (let r = 0; r < REPEATS; r++) {
         const one = await runOne(browser, impl, wl, origin, rssMatch);

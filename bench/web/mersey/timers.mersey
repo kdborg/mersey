@@ -1,0 +1,31 @@
+// Web-platform workload: timers. Arm + disarm a timer each iteration — the
+// registration path (callback wrapping, timer table insert, cancel), not the
+// firing path: a fired setTimeout(0) chain measures the spec's 4ms nesting
+// clamp, not the API.
+import { console } from "std:console";
+import { time } from "std:time";
+import { setTimeout, clearTimeout } from "browser:dom";
+
+const N: int32 = 20000;
+
+function noop(): void {}
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        const id = setTimeout(noop, 1000);
+        clearTimeout(id);
+        if (id > 0) {
+            sum += 1;
+        }
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT timers ${t1 - t0} ${c}`);

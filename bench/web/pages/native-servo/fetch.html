@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native-servo fetch</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: fetch. A sequential chain of real HTTP requests to
+// the bench server's /bench/echo endpoint (cache-control: no-store), reading
+// status and body from each response. Promises via .then (async/await is on
+// the roadmap); the chain self-times and prints RESULT from its last
+// callback, so the harness waits on the console line as usual.
+import { console } from "std:console";
+import { time } from "std:time";
+import { fetch } from "browser:dom";
+
+const N: int32 = 100;
+
+let sum = 0;
+let i = 0;
+let t0 = 0.0;
+
+function step(): void {
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT fetch ${t1 - t0} ${sum}`);
+        return;
+    }
+    fetch(`/bench/echo?i=${i}`).then((resp) => {
+        sum += resp.status;
+        resp.text().then((body) => {
+            sum += body.length;
+            i += 1;
+            step();
+        });
+    });
+}
+
+t0 = time.monotonic();
+step();
+
+</script>
+</body>

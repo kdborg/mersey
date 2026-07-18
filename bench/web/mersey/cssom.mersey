@@ -1,0 +1,31 @@
+// Web-platform workload: CSSOM. Class and inline-style manipulation — a
+// className set, a DOMTokenList query, and a style property write + read
+// back through the CSS serializer, four bridge crossings per iteration.
+import { console } from "std:console";
+import { time } from "std:time";
+import { document, Element, HTMLElement } from "browser:dom";
+
+const N: int32 = 10000;
+const el = document.createElement("div") as HTMLElement;
+(document.body as Element).appendChild(el);
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        el.className = `row mod${i % 7}`;
+        if (el.classList.contains("row")) {
+            sum += 1;
+        }
+        el.style.setProperty("margin-left", `${i % 50}px`);
+        sum = sum + el.style.getPropertyValue("margin-left").length;
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT cssom ${t1 - t0} ${c}`);

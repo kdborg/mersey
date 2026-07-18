@@ -35,7 +35,9 @@ const TEST_WEB = process.env.TEST_WEB ||
 const PYTHON = process.env.PYTHON || "python3";
 const REPEATS = 3;
 const PER_TEST_TIMEOUT = 20; // seconds; a fallback — tests complete in well under 1s
-const WEB_WORKLOADS = ["canvas", "crypto", "dom", "json", "storage", "url"];
+// fetch is excluded: test-web loads pages from file:// (no http origin for the
+// echo endpoint) and its test(() => {}) completes before an async RESULT lands.
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "storage", "timers", "url"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 // Reference checksums (the other native forks); the engine must match them.

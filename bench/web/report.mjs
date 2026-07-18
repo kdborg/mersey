@@ -10,7 +10,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json"))];
+const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json")), ...(await load("results.native.chromium.json"))];
 const workloads = [...new Set(rows.map((r) => r.wl))].sort();
 const key = (browser, impl) => `${browser}/${impl}`;
 const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
@@ -32,6 +32,7 @@ const cols = [
   ["firefox-fork", "native", "Firefox fork native"],
   ["servo-fork", "native", "Servo fork native"],
   ["ladybird-fork", "native", "Ladybird fork native"],
+  ["chromium-fork", "native", "Chromium fork native"],
 ];
 
 const fmtMs = (r) => (r && r.ms != null ? `${r.ms.toFixed(1)}` : "—");

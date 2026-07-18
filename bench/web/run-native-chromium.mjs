@@ -12,6 +12,7 @@ import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { startServer } from "./server.mjs";
 
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killForks(); process.exit(3); });
 process.on("exit", () => killForks());
@@ -68,7 +69,7 @@ function killForks() {
   try { execSync(`pkill -9 -f "${FORK}" 2>/dev/null`); } catch {}
 }
 
-async function runPage(pageFile, profileDir, expectResult = true) {
+async function runPage(pageUrl, profileDir, expectResult = true) {
   killForks();
   await sleep(800); // let the previous tree's processes exit
   return new Promise((resolve) => {
@@ -89,7 +90,7 @@ async function runPage(pageFile, profileDir, expectResult = true) {
         "--no-first-run",
         "--no-default-browser-check",
         `--user-data-dir=${profileDir}`,
-        `file://${pageFile}`,
+        pageUrl,
       ],
       { env: { ...process.env, MERSEY_CONSOLE_STDOUT: "1" }, detached: true },
     );
@@ -122,11 +123,16 @@ async function runPage(pageFile, profileDir, expectResult = true) {
 const rows = [];
 const profileBase = await mkdtemp(join(tmpdir(), "mersey-cr-"));
 
+// Serve the generated pages over http (not file://) so same-origin requests —
+// the fetch workload's /bench/echo — work; the server is rooted at the repo.
+const { server, port } = await startServer();
+const base = `http://localhost:${port}/bench/web/pages/native`;
+
 let baseRss = 0;
 {
   const prof = join(profileBase, "blank");
   await mkdir(prof, { recursive: true });
-  const { rss } = await runPage(join(pageDir, "blank.html"), prof, false);
+  const { rss } = await runPage(`${base}/blank.html`, prof, false);
   baseRss = rss ?? 0;
   console.log(`chromium-native  baseline blank rss ${baseRss} KiB\n`);
 }
@@ -136,7 +142,7 @@ for (const wl of WORKLOADS) {
   for (let r = 0; r < REPEATS; r++) {
     const prof = join(profileBase, `${wl}-${r}`);
     await mkdir(prof, { recursive: true });
-    const { result, rss } = await runPage(join(pageDir, `${wl}.html`), prof);
+    const { result, rss } = await runPage(`${base}/${wl}.html`, prof);
     if (result) samples.push({ ...result, rss: (rss ?? 0) - baseRss });
   }
   if (samples.length === 0) {
@@ -153,5 +159,6 @@ for (const wl of WORKLOADS) {
 }
 
 killForks();
+server.close();
 await writeFile(join(here, "results.native.chromium.json"), JSON.stringify(rows, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.chromium.json`);

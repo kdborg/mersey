@@ -11,6 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { startServer } from "./server.mjs";
 
 // Reap the whole fork tree on any exit path so a crash or interrupt can't leave
 // orphans (killForks is a hoisted declaration, safe to reference here).
@@ -24,10 +25,12 @@ const FORK = `${FORK_DIR}/dist/bin/firefox`;
 const PAGE_SIZE = 4096;
 const REPEATS = 3;
 
-const WORKLOADS = (await readdir(join(here, "mersey")))
-  .filter((f) => f.endsWith(".mersey"))
-  .map((f) => f.replace(/\.mersey$/, ""))
-  .sort();
+const WORKLOADS = process.env.WL
+  ? process.env.WL.split(",")
+  : (await readdir(join(here, "mersey")))
+      .filter((f) => f.endsWith(".mersey"))
+      .map((f) => f.replace(/\.mersey$/, ""))
+      .sort();
 
 const pageDir = join(here, "pages", "native");
 await mkdir(pageDir, { recursive: true });
@@ -105,7 +108,7 @@ async function writePrefs(profileDir) {
   await writeFile(join(profileDir, "prefs.js"), QUIET_PREFS);
 }
 
-async function runPage(pageFile, profileDir, expectResult = true) {
+async function runPage(pageUrl, profileDir, expectResult = true) {
   killForks();
   await writePrefs(profileDir);
   await sleep(800); // let the previous tree's processes exit
@@ -113,7 +116,7 @@ async function runPage(pageFile, profileDir, expectResult = true) {
     // detached: own process group, so we can kill the whole tree at the end.
     const child = spawn(
       FORK,
-      ["--headless", "-no-remote", "-profile", profileDir, `file://${pageFile}`],
+      ["--headless", "-no-remote", "-profile", profileDir, pageUrl],
       { env: { ...process.env, MERSEY_CONSOLE_STDOUT: "1", MOZ_HEADLESS: "1" }, detached: true },
     );
     let out = "";
@@ -131,6 +134,8 @@ async function runPage(pageFile, profileDir, expectResult = true) {
       const m = /RESULT (\S+) ([\d.]+) (\S+)/.exec(out);
       if (m && !result) result = { ms: Number(m[2]), checksum: Number(m[3]) };
     });
+    if (process.env.MERSEY_DEBUG) child.stderr.on("data", (b) => process.stderr.write(b));
+    if (process.env.MERSEY_DEBUG) child.stdout.on("data", (b) => process.stderr.write(b));
     child.on("error", (e) => { console.error("spawn error", e.message); finish(); });
     child.on("exit", () => { if (!settled) finish(); });
     // Sample memory at a fixed settle point for BOTH blank and workload, so the
@@ -143,12 +148,17 @@ async function runPage(pageFile, profileDir, expectResult = true) {
 const rows = [];
 const profileBase = await mkdtemp(join(tmpdir(), "mersey-fork-"));
 
+// Serve the generated pages over http (not file://) so same-origin requests —
+// the fetch workload's /bench/echo — work; the server is rooted at the repo.
+const { server, port } = await startServer();
+const base = `http://localhost:${port}/bench/web/pages/native`;
+
 // Baseline RSS from the blank page.
 let baseRss = 0;
 {
   const prof = join(profileBase, "blank");
   await mkdir(prof, { recursive: true });
-  const { rss } = await runPage(join(pageDir, "blank.html"), prof, false);
+  const { rss } = await runPage(`${base}/blank.html`, prof, false);
   baseRss = rss ?? 0;
   console.log(`native  baseline blank rss ${baseRss} KiB\n`);
 }
@@ -158,7 +168,7 @@ for (const wl of WORKLOADS) {
   for (let r = 0; r < REPEATS; r++) {
     const prof = join(profileBase, `${wl}-${r}`);
     await mkdir(prof, { recursive: true });
-    const { result, rss } = await runPage(join(pageDir, `${wl}.html`), prof);
+    const { result, rss } = await runPage(`${base}/${wl}.html`, prof);
     if (result) samples.push({ ...result, rss: (rss ?? 0) - baseRss });
   }
   if (samples.length === 0) {
@@ -175,5 +185,6 @@ for (const wl of WORKLOADS) {
 }
 
 killForks();
+server.close();
 await writeFile(join(here, "results.native.json"), JSON.stringify(rows, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.json`);

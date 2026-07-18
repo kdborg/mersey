@@ -1,12 +1,28 @@
 # Web-platform benchmarks
 
-Performance and memory for real web technologies — Web Storage, JSON, URL, Web
-Crypto, Canvas 2D, and DOM mutation — across three ways of running the same
-program, in four browsers (Chromium, Firefox, Servo, and Ladybird). Ladybird is
-the newest addition: the **native fork leg is built and measured** — all six web
-workloads + compute, checksums matching the other forks (its Cranelift-JIT
-compute is the fastest of the three native forks). The stock leg is not yet
-collected. See `ladybird/README.md`.
+Performance and memory for real web technologies, across three ways of running
+the same program, in four browsers (Chromium, Firefox, Servo, and Ladybird).
+Twelve technologies are measured:
+
+| workload | technology | per iteration |
+|---|---|---|
+| `storage`  | Web Storage        | setItem + getItem roundtrip |
+| `json`     | JSON (platform's)  | stringify a small object |
+| `url`      | URL                | parse + read pathname/search |
+| `crypto`   | Web Crypto         | getRandomValues into a 16-byte buffer |
+| `canvas`   | Canvas 2D          | fillRect |
+| `dom`      | DOM mutation       | createElement + textContent + appendChild |
+| `events`   | DOM events         | new Event + dispatchEvent (listener re-enters the engine) |
+| `cssom`    | CSSOM              | className set, classList.contains, style setProperty + getPropertyValue |
+| `query`    | Selectors          | querySelectorAll over a 200-node list + NodeList length/index/text reads |
+| `encoding` | Encoding           | TextEncoder.encode + TextDecoder.decode roundtrip |
+| `timers`   | Timers             | setTimeout arm + clearTimeout disarm (registration cost — a fired chain measures the spec's 4ms nesting clamp, not the API) |
+| `fetch`    | Fetch              | sequential HTTP GETs of `/bench/echo` (no-store), status + body read, chained via `.then` |
+
+`fetch` and any future async workloads self-report RESULT from their last
+callback; `pages/js.html` awaits `work()` so a Promise-returning js twin times
+the same way. The bench server exposes `/bench/echo?i=N` (deterministic
+payload, `cache-control: no-store`) so every fetch iteration is a real request.
 
 The three implementations of each workload:
 
@@ -30,11 +46,11 @@ run reports the same checksum, so the three are doing identical work.
 
 ## Caveats (read before quoting numbers)
 
-- **Native runs the Tier-0 interpreter, not the JIT.** The fork embeds the
-  engine with `default-features = false`, so Cranelift is not compiled in.
-  Native and polyfill are therefore *both* interpreters; plain JS is JIT-compiled.
-  Enabling the native JIT is future work and would mainly help compute-bound
-  workloads — these are bridge-bound.
+- **Native runs with the Cranelift JIT in every fork** (Gecko, Chromium, Servo,
+  Ladybird — see each fork's README for how the engine links). The polyfill is
+  the WASM interpreter; plain JS is the browser's own JIT. The web workloads
+  are bridge-bound, so the engine tier matters less than the bridge path — the
+  JIT mainly shows on `compute`.
 - These workloads are dominated by **bridge crossings** (each iteration calls a
   web API), not arithmetic. That is why native (short in-process C++ bridge)
   beats the polyfill (JS→WASM round trip), and why the interpreter tier matters
@@ -68,13 +84,31 @@ node bench/web/run-native-servo.mjs   # -> results.native.servo.json
 # Driven through Ladybird's `test-web` harness (no --headless binary exists);
 # RESULT is read from each test's captured log. Override with LADYBIRD_SRC/TEST_WEB:
 node bench/web/run-native-ladybird.mjs  # -> results.native.ladybird.json
-# (stock js/poly/tjs Ladybird leg not yet implemented — see ladybird/README.md)
+
+# Stock Ladybird (js / transpiled-JS / WASM-poly, mersey module dormant), via
+# test-web with fully self-contained pages — the workload, bridge, bindings and
+# base64'd WASM engine are inlined per page because file:// fetch and relative
+# module imports are refused there. RESULT comes from each test's actual.txt
+# (a println'd console hook); memory is peak PSS minus a blank baseline.
+# fetch is skipped (no http origin); compute is js-only (poly/tjs compute would
+# measure LibWasm's interpreter interpreting an interpreter):
+node bench/web/run-ladybird.mjs         # -> results.ladybird.json
 
 # Merge into REPORT.md:
 node bench/web/report.mjs
+
+# Standalone per-technology page (just the 4-implementations × 4-browsers
+# panels, statically generated from the results JSONs):
+node bench/web/report-pertech.mjs   # -> bench/web/report-pertech.html
 ```
 
 `run.mjs` needs Playwright's browsers (`cd web && npx playwright install`).
 `run-native.mjs` needs the fork built with the `MERSEY_CONSOLE_STDOUT` hook in
 `dom/mersey/MerseyScriptRunner.cpp` (it echoes `console.log` to stdout so the
 headless harness can read the `RESULT` line).
+
+The Gecko and Chromium native runners serve their generated pages over http
+(`server.mjs`, rooted at the repo) rather than `file://`, so the fetch
+workload's same-origin `/bench/echo` requests work. The Ladybird native leg
+skips `fetch`: `test-web` loads pages from `file://` and its `test(() => {})`
+harness completes before an async RESULT lands.

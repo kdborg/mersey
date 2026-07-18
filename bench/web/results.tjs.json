@@ -2,9 +2,18 @@
   {
     "browser": "chromium",
     "impl": "tjs",
+    "wl": "calls",
+    "ms": 49.34499999880791,
+    "rss": 57426,
+    "heap": 0,
+    "checksum": 452320592
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
     "wl": "canvas",
-    "ms": 3.3300000056624413,
-    "rss": 64644,
+    "ms": 3.115000009536743,
+    "rss": 64039,
     "heap": 0,
     "checksum": 20000
   },
@@ -12,8 +21,8 @@
     "browser": "chromium",
     "impl": "tjs",
     "wl": "compute",
-    "ms": 91.94500000029802,
-    "rss": 57872,
+    "ms": 88.98499998450279,
+    "rss": 57215,
     "heap": 0,
     "checksum": 1765835917
   },
@@ -21,53 +30,128 @@
     "browser": "chromium",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 8.705000005662441,
-    "rss": 60652,
+    "ms": 8.790000021457672,
+    "rss": 60103,
     "heap": 0,
     "checksum": 320000
   },
   {
     "browser": "chromium",
     "impl": "tjs",
+    "wl": "cssom",
+    "ms": 10.659999996423721,
+    "rss": 60472,
+    "heap": 0,
+    "checksum": 48000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
     "wl": "dom",
-    "ms": 4.649999998509884,
-    "rss": 101652,
+    "ms": 7.019999980926514,
+    "rss": 101245,
     "heap": 0,
     "checksum": 10000
   },
   {
     "browser": "chromium",
     "impl": "tjs",
+    "wl": "encoding",
+    "ms": 10.890000015497208,
+    "rss": 69068,
+    "heap": 0,
+    "checksum": 437780
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "events",
+    "ms": 5.239999979734421,
+    "rss": 64712,
+    "heap": 0,
+    "checksum": 10000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "fcompute",
+    "ms": null
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "fetch",
+    "ms": 113.85500001907349,
+    "rss": 58624,
+    "heap": 0,
+    "checksum": 20990
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
     "wl": "json",
-    "ms": 1.9149999991059303,
-    "rss": 61320,
+    "ms": 1.824999988079071,
+    "rss": 61145,
     "heap": 0,
     "checksum": 848890
   },
   {
     "browser": "chromium",
     "impl": "tjs",
+    "wl": "mathk",
+    "ms": null
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
+    "wl": "query",
+    "ms": 5.179999977350235,
+    "rss": 65252,
+    "heap": 0,
+    "checksum": 214900
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
     "wl": "storage",
-    "ms": 81.25999999791384,
-    "rss": 71117,
+    "ms": 80.40000000596046,
+    "rss": 70552,
     "heap": 0,
     "checksum": 208890
   },
   {
     "browser": "chromium",
     "impl": "tjs",
+    "wl": "timers",
+    "ms": 12.15499997138977,
+    "rss": 67117,
+    "heap": 0,
+    "checksum": 20000
+  },
+  {
+    "browser": "chromium",
+    "impl": "tjs",
     "wl": "url",
-    "ms": 21.184999994933605,
-    "rss": 76419,
+    "ms": 18.49500000476837,
+    "rss": 75725,
     "heap": 0,
     "checksum": 537780
   },
   {
     "browser": "firefox",
     "impl": "tjs",
+    "wl": "calls",
+    "ms": 237.56,
+    "rss": 102220,
+    "heap": 0,
+    "checksum": 452320592
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
     "wl": "canvas",
-    "ms": 6.839999999999975,
-    "rss": 110196,
+    "ms": 6.339999999999975,
+    "rss": 84625,
     "heap": 0,
     "checksum": 20000
   },
@@ -75,8 +159,8 @@
     "browser": "firefox",
     "impl": "tjs",
     "wl": "compute",
-    "ms": 656.7,
-    "rss": 92852,
+    "ms": 592.5799999999999,
+    "rss": 87586,
     "heap": 0,
     "checksum": 1765835917
   },
@@ -84,44 +168,110 @@
     "browser": "firefox",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 9.279999999999973,
-    "rss": 74281,
+    "ms": 10.079999999999984,
+    "rss": 88993,
     "heap": 0,
     "checksum": 320000
   },
   {
     "browser": "firefox",
     "impl": "tjs",
+    "wl": "cssom",
+    "ms": 14.340000000000032,
+    "rss": 95979,
+    "heap": 0,
+    "checksum": 48000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
     "wl": "dom",
-    "ms": 9.319999999999993,
-    "rss": 110105,
+    "ms": 8.759999999999991,
+    "rss": 108062,
     "heap": 0,
     "checksum": 10000
   },
   {
     "browser": "firefox",
     "impl": "tjs",
+    "wl": "encoding",
+    "ms": 3.920000000000016,
+    "rss": 93437,
+    "heap": 0,
+    "checksum": 437780
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "events",
+    "ms": 12.340000000000032,
+    "rss": 97689,
+    "heap": 0,
+    "checksum": 10000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "fcompute",
+    "ms": null
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "fetch",
+    "ms": 132.01999999999998,
+    "rss": 89894,
+    "heap": 0,
+    "checksum": 20990
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
     "wl": "json",
-    "ms": 4.939999999999998,
-    "rss": 94648,
+    "ms": 5.039999999999964,
+    "rss": 93444,
     "heap": 0,
     "checksum": 848890
   },
   {
     "browser": "firefox",
     "impl": "tjs",
+    "wl": "mathk",
+    "ms": null
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
+    "wl": "query",
+    "ms": 6.519999999999982,
+    "rss": 97080,
+    "heap": 0,
+    "checksum": 214900
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
     "wl": "storage",
-    "ms": 36.400000000000034,
-    "rss": 101058,
+    "ms": 35.160000000000025,
+    "rss": 89321,
     "heap": 0,
     "checksum": 208890
   },
   {
     "browser": "firefox",
     "impl": "tjs",
+    "wl": "timers",
+    "ms": 24,
+    "rss": 102794,
+    "heap": 0,
+    "checksum": 20000
+  },
+  {
+    "browser": "firefox",
+    "impl": "tjs",
     "wl": "url",
-    "ms": 28.519999999999982,
-    "rss": 121627,
+    "ms": 27.75999999999999,
+    "rss": 100760,
     "heap": 0,
     "checksum": 537780
   }

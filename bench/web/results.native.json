@@ -3,80 +3,128 @@
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "calls",
-    "ms": 25.917374999999993,
-    "rss": 15603,
+    "ms": 24.829791999999998,
+    "rss": 227,
     "checksum": 452320592
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "canvas",
-    "ms": 4.41620800000004,
-    "rss": 21283,
+    "ms": 4.486833000000047,
+    "rss": 6542,
     "checksum": 20000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 102.20670800000005,
-    "rss": 22907,
+    "ms": 99.9591670000001,
+    "rss": 10265,
     "checksum": 1765835917
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 10.389292000000069,
-    "rss": 22298,
+    "ms": 9.531375000000025,
+    "rss": 9557,
     "checksum": 320000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "cssom",
+    "ms": 30.83970799999986,
+    "rss": 6541,
+    "checksum": 48000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "dom",
-    "ms": 13.130040999999949,
-    "rss": 31323,
+    "ms": 9.985582999999906,
+    "rss": 27472,
+    "checksum": 10000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": 29.84516700000006,
+    "rss": 11415,
+    "checksum": 437780
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": 40.04216699999995,
+    "rss": 11932,
     "checksum": 10000
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "fcompute",
-    "ms": 118.53774999999996,
-    "rss": 16106,
+    "ms": 114.89850000000001,
+    "rss": 7772,
     "checksum": null
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "fetch",
+    "ms": 458.6071249999999,
+    "rss": 15037,
+    "checksum": 20990
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "json",
-    "ms": 3.221457999999984,
-    "rss": 19466,
+    "ms": 3.3111659999998437,
+    "rss": 6064,
     "checksum": 848890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
     "wl": "mathk",
-    "ms": 36.69504099999995,
-    "rss": 16967,
+    "ms": 34.53995899999995,
+    "rss": 12265,
     "checksum": null
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "query",
+    "ms": 8.167666999999938,
+    "rss": 15756,
+    "checksum": 214900
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "storage",
-    "ms": 55.123208000000034,
-    "rss": 26898,
+    "ms": 59.74208399999986,
+    "rss": 17479,
     "checksum": 208890
   },
   {
     "browser": "firefox-fork",
     "impl": "native",
+    "wl": "timers",
+    "ms": 116.42254200000002,
+    "rss": 13914,
+    "checksum": 20000
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
     "wl": "url",
-    "ms": 41.28079099999991,
-    "rss": 27287,
+    "ms": 37.41045900000006,
+    "rss": 26576,
     "checksum": 537780
   }
 ]

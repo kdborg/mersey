@@ -21,6 +21,16 @@ export function startServer(port = 0) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
+      // Tiny dynamic endpoint for the fetch workload: deterministic payload,
+      // no-store so every iteration is a real request, not a cache read.
+      if (url.pathname === "/bench/echo") {
+        res.writeHead(200, {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        res.end(`payload-${url.searchParams.get("i") ?? "0"}`);
+        return;
+      }
       const path = join(root, decodeURIComponent(url.pathname));
       if (!path.startsWith(root)) {
         res.writeHead(403).end("forbidden");
