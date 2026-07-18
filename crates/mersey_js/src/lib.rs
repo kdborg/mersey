@@ -263,6 +263,22 @@ impl Emit {
         self.out.push_str(s);
     }
 
+    /// 1-based column the next write lands on.
+    fn col(&self) -> u32 {
+        let start = self.out.rfind('\n').map_or(0, |i| i + 1);
+        (self.out.len() - start + 1) as u32
+    }
+
+    /// Record a mapping at the current output position for the source
+    /// expression `e` — the throw sites ($rt.call/get/index) record the
+    /// erroring expression, so mapped stacks and code frames point where the
+    /// engine's own frames point (`xs` in `return xs[i]`, not the statement).
+    fn map_expr(&mut self, e: &Expr) {
+        if let Some(p) = mersey_front::ast::expr_first_pos(e) {
+            self.maps.push((self.line, self.col(), p.line, p.col));
+        }
+    }
+
     /// Compile the numeric functions to WASM and emit the instantiation +
     /// bindings. Returns true if a tier was emitted.
     fn wasm_tier(&mut self, m: &Module) {
@@ -1232,6 +1248,7 @@ impl Emit {
                     name,
                     optional: m_opt,
                 } => {
+                    self.map_expr(obj);
                     self.w("$rt.call(");
                     self.expr(obj);
                     self.w(&format!(
@@ -1268,6 +1285,7 @@ impl Emit {
                 name,
                 optional,
             } => {
+                self.map_expr(obj);
                 self.w("$rt.get(");
                 self.expr(obj);
                 self.w(&format!(
@@ -1280,6 +1298,7 @@ impl Emit {
                 index,
                 optional: _,
             } => {
+                self.map_expr(obj);
                 self.w("$rt.index(");
                 self.expr(obj);
                 self.w(", ");

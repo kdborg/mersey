@@ -460,6 +460,91 @@ const $rt = (() => {
     if (typeof process !== "undefined" && process.stdout) process.stdout.write(s + "\n");
     else console.log(s);
   };
+  // Source-mapped rich errors (browser): parse the JS stack, fetch the blob
+  // modules it names, decode their inline maps, and render the Mersey stack +
+  // a code frame pointing at the erroring expression — the transpiled twin of
+  // the engine's own error rendering.
+  const VLQ = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const vlqSeg = (s) => {
+    const out = [];
+    let v = 0, shift = 0;
+    for (const ch of s) {
+      const d = VLQ.indexOf(ch);
+      v |= (d & 31) << shift;
+      if (d & 32) { shift += 5; continue; }
+      out.push((v >> 1) * ((v & 1) ? -1 : 1));
+      v = 0; shift = 0;
+    }
+    return out;
+  };
+  const decodeMap = (json) => {
+    // Per generated line: [genCol, srcLine, srcCol] triples (absolute, sorted).
+    const lines = [];
+    let srcLine = 0, srcCol = 0;
+    for (const [gl, part] of json.mappings.split(";").entries()) {
+      const row = [];
+      let genCol = 0;
+      for (const segText of part ? part.split(",") : []) {
+        const f = vlqSeg(segText);
+        if (!f.length) continue;
+        genCol += f[0];
+        if (f.length >= 4) {
+          srcLine += f[2];
+          srcCol += f[3];
+          row.push([genCol, srcLine + 1, srcCol + 1]);
+        }
+      }
+      lines[gl] = row;
+    }
+    return { source: json.sources[0], content: json.sourcesContent[0], lines };
+  };
+  const mapCache = new Map();
+  const mapFor = async (url) => {
+    if (mapCache.has(url)) return mapCache.get(url);
+    let m = null;
+    try {
+      const text = await (await fetch(url)).text();
+      const b64 = /sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+\/=]+)/.exec(text);
+      if (b64) m = decodeMap(JSON.parse(atob(b64[1])));
+    } catch {}
+    mapCache.set(url, m);
+    return m;
+  };
+  const resolveFrame = (map, line, col) => {
+    // Nearest mapping at or before (line, col), same line only.
+    const row = map.lines[line - 1] || [];
+    let best = null;
+    for (const [genCol, sl, sc] of row) {
+      if (genCol <= col) best = [sl, sc];
+    }
+    return best ?? (row.length ? [row[0][1], row[0][2]] : null);
+  };
+  const richError = async (e) => {
+    const head = `runtime error: ${e.name}: ${e.message}`;
+    const frames = [];
+    for (const raw of String(e.stack || "").split("\n")) {
+      const m = /at (?:(.+?) \()?((?:blob|https?|file):[^)]+?):(\d+):(\d+)\)?\s*$/.exec(raw);
+      if (!m) continue;
+      const map = await mapFor(m[2]);
+      if (!map) continue;
+      const pos = resolveFrame(map, Number(m[3]), Number(m[4]));
+      if (!pos) continue;
+      frames.push({ name: m[1] || "<module>", source: map, line: pos[0], col: pos[1] });
+    }
+    if (!frames.length) return null;
+    let out = head;
+    for (const f of frames) {
+      out += `\n    at ${f.name} (${f.source.source}:${f.line}:${f.col})`;
+    }
+    // Code frame for the innermost mapped frame.
+    const top = frames[0];
+    const text = (top.source.content || "").split("\n")[top.line - 1];
+    if (text !== undefined) {
+      const num = String(top.line);
+      out += `\n\n  ${num} | ${text}\n  ${" ".repeat(num.length)} | ${" ".repeat(Math.max(0, top.col - 1))}^`;
+    }
+    return out;
+  };
   const uncaught = (e) => {
     const line =
       e instanceof Error
@@ -468,6 +553,11 @@ const $rt = (() => {
     if (typeof process !== "undefined" && process.stderr) {
       process.stderr.write(line + "\n");
       process.exitCode = 2;
+    } else if (e instanceof Error && typeof fetch !== "undefined") {
+      richError(e).then(
+        (rich) => console.error(rich ?? line),
+        () => console.error(line),
+      );
     } else {
       console.error(line);
     }

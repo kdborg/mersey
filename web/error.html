@@ -1,10 +1,6 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Mersey errors</title>
-<!-- Pinned to the engine backend: the rich runtime-error rendering (Mersey
-     stack + code frame) is engine-path only; the transpiled runtime prints
-     the bare message. tjs parity needs expression-granular source maps —
-     tracked with the Custom Elements gap. -->
-<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm" data-backend="wasm"></script>
+<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm"></script>
 </head><body><h1>Runtime error → code frame</h1>
 <script type="text/mersey" src="demo/error.mersey"></script>
 </body></html>
