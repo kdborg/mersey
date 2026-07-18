@@ -6,6 +6,7 @@
 mod doc;
 mod dap;
 mod lsp;
+mod repl;
 
 use std::process::ExitCode;
 
@@ -29,6 +30,7 @@ commands:
   sourcemap <file>        emit a Source Map v3 document on stdout
   lsp                     language server on stdin/stdout (LSP over JSON-RPC)
   dap                     debug adapter on stdin/stdout (DAP; breakpoints, stepping)
+  repl [caps]             interactive session (one growing module; no eval)
   check <file.mersey>     report diagnostics (currently: encoding + syntax)
   parse <file.mersey>     dump the AST (debugging / conformance)
   test [path]             run every *.test.mersey (default: ./)
@@ -118,6 +120,21 @@ fn main() -> ExitCode {
         ("sourcemap", [file]) => sourcemap_cmd(file),
         ("lsp", []) => lsp::serve(),
         ("dap", []) => dap::serve(),
+        ("repl", rest) => {
+            let mut caps = Vec::new();
+            for a in rest {
+                match a.as_str() {
+                    "--allow-read" => caps.push("read".to_string()),
+                    "--allow-env" => caps.push("env".to_string()),
+                    "--allow-random" => caps.push("random".to_string()),
+                    other => {
+                        eprintln!("mersey: unknown flag `{other}`");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            repl::serve(caps)
+        }
         ("fmt", [file]) => fmt_cmd(file, false),
         ("fmt", [flag, file]) if flag == "--write" => fmt_cmd(file, true),
         ("check", [file]) => check(file, Mode::Check),

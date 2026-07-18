@@ -2373,6 +2373,116 @@ impl Interp {
         Ok(())
     }
 
+    /// One REPL turn — a HOST feature; the language itself has no `eval`
+    /// (§1.2). The caller re-parses its whole accumulated program so binding
+    /// and the checker see every prior declaration, then this executes only
+    /// the items from `first_item` on: earlier items already ran in earlier
+    /// turns, and their declarations keep their original bindings (an
+    /// instance from turn 1 stays an instance of turn 1's class). A
+    /// redefinition typed in a NEW turn appears in the tail and takes effect
+    /// normally. The trailing bare expression statement's value comes back
+    /// displayed, for echoing; statements echo nothing.
+    pub fn run_repl_turn(
+        &mut self,
+        module: &'static Module,
+        first_item: usize,
+    ) -> Result<Option<String>, Thrown> {
+        // Imports and declarations from the NEW items only.
+        let mut decls: Vec<&'static Decl> = Vec::new();
+        for item in module.items.iter().skip(first_item) {
+            match item {
+                Item::Import(im) => self.bind_import(im)?,
+                Item::Decl(d) => decls.push(d),
+                Item::Export(ex) => {
+                    if let ExportKind::Decl(d) = &ex.kind {
+                        decls.push(d);
+                    }
+                }
+                Item::Stmt(_) => {}
+            }
+        }
+        for d in &decls {
+            if let Decl::Function(f) = d {
+                let data = Rc::new(FnData::new(
+                    f.name.text.as_str().into(),
+                    f.is_async,
+                    &f.params,
+                    FnBody::Block(&f.body),
+                    f.ret.as_ref(),
+                ));
+                let c = Closure {
+                    data,
+                    env: self.globals.clone(),
+                    this: None,
+                    cls: None,
+                };
+                env_define(&self.globals, &f.name.text, Value::Closure(Rc::new(c)));
+            }
+        }
+        let mut pending: Vec<&'static ClassDecl> = decls
+            .iter()
+            .filter_map(|d| match d {
+                Decl::Class(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        self.pending_class_names = pending.iter().map(|c| c.name.text.clone()).collect();
+        while !pending.is_empty() {
+            let mut still = Vec::new();
+            let mut progressed = false;
+            for c in pending {
+                if self.try_define_class(c)? {
+                    progressed = true;
+                    self.pending_class_names.remove(&c.name.text);
+                } else {
+                    still.push(c);
+                }
+            }
+            pending = still;
+            if !pending.is_empty() && !progressed {
+                let name = &pending[0].name.text;
+                return Err(self.throw(
+                    "TypeError",
+                    format!("cannot resolve base class of `{name}`"),
+                ));
+            }
+        }
+        for d in &decls {
+            if let Decl::Enum(e) = d {
+                self.define_enum(e)?;
+            }
+        }
+
+        // Execute the new statements on the tree-walker (REPL turns are not
+        // performance surfaces), echoing a trailing bare expression.
+        let mut echo = None;
+        for item in module.items.iter().skip(first_item) {
+            match item {
+                Item::Stmt(Stmt::Expr(e)) => {
+                    let v = self.eval(e, &self.globals.clone())?;
+                    echo = match v {
+                        Value::Null => None,
+                        other => Some(to_display(&other)),
+                    };
+                }
+                Item::Stmt(s) => {
+                    self.exec_stmt(s, &self.globals.clone())?;
+                    echo = None;
+                }
+                Item::Export(ExportDecl {
+                    kind: ExportKind::Var(v),
+                    ..
+                }) => {
+                    self.exec_var(v, &self.globals.clone())?;
+                    echo = None;
+                }
+                _ => {}
+            }
+        }
+        self.drain_tasks()?;
+        Ok(echo)
+    }
+
     fn run_module_inner(&mut self, module: &'static Module) -> Result<ModuleFlow, Thrown> {
         let mut decls: Vec<&'static Decl> = Vec::new();
         for item in &module.items {

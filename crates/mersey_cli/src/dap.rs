@@ -18,7 +18,7 @@
 //! too (their slot-resolved locals are best-effort).
 
 use std::collections::HashSet;
-use std::io::{self, BufRead};
+use std::io;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
