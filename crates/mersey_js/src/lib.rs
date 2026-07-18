@@ -143,12 +143,17 @@ pub fn transpile_graph(mods: &[(String, String)]) -> GraphOutput {
                 wasm_fns: std::collections::HashSet::new(),
             };
             e.module(module);
-            // NOTE: no inline map here yet — the loader's error-frame tests
-            // parse raw stacks of these blob modules and the appended map
-            // shifted what they see (two REAL BROWSER failures). The
-            // single-file `transpile` path carries maps; wiring the graph
-            // path needs that interaction understood first. Tracked.
-            (spec.clone(), e.out)
+            // Inline map per module: the loader's blob modules then carry
+            // their .mersey sources into DevTools.
+            let source = mods
+                .iter()
+                .find(|(s, _)| s == spec)
+                .map(|(_, text)| text.as_str())
+                .unwrap_or("");
+            let url = map_url(spec, source, 0, &e.maps);
+            let mut js = e.out;
+            js.push_str(&url);
+            (spec.clone(), js)
         })
         .collect();
     GraphOutput {
@@ -199,10 +204,11 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
     // The prelude shifts the module's lines down; the map accounts for it.
     let offset = js.matches('\n').count() as u32;
     js.push_str(&e.out);
-    // Not appended to `js`: the loader's error-frame parsing reads these
-    // modules raw (appending regressed two REAL BROWSER tests). Callers that
-    // want DevTools mapping (`mersey js --map`) concatenate it themselves.
+    // Appended inline (data: URL, sourcesContent embedded): DevTools shows
+    // the .mersey source for this module. Also carried in `Output.map` for
+    // callers that assemble their own output.
     let map = map_url(name, source, offset, &e.maps);
+    js.push_str(&map);
     Output {
         js,
         map,
