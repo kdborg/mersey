@@ -67,6 +67,16 @@ run reports the same checksum, so the three are doing identical work.
 # Stock browsers (js + polyfill, Chromium + Firefox) via Playwright:
 node bench/web/run.mjs          # -> results.stock.json
 
+# REAL Firefox (js + transpiled + polyfill), the system binary launched
+# headless with no driver. Playwright drives Firefox with the debugger
+# attached, which forces ALL wasm onto SpiderMonkey's baseline compiler
+# (microsoft/playwright#11102) — its Firefox wasm numbers are 5-7× slow.
+# One fresh profile+process per sample; pages are instrumented at serve time
+# to POST their RESULT line back; each sample baselines memory on a blank
+# page and self-navigates to the workload in the same process tree.
+# WL=…/IMPL=…/FIREFOX_BIN=…/TIMEOUT_MS=… to filter/override:
+node bench/web/run-firefox-real.mjs   # -> results.firefox-real.json
+
 # Stock Servo (js + polyfill + transpiled), headless, built from source at
 # ~/servo-src/target/release/servoshell (console.log is read from stdout;
 # Playwright does not drive Servo). Override the binary with SERVO_BIN=…:

@@ -70,7 +70,10 @@ Browser forks (checkouts live BESIDE this repo, not in it):
 Benchmarks (`bench/web/`): twelve web technologies as line-for-line
 `js/<wl>.js` + `mersey/<wl>.mersey` twins, self-timed, checksum-verified
 bit-for-bit across every leg. Runners: `run.mjs` (stock Chromium/Firefox via
-Playwright), `run-tjs.mjs`, `run-servo.mjs`, `run-ladybird.mjs` (stock
+Playwright), `run-tjs.mjs`, `run-firefox-real.mjs` (system Firefox headless,
+driverless — Playwright attaches the debugger, which forces all wasm onto
+SpiderMonkey's baseline compiler and inflates Firefox wasm legs 5-7×),
+`run-servo.mjs`, `run-ladybird.mjs` (stock
 Ladybird via `test-web`, fully self-contained inlined pages), and
 `run-native{,-servo,-ladybird,-chromium}.mjs` for the forks. Most take
 `WL=name,…` (and ladybird `IMPL=`) filters. Results land in

@@ -17,10 +17,12 @@ const MIME = {
   ".css": "text/css",
 };
 
-export function startServer(port = 0) {
+export function startServer(port = 0, opts = {}) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
+      // Runner-specific routes (e.g. run-firefox-real.mjs's RESULT post-back).
+      if (opts.handle && (await opts.handle(req, res, url))) return;
       // Tiny dynamic endpoint for the fetch workload: deterministic payload,
       // no-store so every iteration is a real request, not a cache read.
       if (url.pathname === "/bench/echo") {
@@ -36,7 +38,12 @@ export function startServer(port = 0) {
         res.writeHead(403).end("forbidden");
         return;
       }
-      const body = await readFile(path);
+      let body = await readFile(path);
+      // Optional HTML rewrite hook, so a runner can instrument the benchmark
+      // pages (console capture) without the checked-in pages changing.
+      if (opts.transformHtml && extname(path) === ".html") {
+        body = Buffer.from(opts.transformHtml(body.toString("utf8"), url.pathname));
+      }
       res.writeHead(200, {
         "content-type": MIME[extname(path)] ?? "application/octet-stream",
         // COOP/COEP so performance.memory is populated and cross-origin isolated.

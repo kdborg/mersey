@@ -10,7 +10,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json")), ...(await load("results.native.chromium.json"))];
+const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.firefox-real.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json")), ...(await load("results.native.chromium.json"))];
 const workloads = [...new Set(rows.map((r) => r.wl))].sort();
 const key = (browser, impl) => `${browser}/${impl}`;
 const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
@@ -23,6 +23,9 @@ const cols = [
   ["firefox", "js", "Firefox JS"],
   ["firefox", "poly", "Firefox WASM poly"],
   ["firefox", "tjs", "Firefox JS-backend"],
+  ["firefox-real", "js", "Firefox real JS"],
+  ["firefox-real", "poly", "Firefox real WASM poly"],
+  ["firefox-real", "tjs", "Firefox real JS-backend"],
   ["servo", "js", "Servo JS"],
   ["servo", "poly", "Servo WASM poly"],
   ["servo", "tjs", "Servo JS-backend"],
@@ -44,6 +47,14 @@ md += "median of 3 runs. Lower is faster.\n\n";
 md += "- **js** — the workload in plain JavaScript (the browser's own engine)\n";
 md += "- **polyfill** — the same workload in Mersey, engine compiled to WASM, in a stock browser\n";
 md += "- **native** — the same Mersey, engine hosted inside the browser fork, web APIs via the C++ bridge\n\n";
+md += "> **Caveat — Playwright Firefox understates wasm.** The \"Firefox\" columns are measured ";
+md += "through Playwright, which drives Firefox with the JS debugger attached; SpiderMonkey runs ";
+md += "ALL WebAssembly baseline-only while debugging (microsoft/playwright#11102), so the Firefox ";
+md += "WASM-poly and JS-backend (wasm compute tier) columns are 5-7× slower than real Firefox. ";
+md += "The \"Firefox real\" columns are the honest numbers: the system Firefox, headless, no ";
+md += "driver attached (`run-firefox-real.mjs`). Its memory deltas use a fresh browser per ";
+md += "sample (blank page → self-navigation to the workload in one process tree), so they run ";
+md += "slightly higher than the Playwright columns, which reuse a warm browser.\n\n";
 
 md += "## Time (ms)\n\n";
 md += "| workload | " + cols.map((c) => c[2]).join(" | ") + " |\n";
@@ -65,11 +76,11 @@ for (const wl of workloads) {
 
 // Polyfill and native slowdown vs JS (Chromium JS as the baseline).
 md += "\n## Slowdown vs plain JS (Chromium JS = 1×)\n\n";
-md += "| workload | Chromium polyfill | Firefox polyfill | Servo polyfill | Ladybird polyfill | Firefox fork native | Servo fork native | Ladybird fork native |\n|---|---|---|---|---|---|---|---|\n";
+md += "| workload | Chromium polyfill | Firefox polyfill | Firefox real polyfill | Servo polyfill | Ladybird polyfill | Firefox fork native | Servo fork native | Ladybird fork native |\n|---|---|---|---|---|---|---|---|---|\n";
 for (const wl of workloads) {
   const base = get(wl, "chromium", "js");
   const ratio = (r) => (base && base.ms && r && r.ms != null ? `${(r.ms / base.ms).toFixed(1)}×` : "—");
-  md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "ladybird", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} | ${ratio(get(wl, "ladybird-fork", "native"))} |\n`;
+  md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "firefox-real", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "ladybird", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} | ${ratio(get(wl, "ladybird-fork", "native"))} |\n`;
 }
 
 await writeFile(join(here, "REPORT.md"), md);
