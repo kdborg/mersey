@@ -81,8 +81,8 @@ async function boot() {
   // browser's own JIT runs it — the fast polyfill. "wasm" interprets inside
   // the WASM engine — the conformance vehicle, kept for testing.
   const backend = (selfTag && selfTag.dataset.backend) || "js";
-  const runJs = async (source) => {
-    const js = engine.transpile(source);
+  const runJs = async (source, name) => {
+    const js = engine.transpile(source, name);
     const url = URL.createObjectURL(new Blob([js], { type: "text/javascript" }));
     try {
       await import(url);
@@ -148,7 +148,7 @@ async function boot() {
           };
           status = /from\s+"\.\.?\/|import\("\.\.?\//.test(source)
             ? await runJsGraph(spec, source, fetcher)
-            : await runJs(source);
+            : await runJs(source, spec);
         } else {
           status = await engine.runGraph(spec, source, async (url) => {
             if (!cspAllows(url)) {
@@ -158,7 +158,7 @@ async function boot() {
           });
         }
       } else {
-        status = backend === "js" ? await runJs(tag.textContent) : engine.run(tag.textContent);
+        status = backend === "js" ? await runJs(tag.textContent, "<inline>") : engine.run(tag.textContent);
       }
       if (status !== 0) {
         console.error(`[mersey] ${spec || "<inline>"}: exited with status ${status}`);

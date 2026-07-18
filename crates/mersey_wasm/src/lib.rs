@@ -314,9 +314,21 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 /// JIT runs the output; the interpreter below stays as the test vehicle.
 #[no_mangle]
 pub extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
+    msy_transpile_named(ptr, len, std::ptr::null(), 0)
+}
+
+/// Like `msy_transpile`, with the module's display name (its URL/path) — the
+/// name lands in the source map, so DevTools shows the real `.mersey` file.
+#[no_mangle]
+pub extern "C" fn msy_transpile_named(ptr: *const u8, len: usize, name_ptr: *const u8, name_len: usize) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let src = String::from_utf8_lossy(bytes);
-    let out = mersey_js::transpile(&src, "<script>", true);
+    let name = if name_ptr.is_null() || name_len == 0 {
+        "<script>".to_string()
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(name_ptr, name_len) }).to_string()
+    };
+    let out = mersey_js::transpile(&src, &name, true);
     let text = if out.diagnostics.is_empty() {
         out.js
     } else {

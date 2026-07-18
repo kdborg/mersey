@@ -269,9 +269,12 @@ with position, stack, and locals; policy lives host-side) plus `mersey dap`,
 a Debug Adapter Protocol server any DAP editor drives — breakpoints,
 continue/next/stepIn/stepOut, stackTrace with call-site lines, scopes and
 variables, verified by an end-to-end scripted session. The *DevTools* flavor
-of that criterion (CDP in a fork, or source maps over the transpiled-JS
-backend) drives the same hook and is the tracked follow-up — the transpiler
-does not yet emit position maps, and an identity map would lie. JS↔Mersey
+holds too (2026-07-18, later the same day): the transpiler emits real
+per-statement source maps, every loader blob module carries its map inline
+with the module named by its path, and a Debugger-domain breakpoint set on
+the generated line mapped from a `.mersey` line pauses a served page on a
+real click (verified over CDP against the todo demo — the same resolution
+DevTools' UI performs). JS↔Mersey
 interop is pinned by the browser suite itself: Mersey closures as real JS
 callbacks (listeners, promise reactions, timers), JS objects as handles with
 stable identity, promises crossing both directions, and Custom Elements

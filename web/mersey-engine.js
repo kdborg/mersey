@@ -235,9 +235,15 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
   return {
     /// Transpile one module to JavaScript (the JS-backend polyfill). Returns
     /// the JS text, or throws with the checker's diagnostics.
-    transpile(source) {
+    transpile(source, name) {
       const [ptr, len] = writeStr(source);
-      const packed = exports.msy_transpile(ptr, len);
+      let packed;
+      if (name && exports.msy_transpile_named) {
+        const [nptr, nlen] = writeStr(name);
+        packed = exports.msy_transpile_named(ptr, len, nptr, nlen);
+      } else {
+        packed = exports.msy_transpile(ptr, len);
+      }
       const out = readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
       if (out.startsWith("!")) throw new Error(out.slice(1));
       return out;
