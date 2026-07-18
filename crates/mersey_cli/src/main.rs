@@ -4,6 +4,7 @@
 //! `convert`. `run`, `fmt`, `compile`, `audit` arrive in later phases.
 
 mod doc;
+mod dap;
 mod lsp;
 
 use std::process::ExitCode;
@@ -27,6 +28,7 @@ commands:
   compile <file.mersey>   check, then dump MBC bytecode (verified)
   sourcemap <file>        emit a Source Map v3 document on stdout
   lsp                     language server on stdin/stdout (LSP over JSON-RPC)
+  dap                     debug adapter on stdin/stdout (DAP; breakpoints, stepping)
   check <file.mersey>     report diagnostics (currently: encoding + syntax)
   parse <file.mersey>     dump the AST (debugging / conformance)
   test [path]             run every *.test.mersey (default: ./)
@@ -104,6 +106,7 @@ fn main() -> ExitCode {
         ("compile", [file]) => compile_cmd(file),
         ("sourcemap", [file]) => sourcemap_cmd(file),
         ("lsp", []) => lsp::serve(),
+        ("dap", []) => dap::serve(),
         ("fmt", [file]) => fmt_cmd(file, false),
         ("fmt", [flag, file]) if flag == "--write" => fmt_cmd(file, true),
         ("check", [file]) => check(file, Mode::Check),

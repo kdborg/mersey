@@ -51,7 +51,7 @@ pub fn serve() -> std::process::ExitCode {
 }
 
 /// Read one `Content-Length`-framed JSON-RPC message.
-fn read_message(reader: &mut impl BufRead) -> Option<String> {
+pub(crate) fn read_message(reader: &mut impl BufRead) -> Option<String> {
     let mut len = 0usize;
     loop {
         let mut line = String::new();
@@ -71,7 +71,7 @@ fn read_message(reader: &mut impl BufRead) -> Option<String> {
     String::from_utf8(buf).ok()
 }
 
-fn write_message(body: &str) {
+pub(crate) fn write_message(body: &str) {
     let out = io::stdout();
     let mut out = out.lock();
     let _ = write!(out, "Content-Length: {}\r\n\r\n{}", body.len(), body);

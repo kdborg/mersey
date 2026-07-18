@@ -3016,6 +3016,12 @@ impl Interp {
     /// not supported — the swap-back would drop it).
     fn debug_stmt(&mut self, s: &'static Stmt, env: &Env) {
         let Some(pos) = stmt_pos(s) else { return };
+        // Keep the innermost frame's position current: when a call pushes a
+        // new frame, the caller's frame is left holding its call-site line —
+        // exactly what a debugger's stack view shows for outer frames.
+        if let Some(f) = self.frames.last_mut() {
+            f.pos = pos;
+        }
         let Some(mut hook) = self.debug_hook.take() else { return };
         hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut || {
             snapshot_scopes(env)
