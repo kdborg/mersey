@@ -9142,3 +9142,73 @@ mod json_bench {
         let _ = mersey;
     }
 }
+
+// ---- the REPL session (host-agnostic) --------------------------------------
+
+/// What one REPL turn produced. `Rejected` turns were refused by
+/// decode/parse/bind/check and are NOT part of the session; `Threw` turns
+/// were accepted (their declarations may have taken effect) and are kept,
+/// the same contract as a script that threw.
+pub enum ReplOutcome {
+    /// Ran; the display of a trailing bare expression, if any.
+    Ran(Option<String>),
+    Rejected(String),
+    Threw(String),
+}
+
+/// A REPL session: the accumulated program and how much of it has executed.
+/// Host-agnostic — the CLI, the WASM build, and the C ABI all drive this one
+/// implementation. Each turn appends the fragment, re-parses and re-checks
+/// the WHOLE program (the checker must see every prior declaration; the
+/// session's program always typechecks), then executes only the new items in
+/// the given interpreter (`Interp::run_repl_turn`). Semicolons are appended
+/// for bare fragments — the module grammar's business, not the user's.
+#[derive(Default)]
+pub struct ReplSession {
+    accumulated: String,
+    executed_items: usize,
+}
+
+impl ReplSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn turn(&mut self, interp: &mut Interp, fragment: &str) -> ReplOutcome {
+        let mut fragment = fragment.trim_end().to_string();
+        if !(fragment.ends_with(';') || fragment.ends_with('}')) {
+            fragment.push(';');
+        }
+        let candidate = format!("{}{}\n", self.accumulated, fragment);
+        let src = match mersey_front::source::decode("<repl>", candidate.as_bytes()) {
+            Ok(s) => s,
+            Err(d) => return ReplOutcome::Rejected(d.to_string()),
+        };
+        let parsed = mersey_front::parser::parse(&src);
+        if !parsed.diagnostics.is_empty() {
+            return ReplOutcome::Rejected(
+                parsed.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            );
+        }
+        let module: &'static Module = Box::leak(Box::new(parsed.module));
+        let bound = mersey_front::bind::bind(module);
+        if !bound.diagnostics.is_empty() {
+            return ReplOutcome::Rejected(
+                bound.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            );
+        }
+        let checked = check::check(module);
+        if !checked.diagnostics.is_empty() {
+            return ReplOutcome::Rejected(
+                checked.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            );
+        }
+        let out = interp.run_repl_turn(module, self.executed_items);
+        self.accumulated = candidate;
+        self.executed_items = module.items.len();
+        match out {
+            Ok(echo) => ReplOutcome::Ran(echo),
+            Err(t) => ReplOutcome::Threw(format!("runtime error: {}", interp.describe_thrown(&t))),
+        }
+    }
+}

@@ -84,6 +84,18 @@ async function boot() {
     return;
   }
   const engine = await startEngine({ engineUrl, realm: globalThis });
+  // The console REPL: `mersey(source)` — or the tagged form, mersey\`x * 2\` —
+  // is one growing, always-typechecked module against the page's engine (so
+  // it can inspect live globals). Echoes a trailing bare expression; throws
+  // the checker's diagnostics for a rejected turn. Same session semantics as
+  // the CLI's `mersey repl`.
+  globalThis.mersey = (first, ...subs) => {
+    const source = Array.isArray(first)
+      ? first.reduce((acc, s, i) => acc + s + (i < subs.length ? String(subs[i]) : ""), "")
+      : String(first);
+    const echo = engine.replTurn(source);
+    return echo === "" ? undefined : echo;
+  };
   // Execution backend: "js" (default) transpiles Mersey to JavaScript and the
   // browser's own JIT runs it — the fast polyfill. "wasm" interprets inside
   // the WASM engine — the conformance vehicle, kept for testing.

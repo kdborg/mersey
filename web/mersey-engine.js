@@ -261,6 +261,18 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
       if (out.startsWith("!")) throw new Error(out.slice(1));
       return { modules: JSON.parse(out).modules, lazy };
     },
+    /// One browser-console REPL turn (`globalThis.mersey`): the echo text
+    /// (may be empty), or throws with the diagnostics of a rejected turn.
+    replTurn(source) {
+      if (!exports.msy_repl_turn) {
+        throw new Error("this engine build has no REPL");
+      }
+      const [ptr, len] = writeStr(source);
+      const packed = exports.msy_repl_turn(ptr, len);
+      const out = readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
+      if (out.startsWith("!")) throw new Error(out.slice(1));
+      return out;
+    },
     /// The standalone runtime module text ($rt), shared by a graph's modules.
     runtimeJs() {
       const packed = exports.msy_rt_js();

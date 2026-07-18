@@ -313,6 +313,43 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 /// JS-backend polyfill calls this once per script, then the browser's own
 /// JIT runs the output; the interpreter below stays as the test vehicle.
 #[no_mangle]
+/// One browser-console REPL turn against the page's engine (the loader
+/// exposes this as `globalThis.mersey`). Same growing-module session as the
+/// CLI REPL — and it shares the page interpreter, so the console can inspect
+/// live globals. Reply: the echo text ("" when none, prefixed "runtime
+/// error:" when the turn threw), or "!"-prefixed diagnostics for a rejected
+/// turn (the loader throws those).
+#[no_mangle]
+pub extern "C" fn msy_repl_turn(ptr: *const u8, len: usize) -> u64 {
+    use std::cell::RefCell;
+    thread_local! {
+        static REPL: RefCell<mersey_interp::ReplSession> =
+            RefCell::new(mersey_interp::ReplSession::new());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let fragment = String::from_utf8_lossy(bytes);
+    // The transpiled default path never interprets, so the engine's
+    // interpreter may not exist yet — the REPL is what creates it then.
+    ensure_interp();
+    let text = REPL.with(|session| {
+        let mut session = session.borrow_mut();
+        with_interp(|interp| {
+            use mersey_interp::ReplOutcome;
+            match session.turn(interp, &fragment) {
+                ReplOutcome::Ran(Some(echo)) => echo,
+                ReplOutcome::Ran(None) => String::new(),
+                ReplOutcome::Threw(msg) => msg,
+                ReplOutcome::Rejected(diags) => format!("!{diags}"),
+            }
+        })
+        .unwrap_or_else(|| "!engine not started".to_string())
+    });
+    let boxed = text.into_bytes().into_boxed_slice();
+    let plen = boxed.len();
+    let pptr = Box::leak(boxed).as_ptr();
+    ((pptr as u64) << 32) | plen as u64
+}
+
 pub extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
     msy_transpile_named(ptr, len, std::ptr::null(), 0)
 }

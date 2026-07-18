@@ -13,8 +13,8 @@
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 
-use mersey_front::{bind, check as tycheck, parser, source};
 use mersey_interp as interp;
+use mersey_interp::{ReplOutcome, ReplSession};
 
 /// Net bracket depth of a fragment, ignoring brackets inside strings,
 /// templates, chars, and comments. Positive means "keep reading".
@@ -85,19 +85,15 @@ pub fn serve(caps: Vec<String>) -> ExitCode {
     println!("`console` is pre-imported; a bare expression echoes its value.");
 
     let mut interp = interp::new_interp(Box::new(CapsHost(caps)));
-    let mut accumulated = String::from("import { console } from \"std:console\";\n");
-    let mut executed_items = {
-        // Run the prelude import so `console` exists from the first turn.
-        let src = source::decode("<repl>", accumulated.as_bytes()).expect("prelude decodes");
-        let parsed = parser::parse(&src);
-        let module: &'static _ = Box::leak(Box::new(parsed.module));
-        let n = module.items.len();
-        if interp.run_repl_turn(module, 0).is_err() {
-            eprintln!("mersey repl: prelude failed");
-            return ExitCode::FAILURE;
-        }
-        n
-    };
+    let mut session = ReplSession::new();
+    // The prelude is an ordinary first turn: `console` exists from turn one.
+    if !matches!(
+        session.turn(&mut interp, "import { console } from \"std:console\";"),
+        ReplOutcome::Ran(_)
+    ) {
+        eprintln!("mersey repl: prelude failed");
+        return ExitCode::FAILURE;
+    }
 
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
@@ -120,52 +116,12 @@ pub fn serve(caps: Vec<String>) -> ExitCode {
             fragment.push_str(&more);
         }
 
-        // Semicolons are the module grammar's business, not the REPL user's:
-        // `x * 2` should just echo. Blocks already end themselves.
-        let trimmed = fragment.trim_end();
-        if !(trimmed.ends_with(';') || trimmed.ends_with('}')) {
-            fragment.push(';');
+        match session.turn(&mut interp, &fragment) {
+            ReplOutcome::Ran(Some(echo)) => println!("{echo}"),
+            ReplOutcome::Ran(None) => {}
+            ReplOutcome::Rejected(diags) => eprintln!("{diags}"),
+            ReplOutcome::Threw(msg) => eprintln!("{msg}"),
         }
-        let candidate = format!("{accumulated}{fragment}\n");
-        let src = match source::decode("<repl>", candidate.as_bytes()) {
-            Ok(s) => s,
-            Err(d) => {
-                eprintln!("{d}");
-                continue;
-            }
-        };
-        let parsed = parser::parse(&src);
-        if !parsed.diagnostics.is_empty() {
-            for d in &parsed.diagnostics {
-                eprintln!("{d}");
-            }
-            continue; // discarded: the session program must stay well-formed
-        }
-        let module: &'static _ = Box::leak(Box::new(parsed.module));
-        let bound = bind::bind(module);
-        if !bound.diagnostics.is_empty() {
-            for d in &bound.diagnostics {
-                eprintln!("{d}");
-            }
-            continue;
-        }
-        let checked = tycheck::check(module);
-        if !checked.diagnostics.is_empty() {
-            for d in &checked.diagnostics {
-                eprintln!("{d}");
-            }
-            continue;
-        }
-
-        match interp.run_repl_turn(module, executed_items) {
-            Ok(Some(echo)) => println!("{echo}"),
-            Ok(None) => {}
-            Err(t) => eprintln!("runtime error: {}", interp.describe_thrown(&t)),
-        }
-        // Runtime errors keep the input: its declarations may have taken
-        // effect, and the checker accepted it — same as a script that threw.
-        accumulated = candidate;
-        executed_items = module.items.len();
     }
     ExitCode::SUCCESS
 }
