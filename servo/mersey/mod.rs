@@ -784,6 +784,18 @@ fn refs_mask(args: &[MsyArg16]) -> f64 {
     mask as f64
 }
 
+/// Which args are stable callback ids (kind 5, ABI v8) — the bridge resolves
+/// them to its cached wrapper functions.
+fn cb_mask(args: &[MsyArg16]) -> f64 {
+    let mut mask = 0u32;
+    for (i, a) in args.iter().enumerate() {
+        if a.kind == 5 && i < 32 {
+            mask |= 1u32 << i;
+        }
+    }
+    mask as f64
+}
+
 // ---- direct-DOM tier (the Ladybird fork's HotMethod dispatch, in Rust) ------
 // A hot method unwraps its receiver (and object args) to the Servo DOM native
 // once — the native is boxed and never moves; the bridge's handle table keeps
@@ -1330,7 +1342,7 @@ extern "C" fn host_web_set_u16(
                 }
             }
         }
-        bridge_wide(c"setWide", &[target as f64, name_id as f64, refs_mask(slice)], slice, out)
+        bridge_wide(c"setWide", &[target as f64, name_id as f64, refs_mask(slice), cb_mask(slice)], slice, out)
     }
 }
 
@@ -1370,7 +1382,7 @@ extern "C" fn host_web_call_u16(
                 }
             }
         }
-        bridge_wide(c"callWide", &[target as f64, name_id as f64, refs_mask(a)], a, out)
+        bridge_wide(c"callWide", &[target as f64, name_id as f64, refs_mask(a), cb_mask(a)], a, out)
     }
 }
 
@@ -1397,7 +1409,7 @@ extern "C" fn host_web_new_u16(
                 }
             }
         }
-        bridge_wide(c"newWide", &[ctor_id as f64, refs_mask(a)], a, out)
+        bridge_wide(c"newWide", &[ctor_id as f64, refs_mask(a), cb_mask(a)], a, out)
     }
 }
 

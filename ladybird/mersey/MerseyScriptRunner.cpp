@@ -532,8 +532,8 @@ static char const* host_web_set(void*, int64_t target, char const* prop, size_t 
 
 // setTimeout(cb, ms, ...) straight to WindowOrWorkerGlobalScopeMixin — the
 // callback is already a C++ NativeFunction, so the whole timer arm/fire path
-// stays out of the binding layer.
-static JS::ThrowCompletionOr<ByteString> set_timeout_direct(Runner* runner, ReadonlySpan<JS::Value> args)
+// stays out of the binding layer. Shared by the JSON path and the u16 tier.
+static JS::ThrowCompletionOr<i32> set_timeout_core(Runner* runner, ReadonlySpan<JS::Value> args)
 {
     auto& global = runner->realm->global_object();
     auto& window = as<HTML::Window>(global);
@@ -543,8 +543,12 @@ static JS::ThrowCompletionOr<ByteString> set_timeout_direct(Runner* runner, Read
     GC::RootVector<JS::Value> extra;
     for (size_t i = 2; i < args.size(); ++i)
         extra.append(args[i]);
-    auto id = window.set_timeout(HTML::TimerHandler { GC::Ref { *callback } }, delay, move(extra));
-    return ok_reply(runner, JS::Value(id));
+    return window.set_timeout(HTML::TimerHandler { GC::Ref { *callback } }, delay, move(extra));
+}
+
+static JS::ThrowCompletionOr<ByteString> set_timeout_direct(Runner* runner, ReadonlySpan<JS::Value> args)
+{
+    return ok_reply(runner, JS::Value(TRY(set_timeout_core(runner, args))));
 }
 
 static char const* host_web_call(void*, int64_t target, char const* method, size_t method_len,
@@ -863,6 +867,10 @@ static JS::Value arg16_to_value(Runner* runner, msy_arg16 const& a)
         return handle_value(runner, static_cast<int64_t>(a.num));
     case 3:
         return JS::Value(a.num != 0);
+    case 5:
+        // A durable Mersey callable as its stable callback id (ABI v8) —
+        // the same cached NativeFunction the JSON path's {"__cb__":id} gets.
+        return make_callback(runner, static_cast<uint32_t>(a.num));
     default:
         return JS::js_null();
     }
@@ -1362,11 +1370,31 @@ static void host_web_call_u16(void*, int64_t target, uint32_t name_id, msy_arg16
     wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
         auto& vm = runner->realm->vm();
         auto tv = handle_value(runner, target);
+        auto name = interned_name(runner, name_id);
+        // ABI v8: the interned EMPTY name means the handle is itself callable
+        // (an imported `setTimeout(cb, ms)`, `fetch(url)`) — same routing as
+        // the JSON path's `method == ""`, minus all the JSON.
+        if (name.is_empty()) {
+            GC::RootVector<JS::Value> vals;
+            for (size_t i = 0; i < argc; ++i)
+                vals.append(arg16_to_value(runner, args[i]));
+            if (is<HTML::Window>(runner->realm->global_object()) && !vals.is_empty()) {
+                if (target == runner->set_timeout_handle && vals[0].is_function())
+                    return JS::Value(TRY(set_timeout_core(runner, vals.span())));
+                if (target == runner->clear_timeout_handle && vals[0].is_number()) {
+                    as<HTML::Window>(runner->realm->global_object()).clear_timeout(static_cast<i32>(vals[0].as_double()));
+                    return JS::js_null();
+                }
+            }
+            if (!tv.is_function())
+                return vm.throw_completion<JS::TypeError>(Utf16String::from_utf8("value is not a function"sv));
+            return JS::call(vm, tv, JS::js_undefined(), vals.span());
+        }
         auto obj = TRY(target_object(vm, tv));
-        auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }));
+        auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(name) }));
         if (!fn.is_function())
             return runner->realm->vm().throw_completion<JS::TypeError>(
-                Utf16String::formatted("{} is not a function", interned_name(runner, name_id)));
+                Utf16String::formatted("{} is not a function", name));
         GC::RootVector<JS::Value> vals;
         for (size_t i = 0; i < argc; ++i)
             vals.append(arg16_to_value(runner, args[i]));

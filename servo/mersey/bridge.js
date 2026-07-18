@@ -76,8 +76,19 @@ function makeBridge(globalObject, invokeCallback) {
   // One wrapper per callback id. The engine keys ids by closure identity, so
   // the same Mersey function is the same JS function on every crossing —
   // `removeEventListener` removes, and a hot `setTimeout` loop doesn't
-  // allocate a wrapper per call.
+  // allocate a wrapper per call. Shared by the JSON path ({"__cb__":id}) and
+  // the wide tier's cb mask (ABI v8).
   const cbWrappers = new Map();
+  const cbFor = (id) => {
+    const cached = cbWrappers.get(id);
+    if (cached) return cached;
+    // A Mersey closure: JS calls it with real arguments (event objects,
+    // resolved promise values, …), which cross back as handles.
+    const fn = (...args) => invokeCallback(id, JSON.stringify(args.map(encode)));
+    fn.__merseyCallback = id; // so the host can release it later
+    cbWrappers.set(id, fn);
+    return fn;
+  };
 
   // tagged JSON value -> JS value (callbacks become real functions)
   const decode = (v) => {
@@ -85,15 +96,7 @@ function makeBridge(globalObject, invokeCallback) {
     if (Array.isArray(v)) return v.map(decode);
     if ("__ref__" in v) return handles[v.__ref__];
     if ("__cb__" in v) {
-      const id = v.__cb__;
-      const cached = cbWrappers.get(id);
-      if (cached) return cached;
-      // A Mersey closure: JS calls it with real arguments (event objects,
-      // resolved promise values, …), which cross back as handles.
-      const fn = (...args) => invokeCallback(id, JSON.stringify(args.map(encode)));
-      fn.__merseyCallback = id; // so the host can release it later
-      cbWrappers.set(id, fn);
-      return fn;
+      return cbFor(v.__cb__);
     }
     const out = {};
     for (const [k, val] of Object.entries(v)) out[k] = decode(val);
@@ -216,37 +219,43 @@ function makeBridge(globalObject, invokeCallback) {
     },
     // refsMask: bit i set means args[i] is a handle number — resolve it to the
     // object it names, so calls with object arguments (appendChild(el),
-    // getRandomValues(buf)) stay on the wide path.
-    setWide(target, nameId, refsMask, value) {
+    // getRandomValues(buf)) stay on the wide path. cbMask (ABI v8) marks
+    // stable callback ids the same way — resolved to cached wrappers.
+    setWide(target, nameId, refsMask, cbMask, value) {
       const obj = handles[target];
       if (obj == null) throw new Error(`stale handle ${target}`);
       if (refsMask & 1) value = handles[value];
+      else if (cbMask & 1) value = cbFor(value);
       const prop = names[nameId];
       const s = bound(obj, prop, SETS, "s");
       if (s) s(obj, value);
       else obj[prop] = value;
       return null;
     },
-    callWide(target, nameId, refsMask, ...args) {
+    callWide(target, nameId, refsMask, cbMask, ...args) {
       const obj = handles[target];
       if (obj == null) throw new Error(`stale handle ${target}`);
-      if (refsMask) {
-        for (let i = 0; refsMask >> i; i++) {
-          if ((refsMask >> i) & 1) args[i] = handles[args[i]];
-        }
+      for (let i = 0, m = refsMask | cbMask; m >> i; i++) {
+        if ((refsMask >> i) & 1) args[i] = handles[args[i]];
+        else if ((cbMask >> i) & 1) args[i] = cbFor(args[i]);
       }
       const method = names[nameId];
+      // ABI v8: the interned EMPTY name — the handle is itself callable
+      // (an imported `setTimeout(cb, ms)`, `fetch(url)`).
+      if (method === "") {
+        if (typeof obj !== "function") throw new Error("value is not a function");
+        return wideResult(obj(...args));
+      }
       const c = bound(obj, method, CALLS, "c");
       if (c) return wideResult(c(obj, args));
       const fn = obj[method];
       if (typeof fn !== "function") throw new Error(`${method} is not a function`);
       return wideResult(fn.apply(obj, args));
     },
-    newWide(ctorId, refsMask, ...args) {
-      if (refsMask) {
-        for (let i = 0; refsMask >> i; i++) {
-          if ((refsMask >> i) & 1) args[i] = handles[args[i]];
-        }
+    newWide(ctorId, refsMask, cbMask, ...args) {
+      for (let i = 0, m = refsMask | cbMask; m >> i; i++) {
+        if ((refsMask >> i) & 1) args[i] = handles[args[i]];
+        else if ((cbMask >> i) & 1) args[i] = cbFor(args[i]);
       }
       const name = names[ctorId];
       const c = useBindings ? CTORS.get(name) : null;

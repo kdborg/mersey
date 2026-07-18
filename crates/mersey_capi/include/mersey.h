@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 7u
+#define MSY_ABI_VERSION 8u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -65,7 +65,9 @@ typedef struct {
  *   1 number (num)
  *   2 host-object handle (num) — the bridge resolves it back to the object
  *   3 bool (num is 0/1)      4 null
- * Kinds 0/1 keep the old is_num semantics; 2–4 are ABI v6. */
+ *   5 callback id (num) — a durable Mersey callable's STABLE id, the same id
+ *     the JSON path's {"__cb__":id} carries; resolve it to the cached wrapper
+ * Kinds 0/1 keep the old is_num semantics; 2–4 are ABI v6, 5 is ABI v8. */
 typedef struct {
     int32_t kind;
     double num;
@@ -188,6 +190,9 @@ typedef struct {
                         msy_reply *out);
     void (*web_set_u16)(void *data, int64_t target, uint32_t name_id,
                         const msy_arg16 *value, msy_reply *out);
+    /* ABI v8: `name_id` may be the interned EMPTY name — the target handle is
+     * itself callable (an imported `setTimeout(cb, ms)`, `fetch(url)`): call
+     * the handle. Arguments may be kind 5 (a stable callback id). */
     void (*web_call_u16)(void *data, int64_t target, uint32_t name_id,
                          const msy_arg16 *args, size_t argc, msy_reply *out);
     /* new Ctor(args…) with UTF-32 args and a typed reply (the handle of the new

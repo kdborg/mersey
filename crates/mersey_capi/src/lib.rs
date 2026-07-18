@@ -28,7 +28,7 @@ use mersey_interp::{embed, new_interp, Host, Interp, WebScalar};
 
 /// Bumped whenever the table layout or a boundary contract changes. The
 /// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 7;
+pub const MSY_ABI_VERSION: u32 = 8;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).
@@ -185,6 +185,10 @@ fn to_msy_arg16(a: &mersey_interp::WebArg) -> MsyArg16 {
         WebArg::Ref(h) => num(2, *h as f64),
         WebArg::Bool(b) => num(3, if *b { 1.0 } else { 0.0 }),
         WebArg::Null => num(4, 0.0),
+        // A durable Mersey callable as its stable callback id (ABI v8): the
+        // host resolves it to its cached wrapper, exactly as the JSON path's
+        // {"__cb__":id} would.
+        WebArg::Cb(id) => num(5, *id as f64),
     }
 }
 

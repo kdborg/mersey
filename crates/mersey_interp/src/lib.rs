@@ -153,6 +153,11 @@ pub enum WebArg<'a> {
     Ref(i64),
     Bool(bool),
     Null,
+    /// A durable Mersey callable, crossing as its stable callback id — the
+    /// same id the JSON path's `{"__cb__":id}` carries, so the host resolves
+    /// it to its cached wrapper. This is what keeps `setTimeout(cb, ms)` and
+    /// `addEventListener(type, cb)` off the JSON path entirely (ABI v8).
+    Cb(u32),
 }
 
 /// A typed reply from the wide-string fast path — no JSON for the common cases.
@@ -183,6 +188,12 @@ fn is_web_scalar(v: &Value) -> bool {
     )
 }
 
+/// True for values a `web_call_u16` argument can carry: scalars, plus durable
+/// callables (which cross as their stable callback id — `WebArg::Cb`).
+fn is_web_scalar_or_cb(v: &Value) -> bool {
+    is_web_scalar(v) || matches!(v, Value::Closure(_) | Value::Native(_))
+}
+
 /// A `WebArg` back to a `Value`, for the general `web_call` fallback when the
 /// host declines the interned wide path. The inverse of `value_as_webarg`.
 fn webarg_to_value(a: &WebArg) -> Value {
@@ -192,6 +203,9 @@ fn webarg_to_value(a: &WebArg) -> Value {
         WebArg::Ref(h) => Value::JsRef(*h),
         WebArg::Bool(b) => Value::Bool(*b),
         WebArg::Null => Value::Null,
+        // Only the JIT shims round-trip WebArgs back to Values, and compiled
+        // code never carries callables — this arm is unreachable there.
+        WebArg::Cb(_) => Value::Null,
     }
 }
 
@@ -6837,15 +6851,7 @@ impl Interp {
             // identity): the host caches one wrapper per id, so the same
             // Mersey function is the same JS function on every crossing.
             Value::Closure(_) | Value::Native(_) => {
-                let key = Self::callback_key(v).expect("closure/native has identity");
-                let id = match self.callback_ids.get(&key) {
-                    Some(id) => *id,
-                    None => {
-                        let id = self.alloc_callback(v.clone());
-                        self.callback_ids.insert(key, id);
-                        id
-                    }
-                };
+                let id = self.callback_id_for(v);
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
             }
             // One-shot promise plumbing: a fresh slot per crossing (each
@@ -6919,6 +6925,31 @@ impl Interp {
                 self.callbacks.push(v);
                 (self.callbacks.len() - 1) as u32
             }
+        }
+    }
+
+    /// The stable callback id for a durable callable — cached by identity,
+    /// allocated on first crossing. Shared by the JSON path (`{"__cb__":id}`)
+    /// and the wide tier (`WebArg::Cb`), so both spell the same callback.
+    fn callback_id_for(&mut self, v: &Value) -> u32 {
+        let key = Self::callback_key(v).expect("closure/native has identity");
+        match self.callback_ids.get(&key) {
+            Some(id) => *id,
+            None => {
+                let id = self.alloc_callback(v.clone());
+                self.callback_ids.insert(key, id);
+                id
+            }
+        }
+    }
+
+    /// `value_as_webarg`, extended with the durable-callable case (needs
+    /// `self` for the cached callback id). Callers gate on
+    /// `is_web_scalar_or_cb`.
+    fn value_as_webarg_cb<'a>(&mut self, v: &'a Value) -> WebArg<'a> {
+        match v {
+            Value::Closure(_) | Value::Native(_) => WebArg::Cb(self.callback_id_for(v)),
+            other => value_as_webarg(other),
         }
     }
 
@@ -7056,31 +7087,36 @@ impl Interp {
                 }
             }
         }
-        // Fast paths skip JSON entirely. Not for `method == ""`, which calls the
-        // handle itself (`fetch(url)`), and only when every argument is a scalar.
-        if !method.is_empty() && !args.is_empty() {
-            // Wide-string fast path: all-scalar args cross as UTF-32 (zero-copy
-            // strings), the reply comes back typed as UTF-16 — no JSON either way.
-            if args.iter().all(is_web_scalar) {
-                if let Some(id) = self.intern(method) {
-                    // The arguments cross on the stack, not through a fresh heap
-                    // `Vec` per call — this is the hottest web path (getItem,
-                    // fillRect, …), run tens of thousands of times a frame.
-                    let reply = if args.len() <= 8 {
-                        let mut buf: [WebArg; 8] = std::array::from_fn(|_| WebArg::Null);
-                        for (k, a) in args.iter().enumerate() {
-                            buf[k] = value_as_webarg(a);
-                        }
-                        self.host.web_call_u16(target, id, &buf[..args.len()])
-                    } else {
-                        let wargs: Vec<WebArg> = args.iter().map(value_as_webarg).collect();
-                        self.host.web_call_u16(target, id, &wargs)
-                    };
-                    if let Some(reply) = reply {
-                        return self.value_from_reply(reply);
+        // Wide fast path: scalar args cross as UTF-16 (zero-copy strings) and
+        // durable callables as their stable callback id — no JSON either way.
+        // Unlike the tiers below it also carries `method == ""` (calling the
+        // handle itself: an imported `setTimeout(cb, ms)`), which crosses as
+        // the interned empty name; the host calls the handle (ABI v8).
+        if !args.is_empty() && args.iter().all(is_web_scalar_or_cb) {
+            if let Some(id) = self.intern(method) {
+                // The arguments cross on the stack, not through a fresh heap
+                // `Vec` per call — this is the hottest web path (getItem,
+                // fillRect, …), run tens of thousands of times a frame.
+                let reply = if args.len() <= 8 {
+                    let mut buf: [WebArg; 8] = std::array::from_fn(|_| WebArg::Null);
+                    for (k, a) in args.iter().enumerate() {
+                        buf[k] = self.value_as_webarg_cb(a);
                     }
+                    self.host.web_call_u16(target, id, &buf[..args.len()])
+                } else {
+                    let mut wargs = Vec::with_capacity(args.len());
+                    for a in args.iter() {
+                        wargs.push(self.value_as_webarg_cb(a));
+                    }
+                    self.host.web_call_u16(target, id, &wargs)
+                };
+                if let Some(reply) = reply {
+                    return self.value_from_reply(reply);
                 }
             }
+        }
+        // Interned single/multi-scalar tiers (UTF-8): named methods only.
+        if !method.is_empty() && !args.is_empty() {
             if let Some(scalars) = as_scalars(&args) {
                 if let Some(id) = self.intern(method) {
                     let refs: Vec<WebScalar> = scalars.iter().map(scalar_ref).collect();
