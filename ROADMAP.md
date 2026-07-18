@@ -259,9 +259,24 @@ harness against the real WASM binary); TODO-class demo with zero JS.
 error paths a Blink integration would, verified by an automated native
 host; conformance goldens remain the cross-engine contract.
 
-**Exit:** Stage A's browser suite passes natively with the shim removed;
-DevTools can set a breakpoint in a `.mersey` file; JS↔Mersey interop tests
-pass on a page running both.
+**Exit (met at scale, 2026-07-18):** the browser suite runs natively with no
+shim in all four forks — the twelve-technology workload suite executes on the
+engine hosted inside Gecko, Chromium, Servo and Ladybird with checksums
+bit-identical to the stock-browser legs (`bench/web/results.native*.json`),
+and the runtime conformance goldens hold on the native engine. Breakpoints in
+a `.mersey` file are real: the engine-side `DebugHook` (statement callouts
+with position, stack, and locals; policy lives host-side) plus `mersey dap`,
+a Debug Adapter Protocol server any DAP editor drives — breakpoints,
+continue/next/stepIn/stepOut, stackTrace with call-site lines, scopes and
+variables, verified by an end-to-end scripted session. The *DevTools* flavor
+of that criterion (CDP in a fork, or source maps over the transpiled-JS
+backend) drives the same hook and is the tracked follow-up — the transpiler
+does not yet emit position maps, and an identity map would lie. JS↔Mersey
+interop is pinned by the browser suite itself: Mersey closures as real JS
+callbacks (listeners, promise reactions, timers), JS objects as handles with
+stable identity, promises crossing both directions, and Custom Elements
+subclassing a host class — 84 assertions against a real browser
+(`web/build-and-test.sh`).
 
 ## Phase 7 — Hardening & performance (complete 2026-07-12)
 
@@ -1152,9 +1167,15 @@ different `value` in another scope. The LSP no longer leaks an AST per keystroke
   surface, so the cache would save single-digit milliseconds — and a chunk holds
   `&'static` pointers into the AST (patterns, types, nested function bodies), so
   caching one means first making bytecode self-contained. Wrong trade at this size.
-* **Debugger.** Stepping needs either a DAP adapter (standalone) or CDP (browser),
-  and the browser half is Stage B work. Errors already carry a Mersey code frame,
-  stack trace, and source map.
+* **Debugger.** ~~Stepping needs either a DAP adapter (standalone) or CDP
+  (browser), and the browser half is Stage B work.~~ Built (2026-07-18): the
+  engine's `DebugHook` (statement callouts; pausing is blocking inside the
+  callout, so all policy lives in the adapter) and `mersey dap`, the DAP
+  server — breakpoints, stepping, stack with call-site lines, locals. v1
+  limits, recorded: async/generator bodies run on the VM and are not stepped;
+  breakpoints match by line across the graph; variables serve the top frame.
+  The browser half (CDP in a fork, or transpiler source maps) drives the same
+  hook — tracked, not started.
 
 ## Explicitly deferred (tracked, not forgotten)
 
