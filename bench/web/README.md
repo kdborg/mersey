@@ -84,7 +84,15 @@ node bench/web/run-native-servo.mjs   # -> results.native.servo.json
 # Driven through Ladybird's `test-web` harness (no --headless binary exists);
 # RESULT is read from each test's captured log. Override with LADYBIRD_SRC/TEST_WEB:
 node bench/web/run-native-ladybird.mjs  # -> results.native.ladybird.json
-# (stock js/poly/tjs Ladybird leg not yet implemented — see ladybird/README.md)
+
+# Stock Ladybird (js / transpiled-JS / WASM-poly, mersey module dormant), via
+# test-web with fully self-contained pages — the workload, bridge, bindings and
+# base64'd WASM engine are inlined per page because file:// fetch and relative
+# module imports are refused there. RESULT comes from each test's actual.txt
+# (a println'd console hook); memory is peak PSS minus a blank baseline.
+# fetch is skipped (no http origin); compute is js-only (poly/tjs compute would
+# measure LibWasm's interpreter interpreting an interpreter):
+node bench/web/run-ladybird.mjs         # -> results.ladybird.json
 
 # Merge into REPORT.md:
 node bench/web/report.mjs

@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Mersey is a strictly-typed, class-based language for web browsers (loaded via
+`<script type="text/mersey">` but run by its own engine, not the JS engine) and
+standalone use. One mode (strict), no prototypes, sealed nominal classes,
+C-style numeric-only implicit conversion, capability-scoped I/O (deny by
+default, spec §5.3), no `eval`. The spec lives in `docs/spec/`, the phased plan
+in `ROADMAP.md` — consult both before proposing semantics; several decisions
+are user-fixed there. Engine strings are UTF-16 (WTF-16) with JS-aligned
+code-unit semantics — this is a decided point some older docs contradict, and
+benchmark checksum parity depends on it.
+
+## Build and test
+
+```bash
+cargo build --release                 # workspace; CLI at target/release/mersey
+cargo test                            # Rust unit/integration tests
+./target/release/mersey run app.mersey        # check + execute (caps: --allow-read --allow-random …)
+./target/release/mersey compile f.mersey      # check + dump verified bytecode (fast typecheck smoke)
+./target/release/mersey test [path]           # run *.test.mersey (tests/mersey, tests/conformance)
+web/build-and-test.sh                 # build mersey_wasm (wasm32-unknown-unknown), copy into web/, run all web/test/*.mjs
+```
+
+`cargo build --release -p mersey_capi` produces `target/release/libmersey_capi.a`,
+the staticlib the Chromium/Ladybird forks link (Servo builds the crate itself;
+Gecko vendors it). The C ABI header is `crates/mersey_capi/include/mersey.h`;
+`msy_abi_version()` must match `MSY_ABI_VERSION` in every host.
+
+## Architecture
+
+Crates (workspace):
+- `mersey_front` — lexer/parser/binder/checker. `webapi.gen.mersey` (via
+  `tools/webidl-gen` over `@webref/idl`) makes the whole standardized WebIDL
+  surface ambient types; `browser:dom` imports resolve any live web global.
+- `mersey_interp` — tree-walker + bytecode VM, GC, the host-table trait
+  (`web_*` hooks) every embedder implements. Capability gating lives here.
+- `mersey_jit` — Cranelift Tier-1. Compiled code reaches the host through the
+  same table (typed `web_bind` ids for hot numeric calls like canvas fillRect).
+- `mersey_capi` — the C ABI (`msy_context_*`); the one boundary all four
+  browser forks and `native/host_demo.c` share.
+- `mersey_wasm` — the engine compiled to WASM for the Stage A polyfill.
+- `mersey_cli`, `mersey_js` (transpile backend), `mersey_fuzz`.
+
+The web bridge, in one sentence: the engine never touches JS objects — it holds
+integer handles and calls host hooks in tiers of decreasing cost
+(reflective JSON `web_get/set/call/new` → interned ids `web_*_id/scalars` →
+wide UTF-16 `web_*_u16` with a refs bitmask → typed `web_bind` → per-fork
+direct-C++ "hot method" paths). Every tier is optional; NULL hooks fall back a
+tier, and identical checksums across tiers/browsers are the correctness proof.
+`web/mersey-bridge.js` is the canonical reflective implementation (handles are
+indices into its table, objects deduped via `handleFor`; mersey closures cross
+as `{"__cb__":id}` and re-enter through `__merseyInvoke`).
+
+Browser forks (checkouts live BESIDE this repo, not in it):
+- `~/gecko` (dom/mersey), `~/chromium/src` (blink core/script/mersey_script_runner,
+  branch `mersey`), `~/servo-src` (components/script/mersey), `~/ladybird`
+  (Libraries/LibWeb/Mersey). The repo keeps each fork's glue under `servo/`,
+  `ladybird/`, `chromium/` with an idempotent `apply.sh` that installs it into
+  the checkout; `refresh-bridge.sh` regenerates each fork's embedded copy of
+  `web/mersey-bridge.js` — never edit the embedded copies by hand.
+- Gecko and Chromium fork changes are committed in their own checkouts;
+  Servo/Ladybird glue is versioned here and applied.
+
+Benchmarks (`bench/web/`): twelve web technologies as line-for-line
+`js/<wl>.js` + `mersey/<wl>.mersey` twins, self-timed, checksum-verified
+bit-for-bit across every leg. Runners: `run.mjs` (stock Chromium/Firefox via
+Playwright), `run-tjs.mjs`, `run-servo.mjs`, `run-ladybird.mjs` (stock
+Ladybird via `test-web`, fully self-contained inlined pages), and
+`run-native{,-servo,-ladybird,-chromium}.mjs` for the forks. Most take
+`WL=name,…` (and ladybird `IMPL=`) filters. Results land in
+`results.*.json`; `report.mjs` regenerates `REPORT.md`;
+`gen-report-data.mjs` regenerates `report.html`'s baked DATA block — never
+hand-edit those numbers. Adding a workload = the two twin files (auto-
+discovered) + the hardcoded lists in `run-native-servo.mjs`,
+`run-native-ladybird.mjs`, `run-ladybird.mjs`.
+
+## Conventions that bite
+
+- Workload twins must stay line-for-line equivalent and print
+  `RESULT <name> <ms> <checksum>`; async workloads self-report from their last
+  callback and `pages/js.html` awaits `work()`.
+- Benchmarks are timing-sensitive: never run builds and measurements
+  concurrently; browser-profile temp dirs can fill `/tmp` — clean
+  `/tmp/mersey-*` if the shell starts failing with EDQUOT.
+- A fork's every bridge entry point (including the JSON fallbacks) must
+  normalize its handle domain before calling the JS bridge — closure/dict
+  arguments force the JSON path with whatever receiver the fast tier owned.
+- `mersey fmt --write` is the formatter; generated files
+  (`web/mersey-bindings.gen.js`, `webapi.gen.mersey`, `bridge.js.h`) are
+  regenerated, not edited.

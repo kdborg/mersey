@@ -214,11 +214,22 @@ stay Ladybird's). Method/API names track Ladybird's LibWeb/LibJS at integration
 time (this was verified against a tree whose LibJS had migrated to UTF-16); a
 much newer tree may need a name nudged.
 
+## The stock leg
+
+`bench/web/run-ladybird.mjs` collects js / transpiled-JS / WASM-polyfill in
+(effectively) unmodified Ladybird — the fork's mersey module is dormant for
+these pages. Under `test-web`'s `file://` loader every fetch and relative
+module import is refused (cors requires http), so each generated Text test is
+fully self-contained: workload + bridge + bindings + the base64'd WASM engine
+inline. Probed facts that make it work: `WebAssembly.instantiate(bytes)` and
+`import(blobURL)` both succeed under `file://` — only fetch is blocked. RESULT
+reaches `actual.txt` through a println'd console hook inside `asyncTest`;
+memory is peak PSS of the process tree minus a blank baseline. Two honest
+exclusions: `fetch` (no http origin) and poly/tjs `compute` (LibWasm is an
+interpreter — timing it interpreting the Mersey interpreter measures LibWasm,
+which the poly bars already show).
+
 ## Not yet done
 
-- **The stock leg** (js / WASM-polyfill / transpiled-JS in unmodified Ladybird)
-  is not collected — its pages fetch over http, which needs `test-web`'s echo
-  server wired in. `run-ladybird.mjs` is a placeholder for it. Only the native
-  leg has numbers so far.
-- **Direct-C++ fast paths** against Ladybird's LibWeb bindings (the lever that
-  would close the web-workload gap above).
+- **Direct-C++ fast paths** against more of Ladybird's LibWeb bindings (the
+  direct-DOM tier covers the hot methods of the twelve workloads today).

@@ -17,6 +17,7 @@ const rows = [
   ...(await load("results.stock.json")),
   ...(await load("results.tjs.json")),
   ...(await load("results.servo.json")),
+  ...(await load("results.ladybird.json")),
   ...(await load("results.native.json")),
   ...(await load("results.native.servo.json")),
   ...(await load("results.native.ladybird.json")),
@@ -27,6 +28,7 @@ const KEY = {
   "chromium/js": "cjs", "chromium/poly": "cpoly", "chromium/tjs": "ctjs",
   "firefox/js": "fjs", "firefox/poly": "fpoly", "firefox/tjs": "ftjs",
   "servo/js": "sjs", "servo/poly": "spoly", "servo/tjs": "stjs",
+  "ladybird/js": "lbjs", "ladybird/poly": "lbpoly", "ladybird/tjs": "lbtjs",
   "firefox-fork/native": "native", "chromium-fork/native": "cnative",
   "servo-fork/native": "snative", "ladybird-fork/native": "lbnative",
 };
