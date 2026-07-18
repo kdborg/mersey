@@ -251,6 +251,13 @@ export function makeBridge(globalObject, invokeCallback) {
     handleObj(h) {
       return handles[h];
     },
+    // Register a host-CREATED object (a DOMURL, an Element the C++ fork built
+    // directly) and return its handle — keeping it alive in the handle table so
+    // the engine can name it, while the host caches the native pointer it already
+    // holds. The direct-DOM counterpart of `handleObj`, for the create direction.
+    register(obj) {
+      return handleFor(obj);
+    },
     // A C++-created object (negative handle) escaping to a JS-path API: the
     // host materialized its reflector and registers it under the SAME handle,
     // so every path — lookups and re-encoding — sees one identity.

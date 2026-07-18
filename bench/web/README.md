@@ -2,7 +2,11 @@
 
 Performance and memory for real web technologies — Web Storage, JSON, URL, Web
 Crypto, Canvas 2D, and DOM mutation — across three ways of running the same
-program, in three browsers (Chromium, Firefox, and Servo).
+program, in four browsers (Chromium, Firefox, Servo, and Ladybird). Ladybird is
+the newest addition: the **native fork leg is built and measured** — all six web
+workloads + compute, checksums matching the other forks (its Cranelift-JIT
+compute is the fastest of the three native forks). The stock leg is not yet
+collected. See `ladybird/README.md`.
 
 The three implementations of each workload:
 
@@ -58,6 +62,13 @@ node bench/web/run-native.mjs   # -> results.native.json
 # Native, via the Servo fork (needs servoshell built at ~/servo-src with the
 # components/script/mersey engine; reflective bridge, Cranelift JIT vendored):
 node bench/web/run-native-servo.mjs   # -> results.native.servo.json
+
+# Native Ladybird (needs the fork built at ~/ladybird via ladybird/apply.sh;
+# reflective C++→LibJS bridge, Cranelift JIT via the linked libmersey_capi.a).
+# Driven through Ladybird's `test-web` harness (no --headless binary exists);
+# RESULT is read from each test's captured log. Override with LADYBIRD_SRC/TEST_WEB:
+node bench/web/run-native-ladybird.mjs  # -> results.native.ladybird.json
+# (stock js/poly/tjs Ladybird leg not yet implemented — see ladybird/README.md)
 
 # Merge into REPORT.md:
 node bench/web/report.mjs

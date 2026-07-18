@@ -1,0 +1,51 @@
+[
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 9.849291999999998,
+    "checksum": 20000
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 26.356125,
+    "checksum": 320000
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 29.149,
+    "checksum": 10000
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 1.4385830000000013,
+    "checksum": 848890
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 10089.211879999999,
+    "checksum": 208890
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 54.54075,
+    "checksum": 537780
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 94.878334,
+    "checksum": 1765835917
+  }
+]
