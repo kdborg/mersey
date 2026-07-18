@@ -96,6 +96,12 @@
   .wl-name { font-family: var(--mono); font-size: .8rem; color: var(--ink); margin-bottom: .45rem; display: flex; justify-content: space-between; }
   .wl-name b { font-weight: 600; }
   .wl-name em { font-style: normal; color: var(--ink-faint); }
+  /* per-technology panels: time | memory side by side */
+  .pt { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+        padding: 1.1rem 1.4rem .9rem; box-shadow: var(--shadow); margin: 0 0 1rem; }
+  .pt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.8rem; }
+  .pt-title { font-family: var(--mono); font-size: .72rem; color: var(--ink-faint); margin: .15rem 0 .4rem; }
+  @media (max-width: 760px) { .pt-grid { grid-template-columns: 1fr; } }
   .bars { display: grid; gap: 5px; }
   .bar-row { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: .6rem; }
   .bar-lab { font-family: var(--mono); font-size: .7rem; color: var(--ink-faint); text-align: right; }
@@ -212,10 +218,18 @@
     faster than the engine's own native JIT on three of four kernels, at parity on the fourth, and it
     runs in every stock browser.</p>
 
-  <h2>Time per web-platform workload</h2>
-  <p class="note">Wall-clock of the workload loop, self-timed inside the language (startup excluded),
-    median of 3 runs. <b>Log scale</b> — each gridline is 10× — because plain JS and the engine are orders
-    of magnitude apart. Firefox figures; Chromium is comparable (full numbers below).</p>
+  <h2>Per technology — time and memory, four ways × four browsers</h2>
+  <p class="note">One panel per web technology. Left: wall-clock of the workload loop, self-timed inside
+    the language (startup excluded), median of 3 runs, <b>log scale</b> — each gridline is 10× — because
+    plain JS and the engine are orders of magnitude apart. Right: memory — PSS of the whole browser
+    process tree, workload page minus a blank page (PSS counts shared libraries once, so a fresh renderer
+    doesn't inflate the delta); the polyfill delta <em>includes</em> the WASM engine loaded into the page,
+    the native engine is compiled into the browser so its delta is workload allocation only. Rows are the
+    four ways of running the same program — plain JS, transpiled JS, the WASM interpreter, and native —
+    each in the four browsers: <b>·ff</b> Firefox, <b>·cr</b> Chromium, <b>·sv</b> Servo, <b>·lb</b>
+    Ladybird. A dimmed row is honest absence, not zero: the stock-Ladybird legs are not collected yet
+    (no headless binary — see <code>ladybird/README.md</code>), Ladybird/Chromium native skip
+    <code>fetch</code> (file:// harness / V8-coupled Fetch API).</p>
   <p class="note" style="border-left:3px solid var(--native); padding-left:.8rem">
     <b>The Tier-1 JIT now compiles the web loops.</b> A warm-up pass compiles the function, so the timed
     run enters it already compiled from the top — these bars reflect true compiled speed (canvas fell
@@ -239,14 +253,10 @@
     and the JIT's <code>std:math</code> intrinsics took <code>mathk</code> from 1913&nbsp;ms (interpreted)
     to <b>36&nbsp;ms (~53×)</b>.</p>
   <div class="legend">
-    <span><i class="sw js"></i> plain JS — Firefox engine, JIT</span>
-    <span><i class="sw servo"></i> plain JS — Servo (SpiderMonkey), JIT</span>
-    <span><i class="sw tjs"></i> polyfill — transpiled JS (+WASM tier)</span>
-    <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
-    <span><i class="sw native"></i> native·ff — Mersey in the Firefox fork</span>
-    <span><i class="sw cnative"></i> native·cr — Mersey in the Chromium fork</span>
-    <span><i class="sw snative"></i> native·sv — Mersey in the Servo fork (reflective bridge)</span>
-    <span><i class="sw lbnative"></i> native·lb — Mersey in the Ladybird fork (reflective bridge)</span>
+    <span><i class="sw js"></i> plain JS — the browser's own engine, JIT</span>
+    <span><i class="sw tjs"></i> transpiled JS — Mersey→JS at load time, browser JIT runs it</span>
+    <span><i class="sw poly"></i> WASM — the Mersey engine compiled to WASM, interpreting</span>
+    <span><i class="sw native"></i> native — the Mersey engine hosted inside the browser fork</span>
   </div>
   <p class="note" style="margin:-.2rem 0 .6rem">Chromium native is the same engine in the other fork, with a
     direct-C++ Blink bridge on the interned typed fast paths — url/dom/crypto/canvas land within
@@ -259,7 +269,7 @@
     native is <b>~2–3× faster</b>; the Mersey bridge itself is ~38&nbsp;ms. All six web workloads now run in
     both forks. See the Chromium
     note at the bottom.</p>
-  <div class="chart" id="timechart"></div>
+  <div id="pertech"></div>
 
   <h2>The three browsers, plain JS</h2>
   <p class="note">The same hand-written JavaScript workload in each stock browser's own engine —
@@ -289,13 +299,6 @@
     is a release build while the fork's V8 carries DCHECKs, so these margins still flatter native somewhat;
     the sign is solid, the exact multiple is soft.</p>
   <div class="chart" id="samehostchart"></div>
-
-  <h2>Memory per workload</h2>
-  <p class="note">PSS of the whole browser process tree, workload page minus a blank page (Firefox).
-    PSS counts shared libraries once, so a new renderer process doesn't inflate the delta. The polyfill
-    delta <em>includes</em> the WASM engine loaded into the page; the native engine is compiled into the
-    browser, so its delta is workload allocation only.</p>
-  <div class="chart" id="memchart"></div>
 
   <h2>Every number</h2>
   <p class="note">Time in milliseconds (lower is faster); memory in MiB (PSS delta vs blank).
@@ -495,18 +498,18 @@
 
 <script>
   const DATA = {
-    canvas: { cjs:2.8, mcjs:18.5, cpoly:77.6, mcpoly:72.3, fjs:4.9, mfjs:44.7, fpoly:193.8, mfpoly:99.8, ctjs:3.1, mctjs:62.5, ftjs:6.3, mftjs:82.6, sjs:2.8, msjs:20.0, spoly:72.2, mspoly:68.5, stjs:4.5, mstjs:70.8, native:4.9, mnative:16.2, snative:18.0, msnative:31.9, lbnative:9.5, mlbnative:24.3, cnative:10.6, mcnative:22.6 },
-    crypto: { cjs:9.7, mcjs:97.8, cpoly:112.1, mcpoly:68.5, fjs:8.3, mfjs:46.7, fpoly:252.7, mfpoly:90.7, ctjs:8.8, mctjs:58.7, ftjs:10.1, mftjs:86.9, sjs:2.5, msjs:4.0, spoly:79.2, mspoly:59.5, stjs:4.4, mstjs:58.0, native:8.5, mnative:19.3, snative:22.0, msnative:21.1, lbnative:26.4, mlbnative:28.8, cnative:15.7, mcnative:18.3 },
-    cssom: { cjs:5.2, mcjs:16.3, cpoly:160.3, mcpoly:82.5, fjs:9.3, mfjs:47.4, fpoly:431.3, mfpoly:0.7, ctjs:10.7, mctjs:59.1, ftjs:14.3, mftjs:93.7, sjs:11.3, msjs:5.2, spoly:153.2, mspoly:59.4, stjs:17.4, mstjs:59.6, native:61.1, mnative:13.9, snative:26.3, msnative:19.3, lbnative:45.9, mlbnative:22.7, cnative:78.5, mcnative:27.9 },
-    dom: { cjs:3.3, mcjs:57.0, cpoly:103.9, mcpoly:105.1, fjs:6.1, mfjs:63.0, fpoly:224.6, mfpoly:103.4, ctjs:7.0, mctjs:98.9, ftjs:8.8, mftjs:105.5, sjs:12.5, msjs:29.0, spoly:85.4, mspoly:100.3, stjs:17.1, mstjs:108.9, native:9.7, mnative:34.7, snative:19.0, msnative:72.8, lbnative:27.2, mlbnative:227.6, cnative:22.2, mcnative:84.2 },
-    encoding: { cjs:10.3, mcjs:25.5, cpoly:96.7, mcpoly:83.4, fjs:2.7, mfjs:47.1, fpoly:228.4, mfpoly:93.2, ctjs:10.9, mctjs:67.4, ftjs:3.9, mftjs:91.2, sjs:4.5, msjs:4.5, spoly:78.5, mspoly:68.5, stjs:6.9, mstjs:57.0, native:27.4, mnative:21.3, snative:29.3, msnative:23.8, lbnative:36.0, mlbnative:30.7, cnative:27.1, mcnative:21.2 },
-    events: { cjs:5.0, mcjs:20.2, cpoly:111.3, mcpoly:74.4, fjs:11.3, mfjs:31.6, fpoly:243.4, mfpoly:86.7, ctjs:5.2, mctjs:63.2, ftjs:12.3, mftjs:95.4, sjs:8.1, msjs:8.3, spoly:91.4, mspoly:63.0, stjs:9.5, mstjs:61.1, native:51.7, mnative:29.5, snative:24.1, msnative:23.5, lbnative:39.8, mlbnative:30.5, cnative:29.8, mcnative:25.0 },
-    fetch: { cjs:117.5, mcjs:16.4, cpoly:154.0, mcpoly:52.0, fjs:131.8, mfjs:52.6, fpoly:142.3, mfpoly:94.1, ctjs:113.9, mctjs:57.3, ftjs:132.0, mftjs:87.8, sjs:33.1, msjs:7.9, spoly:42.1, mspoly:61.8, stjs:36.7, mstjs:57.5, native:482.7, mnative:7.5, snative:39.2, msnative:22.9 },
-    json: { cjs:1.9, mcjs:16.9, cpoly:27.0, mcpoly:48.5, fjs:3.7, mfjs:46.6, fpoly:118.1, mfpoly:92.0, ctjs:1.8, mctjs:59.7, ftjs:5.0, mftjs:91.3, sjs:3.7, msjs:3.8, spoly:26.1, mspoly:57.7, stjs:5.0, mstjs:59.5, native:3.3, mnative:13.4, snative:1.0, msnative:18.4, lbnative:1.4, mlbnative:18.0, cnative:6.1, mcnative:17.6 },
-    query: { cjs:4.7, mcjs:27.1, cpoly:30.5, mcpoly:71.9, fjs:6.2, mfjs:52.2, fpoly:45.8, mfpoly:93.1, ctjs:5.2, mctjs:63.7, ftjs:6.5, mftjs:94.8, sjs:9.3, msjs:22.3, spoly:25.9, mspoly:78.6, stjs:11.3, mstjs:72.5, native:12.5, mnative:26.9, snative:11.3, msnative:33.9, lbnative:9.5, mlbnative:25.5, cnative:11.0, mcnative:26.3 },
-    storage: { cjs:65.5, mcjs:32.8, cpoly:256.7, mcpoly:88.9, fjs:32.9, mfjs:57.9, fpoly:394.9, mfpoly:90.0, ctjs:80.4, mctjs:68.9, ftjs:35.2, mftjs:87.2, sjs:1958.8, msjs:4.8, spoly:2339.1, mspoly:55.4, stjs:3372.9, mstjs:56.5, native:53.4, mnative:30.8, snative:2010.6, msnative:18.8, lbnative:9667.4, mlbnative:33.6, cnative:225.9, mcnative:24.8 },
-    timers: { cjs:12.2, mcjs:27.7, cpoly:147.9, mcpoly:86.1, fjs:24.5, mfjs:61.2, fpoly:394.4, mfpoly:112.7, ctjs:12.2, mctjs:65.5, ftjs:24.0, mftjs:100.4, sjs:9.9, msjs:7.5, spoly:107.9, mspoly:62.7, stjs:9.3, mstjs:61.2, native:105.0, mnative:32.9, snative:49.7, msnative:20.5, lbnative:138.8, mlbnative:36.4, cnative:180.6, mcnative:24.9 },
-    url: { cjs:20.0, mcjs:37.4, cpoly:187.8, mcpoly:99.7, fjs:26.8, mfjs:57.1, fpoly:466.6, mfpoly:101.3, ctjs:18.5, mctjs:74.0, ftjs:27.8, mftjs:98.4, sjs:11.5, msjs:9.0, spoly:137.3, mspoly:60.8, stjs:13.2, mstjs:62.2, native:37.0, mnative:24.7, snative:21.7, msnative:25.6, lbnative:52.4, mlbnative:30.0, cnative:56.3, mcnative:28.3 },
+    canvas: { cjs:2.8, mcjs:18.5, cpoly:77.6, mcpoly:72.3, fjs:4.9, mfjs:44.7, fpoly:193.8, mfpoly:99.8, ctjs:3.1, mctjs:62.5, ftjs:6.3, mftjs:82.6, sjs:2.8, msjs:20.0, spoly:72.2, mspoly:68.5, stjs:4.5, mstjs:70.8, native:4.5, mnative:6.4, snative:18.0, msnative:31.9, lbnative:9.5, mlbnative:24.3, cnative:10.6, mcnative:22.6 },
+    crypto: { cjs:9.7, mcjs:97.8, cpoly:112.1, mcpoly:68.5, fjs:8.3, mfjs:46.7, fpoly:252.7, mfpoly:90.7, ctjs:8.8, mctjs:58.7, ftjs:10.1, mftjs:86.9, sjs:2.5, msjs:4.0, spoly:79.2, mspoly:59.5, stjs:4.4, mstjs:58.0, native:9.5, mnative:9.3, snative:22.0, msnative:21.1, lbnative:26.4, mlbnative:28.8, cnative:15.7, mcnative:18.3 },
+    cssom: { cjs:5.2, mcjs:16.3, cpoly:160.3, mcpoly:82.5, fjs:9.3, mfjs:47.4, fpoly:431.3, mfpoly:0.7, ctjs:10.7, mctjs:59.1, ftjs:14.3, mftjs:93.7, sjs:11.3, msjs:5.2, spoly:153.2, mspoly:59.4, stjs:17.4, mstjs:59.6, native:30.8, mnative:6.4, snative:26.3, msnative:19.3, lbnative:45.9, mlbnative:22.7, cnative:78.5, mcnative:27.9 },
+    dom: { cjs:3.3, mcjs:57.0, cpoly:103.9, mcpoly:105.1, fjs:6.1, mfjs:63.0, fpoly:224.6, mfpoly:103.4, ctjs:7.0, mctjs:98.9, ftjs:8.8, mftjs:105.5, sjs:12.5, msjs:29.0, spoly:85.4, mspoly:100.3, stjs:17.1, mstjs:108.9, native:10.0, mnative:26.8, snative:19.0, msnative:72.8, lbnative:27.2, mlbnative:227.6, cnative:22.2, mcnative:84.2 },
+    encoding: { cjs:10.3, mcjs:25.5, cpoly:96.7, mcpoly:83.4, fjs:2.7, mfjs:47.1, fpoly:228.4, mfpoly:93.2, ctjs:10.9, mctjs:67.4, ftjs:3.9, mftjs:91.2, sjs:4.5, msjs:4.5, spoly:78.5, mspoly:68.5, stjs:6.9, mstjs:57.0, native:29.8, mnative:11.1, snative:29.3, msnative:23.8, lbnative:36.0, mlbnative:30.7, cnative:27.1, mcnative:21.2 },
+    events: { cjs:5.0, mcjs:20.2, cpoly:111.3, mcpoly:74.4, fjs:11.3, mfjs:31.6, fpoly:243.4, mfpoly:86.7, ctjs:5.2, mctjs:63.2, ftjs:12.3, mftjs:95.4, sjs:8.1, msjs:8.3, spoly:91.4, mspoly:63.0, stjs:9.5, mstjs:61.1, native:40.0, mnative:11.7, snative:24.1, msnative:23.5, lbnative:39.8, mlbnative:30.5, cnative:29.8, mcnative:25.0 },
+    fetch: { cjs:117.5, mcjs:16.4, cpoly:154.0, mcpoly:52.0, fjs:131.8, mfjs:52.6, fpoly:142.3, mfpoly:94.1, ctjs:113.9, mctjs:57.3, ftjs:132.0, mftjs:87.8, sjs:33.1, msjs:7.9, spoly:42.1, mspoly:61.8, stjs:36.7, mstjs:57.5, native:458.6, mnative:14.7, snative:39.2, msnative:22.9 },
+    json: { cjs:1.9, mcjs:16.9, cpoly:27.0, mcpoly:48.5, fjs:3.7, mfjs:46.6, fpoly:118.1, mfpoly:92.0, ctjs:1.8, mctjs:59.7, ftjs:5.0, mftjs:91.3, sjs:3.7, msjs:3.8, spoly:26.1, mspoly:57.7, stjs:5.0, mstjs:59.5, native:3.3, mnative:5.9, snative:1.0, msnative:18.4, lbnative:1.4, mlbnative:18.0, cnative:6.1, mcnative:17.6 },
+    query: { cjs:4.7, mcjs:27.1, cpoly:30.5, mcpoly:71.9, fjs:6.2, mfjs:52.2, fpoly:45.8, mfpoly:93.1, ctjs:5.2, mctjs:63.7, ftjs:6.5, mftjs:94.8, sjs:9.3, msjs:22.3, spoly:25.9, mspoly:78.6, stjs:11.3, mstjs:72.5, native:8.2, mnative:15.4, snative:11.3, msnative:33.9, lbnative:9.5, mlbnative:25.5, cnative:11.0, mcnative:26.3 },
+    storage: { cjs:65.5, mcjs:32.8, cpoly:256.7, mcpoly:88.9, fjs:32.9, mfjs:57.9, fpoly:394.9, mfpoly:90.0, ctjs:80.4, mctjs:68.9, ftjs:35.2, mftjs:87.2, sjs:1958.8, msjs:4.8, spoly:2339.1, mspoly:55.4, stjs:3372.9, mstjs:56.5, native:59.7, mnative:17.1, snative:2010.6, msnative:18.8, lbnative:9667.4, mlbnative:33.6, cnative:225.9, mcnative:24.8 },
+    timers: { cjs:12.2, mcjs:27.7, cpoly:147.9, mcpoly:86.1, fjs:24.5, mfjs:61.2, fpoly:394.4, mfpoly:112.7, ctjs:12.2, mctjs:65.5, ftjs:24.0, mftjs:100.4, sjs:9.9, msjs:7.5, spoly:107.9, mspoly:62.7, stjs:9.3, mstjs:61.2, native:116.4, mnative:13.6, snative:49.7, msnative:20.5, lbnative:138.8, mlbnative:36.4, cnative:180.6, mcnative:24.9 },
+    url: { cjs:20.0, mcjs:37.4, cpoly:187.8, mcpoly:99.7, fjs:26.8, mfjs:57.1, fpoly:466.6, mfpoly:101.3, ctjs:18.5, mctjs:74.0, ftjs:27.8, mftjs:98.4, sjs:11.5, msjs:9.0, spoly:137.3, mspoly:60.8, stjs:13.2, mstjs:62.2, native:37.4, mnative:26.0, snative:21.7, msnative:25.6, lbnative:52.4, mlbnative:30.0, cnative:56.3, mcnative:28.3 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
@@ -579,34 +582,53 @@
     }).join("") + `</div>`;
   }
 
-  // ---- log-scale time chart (Firefox) ----
+  // ---- per-technology panels: time (log) + memory (linear), 4 impls × 4 browsers ----
   const LOG_MIN = 1, LOG_MAX = 11000; // headroom for Ladybird's slow localStorage (~10 s)
   const logPct = (v) => Math.max(2, (Math.log10(v) - Math.log10(LOG_MIN)) / (Math.log10(LOG_MAX) - Math.log10(LOG_MIN)) * 100);
-  // Firefox JS/poly/tjs baselines, plus BOTH fork natives (Firefox and Chromium).
-  const timeSeries = [["js", "fjs", "js·ff"], ["servo", "sjs", "js·sv"], ["tjs", "ftjs", "tjs·ff"], ["poly", "fpoly", "poly·ff"],
-                      ["native", "native", "native·ff"], ["cnative", "cnative", "native·cr"], ["snative", "snative", "native·sv"], ["lbnative", "lbnative", "native·lb"]];
-  document.getElementById("timechart").innerHTML = WL.map((w) => `
-    <div class="wl">
-      <div class="wl-name"><b>${w}</b><em>ms · Firefox/Servo JS + fork native</em></div>
-      <div class="bars">
-        ${timeSeries.map(([cls, key, lab]) => {
-          const v = DATA[w][key];
-          if (v == null) {
-            return `<div class="bar-row">
-              <div class="bar-lab">${lab}</div>
-              <div class="track"><div class="bar ${cls}" style="width:2%;opacity:.28">
-                <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div>
-            </div>`;
-          }
-          const pct = logPct(v);
+  {
+    // Implementation rows; each expands to ·ff/·cr/·sv/·lb. A null key means
+    // that leg is not collected (stock Ladybird) — rendered dimmed, never zero.
+    const IMPLS = [
+      ["js",     { ff: "fjs",   cr: "cjs",     sv: "sjs",     lb: null }],
+      ["tjs",    { ff: "ftjs",  cr: "ctjs",    sv: "stjs",    lb: null }],
+      ["poly",   { ff: "fpoly", cr: "cpoly",   sv: "spoly",   lb: null }],
+      ["native", { ff: "native", cr: "cnative", sv: "snative", lb: "lbnative" }],
+    ];
+    const BROWSERS = ["ff", "cr", "sv", "lb"];
+    const fmtMsVal = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v;
+    const naRow = (cls, lab) => `<div class="bar-row">
+      <div class="bar-lab">${lab}</div>
+      <div class="track"><div class="bar ${cls}" style="width:2%;opacity:.28">
+        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div>`;
+    const column = (title, get, pctFn, fmtV) => `
+      <div class="pt-col">
+        <div class="pt-title">${title}</div>
+        <div class="bars">` + IMPLS.map(([cls, keys]) => BROWSERS.map((b) => {
+          const lab = `${cls}·${b}`;
+          const key = keys[b];
+          const v = key ? get(key) : null;
+          if (v == null) return naRow(cls, lab);
+          const pct = pctFn(v);
           return `<div class="bar-row">
             <div class="bar-lab">${lab}</div>
             <div class="track"><div class="bar ${cls}" style="width:${pct}%">
-              <span class="val${pct < 22 ? " out" : ""}">${v}</span></div></div>
-          </div>`;
-        }).join("")}
-      </div>
-    </div>`).join("");
+              <span class="val${pct < 26 ? " out" : ""}">${fmtV(v)}</span></div></div></div>`;
+        }).join("")).join("") + `</div>
+      </div>`;
+    document.getElementById("pertech").innerHTML = WL.map((w) => {
+      // Memory self-scales per panel (Ladybird's dom delta would flatten the rest).
+      const memVals = IMPLS.flatMap(([, keys]) => BROWSERS.map((b) => keys[b] ? DATA[w]["m" + keys[b]] : null))
+        .filter((v) => v != null);
+      const memMax = Math.max(...memVals, 1);
+      return `<div class="pt">
+        <div class="wl-name"><b>${w}</b><em>4 implementations × ff / cr / sv / lb</em></div>
+        <div class="pt-grid">
+          ${column("time — ms, log scale", (k) => DATA[w][k], logPct, fmtMsVal)}
+          ${column("memory — PSS delta, MiB", (k) => DATA[w]["m" + k], (v) => Math.max(2, v / memMax * 100), (v) => v)}
+        </div>
+      </div>`;
+    }).join("");
+  }
 
   // ---- same-host fairness chart (fork, file://, JS vs native) ----
   document.getElementById("samehostchart").innerHTML = Object.keys(SAMEHOST).map((w) => {
@@ -646,24 +668,8 @@
     }).join("");
   }
 
-  // ---- memory chart (Firefox), linear ----
-  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mftjs, DATA[w].mnative, DATA[w].msjs, DATA[w].mspoly, DATA[w].mstjs]));
-  const memSeries = [["js", "mfjs"], ["servo", "msjs"], ["tjs", "mftjs"], ["poly", "mfpoly"], ["native", "mnative"]];
-  document.getElementById("memchart").innerHTML = WL.map((w) => `
-    <div class="wl">
-      <div class="wl-name"><b>${w}</b><em>MiB · Firefox/Servo</em></div>
-      <div class="bars">
-        ${memSeries.map(([cls, key]) => {
-          const v = DATA[w][key];
-          const pct = Math.max(2, v / memMax * 100);
-          return `<div class="bar-row">
-            <div class="bar-lab">${cls}</div>
-            <div class="track"><div class="bar ${cls}" style="width:${pct}%">
-              <span class="val${pct < 16 ? " out" : ""}">${v}</span></div></div>
-          </div>`;
-        }).join("")}
-      </div>
-    </div>`).join("");
+  // (The old Firefox-only time and memory charts are folded into the
+  // per-technology panels above.)
 
   // ---- bridge A/B chart (fork, fast paths on vs reflective) ----
   const abMax = Math.max(...Object.values(BRIDGE_AB).flatMap((d) => [d.fast, d.slow]));
