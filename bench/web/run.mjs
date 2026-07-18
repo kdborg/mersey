@@ -142,5 +142,18 @@ console.log("Firefox:");
 all.push(...(await measure(firefox, "firefox", origin, "ms-playwright/firefox")));
 
 server.close();
-await writeFile(join(here, "results.stock.json"), JSON.stringify(all, null, 2));
+// A filtered run (WL=…) must not clobber rows it did not measure: merge into
+// the existing file, replacing only (impl, wl) pairs this run produced.
+async function mergeRows(file, fresh) {
+  let existing = [];
+  try {
+    existing = JSON.parse(await readFile(join(here, file), "utf8"));
+  } catch {}
+  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
+  const produced = new Set(fresh.map(key));
+  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
+}
+
+const merged = await mergeRows("results.stock.json", all);
+await writeFile(join(here, "results.stock.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${all.length} rows to bench/web/results.stock.json`);

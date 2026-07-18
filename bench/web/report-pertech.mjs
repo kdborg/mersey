@@ -90,7 +90,7 @@ const panels = WL.map((w) => {
     <div class="wl-name"><b>${w}</b><em>4 implementations × ff / cr / sv / lb</em></div>
     <div class="pt-grid">
       ${column(d, "time — ms, log scale", (k) => d[k], logPct, fmtMs)}
-      ${column(d, "memory — PSS delta, MiB", (k) => d["m" + k], (v) => Math.max(2, v / memMax * 100), (v) => v)}
+      ${column(d, "memory — PSS delta, MiB", (k) => d["m" + k], (v) => Math.max(2, v / memMax * 100), (v) => (v === 0 ? "≈0" : v))}
     </div>
   </div>`;
 }).join("\n");
@@ -169,7 +169,10 @@ const html = `<!doctype html>
     blank page). The same program four ways — plain JS, transpiled JS, the WASM interpreter, and the
     Mersey engine native in the browser fork — each in Firefox (·ff), Chromium (·cr), Servo (·sv) and
     Ladybird (·lb). Every bar reports the same checksum. A dimmed row is honest absence
-    (fetch has no http origin under Ladybird's test harness and no native path in the Chromium fork).</p>
+    (fetch has no http origin under Ladybird's test harness and no native path in the Chromium fork).
+    A memory bar of ≈0 is the measurement floor, not zero cost: Ladybird runs one process per
+    test, so its memory is peak PSS minus a blank page's peak — a workload whose allocations
+    stay under startup's crest is invisible to that method.</p>
   <div class="legend">
     <span><i class="sw js"></i> plain JS — the browser's own engine, JIT</span>
     <span><i class="sw tjs"></i> transpiled JS — Mersey→JS at load time, browser JIT runs it</span>

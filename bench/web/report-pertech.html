@@ -72,7 +72,10 @@
     blank page). The same program four ways — plain JS, transpiled JS, the WASM interpreter, and the
     Mersey engine native in the browser fork — each in Firefox (·ff), Chromium (·cr), Servo (·sv) and
     Ladybird (·lb). Every bar reports the same checksum. A dimmed row is honest absence
-    (fetch has no http origin under Ladybird's test harness and no native path in the Chromium fork).</p>
+    (fetch has no http origin under Ladybird's test harness and no native path in the Chromium fork).
+    A memory bar of ≈0 is the measurement floor, not zero cost: Ladybird runs one process per
+    test, so its memory is peak PSS minus a blank page's peak — a workload whose allocations
+    stay under startup's crest is invisible to that method.</p>
   <div class="legend">
     <span><i class="sw js"></i> plain JS — the browser's own engine, JIT</span>
     <span><i class="sw tjs"></i> transpiled JS — Mersey→JS at load time, browser JIT runs it</span>
@@ -131,9 +134,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:9.3%">
           <span class="val out">2.5</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:22.8%">
+          <span class="val out">9.6</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -150,7 +153,7 @@
           <span class="val out">20</span></div></div></div><div class="bar-row">
         <div class="bar-lab">js·lb</div>
         <div class="track"><div class="bar js" style="width:2.0%">
-          <span class="val out">0</span></div></div></div><div class="bar-row">
+          <span class="val out">≈0</span></div></div></div><div class="bar-row">
         <div class="bar-lab">tjs·ff</div>
         <div class="track"><div class="bar tjs" style="width:25.2%">
           <span class="val out">103.7</span></div></div></div><div class="bar-row">
@@ -184,9 +187,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:7.8%">
           <span class="val out">32.3</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:6.3%">
+          <span class="val out">26</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -242,9 +245,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:29.2%">
           <span class="val">18.1</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:25.5%">
+          <span class="val out">12.5</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -295,9 +298,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:4.9%">
           <span class="val out">21.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:5.2%">
+          <span class="val out">23.1</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -353,9 +356,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:33.6%">
           <span class="val">27.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:37.5%">
+          <span class="val">41.1</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -406,9 +409,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:4.0%">
           <span class="val out">18.5</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:4.8%">
+          <span class="val out">21.9</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -464,9 +467,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:30.6%">
           <span class="val">20.7</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:31.7%">
+          <span class="val">23.1</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -517,9 +520,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:6.1%">
           <span class="val out">25.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:52.6%">
+          <span class="val">222.8</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -575,9 +578,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:31.1%">
           <span class="val">21.8</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:36.6%">
+          <span class="val">37.4</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -594,7 +597,7 @@
           <span class="val out">4.5</span></div></div></div><div class="bar-row">
         <div class="bar-lab">js·lb</div>
         <div class="track"><div class="bar js" style="width:2.0%">
-          <span class="val out">0</span></div></div></div><div class="bar-row">
+          <span class="val out">≈0</span></div></div></div><div class="bar-row">
         <div class="bar-lab">tjs·ff</div>
         <div class="track"><div class="bar tjs" style="width:21.6%">
           <span class="val out">93</span></div></div></div><div class="bar-row">
@@ -628,9 +631,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:5.1%">
           <span class="val out">21.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:6.3%">
+          <span class="val out">27.2</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -687,8 +690,8 @@
         <div class="track"><div class="bar native" style="width:33.5%">
           <span class="val">27.7</span></div></div></div><div class="bar-row">
         <div class="bar-lab">native·lb</div>
-        <div class="track"><div class="bar native" style="width:30.8%">
-          <span class="val">21.1</span></div></div></div></div>
+        <div class="track"><div class="bar native" style="width:30.3%">
+          <span class="val">20.2</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -705,7 +708,7 @@
           <span class="val out">8.3</span></div></div></div><div class="bar-row">
         <div class="bar-lab">js·lb</div>
         <div class="track"><div class="bar js" style="width:2.0%">
-          <span class="val out">0</span></div></div></div><div class="bar-row">
+          <span class="val out">≈0</span></div></div></div><div class="bar-row">
         <div class="bar-lab">tjs·ff</div>
         <div class="track"><div class="bar tjs" style="width:23.5%">
           <span class="val out">94.4</span></div></div></div><div class="bar-row">
@@ -739,9 +742,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:6.0%">
           <span class="val out">24.1</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:6.2%">
+          <span class="val out">25</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -908,9 +911,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:2.0%">
           <span class="val out">1.1</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:3.4%">
+          <span class="val out">1.4</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -961,9 +964,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:4.3%">
           <span class="val out">18.2</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:4.2%">
+          <span class="val out">17.9</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -1019,9 +1022,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:25.0%">
           <span class="val out">11.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:21.6%">
+          <span class="val out">8.5</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -1072,9 +1075,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:7.3%">
           <span class="val out">28.6</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:6.4%">
+          <span class="val out">25.1</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -1130,9 +1133,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:76.6%">
           <span class="val">2.0 s</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:86.6%">
+          <span class="val">5.3 s</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -1183,9 +1186,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:4.2%">
           <span class="val out">18.9</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:4.2%">
+          <span class="val out">19.2</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -1242,8 +1245,8 @@
         <div class="track"><div class="bar native" style="width:36.0%">
           <span class="val">35.4</span></div></div></div><div class="bar-row">
         <div class="bar-lab">native·lb</div>
-        <div class="track"><div class="bar native" style="width:32.3%">
-          <span class="val">24.4</span></div></div></div></div>
+        <div class="track"><div class="bar native" style="width:32.1%">
+          <span class="val">24</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -1294,9 +1297,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:4.1%">
           <span class="val out">18.8</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:5.8%">
+          <span class="val out">26.8</span></div></div></div></div>
     </div>
     </div>
   </div>
@@ -1352,9 +1355,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:32.5%">
           <span class="val">25.1</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:37.8%">
+          <span class="val">42.2</span></div></div></div></div>
     </div>
       
     <div class="pt-col">
@@ -1405,9 +1408,9 @@
         <div class="bar-lab">native·sv</div>
         <div class="track"><div class="bar native" style="width:6.2%">
           <span class="val out">28.5</span></div></div></div><div class="bar-row">
-      <div class="bar-lab">native·lb</div>
-      <div class="track"><div class="bar native" style="width:2%;opacity:.28">
-        <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div></div>
+        <div class="bar-lab">native·lb</div>
+        <div class="track"><div class="bar native" style="width:5.0%">
+          <span class="val out">23.2</span></div></div></div></div>
     </div>
     </div>
   </div>

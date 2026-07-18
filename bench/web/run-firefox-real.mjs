@@ -263,5 +263,18 @@ for (const wl of WORKLOADS) {
 }
 
 server.close();
-await writeFile(join(here, "results.firefox-real.json"), JSON.stringify(rows, null, 2));
+// A filtered run (WL=…) must not clobber rows it did not measure: merge into
+// the existing file, replacing only (impl, wl) pairs this run produced.
+async function mergeRows(file, fresh) {
+  let existing = [];
+  try {
+    existing = JSON.parse(await readFile(join(here, file), "utf8"));
+  } catch {}
+  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
+  const produced = new Set(fresh.map(key));
+  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
+}
+
+const merged = await mergeRows("results.firefox-real.json", rows);
+await writeFile(join(here, "results.firefox-real.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.firefox-real.json`);

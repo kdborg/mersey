@@ -2,15 +2,96 @@
   {
     "browser": "ladybird-fork",
     "impl": "native",
-    "wl": "timers",
-    "ms": 24.418417000000005,
-    "checksum": 20000
+    "wl": "canvas",
+    "ms": 9.588291000000005,
+    "checksum": 20000,
+    "rss": 26661
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 12.518042000000001,
+    "checksum": 320000,
+    "rss": 23632
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "cssom",
+    "ms": 41.143375000000006,
+    "checksum": 48000,
+    "rss": 22380
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 23.123916,
+    "checksum": 10000,
+    "rss": 228116
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": 37.380333,
+    "checksum": 437780,
+    "rss": 27896
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "events",
-    "ms": 21.061500000000002,
-    "checksum": 10000
+    "ms": 20.241917,
+    "checksum": 10000,
+    "rss": 25588
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 1.444459000000002,
+    "checksum": 848890,
+    "rss": 18334
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "query",
+    "ms": 8.526958999999998,
+    "checksum": 214900,
+    "rss": 25666
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 5323.783002,
+    "checksum": 208890,
+    "rss": 19700
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "timers",
+    "ms": 23.965209,
+    "checksum": 20000,
+    "rss": 27474
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 42.195083999999994,
+    "checksum": 537780,
+    "rss": 23732
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 96.81145799999999,
+    "checksum": 1765835917
   }
 ]
