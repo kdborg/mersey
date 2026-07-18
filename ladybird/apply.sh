@@ -8,7 +8,7 @@
 # It does NOT build. See ladybird/README.md for the full build recipe.
 #
 # The touch points (all under Libraries/LibWeb):
-#   Mersey/{MerseyScriptRunner.{h,cpp},bridge.js,bridge.js.h,mersey.h}
+#   Mersey/{MerseyScriptRunner.{h,cpp},mersey.h}
 #                                    the engine module (copied from this repo)
 #   CMakeLists.txt                   compile the module + link libmersey_capi.a
 #   HTML/HTMLScriptElement.cpp       the text/mersey hook (attempted; see below)
@@ -28,16 +28,16 @@ LIBWEB="$LADYBIRD_SRC/Libraries/LibWeb"
 
 [ -d "$LIBWEB" ] || { echo "no Libraries/LibWeb at $LADYBIRD_SRC — is LADYBIRD_SRC right?" >&2; exit 1; }
 
-# 1. The engine module + the C ABI header + the reflective bridge.
+# 1. The engine module + the C ABI header. The web bridge is native C++ inside
+#    MerseyScriptRunner.cpp — there is no JS bridge to install (a stale
+#    bridge.js{,.h} pair from an earlier fork revision is cleaned up).
 DEST="$LIBWEB/Mersey"
 mkdir -p "$DEST"
 cp "$HERE/mersey/MerseyScriptRunner.h"   "$DEST/MerseyScriptRunner.h"
 cp "$HERE/mersey/MerseyScriptRunner.cpp" "$DEST/MerseyScriptRunner.cpp"
 cp "$MERSEY_REPO/crates/mersey_capi/include/mersey.h" "$DEST/mersey.h"
-# Regenerate the bridge (readable .js + compiled .h) straight from the canonical
-# web/mersey-bridge.js, so a checkout is never stale against it.
-"$HERE/refresh-bridge.sh" "$DEST/bridge.js" "$MERSEY_REPO"
-echo "installed Libraries/LibWeb/Mersey/{MerseyScriptRunner.{h,cpp},bridge.js,bridge.js.h,mersey.h}"
+rm -f "$DEST/bridge.js" "$DEST/bridge.js.h"
+echo "installed Libraries/LibWeb/Mersey/{MerseyScriptRunner.{h,cpp},mersey.h}"
 
 # 2. CMake wiring — appended once to LibWeb/CMakeLists.txt, guarded by a marker.
 #    Appending is anchor-free (target_sources/-link work after the LibWeb target
