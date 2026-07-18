@@ -744,6 +744,107 @@ pub struct Frame_ {
     pub pos: mersey_front::diag::Pos,
 }
 
+/// A debugger's view of the interpreter at one statement boundary.
+pub struct DebugPause<'a> {
+    /// Source position of the statement about to execute.
+    pub pos: mersey_front::diag::Pos,
+    /// The call stack, outermost first (`frames.last()` is the current frame).
+    pub frames: &'a [Frame_],
+}
+
+/// The engine side of a debugger (a DAP adapter, a browser's CDP agent):
+/// installed with `Interp::set_debug_hook`, called before every executable
+/// statement of tree-walked code. Pausing IS blocking inside `on_stmt` — the
+/// engine sits mid-statement until it returns — so all breakpoint/step policy
+/// lives in the hook; the engine only reports. `locals` snapshots the scope
+/// chain on demand (innermost scope first, values display-formatted), so a
+/// hook that does not pause never pays for it. Installing a hook forces the
+/// pure tree-walker (`use_vm = false`): sync code gets statement-grained
+/// callouts; async and generator bodies still run on the VM (only it can
+/// suspend) and are not stepped — a recorded v1 limit.
+pub trait DebugHook {
+    fn on_stmt(
+        &mut self,
+        pause: &DebugPause,
+        locals: &mut dyn FnMut() -> Vec<Vec<(String, String)>>,
+    );
+}
+
+/// Best-effort source position of an expression: the first positioned node
+/// under it, left to right. `None` for the rare shapes with no carrier.
+fn expr_pos(e: &Expr) -> Option<mersey_front::diag::Pos> {
+    match e {
+        Expr::Ident(n) => Some(n.pos),
+        Expr::This(p) => Some(*p),
+        Expr::Lit { pos, .. }
+        | Expr::Unary { pos, .. }
+        | Expr::SuperMember { pos, .. }
+        | Expr::SuperCall { pos, .. }
+        | Expr::Yield { pos, .. } => Some(*pos),
+        Expr::Paren(x)
+        | Expr::Update { expr: x, .. }
+        | Expr::Cast { expr: x, .. }
+        | Expr::Is { expr: x, .. }
+        | Expr::ImportCall(x) => expr_pos(x),
+        Expr::Binary { l, .. } => expr_pos(l),
+        Expr::Assign { target, .. } => expr_pos(target),
+        Expr::Cond { cond, .. } => expr_pos(cond),
+        Expr::Call { callee, .. } => expr_pos(callee),
+        Expr::Member { obj, .. } | Expr::Index { obj, .. } => expr_pos(obj),
+        _ => None,
+    }
+}
+
+fn pattern_pos(p: &Pattern) -> Option<mersey_front::diag::Pos> {
+    match p {
+        Pattern::Name(n) => Some(n.pos),
+        _ => None,
+    }
+}
+
+/// Best-effort position of a statement — the line a breakpoint on it hits.
+/// Blocks and `try` report through their inner statements; `Empty` never.
+fn stmt_pos(s: &Stmt) -> Option<mersey_front::diag::Pos> {
+    match s {
+        Stmt::Var(v) => v.bindings.first().and_then(|b| pattern_pos(&b.target)),
+        Stmt::Expr(e) | Stmt::Throw(e) => expr_pos(e),
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => {
+            expr_pos(cond)
+        }
+        Stmt::For { init, cond, .. } => match init {
+            Some(ForInit::Var(v)) => v.bindings.first().and_then(|b| pattern_pos(&b.target)),
+            Some(ForInit::Exprs(es)) => es.first().and_then(expr_pos),
+            None => cond.as_ref().and_then(expr_pos),
+        },
+        Stmt::ForOf { target, .. } => pattern_pos(target),
+        Stmt::Switch { scrutinee, .. } => expr_pos(scrutinee),
+        Stmt::Break { pos, .. } | Stmt::Continue { pos, .. } | Stmt::Return { pos, .. } => {
+            Some(*pos)
+        }
+        Stmt::Labeled { label, .. } => Some(label.pos),
+        Stmt::Block(_) | Stmt::Try { .. } | Stmt::Empty => None,
+    }
+}
+
+/// The scope chain as the debugger shows it: innermost first, each scope a
+/// name-sorted list of display-formatted values.
+fn snapshot_scopes(env: &Env) -> Vec<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    let mut cur = Some(env.clone());
+    while let Some(e) = cur {
+        let s = e.borrow();
+        let mut vars: Vec<(String, String)> = s
+            .vars
+            .iter()
+            .map(|(k, v)| (k.clone(), to_display(v)))
+            .collect();
+        vars.sort();
+        out.push(vars);
+        cur = s.parent.clone();
+    }
+    out
+}
+
 /// A suspended async function: the VM's whole state is data, so `await`
 /// captures it and resumes later (no CPS transform, no threads).
 #[derive(Clone)]
@@ -1075,6 +1176,9 @@ pub struct Interp {
     root: Env,
     globals: Env,
     callbacks: Vec<Value>,
+    /// The debugger, when attached (see `DebugHook`). `None` costs one branch
+    /// per tree-walked statement.
+    debug_hook: Option<Box<dyn DebugHook>>,
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
     /// Every class the program has defined.
     ///
@@ -1810,6 +1914,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         root,
         globals,
         callbacks: Vec::new(),
+        debug_hook: None,
         error_classes,
         all_classes: Vec::new(),
         jit_threshold: JIT_THRESHOLD,
@@ -2389,20 +2494,33 @@ impl Interp {
                 return Ok(ModuleFlow::Done);
             }
         }
-        for item in &module.items {
-            match item {
-                Item::Stmt(s) => {
-                    self.exec_stmt(s, &self.globals.clone())?;
-                }
-                Item::Export(ExportDecl {
-                    kind: ExportKind::Var(v),
-                    ..
-                }) => {
-                    self.exec_var(v, &self.globals.clone())?;
-                }
-                _ => {}
-            }
+        // The debugger's stack wants the module frame under tree-walked
+        // top-level statements too (the VM branch above pushes its own).
+        let debug_module_frame = self.debug_hook.is_some();
+        if debug_module_frame {
+            self.push_frame(&"<module>".into(), &spec.as_str().into());
         }
+        let run = (|| -> Result<(), Thrown> {
+            for item in &module.items {
+                match item {
+                    Item::Stmt(s) => {
+                        self.exec_stmt(s, &self.globals.clone())?;
+                    }
+                    Item::Export(ExportDecl {
+                        kind: ExportKind::Var(v),
+                        ..
+                    }) => {
+                        self.exec_var(v, &self.globals.clone())?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        })();
+        if debug_module_frame {
+            self.pop_frame();
+        }
+        run?;
         self.drain_tasks()?;
         Ok(ModuleFlow::Done)
     }
@@ -2885,6 +3003,26 @@ impl Interp {
         Ok(Sig::Normal)
     }
 
+    /// Attach a debugger (see `DebugHook`). Forces the pure tree-walker so
+    /// every sync statement reports; async/generator bodies stay on the VM.
+    pub fn set_debug_hook(&mut self, hook: Box<dyn DebugHook>) {
+        self.use_vm = false;
+        self.debug_hook = Some(hook);
+    }
+
+    /// The debugger callout: this statement's position, the call stack, and
+    /// on-demand locals. The hook is taken out for the call so the borrows
+    /// stay disjoint (a hook installing another hook from inside itself is
+    /// not supported — the swap-back would drop it).
+    fn debug_stmt(&mut self, s: &'static Stmt, env: &Env) {
+        let Some(pos) = stmt_pos(s) else { return };
+        let Some(mut hook) = self.debug_hook.take() else { return };
+        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut || {
+            snapshot_scopes(env)
+        });
+        self.debug_hook = Some(hook);
+    }
+
     fn exec_stmt(&mut self, s: &'static Stmt, env: &Env) -> SResult {
         self.exec_stmt_l(s, env, None)
     }
@@ -2892,6 +3030,9 @@ impl Interp {
     /// `label` is the label attached to this statement, if it is a loop —
     /// `break label`/`continue label` signals matching it are consumed here.
     fn exec_stmt_l(&mut self, s: &'static Stmt, env: &Env, label: Option<&str>) -> SResult {
+        if self.debug_hook.is_some() {
+            self.debug_stmt(s, env);
+        }
         match s {
             Stmt::Block(b) => self.exec_block(b, env),
             Stmt::Var(v) => {
@@ -8206,6 +8347,7 @@ fn collect_exports(module: &'static Module, env: &Env) -> HashMap<String, Value>
 struct Frame<'a> {
     i: &'a mut Interp,
     pushed: bool,
+    framed: bool,
 }
 
 impl<'a> Frame<'a> {
@@ -8216,7 +8358,14 @@ impl<'a> Frame<'a> {
         } else {
             false
         };
-        Frame { i, pushed }
+        // The VM keeps the diagnostic call stack itself; tree-walked calls
+        // only need it when a debugger is watching (`DebugPause::frames`).
+        let framed = i.debug_hook.is_some();
+        if framed {
+            let module = i.current_module.clone();
+            i.push_frame(&c.data.name, &module.as_str().into());
+        }
+        Frame { i, pushed, framed }
     }
 }
 
@@ -8224,6 +8373,9 @@ impl Drop for Frame<'_> {
     fn drop(&mut self) {
         if self.pushed {
             self.i.class_stack.pop();
+        }
+        if self.framed {
+            self.i.pop_frame();
         }
     }
 }
