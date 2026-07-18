@@ -73,12 +73,11 @@ editor. In VS Code, a generic adapter configuration is enough:
 }
 ```
 
-Point the editor's DAP client at the `mersey dap` command (VS Code needs a
-thin extension or a generic-DAP wrapper such as debugpy-style launchers; any
-editor that speaks DAP directly — Helix, Zed, nvim-dap — takes the command
-as-is). Debugging runs the pure tree-walker; async/generator bodies execute
-on the VM and are not stepped, breakpoints match by line, and variables are
-served for the top frame (v1 limits, tracked in ROADMAP.md).
+Point the editor's DAP client at the `mersey dap` command — VS Code via the
+`editors/vscode-mersey` extension; any editor that speaks DAP directly
+(Helix, Zed, nvim-dap) takes the command as-is. Breakpoints are path-matched
+across the module graph, every stack frame serves its variables, and async/
+generator bodies (which execute on the VM) break and step like sync code.
 
 ## Status
 

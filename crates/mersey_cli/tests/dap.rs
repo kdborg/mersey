@@ -131,6 +131,15 @@ fn breakpoint_step_inspect_continue() {
         "param a=1 visible: {vars}"
     );
 
+    // Outer frame (the module, frameId 1): its scope chain resolves too —
+    // `add` itself is bound there.
+    dap.send("scopes", "{\"frameId\":1}");
+    let outer_scopes = dap.read_until("\"command\":\"scopes\"");
+    assert!(outer_scopes.contains("\"name\":\"Locals\""), "{outer_scopes}");
+    dap.send("variables", "{\"variablesReference\":65}");
+    let outer_vars = dap.read_until("\"command\":\"variables\"");
+    assert!(outer_vars.contains("\"name\":\"add\""), "module scope shows add: {outer_vars}");
+
     // Step over: to `return r` on line 5, with r now bound.
     dap.send("next", "{\"threadId\":1}");
     let step = dap.read_until("\"event\":\"stopped\"");

@@ -1,0 +1,44 @@
+{
+  "name": "mersey-debug",
+  "displayName": "Mersey Debug",
+  "description": "Debug Mersey programs (.mersey) via the mersey dap adapter: breakpoints, stepping, stack, variables.",
+  "version": "0.1.0",
+  "publisher": "mersey",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Debuggers", "Programming Languages"],
+  "activationEvents": ["onDebugResolve:mersey"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      { "id": "mersey", "extensions": [".mersey"], "aliases": ["Mersey"] }
+    ],
+    "breakpoints": [{ "language": "mersey" }],
+    "debuggers": [
+      {
+        "type": "mersey",
+        "label": "Mersey Debug",
+        "languages": ["mersey"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .mersey entry module.",
+                "default": "${file}"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "mersey",
+            "request": "launch",
+            "name": "Debug current Mersey file",
+            "program": "${file}"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2622,6 +2622,11 @@ fn exec(
     // `work`'s loop that matters.
     let mut cur_osr: Option<OsrCtx> = osr;
     let handlers: &mut Vec<(usize, usize, usize)> = &mut state.handlers;
+    // Debugger: async/generator bodies only run here, so the VM reports line
+    // changes the way the tree-walker reports statements. One local-bool
+    // branch per op when no debugger is attached.
+    let debugging = i.debug_hook_attached();
+    let mut last_debug_line: u32 = 0;
     let mut pc = *pc_ref;
     // Resuming from an await: deliver the settled value (or throw it).
     if let Some((value, rejected)) = resumed {
@@ -2866,6 +2871,15 @@ fn exec(
         i.set_site(chunk.pos_at(pc));
         let here = pc;
         pc += 1;
+        if debugging {
+            let dpos = chunk.pos_at(here);
+            if dpos.line != 0 && dpos.line != last_debug_line {
+                last_debug_line = dpos.line;
+                if let Some(env) = scopes.last().cloned() {
+                    i.debug_vm_stmt(dpos, &env);
+                }
+            }
+        }
         match op {
             Op::Const(ci) => stack.push(chunk.consts[ci as usize].clone()),
             Op::Null => stack.push(Value::Null),

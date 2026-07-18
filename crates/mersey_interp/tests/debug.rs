@@ -39,12 +39,12 @@ impl DebugHook for Recorder {
     fn on_stmt(
         &mut self,
         pause: &DebugPause,
-        locals: &mut dyn FnMut() -> Vec<Vec<(String, String)>>,
+        locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
     ) {
         self.lines.borrow_mut().push(pause.pos.line);
         if pause.pos.line == self.break_line {
             let stack: Vec<String> = pause.frames.iter().map(|f| f.name.to_string()).collect();
-            self.hit.borrow_mut().push((stack, locals()));
+            self.hit.borrow_mut().push((stack, locals(0)));
         }
     }
 }
@@ -136,7 +136,7 @@ fn passive_hook_changes_nothing() {
         fn on_stmt(
             &mut self,
             _pause: &DebugPause,
-            _locals: &mut dyn FnMut() -> Vec<Vec<(String, String)>>,
+            _locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
         ) {
         }
     }
@@ -150,4 +150,26 @@ fn passive_hook_changes_nothing() {
     interp.set_debug_hook(Box::new(Passive));
     assert!(interp.run_module(module).is_ok(), "program runs");
     assert_eq!(buffer.borrow().as_str(), "total 6\n");
+}
+
+#[test]
+fn async_bodies_report_lines_via_the_vm() {
+    // Debugging forces the tree-walker for sync code, but async bodies can
+    // only run on the VM (it owns suspension) — its loop reports line
+    // changes so they are visible and steppable too.
+    const ASYNC_PROGRAM: &str = "\
+import { console } from \"std:console\";
+
+async function work(): int32 {
+    const a = 1;
+    const b = a + 1;
+    return b;
+}
+
+work();
+console.log(\"done\");
+";
+    let (out, lines, _) = run_with_hook(ASYNC_PROGRAM, 0);
+    assert_eq!(out, "done\n");
+    assert!(lines.contains(&4) && lines.contains(&5), "async body lines reported: {lines:?}");
 }

@@ -11,10 +11,11 @@
 //! until a resume command arrives. All policy is here — the engine only
 //! reports (see `mersey_interp::DebugHook`).
 //!
-//! v1 limits, recorded: breakpoints match by line across the whole graph
-//! (path is not compared — single-file programs are the target); variables
-//! are served for the top frame only (the hook exposes the current scope
-//! chain); async/generator bodies run on the VM and are not stepped.
+//! Breakpoints are path-matched (suffix/basename, so editor-absolute paths
+//! find graph-relative specs); variables are served for every frame (the
+//! engine keeps each frame's environment while debugging); async/generator
+//! bodies report through the VM loop's line callouts, so they break and step
+//! too (their slot-resolved locals are best-effort).
 
 use std::collections::HashSet;
 use std::io::{self, BufRead};
@@ -117,14 +118,23 @@ fn output_event(text: &str) {
 }
 
 /// `setBreakpoints` REPLACES the set for its source; reply verifies each.
-fn apply_breakpoints(req: &Json, bps: &mut HashSet<u32>) {
-    bps.clear();
+/// Sources are matched to executing modules by path suffix/basename, so an
+/// editor's absolute path finds the graph's relative spec and vice versa.
+type Breakpoints = Vec<(String, HashSet<u32>)>;
+
+fn apply_breakpoints(req: &Json, bps: &mut Breakpoints) {
+    let path = get(req, "arguments")
+        .and_then(|a| get(a, "source"))
+        .and_then(|s| get_str(s, "path"))
+        .unwrap_or("")
+        .to_string();
+    let mut lines = HashSet::new();
     let mut verified = Vec::new();
     if let Some(args) = get(req, "arguments") {
         if let Some(Json::Arr(items)) = get(args, "breakpoints") {
             for item in items {
                 if let Some(line) = get_num(item, "line") {
-                    bps.insert(line as u32);
+                    lines.insert(line as u32);
                     verified.push(obj(vec![
                         ("verified", Json::Bool(true)),
                         ("line", n(line)),
@@ -133,7 +143,24 @@ fn apply_breakpoints(req: &Json, bps: &mut HashSet<u32>) {
             }
         }
     }
+    bps.retain(|(p, _)| *p != path);
+    bps.push((path, lines));
     respond(req, Some(obj(vec![("breakpoints", Json::Arr(verified))])));
+}
+
+fn basename(p: &str) -> &str {
+    p.rsplit(['/', '\\']).next().unwrap_or(p)
+}
+
+fn bp_hit(bps: &Breakpoints, module: &str, line: u32) -> bool {
+    bps.iter().any(|(path, lines)| {
+        lines.contains(&line)
+            && (path.is_empty()
+                || path == module
+                || path.ends_with(module)
+                || module.ends_with(path.as_str())
+                || basename(path) == basename(module))
+    })
 }
 
 // ---- the debuggee's host ---------------------------------------------------
@@ -165,7 +192,7 @@ enum Step {
 struct DapDebugger {
     rx: Rc<mpsc::Receiver<Json>>,
     program: String,
-    bps: HashSet<u32>,
+    bps: Breakpoints,
     step: Step,
     pause_pending: bool,
     /// The previous callout's line, so consecutive statements on a
@@ -203,14 +230,15 @@ impl DebugHook for DapDebugger {
     fn on_stmt(
         &mut self,
         pause: &DebugPause,
-        locals: &mut dyn FnMut() -> Vec<Vec<(String, String)>>,
+        locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
     ) {
         while let Ok(req) = self.rx.try_recv() {
             self.handle_running(&req);
         }
         let line = pause.pos.line;
         let depth = pause.frames.len();
-        let hit_bp = self.bps.contains(&line) && self.prev_line != line;
+        let module = pause.frames.last().map(|f| f.module.to_string()).unwrap_or_default();
+        let hit_bp = bp_hit(&self.bps, &module, line) && self.prev_line != line;
         let hit_step = match self.step {
             Step::Run => false,
             Step::In => true,
@@ -240,8 +268,10 @@ impl DebugHook for DapDebugger {
             ])),
         );
 
-        // Scope snapshot on first use, held for this pause only.
-        let mut scopes: Option<Vec<Vec<(String, String)>>> = None;
+        // Per-frame scope snapshots on first use, held for this pause only.
+        // variablesReference encodes (frame_from_top, scope): frame*64+scope+1.
+        let mut scopes: std::collections::HashMap<usize, Vec<Vec<(String, String)>>> =
+            std::collections::HashMap::new();
 
         loop {
             let Ok(req) = self.rx.recv() else {
@@ -260,13 +290,15 @@ impl DebugHook for DapDebugger {
                             } else {
                                 (f.pos.line.max(1), f.pos.col.max(1))
                             };
+                            let source = if f.module.is_empty() || &*f.module == "<script>" {
+                                self.program.clone()
+                            } else {
+                                f.module.to_string()
+                            };
                             obj(vec![
                                 ("id", n(i as f64)),
                                 ("name", s(&f.name)),
-                                (
-                                    "source",
-                                    obj(vec![("path", s(&self.program))]),
-                                ),
+                                ("source", obj(vec![("path", s(&source))])),
                                 ("line", n(fline as f64)),
                                 ("column", n(fcol as f64)),
                             ])
@@ -284,13 +316,8 @@ impl DebugHook for DapDebugger {
                 "scopes" => {
                     let frame_id = get(&req, "arguments")
                         .and_then(|a| get_num(a, "frameId"))
-                        .unwrap_or(0.0);
-                    if frame_id as i64 != 0 {
-                        // v1: locals are the current scope chain (top frame).
-                        respond(&req, Some(obj(vec![("scopes", Json::Arr(vec![]))])));
-                        continue;
-                    }
-                    let snap = scopes.get_or_insert_with(|| locals());
+                        .unwrap_or(0.0) as usize;
+                    let snap = scopes.entry(frame_id).or_insert_with(|| locals(frame_id));
                     let last = snap.len().saturating_sub(1);
                     let list: Vec<Json> = snap
                         .iter()
@@ -305,7 +332,7 @@ impl DebugHook for DapDebugger {
                             };
                             obj(vec![
                                 ("name", s(&name)),
-                                ("variablesReference", n((i + 1) as f64)),
+                                ("variablesReference", n((frame_id * 64 + i + 1) as f64)),
                                 ("expensive", Json::Bool(i == last)),
                             ])
                         })
@@ -316,9 +343,10 @@ impl DebugHook for DapDebugger {
                     let reference = get(&req, "arguments")
                         .and_then(|a| get_num(a, "variablesReference"))
                         .unwrap_or(0.0) as usize;
-                    let snap = scopes.get_or_insert_with(|| locals());
+                    let (frame_id, scope_idx) = ((reference - 1) / 64, (reference - 1) % 64);
+                    let snap = scopes.entry(frame_id).or_insert_with(|| locals(frame_id));
                     let vars: Vec<Json> = snap
-                        .get(reference.wrapping_sub(1))
+                        .get(scope_idx)
                         .map(|scope| {
                             scope
                                 .iter()
@@ -380,7 +408,7 @@ impl DebugHook for DapDebugger {
 
 pub fn serve() -> ExitCode {
     let mut program: Option<String> = None;
-    let mut bps: HashSet<u32> = HashSet::new();
+    let mut bps: Breakpoints = Vec::new();
 
     // Configuration phase, on this thread: initialize → launch →
     // setBreakpoints → configurationDone.

@@ -763,10 +763,13 @@ pub struct DebugPause<'a> {
 /// callouts; async and generator bodies still run on the VM (only it can
 /// suspend) and are not stepped — a recorded v1 limit.
 pub trait DebugHook {
+    /// `locals(i)` snapshots frame `i` counted from the TOP of the stack:
+    /// 0 is the paused statement's own scope chain; deeper frames serve the
+    /// environment they were entered with. Out of range → empty.
     fn on_stmt(
         &mut self,
         pause: &DebugPause,
-        locals: &mut dyn FnMut() -> Vec<Vec<(String, String)>>,
+        locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
     );
 }
 
@@ -1179,6 +1182,9 @@ pub struct Interp {
     /// The debugger, when attached (see `DebugHook`). `None` costs one branch
     /// per tree-walked statement.
     debug_hook: Option<Box<dyn DebugHook>>,
+    /// While debugging: each diagnostic frame's environment, parallel to
+    /// `frames` — what `stackTrace`'s outer-frame variables read.
+    debug_envs: Vec<Env>,
     error_classes: HashMap<&'static str, Rc<ClassDef>>,
     /// Every class the program has defined.
     ///
@@ -1915,6 +1921,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         globals,
         callbacks: Vec::new(),
         debug_hook: None,
+        debug_envs: Vec::new(),
         error_classes,
         all_classes: Vec::new(),
         jit_threshold: JIT_THRESHOLD,
@@ -2499,6 +2506,7 @@ impl Interp {
         let debug_module_frame = self.debug_hook.is_some();
         if debug_module_frame {
             self.push_frame(&"<module>".into(), &spec.as_str().into());
+            self.debug_envs.push(self.globals.clone());
         }
         let run = (|| -> Result<(), Thrown> {
             for item in &module.items {
@@ -2519,6 +2527,7 @@ impl Interp {
         })();
         if debug_module_frame {
             self.pop_frame();
+            self.debug_envs.pop();
         }
         run?;
         self.drain_tasks()?;
@@ -3023,8 +3032,44 @@ impl Interp {
             f.pos = pos;
         }
         let Some(mut hook) = self.debug_hook.take() else { return };
-        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut || {
-            snapshot_scopes(env)
+        let envs = &self.debug_envs;
+        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut |from_top| {
+            if from_top == 0 {
+                snapshot_scopes(env)
+            } else {
+                match envs.len().checked_sub(from_top + 1).and_then(|i| envs.get(i)) {
+                    Some(e) => snapshot_scopes(e),
+                    None => Vec::new(),
+                }
+            }
+        });
+        self.debug_hook = Some(hook);
+    }
+
+    /// Whether a debugger is attached (the VM loop's per-op gate).
+    pub(crate) fn debug_hook_attached(&self) -> bool {
+        self.debug_hook.is_some()
+    }
+
+    /// The VM's debugger callout — async/generator bodies execute there, and
+    /// this is how their line changes reach the hook. Same contract as
+    /// `debug_stmt`; the VM's slot-resolved locals may not all live in the
+    /// scope chain, so snapshots there are best-effort.
+    pub(crate) fn debug_vm_stmt(&mut self, pos: mersey_front::diag::Pos, env: &Env) {
+        if let Some(f) = self.frames.last_mut() {
+            f.pos = pos;
+        }
+        let Some(mut hook) = self.debug_hook.take() else { return };
+        let envs = &self.debug_envs;
+        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut |from_top| {
+            if from_top == 0 {
+                snapshot_scopes(env)
+            } else {
+                match envs.len().checked_sub(from_top + 1).and_then(|i| envs.get(i)) {
+                    Some(e) => snapshot_scopes(e),
+                    None => Vec::new(),
+                }
+            }
         });
         self.debug_hook = Some(hook);
     }
@@ -3559,7 +3604,7 @@ impl Interp {
                 };
                 self.push_frame(&c.data.name, &chunk.module);
                 let out = {
-                    let frame = Frame::enter(self, c);
+                    let frame = Frame::enter(self, c, &scope);
                     let f = vm::new_frame(&chunk, &scope, c.this.as_ref());
                     vm::run_chunk(frame.i, &chunk, scope, f, osr)
                 };
@@ -3569,11 +3614,11 @@ impl Interp {
         }
         match &c.data.body {
             FnBody::Expr(e) => {
-                let frame = Frame::enter(self, c);
+                let frame = Frame::enter(self, c, &scope);
                 frame.i.eval(e, &scope)
             }
             FnBody::Block(stmts) => {
-                let frame = Frame::enter(self, c);
+                let frame = Frame::enter(self, c, &scope);
                 match frame.i.exec_block_in(stmts, &scope)? {
                     Sig::Return(v) => Ok(v),
                     _ => Ok(Value::Null),
@@ -4042,7 +4087,7 @@ impl Interp {
         let frame = vm::arg_frame(&chunk, args, c.this.as_ref());
         self.push_frame(&c.data.name, &chunk.module);
         let out = {
-            let f = Frame::enter(self, c);
+            let f = Frame::enter(self, c, &c.env.clone());
             // The closure's own environment *is* the scope: there is nothing to
             // put in a fresh one.
             vm::run_chunk(f.i, &chunk, c.env.clone(), frame, osr)
@@ -8357,7 +8402,7 @@ struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    fn enter(i: &'a mut Interp, c: &Closure) -> Frame<'a> {
+    fn enter(i: &'a mut Interp, c: &Closure, env: &Env) -> Frame<'a> {
         let pushed = if let Some(cls) = &c.cls {
             i.class_stack.push(cls.clone());
             true
@@ -8366,10 +8411,12 @@ impl<'a> Frame<'a> {
         };
         // The VM keeps the diagnostic call stack itself; tree-walked calls
         // only need it when a debugger is watching (`DebugPause::frames`).
+        // The env rides along so outer frames can serve their variables.
         let framed = i.debug_hook.is_some();
         if framed {
             let module = i.current_module.clone();
             i.push_frame(&c.data.name, &module.as_str().into());
+            i.debug_envs.push(env.clone());
         }
         Frame { i, pushed, framed }
     }
@@ -8382,6 +8429,7 @@ impl Drop for Frame<'_> {
         }
         if self.framed {
             self.i.pop_frame();
+            self.i.debug_envs.pop();
         }
     }
 }
