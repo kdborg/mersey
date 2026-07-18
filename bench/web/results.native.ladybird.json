@@ -4,77 +4,88 @@
     "impl": "native",
     "wl": "canvas",
     "ms": 10.668292000000001,
-    "checksum": 20000
+    "checksum": 20000,
+    "rss": 21661
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "crypto",
     "ms": 26.488459,
-    "checksum": 320000
+    "checksum": 320000,
+    "rss": 25482
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "cssom",
     "ms": 52.30437499999999,
-    "checksum": 48000
+    "checksum": 48000,
+    "rss": 18497
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "dom",
     "ms": 28.577291999999993,
-    "checksum": 10000
+    "checksum": 10000,
+    "rss": 231022
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "encoding",
     "ms": 36.846959000000005,
-    "checksum": 437780
+    "checksum": 437780,
+    "rss": 28709
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "events",
     "ms": 39.57483299999999,
-    "checksum": 10000
+    "checksum": 10000,
+    "rss": 28228
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "json",
     "ms": 1.3725000000000023,
-    "checksum": 848890
+    "checksum": 848890,
+    "rss": 14220
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "query",
     "ms": 10.035542,
-    "checksum": 214900
+    "checksum": 214900,
+    "rss": 24918
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "storage",
     "ms": 9810.812255,
-    "checksum": 208890
+    "checksum": 208890,
+    "rss": 29460
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "timers",
     "ms": 145.06425,
-    "checksum": 20000
+    "checksum": 20000,
+    "rss": 34479
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "url",
     "ms": 53.3955,
-    "checksum": 537780
+    "checksum": 537780,
+    "rss": 23980
   },
   {
     "browser": "ladybird-fork",

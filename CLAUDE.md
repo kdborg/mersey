@@ -74,10 +74,12 @@ Playwright), `run-tjs.mjs`, `run-servo.mjs`, `run-ladybird.mjs` (stock
 Ladybird via `test-web`, fully self-contained inlined pages), and
 `run-native{,-servo,-ladybird,-chromium}.mjs` for the forks. Most take
 `WL=name,…` (and ladybird `IMPL=`) filters. Results land in
-`results.*.json`; after ANY results refresh regenerate all three report
-surfaces: `report.mjs` → `REPORT.md`; `gen-report-data.mjs` → `report.html`'s
-baked DATA block; `report-pertech.mjs` → `report-pertech.html` — never
-hand-edit those numbers. Adding a workload = the two twin files (auto-
+`results.*.json`; re-running `run-native-ladybird.mjs` drops the `rss` fields —
+follow it with `run-native-ladybird-mem.mjs` (a separate peak-PSS poller; the
+time runner can't sample test-web's short-lived processes). After ANY results
+refresh regenerate all three report surfaces: `report.mjs` → `REPORT.md`;
+`gen-report-data.mjs` → `report.html`'s baked DATA block; `report-pertech.mjs`
+→ `report-pertech.html` — never hand-edit those numbers. Adding a workload = the two twin files (auto-
 discovered) + the hardcoded lists in `run-native-servo.mjs`,
 `run-native-ladybird.mjs`, `run-ladybird.mjs`.
 
