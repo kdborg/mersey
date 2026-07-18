@@ -29,6 +29,10 @@ export function startServer(port = 0, opts = {}) {
         res.writeHead(200, {
           "content-type": "text/plain; charset=utf-8",
           "cache-control": "no-store",
+          // file:// pages have opaque origins (Ladybird's test-web loads
+          // tests from disk); the echo endpoint admits them via CORS so the
+          // fetch workload can run there too.
+          "access-control-allow-origin": "*",
         });
         res.end(`payload-${url.searchParams.get("i") ?? "0"}`);
         return;
