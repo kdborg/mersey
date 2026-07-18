@@ -426,3 +426,6 @@ function makeBridge(globalObject, invokeCallback) {
 globalThis.__merseyBridge = makeBridge(globalThis, function (cb, argsJson) {
   return globalThis.__merseyInvoke(cb, argsJson);
 });
+// Mersey runs natively here: the Stage A polyfill loader sees this and
+// stands down (no WASM fetch, no double execution).
+globalThis.merseyNative = true;

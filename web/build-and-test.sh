@@ -15,5 +15,6 @@ node web/test/random.mjs
 node web/test/pixels.mjs
 node web/test/sw.mjs
 node web/test/components.mjs
+node web/test/native-skip.mjs
 node web/test/errors.mjs
 node web/test/security.mjs

@@ -162,6 +162,9 @@ static void reset_handles(Runner* runner, JS::Realm& realm)
     runner->handles = make<GC::RootVector<JS::Value>>();
     runner->by_object.clear();
     auto& global = realm.global_object();
+    // Announce native Mersey to the page: the Stage A polyfill loader sees
+    // this and stands down (no WASM fetch, no double execution).
+    (void)global.create_data_property(JS::PropertyKey { "merseyNative"_utf16_fly_string }, JS::Value(true));
     runner->handles->append(JS::Value(&global));
     runner->by_object.set(&global, 0);
     runner->set_timeout_handle = INT64_MIN;

@@ -76,6 +76,13 @@ function cspAllows(url) {
 }
 
 async function boot() {
+  // A Mersey-native browser executes `text/mersey` itself and announces it
+  // (`globalThis.merseyNative`, set by the fork's script runner before any
+  // script runs). The polyfill then disappears entirely — no WASM fetch, no
+  // engine, no double execution — which is this loader's Stage B contract.
+  if (globalThis.merseyNative) {
+    return;
+  }
   const engine = await startEngine({ engineUrl, realm: globalThis });
   // Execution backend: "js" (default) transpiles Mersey to JavaScript and the
   // browser's own JIT runs it — the fast polyfill. "wasm" interprets inside
