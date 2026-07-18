@@ -298,7 +298,14 @@
 
   <h2>Every number</h2>
   <p class="note">Time in milliseconds (lower is faster); memory in MiB (PSS delta vs blank).
-    Green marks the faster of the two Mersey paths.</p>
+    Green marks the faster of the two Mersey paths. <b>Memory caveat:</b> the Firefox, Chromium and Servo
+    native columns sample PSS at a fixed settle point on a persistent process. Ladybird has no persistent
+    headless browser — it runs through <code>test-web</code>, which spawns and tears down a fresh
+    WebContent process per test — so its native memory is <em>peak-sampled</em> across that short process
+    life (max PSS over the Ladybird process tree, minus a blank page measured the same way). Peak sampling
+    over-reads transient allocation relative to settle sampling, so Ladybird's memory (and the
+    element-heavy <code>dom</code> figure in particular) is a best-effort upper bound, not strictly
+    comparable to the other three.</p>
   <div class="scroll"><table id="fulltable"></table></div>
 
   <h2>Implementations across browsers</h2>
@@ -487,12 +494,12 @@
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:18.6, msnative:29.0, lbnative:9.8 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:18.3, msnative:20.8, lbnative:26.4 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:31.9, msnative:58.8, lbnative:29.1 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.0, msnative:18.2, lbnative:1.4 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:1953, msnative:18.7, lbnative:10089 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:38.0, msnative:24.4, lbnative:54.5 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:18.6, msnative:29.0, lbnative:9.8, mcnative:21.3, mlbnative:22.6 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:18.3, msnative:20.8, lbnative:26.4, mcnative:15.6, mlbnative:26.3 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:31.9, msnative:58.8, lbnative:29.1, mcnative:136.5, mlbnative:225.6 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.0, msnative:18.2, lbnative:1.4, mcnative:15.6, mlbnative:14.8 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:1953, msnative:18.7, lbnative:10089, mcnative:21.8, mlbnative:35.2 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:38.0, msnative:24.4, lbnative:54.5, mcnative:22.8, mlbnative:28.2 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
