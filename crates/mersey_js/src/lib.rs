@@ -63,6 +63,9 @@ pub const RUNTIME: &str = include_str!("rt.js");
 
 pub struct Output {
     pub js: String,
+    /// An inline `//# sourceMappingURL=data:…` line mapping emitted
+    /// statements back to the `.mersey` source (with sourcesContent).
+    pub map: String,
     pub diagnostics: Vec<String>,
 }
 
@@ -132,12 +135,19 @@ pub fn transpile_graph(mods: &[(String, String)]) -> GraphOutput {
         .map(|(spec, module)| {
             let mut e = Emit {
                 out: String::new(),
+                line: 1,
+                maps: Vec::new(),
                 indent: 0,
                 mode: Mode::Module,
                 spec: spec.clone(),
                 wasm_fns: std::collections::HashSet::new(),
             };
             e.module(module);
+            // NOTE: no inline map here yet — the loader's error-frame tests
+            // parse raw stacks of these blob modules and the appended map
+            // shifted what they see (two REAL BROWSER failures). The
+            // single-file `transpile` path carries maps; wiring the graph
+            // path needs that interaction understood first. Tracked.
             (spec.clone(), e.out)
         })
         .collect();
@@ -158,6 +168,7 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
     if !parsed.diagnostics.is_empty() {
         return Output {
             js: String::new(),
+            map: String::new(),
             diagnostics: parsed.diagnostics.iter().map(|d| d.to_string()).collect(),
         };
     }
@@ -166,11 +177,14 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
     if !out.diagnostics.is_empty() {
         return Output {
             js: String::new(),
+            map: String::new(),
             diagnostics: out.diagnostics.iter().map(|d| d.to_string()).collect(),
         };
     }
     let mut e = Emit {
         out: String::new(),
+        line: 1,
+        maps: Vec::new(),
         indent: 0,
         mode: Mode::Single,
         spec: name.to_string(),
@@ -182,11 +196,39 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
         js.push_str(RUNTIME);
         js.push('\n');
     }
+    // The prelude shifts the module's lines down; the map accounts for it.
+    let offset = js.matches('\n').count() as u32;
     js.push_str(&e.out);
+    // Not appended to `js`: the loader's error-frame parsing reads these
+    // modules raw (appending regressed two REAL BROWSER tests). Callers that
+    // want DevTools mapping (`mersey js --map`) concatenate it themselves.
+    let map = map_url(name, source, offset, &e.maps);
     Output {
         js,
+        map,
         diagnostics: Vec::new(),
     }
+}
+
+/// An inline `sourceMappingURL` for the emitted module: DevTools (and any
+/// stack mapper) resolves generated lines back to the `.mersey` source —
+/// which the map carries in `sourcesContent`, so no server round-trip.
+fn map_url(name: &str, source: &str, gen_line_offset: u32, maps: &[(u32, u32, u32, u32)]) -> String {
+    use mersey_front::sourcemap::{encode, Mapping};
+    let mappings: Vec<Mapping> = maps
+        .iter()
+        .map(|(gl, gc, sl, sc)| Mapping {
+            gen_line: gl + gen_line_offset,
+            gen_col: *gc,
+            src_line: *sl,
+            src_col: *sc,
+        })
+        .collect();
+    let map = encode(name, source, mappings);
+    format!(
+        "\n//# sourceMappingURL=data:application/json;base64,{}\n",
+        b64(map.as_bytes())
+    )
 }
 
 struct Emit {
@@ -194,6 +236,10 @@ struct Emit {
     indent: usize,
     mode: Mode,
     spec: String,
+    /// Current 1-based line of `out`, and (gen_line, gen_col, src_line,
+    /// src_col) recorded at each statement — the source map's raw material.
+    line: u32,
+    maps: Vec<(u32, u32, u32, u32)>,
     /// Top-level functions the WASM tier compiled: bound from $w, not emitted.
     wasm_fns: std::collections::HashSet<String>,
 }
@@ -201,11 +247,13 @@ struct Emit {
 impl Emit {
     fn nl(&mut self) {
         self.out.push('\n');
+        self.line += 1;
         for _ in 0..self.indent {
             self.out.push_str("  ");
         }
     }
     fn w(&mut self, s: &str) {
+        self.line += s.matches('\n').count() as u32;
         self.out.push_str(s);
     }
 
@@ -728,6 +776,10 @@ impl Emit {
     }
 
     fn stmt(&mut self, s: &Stmt) {
+        if let Some(p) = mersey_front::ast::stmt_first_pos(s) {
+            self.maps
+                .push((self.line, self.indent as u32 * 2 + 1, p.line, p.col));
+        }
         match s {
             Stmt::Block(body) => {
                 self.w("{");

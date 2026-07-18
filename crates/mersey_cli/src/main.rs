@@ -50,7 +50,15 @@ fn main() -> ExitCode {
     match (cmd, rest) {
         // Transpile one module to JavaScript on stdout (the JS-backend
         // polyfill; conformance-gated against the engine).
-        ("js", [file]) => {
+        ("js", rest2) if matches!(rest2, [_] | [_, _]) => {
+            let (with_map, file) = match rest2 {
+                [flag, f] if flag == "--map" => (true, f),
+                [f] => (false, f),
+                _ => {
+                    eprintln!("usage: mersey js [--map] <file.mersey>");
+                    return ExitCode::from(2);
+                }
+            };
             let src = match std::fs::read(file) {
                 Ok(b) => b,
                 Err(e) => {
@@ -67,6 +75,9 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             print!("{}", out.js);
+            if with_map {
+                print!("{}", out.map);
+            }
             return ExitCode::SUCCESS;
         }
         ("run", rest) if !rest.is_empty() => {

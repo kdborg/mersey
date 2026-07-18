@@ -826,3 +826,63 @@ pub fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
         _ => {}
     }
 }
+
+// ---- source positions for tooling ------------------------------------------
+
+/// Best-effort position of an expression: the first positioned node under it,
+/// left to right. (Twin of the interpreter's private walker — statements carry
+/// no spans of their own, so debuggers and source maps derive one.)
+pub fn expr_first_pos(e: &Expr) -> Option<Pos> {
+    match e {
+        Expr::Ident(n) => Some(n.pos),
+        Expr::This(p) => Some(*p),
+        Expr::Lit { pos, .. }
+        | Expr::Unary { pos, .. }
+        | Expr::SuperMember { pos, .. }
+        | Expr::SuperCall { pos, .. }
+        | Expr::Yield { pos, .. } => Some(*pos),
+        Expr::Paren(x)
+        | Expr::Update { expr: x, .. }
+        | Expr::Cast { expr: x, .. }
+        | Expr::Is { expr: x, .. }
+        | Expr::ImportCall(x) => expr_first_pos(x),
+        Expr::Binary { l, .. } => expr_first_pos(l),
+        Expr::Assign { target, .. } => expr_first_pos(target),
+        Expr::Cond { cond, .. } => expr_first_pos(cond),
+        Expr::Call { callee, .. } => expr_first_pos(callee),
+        Expr::Member { obj, .. } | Expr::Index { obj, .. } => expr_first_pos(obj),
+        _ => None,
+    }
+}
+
+/// Best-effort position of a statement — the line a breakpoint on it hits.
+pub fn stmt_first_pos(s: &Stmt) -> Option<Pos> {
+    match s {
+        Stmt::Var(v) => v.bindings.first().and_then(|b| match &b.target {
+            Pattern::Name(n) => Some(n.pos),
+            _ => None,
+        }),
+        Stmt::Expr(e) | Stmt::Throw(e) => expr_first_pos(e),
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => {
+            expr_first_pos(cond)
+        }
+        Stmt::For { init, cond, .. } => match init {
+            Some(ForInit::Var(v)) => v.bindings.first().and_then(|b| match &b.target {
+                Pattern::Name(n) => Some(n.pos),
+                _ => None,
+            }),
+            Some(ForInit::Exprs(es)) => es.first().and_then(expr_first_pos),
+            None => cond.as_ref().and_then(expr_first_pos),
+        },
+        Stmt::ForOf { target, .. } => match target {
+            Pattern::Name(n) => Some(n.pos),
+            _ => None,
+        },
+        Stmt::Switch { scrutinee, .. } => expr_first_pos(scrutinee),
+        Stmt::Break { pos, .. } | Stmt::Continue { pos, .. } | Stmt::Return { pos, .. } => {
+            Some(*pos)
+        }
+        Stmt::Labeled { label, .. } => Some(label.pos),
+        Stmt::Block(_) | Stmt::Try { .. } | Stmt::Empty => None,
+    }
+}
