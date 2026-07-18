@@ -1,0 +1,170 @@
+[
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "canvas",
+    "ms": 2.619999999999999,
+    "rss": 20672,
+    "checksum": 20000
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "canvas",
+    "ms": 74.47,
+    "rss": 72300,
+    "checksum": 20000
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "canvas",
+    "ms": 4.930000000000007,
+    "rss": 76048,
+    "checksum": 20000
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "compute",
+    "ms": 107.85,
+    "rss": 3392,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "compute",
+    "ms": 19403.97,
+    "rss": 78808,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "compute",
+    "ms": 132.83999999999997,
+    "rss": 59384,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "crypto",
+    "ms": 2.4400000000000013,
+    "rss": 3300,
+    "checksum": 320000
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "crypto",
+    "ms": 82.44999999999999,
+    "rss": 59696,
+    "checksum": 320000
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "crypto",
+    "ms": 4.579999999999984,
+    "rss": 59008,
+    "checksum": 320000
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "dom",
+    "ms": 12.41,
+    "rss": 26944,
+    "checksum": 10000
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "dom",
+    "ms": 99.69,
+    "rss": 75736,
+    "checksum": 10000
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "dom",
+    "ms": 17.75,
+    "rss": 77024,
+    "checksum": 10000
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "json",
+    "ms": 3.5100000000000016,
+    "rss": 3688,
+    "checksum": 848890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "json",
+    "ms": 26.159999999999997,
+    "rss": 57784,
+    "checksum": 848890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "json",
+    "ms": 5.140000000000015,
+    "rss": 58644,
+    "checksum": 848890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "storage",
+    "ms": 1981.55,
+    "rss": 5212,
+    "checksum": 208890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "storage",
+    "ms": 2425.0099999999998,
+    "rss": 61104,
+    "checksum": 208890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "storage",
+    "ms": 3607.3999999999996,
+    "rss": 57676,
+    "checksum": 208890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "url",
+    "ms": 11.420000000000002,
+    "rss": 9076,
+    "checksum": 537780
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "url",
+    "ms": 150.45999999999998,
+    "rss": 65192,
+    "checksum": 537780
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "url",
+    "ms": 12.009999999999991,
+    "rss": 62444,
+    "checksum": 537780
+  }
+]
