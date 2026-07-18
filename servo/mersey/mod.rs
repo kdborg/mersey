@@ -7,15 +7,16 @@
 //! `dom/mersey/MerseyScriptRunner` and the Chromium fork's `//components/mersey`.
 //!
 //! A `<script type="text/mersey">` runs in the engine directly (Rust
-//! interpreter + Cranelift JIT), *not* as WASM and *not* as JS. Only the actual
-//! web-API calls cross into Servo's SpiderMonkey realm, through the same
-//! reflective bridge the WASM polyfill uses (`web/mersey-bridge.js`, embedded
-//! here as `bridge.js`): five reflective operations — global / get / set / call
-//! / construct — reach any object in the JS realm, with a handle table for
-//! object identity. This is the honest bootstrap; the direct-C++ typed fast
-//! paths the other forks grew are left for later (every fast-path pointer in the
-//! host table is NULL, so the engine falls back to these reflective ops — same
-//! results, verified by matching workload checksums).
+//! interpreter + Cranelift JIT), *not* as WASM and *not* as JS. Web-API calls
+//! prefer the direct-Rust tier: hot methods classified at intern time dispatch
+//! straight to Servo's own DOM implementations (`NodeMethods::AppendChild`,
+//! `StorageMethods::SetItem`, `CryptoMethods::GetRandomValues`,
+//! `TextEncoderMethods::Encode`, and the canvas draw loop through `web_bind` to
+//! `CanvasRenderingContext2DMethods::FillRect`) — the Rust API, not JS. Only
+//! what falls outside the hot set crosses through the reflective bridge
+//! (`web/mersey-bridge.js`, embedded as `bridge.js`) into the SpiderMonkey
+//! realm, which also owns the handle table for object identity. Same results
+//! on every path, verified by matching workload checksums.
 //!
 //! Threading/re-entrancy: one engine context per script thread, always called
 //! from that thread; a bridge call the engine makes can re-enter (a JS callback
@@ -34,7 +35,8 @@ use std::time::Instant;
 
 use js::context::JSContext;
 use js::conversions::{jsstr_to_string, Utf8Chars};
-use js::jsapi::{CallArgs, JSObject, Value};
+use js::jsapi::{CallArgs, Heap, JSObject, Value};
+use js::typedarray::{ArrayBufferView, ArrayBufferViewU8, TypedArray};
 use js::jsval::{BooleanValue, DoubleValue, NullValue, StringValue, UndefinedValue};
 use js::rust::wrappers2::{
     JS_CallFunctionName, JS_DefineFunction, JS_GetProperty, JS_NewStringCopyUTF8N,
@@ -52,8 +54,16 @@ use std::collections::HashMap;
 use js::jsval::ObjectValue;
 use stylo_atoms::Atom;
 
+use script_bindings::trace::RootedTraceableBox;
+
 use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
+use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DMethods;
+use crate::dom::bindings::codegen::Bindings::CryptoBinding::CryptoMethods;
 use crate::dom::bindings::codegen::Bindings::DOMTokenListBinding::DOMTokenListMethods;
+use crate::dom::bindings::codegen::Bindings::StorageBinding::StorageMethods;
+use crate::dom::bindings::codegen::Bindings::TextDecoderBinding::{TextDecodeOptions, TextDecoderMethods};
+use crate::dom::bindings::codegen::Bindings::TextEncoderBinding::TextEncoderMethods;
+use crate::dom::bindings::codegen::UnionTypes::ArrayBufferViewOrArrayBuffer;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::EventTargetBinding::EventTargetMethods;
@@ -66,6 +76,8 @@ use crate::dom::bindings::conversions::root_from_object;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::canvasrenderingcontext2d::CanvasRenderingContext2D;
+use crate::dom::crypto::Crypto;
 use crate::dom::cssstyledeclaration::CSSStyleDeclaration;
 use crate::dom::document::Document;
 use crate::dom::domtokenlist::DOMTokenList;
@@ -76,6 +88,9 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::htmlelement::HTMLElement;
 use crate::dom::node::Node;
 use crate::dom::nodelist::NodeList;
+use crate::dom::storage::Storage;
+use crate::dom::textdecoder::TextDecoder;
+use crate::dom::textencoder::TextEncoder;
 use crate::dom::url::URL;
 use crate::realms::enter_auto_realm;
 
@@ -112,6 +127,12 @@ enum Hot {
     QuerySelectorAll, // doc.querySelectorAll(sel) -> DocumentMethods::QuerySelectorAll
     Length,           // nodes.length              -> NodeListMethods::Length
     Index(u32),       // nodes[i]                  -> NodeListMethods::Item
+    GetRandomValues,  // crypto.getRandomValues(b) -> CryptoMethods::GetRandomValues
+    Encode,           // enc.encode(s)             -> TextEncoderMethods::Encode
+    Decode,           // dec.decode(bytes)         -> TextDecoderMethods::Decode
+    GetItem,          // storage.getItem(k)        -> StorageMethods::GetItem
+    SetItem,          // storage.setItem(k, v)     -> StorageMethods::SetItem
+    RemoveItem,       // storage.removeItem(k)     -> StorageMethods::RemoveItem
 }
 
 /// Cached native pointers for a bridge handle, one slot per role. Servo DOM
@@ -130,6 +151,11 @@ struct Natives {
     style: *const CSSStyleDeclaration,
     event: *const Event,
     target: *const EventTarget,
+    storage: *const Storage,
+    crypto: *const Crypto,
+    encoder: *const TextEncoder,
+    decoder: *const TextDecoder,
+    canvas2d: *const CanvasRenderingContext2D,
 }
 
 impl Default for Natives {
@@ -145,6 +171,11 @@ impl Default for Natives {
             style: ptr::null(),
             event: ptr::null(),
             target: ptr::null(),
+            storage: ptr::null(),
+            crypto: ptr::null(),
+            encoder: ptr::null(),
+            decoder: ptr::null(),
+            canvas2d: ptr::null(),
         }
     }
 }
@@ -412,6 +443,12 @@ extern "C" fn host_web_intern(_data: *mut c_void, name: *const c_char, len: usiz
             "getPropertyValue" => Hot::GetPropertyValue,
             "querySelectorAll" => Hot::QuerySelectorAll,
             "length" => Hot::Length,
+            "getRandomValues" => Hot::GetRandomValues,
+            "encode" => Hot::Encode,
+            "decode" => Hot::Decode,
+            "getItem" => Hot::GetItem,
+            "setItem" => Hot::SetItem,
+            "removeItem" => Hot::RemoveItem,
             // A digit-only name is an indexed access (`nodes[i]`) crossing as a
             // property read; dispatch it to NodeList::Item by value.
             n if !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()) => {
@@ -868,6 +905,11 @@ resolver!(resolve_token_list, DOMTokenList, token_list);
 resolver!(resolve_style, CSSStyleDeclaration, style);
 resolver!(resolve_event, Event, event);
 resolver!(resolve_target, EventTarget, target);
+resolver!(resolve_storage, Storage, storage);
+resolver!(resolve_crypto, Crypto, crypto);
+resolver!(resolve_encoder, TextEncoder, encoder);
+resolver!(resolve_decoder, TextDecoder, decoder);
+resolver!(resolve_canvas2d, CanvasRenderingContext2D, canvas2d);
 
 unsafe fn reply_none(out: *mut MsyReply) {
     *out = MsyReply::default();
@@ -1111,6 +1153,125 @@ unsafe fn try_dispatch_event(cx: &mut JSContext, target: i64, args: &[MsyArg16],
     true
 }
 
+// storage.getItem(k) / setItem(k, v) / removeItem(k): straight to Servo's
+// Storage implementation — no realm entry beyond the one-time receiver unwrap.
+unsafe fn try_storage_get_item(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(st) = resolve_storage(cx, target) else {
+        return false;
+    };
+    match st.GetItem(DOMString::from(arg16_str(&args[0]))) {
+        Some(v) => {
+            let r = runner_ptr();
+            fill_str16(r, out, 2, &v.str());
+        },
+        None => reply_none(out),
+    }
+    true
+}
+
+unsafe fn try_storage_set_item(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.len() < 2 || args[0].kind != 0 || args[1].kind != 0 {
+        return false;
+    }
+    let Some(st) = resolve_storage(cx, target) else {
+        return false;
+    };
+    // A quota error falls back to the reflective path, which throws it properly.
+    if st
+        .SetItem(DOMString::from(arg16_str(&args[0])), DOMString::from(arg16_str(&args[1])))
+        .is_err()
+    {
+        return false;
+    }
+    reply_none(out);
+    true
+}
+
+unsafe fn try_storage_remove_item(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(st) = resolve_storage(cx, target) else {
+        return false;
+    };
+    st.RemoveItem(DOMString::from(arg16_str(&args[0])));
+    reply_none(out);
+    true
+}
+
+// crypto.getRandomValues(buf): unwrap the Crypto receiver and the buffer, fill
+// the bytes directly in Rust.
+unsafe fn try_get_random_values(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 2 {
+        return false;
+    }
+    let Some(crypto) = resolve_crypto(cx, target) else {
+        return false;
+    };
+    let Some(obj) = bridge_handle_obj(cx, args[0].num as i64) else {
+        return false;
+    };
+    let Ok(view) = ArrayBufferView::from(obj) else {
+        return false;
+    };
+    auto_root!(&in(cx) let guard = view);
+    if crypto.GetRandomValues(guard).is_err() {
+        return false;
+    }
+    reply_none(out);
+    true
+}
+
+// enc.encode(s): direct UTF-8 encode; the fresh Uint8Array is registered and
+// crosses as a ref.
+unsafe fn try_encode(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 0 {
+        return false;
+    }
+    let Some(enc) = resolve_encoder(cx, target) else {
+        return false;
+    };
+    let bytes = enc.Encode(cx, USVString(arg16_str(&args[0])));
+    let obj = bytes.underlying_object().get();
+    if obj.is_null() {
+        return false;
+    }
+    let h = bridge_register_object(cx, obj);
+    if h < 0 {
+        return false;
+    }
+    *out = MsyReply::default();
+    (*out).tag = 3; // ref
+    (*out).num = h as f64;
+    true
+}
+
+// dec.decode(bytes) with a typed-array handle: direct decode.
+unsafe fn try_decode(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *mut MsyReply) -> bool {
+    if args.is_empty() || args[0].kind != 2 {
+        return false;
+    }
+    let Some(dec) = resolve_decoder(cx, target) else {
+        return false;
+    };
+    let Some(obj) = bridge_handle_obj(cx, args[0].num as i64) else {
+        return false;
+    };
+    let Ok(heap_view) = TypedArray::<ArrayBufferViewU8, Box<Heap<*mut JSObject>>>::from(obj) else {
+        return false;
+    };
+    let input = ArrayBufferViewOrArrayBuffer::ArrayBufferView(RootedTraceableBox::new(heap_view));
+    let Ok(text) = dec.Decode(Some(input), &TextDecodeOptions::empty()) else {
+        return false;
+    };
+    let r = runner_ptr();
+    fill_str16(r, out, 2, &text.0);
+    true
+}
+
 /// The hot classification of an interned id, if any.
 unsafe fn hot_of(name_id: u32) -> Hot {
     let r = runner_ptr();
@@ -1196,6 +1357,12 @@ extern "C" fn host_web_call_u16(
                         try_style_property(cx, target, hot, a, out)
                     },
                     Hot::QuerySelectorAll => try_query_selector_all(cx, target, a, out),
+                    Hot::GetRandomValues => try_get_random_values(cx, target, a, out),
+                    Hot::Encode => try_encode(cx, target, a, out),
+                    Hot::Decode => try_decode(cx, target, a, out),
+                    Hot::GetItem => try_storage_get_item(cx, target, a, out),
+                    Hot::SetItem => try_storage_set_item(cx, target, a, out),
+                    Hot::RemoveItem => try_storage_remove_item(cx, target, a, out),
                     _ => false,
                 };
                 if handled {
@@ -1231,6 +1398,85 @@ extern "C" fn host_web_new_u16(
             }
         }
         bridge_wide(c"newWide", &[ctor_id as f64, refs_mask(a)], a, out)
+    }
+}
+
+// ---- typed-binding fast path (ABI v7, web_bind) ----------------------------
+// The leanest tier: a JIT-compiled numeric web method (the canvas draw loop)
+// crosses as a compile-time bind id plus raw f64s — no interned name, no
+// MsyArg16 marshalling — and dispatches straight to Servo's
+// CanvasRenderingContext2D methods. Ids must match MSY_BIND_* in
+// crates/mersey_capi/include/mersey.h.
+const BIND_CANVAS2D_FILLRECT: u32 = 1;
+const BIND_CANVAS2D_CLEARRECT: u32 = 2;
+const BIND_CANVAS2D_STROKERECT: u32 = 3;
+const BIND_CANVAS2D_RECT: u32 = 4;
+const BIND_CANVAS2D_MOVETO: u32 = 5;
+const BIND_CANVAS2D_LINETO: u32 = 6;
+const BIND_CANVAS2D_TRANSLATE: u32 = 7;
+const BIND_CANVAS2D_SCALE: u32 = 8;
+const BIND_CANVAS2D_ROTATE: u32 = 9;
+
+fn bind_method_name(id: u32) -> &'static str {
+    match id {
+        BIND_CANVAS2D_FILLRECT => "fillRect",
+        BIND_CANVAS2D_CLEARRECT => "clearRect",
+        BIND_CANVAS2D_STROKERECT => "strokeRect",
+        BIND_CANVAS2D_RECT => "rect",
+        BIND_CANVAS2D_MOVETO => "moveTo",
+        BIND_CANVAS2D_LINETO => "lineTo",
+        BIND_CANVAS2D_TRANSLATE => "translate",
+        BIND_CANVAS2D_SCALE => "scale",
+        BIND_CANVAS2D_ROTATE => "rotate",
+        _ => "",
+    }
+}
+
+extern "C" fn host_web_bind(
+    _d: *mut c_void,
+    target: i64,
+    bind_id: u32,
+    args: *const f64,
+    argc: usize,
+    out: *mut MsyReply,
+) {
+    unsafe {
+        *out = MsyReply::default();
+        let a = |i: usize| if !args.is_null() && i < argc { *args.add(i) } else { 0.0 };
+        if let Some(mut cx) = JSContext::get_from_thread() {
+            let cx = &mut cx;
+            if let Some(ctx2d) = resolve_canvas2d(cx, target) {
+                match bind_id {
+                    BIND_CANVAS2D_FILLRECT => return ctx2d.FillRect(a(0), a(1), a(2), a(3)),
+                    BIND_CANVAS2D_CLEARRECT => return ctx2d.ClearRect(a(0), a(1), a(2), a(3)),
+                    BIND_CANVAS2D_STROKERECT => return ctx2d.StrokeRect(a(0), a(1), a(2), a(3)),
+                    BIND_CANVAS2D_RECT => return ctx2d.Rect(a(0), a(1), a(2), a(3)),
+                    BIND_CANVAS2D_MOVETO => return ctx2d.MoveTo(a(0), a(1)),
+                    BIND_CANVAS2D_LINETO => return ctx2d.LineTo(a(0), a(1)),
+                    BIND_CANVAS2D_TRANSLATE => return ctx2d.Translate(a(0), a(1)),
+                    BIND_CANVAS2D_SCALE => return ctx2d.Scale(a(0), a(1)),
+                    BIND_CANVAS2D_ROTATE => return ctx2d.Rotate(a(0)),
+                    _ => {},
+                }
+            }
+        }
+        // Receiver is not a canvas context (or an unknown id): reflective call
+        // under the method's real name. Never hit by the canvas workload.
+        let name = bind_method_name(bind_id);
+        if name.is_empty() {
+            return;
+        }
+        let mut json = String::from("[");
+        for i in 0..argc {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&a(i).to_string());
+        }
+        json.push(']');
+        let t = target.to_string();
+        let mut dummy: usize = 0;
+        let _ = call_bridge_str(c"call", &[&t, name, &json], &mut dummy);
     }
 }
 
@@ -1273,8 +1519,9 @@ fn host_table() -> MsyHostTable {
         web_set_u16: Some(host_web_set_u16),
         web_call_u16: Some(host_web_call_u16),
         web_new_u16: Some(host_web_new_u16),
-        // Typed-binding (web_bind) fast path not built yet.
-        web_bind: None,
+        // Typed-binding fast path: the JIT-compiled canvas loop calls this with
+        // raw f64s; we dispatch straight to CanvasRenderingContext2D.
+        web_bind: Some(host_web_bind),
     }
 }
 

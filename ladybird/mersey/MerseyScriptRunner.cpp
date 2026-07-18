@@ -11,6 +11,10 @@
 #include <AK/CharacterTypes.h>
 #include <AK/Format.h>
 #include <AK/HashMap.h>
+#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
+#include <AK/JsonValue.h>
+#include <AK/OwnPtr.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Utf16FlyString.h>
@@ -19,8 +23,13 @@
 #include <AK/Vector.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/Runtime/AbstractOperations.h>
+#include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibJS/Runtime/BoundFunction.h>
+#include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/DataView.h>
+#include <LibJS/Runtime/Error.h>
+#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PrimitiveString.h>
@@ -29,7 +38,6 @@
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/VM.h>
-#include <LibWeb/Bindings/TextDecoder.h>
 #include <LibWeb/CSS/CSSStyleDeclaration.h>
 #include <LibWeb/CSS/CSSStyleProperties.h>
 #include <LibWeb/Crypto/Crypto.h>
@@ -47,19 +55,14 @@
 #include <LibWeb/Encoding/TextEncoder.h>
 #include <LibWeb/HTML/AttributeNames.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
-#include <LibWeb/Namespace.h>
-#include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibWeb/HTML/Storage.h>
+#include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
+#include <LibWeb/Namespace.h>
 #include <LibWeb/WebIDL/Buffers.h>
-
-// The reflective bridge JS, generated from web/mersey-bridge.js by
-// ladybird/refresh-bridge.sh into bridge.js.h — a C++ header wrapping the
-// canonical, readable bridge.js in one raw string literal:
-//   namespace Web::Mersey { inline constexpr StringView BRIDGE_JS = R"…(…)…"sv; }
-// So the module builds with no data-file plumbing, the C++ counterpart of
-// Servo's `include_str!("bridge.js")`. Do not edit the generated header by hand.
-#include <LibWeb/Mersey/bridge.js.h>
+#include <LibWeb/WebIDL/CallbackType.h>
 
 namespace Web::Mersey {
 
@@ -68,16 +71,18 @@ namespace Web::Mersey {
 // API by import.
 static constexpr StringView CAPS = "[\"dom\",\"web\",\"time\",\"random\",\"net\",\"storage\"]"sv;
 
-// Hot methods with a direct-C++ path (the direct-DOM tier): the engine interns a
-// name once, and we classify it then, so the wide-path hooks can switch on the id
-// straight to the C++ method — skipping the reflective bridge into LibJS entirely.
+// Member names with a direct-C++ path (the direct-DOM tier): the engine interns
+// a name once, we classify it then, and the host hooks switch on the id straight
+// to the LibWeb C++ method. Everything else takes the native reflective path
+// below — LibJS property gets / JS::call on the IDL bindings — which still
+// never evaluates or calls any JS source: the whole bridge is C++.
 enum class HotMethod : u8 {
     None,
     GetRandomValues,  // crypto.getRandomValues(buf) -> Crypto::get_random_values
     CtorURL,          // new URL(str)               -> DOMURL::construct_impl
     Pathname,         // url.pathname               -> DOMURL::pathname
     Search,           // url.search                 -> DOMURL::search
-    CreateElement,    // document.createElement(t)  -> Document::create_element
+    CreateElement,    // document.createElement(t)  -> DOM::create_element
     AppendChild,      // node.appendChild(child)    -> Node::append_child
     TextContent,      // el.textContent (get + set) -> Node::text_content / set_text_content
     CtorEvent,        // new Event(type)            -> DOM::Event::create
@@ -93,123 +98,296 @@ enum class HotMethod : u8 {
     Index,            // nodes[i] (digit-only name) -> NodeList::item
     Encode,           // enc.encode(s)              -> TextEncoder::encode
     Decode,           // dec.decode(bytes)          -> TextDecoder::decode
+    GetItem,          // storage.getItem(k)         -> HTML::Storage::get_item
+    SetItem,          // storage.setItem(k, v)      -> HTML::Storage::set_item
+    RemoveItem,       // storage.removeItem(k)      -> HTML::Storage::remove_item
 };
 
 // Per-realm engine runner, reached through a raw thread-local pointer (see the
-// header's threading note — a bridge call can legitimately re-enter).
+// header's threading note — a host call can legitimately re-enter).
 struct Runner {
     msy_context* ctx { nullptr };
-    // The realm whose global hosts the page's JS (and the reflective bridge).
+    // The realm whose global hosts the page (and every object a handle names).
     JS::Realm* realm { nullptr };
-    bool bridge_ready { false };
     // Backing store for a reply the engine reads — valid until the next host
     // call on this runner, exactly the C-ABI buffer-lifetime contract. A
     // ByteString (UTF-8) keeps a stable (characters, length) the ABI borrows.
     ByteString scratch;
     // Backing store for a typed UTF-16 reply (msy_reply::str16) on the wide path.
     Vector<uint16_t> reply_str16;
-    // Typed-binding fast path (web_bind): the canvas draw loop reuses one context,
-    // so its C++ pointer is cached by handle — one JS unwrap amortized over the
-    // loop, then every fillRect is a direct call. LibGC is non-moving and the page
-    // holds the context alive, so a raw pointer is safe for the workload's span.
-    int64_t canvas_handle { INT64_MIN };
-    GC::Ptr<Web::HTML::CanvasRenderingContext2D> canvas_ctx;
-    // Direct-DOM tier: interned-name → hot method (indexed by name id), and a
-    // handle → JS object cache so a hot method's receiver/object args are
-    // unwrapped once and reused across the loop (invalidated on web_release).
+    // The native handle table — the C++ counterpart of the JS bridge's
+    // `handles` array, owned here so no JS is involved in object identity.
+    // Handle 0 is the realm's global object; slots are nulled on web_release
+    // (indices must stay stable). The RootVector keeps every entry alive for
+    // the GC; by_object dedups object handles exactly like the bridge's Map.
+    OwnPtr<GC::RootVector<JS::Value>> handles;
+    HashMap<JS::Object*, int64_t> by_object;
+    // Interned member names (the id is the index) and their hot classification.
+    Vector<ByteString> names;
+    HashMap<ByteString, uint32_t> name_ids;
     Vector<HotMethod> hot;
     // For HotMethod::Index: the parsed index the digit-only name spells.
     Vector<uint32_t> hot_arg;
-    HashMap<int64_t, GC::Ptr<JS::Object>> handle_cache;
+    // Callable-handle globals with a direct-C++ path in web_call: `setTimeout(cb,
+    // ms)` crosses on the JSON path (the closure argument forces it), and we
+    // dispatch it straight to WindowOrWorkerGlobalScopeMixin instead of calling
+    // the binding function.
+    int64_t set_timeout_handle { INT64_MIN };
+    int64_t clear_timeout_handle { INT64_MIN };
+    // Typed-binding fast path (web_bind): the canvas draw loop reuses one context,
+    // so its C++ pointer is cached by handle — one unwrap amortized over the
+    // loop, then every fillRect is a direct call. LibGC is non-moving and the
+    // handle table holds the context alive, so the pointer is safe.
+    int64_t canvas_handle { INT64_MIN };
+    GC::Ptr<Web::HTML::CanvasRenderingContext2D> canvas_ctx;
     MonotonicTime start { MonotonicTime::now() };
 };
 
 static thread_local Runner* s_runner { nullptr };
 
-// ---- reflective bridge plumbing -------------------------------------------
+// ---- native handle table ---------------------------------------------------
 
-// One argument crossing into the bridge: a JS number or a UTF-8 string. Mirrors
-// Servo's JsArg — numbers stay numbers, strings stay strings, so the bridge's
-// interned/scalar fast paths never see a JSON blob to parse.
-struct BridgeArg {
-    enum class Kind { Number, String } kind;
-    double number { 0 };
-    StringView string;
-
-    static BridgeArg num(double n) { return { Kind::Number, n, {} }; }
-    static BridgeArg str(StringView s) { return { Kind::String, 0, s }; }
-};
-
-// Call `__merseyBridge[method](args...)` in the runner's realm and return the
-// reply as UTF-8. A string reply comes back verbatim; a numeric reply (intern)
-// is encoded as its decimal text, so the number-returning wrappers can parse it
-// (matching the Servo fork). Empty optional means the call could not be made.
-static Optional<ByteString> call_bridge(StringView method, ReadonlySpan<BridgeArg> args)
+// (Re)build the table for a realm: handle 0 = the global object.
+static void reset_handles(Runner* runner, JS::Realm& realm)
 {
-    auto* runner = s_runner;
-    if (!runner || !runner->realm)
-        return {};
-    auto& realm = *runner->realm;
-    auto& vm = realm.vm();
+    runner->handles = make<GC::RootVector<JS::Value>>();
+    runner->by_object.clear();
     auto& global = realm.global_object();
-
-    auto bridge_value_or = global.get("__merseyBridge"_utf16_fly_string);
-    if (bridge_value_or.is_error() || !bridge_value_or.value().is_object())
-        return {};
-    auto& bridge = bridge_value_or.value().as_object();
-
-    auto method_value_or = bridge.get(JS::PropertyKey { Utf16String::from_utf8(method) });
-    if (method_value_or.is_error() || !method_value_or.value().is_function())
-        return {};
-
-    GC::RootVector<JS::Value> arguments;
-    for (auto const& arg : args) {
-        if (arg.kind == BridgeArg::Kind::Number)
-            arguments.append(JS::Value(arg.number));
-        else
-            arguments.append(JS::PrimitiveString::create(vm, Utf16String::from_utf8(arg.string)));
-    }
-
-    auto result_or = JS::call(vm, method_value_or.value(), JS::Value(&bridge), arguments.span());
-    if (result_or.is_error())
-        return {};
-    auto result = result_or.value();
-    // A JSON-string reply comes back verbatim (UTF-16 → UTF-8); a numeric reply
-    // (intern) is its integer decimal text, which the number-returning wrappers
-    // parse back — so one path serves both.
-    if (result.is_string())
-        return result.as_string().utf16_string().to_byte_string();
-    if (result.is_number())
-        return ByteString::number(static_cast<i64>(result.as_double()));
-    return ByteString {};
+    runner->handles->append(JS::Value(&global));
+    runner->by_object.set(&global, 0);
+    runner->set_timeout_handle = INT64_MIN;
+    runner->clear_timeout_handle = INT64_MIN;
+    runner->canvas_handle = INT64_MIN;
+    runner->canvas_ctx = nullptr;
 }
 
-// Stash a reply into the runner scratch (UTF-8) and hand back its (ptr, len) —
-// the engine reads it before the next call across the boundary in this
-// direction, the whole of the ABI's buffer-ownership rule.
-static char const* reply_into_scratch(StringView method, ReadonlySpan<BridgeArg> args, size_t* out_len)
+// The value a handle names: js_null for a released slot (the bridge's `null`
+// entry — stale), js_undefined for a handle that was never allocated.
+static JS::Value handle_value(Runner* runner, int64_t handle)
+{
+    if (!runner->handles || handle < 0 || static_cast<size_t>(handle) >= runner->handles->size())
+        return JS::js_undefined();
+    return (*runner->handles)[handle];
+}
+
+static GC::Ptr<JS::Object> handle_object(Runner* runner, int64_t handle)
+{
+    auto v = handle_value(runner, handle);
+    if (!v.is_object())
+        return nullptr;
+    return &v.as_object();
+}
+
+// The handle for a value, allocating one if needed (objects dedup, so a stable
+// object keeps a stable handle — the loop-carried receivers depend on that).
+static int64_t handle_for(Runner* runner, JS::Value v)
+{
+    if (v.is_object()) {
+        if (auto it = runner->by_object.find(&v.as_object()); it != runner->by_object.end())
+            return it->value;
+    }
+    int64_t h = static_cast<int64_t>(runner->handles->size());
+    runner->handles->append(v);
+    if (v.is_object())
+        runner->by_object.set(&v.as_object(), h);
+    return h;
+}
+
+// ---- tagged-JSON encode / decode (the C++ web/mersey-bridge.js) ------------
+// The engine's reflective wire format (mersey.h): primitives are JSON scalars,
+// host objects cross as {"__ref__": handle}, Mersey closures arrive as
+// {"__cb__": id} and become NativeFunctions that re-enter the engine. This is
+// exactly the bridge JS's encode/decode, natively — no JS runs.
+
+static void append_json_quoted(StringBuilder& out, StringView utf8)
+{
+    out.append('"');
+    for (char c : utf8) {
+        switch (c) {
+        case '"':
+            out.append("\\\""sv);
+            break;
+        case '\\':
+            out.append("\\\\"sv);
+            break;
+        case '\b':
+            out.append("\\b"sv);
+            break;
+        case '\f':
+            out.append("\\f"sv);
+            break;
+        case '\n':
+            out.append("\\n"sv);
+            break;
+        case '\r':
+            out.append("\\r"sv);
+            break;
+        case '\t':
+            out.append("\\t"sv);
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20)
+                out.appendff("\\u{:04x}", static_cast<unsigned char>(c));
+            else
+                out.append(c);
+        }
+    }
+    out.append('"');
+}
+
+// One value, encoded. Non-finite numbers become null (JSON.stringify's rule);
+// anything non-primitive becomes a (deduped) handle ref.
+static void encode_value(Runner* runner, StringBuilder& out, JS::Value v)
+{
+    if (v.is_nullish()) {
+        out.append("null"sv);
+        return;
+    }
+    if (v.is_boolean()) {
+        out.append(v.as_bool() ? "true"sv : "false"sv);
+        return;
+    }
+    if (v.is_number()) {
+        double d = v.as_double();
+        if (!__builtin_isfinite(d)) {
+            out.append("null"sv);
+            return;
+        }
+        JS::number_to_string(out, d);
+        return;
+    }
+    if (v.is_string()) {
+        append_json_quoted(out, v.as_string().utf16_string().to_byte_string());
+        return;
+    }
+    if (v.is_bigint()) {
+        append_json_quoted(out, v.to_utf16_string_without_side_effects().to_byte_string());
+        return;
+    }
+    out.appendff("{{\"__ref__\":{}}}", handle_for(runner, v));
+}
+
+// A Mersey closure crossing into JS-shaped code (an event listener, a promise
+// reaction, a timer callback): a NativeFunction that encodes its arguments and
+// re-enters the engine — C++ end to end, no JS trampoline.
+static JS::Value make_callback(Runner* runner, uint32_t id)
+{
+    return JS::NativeFunction::create(*runner->realm, [runner, id](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+        StringBuilder json;
+        json.append('[');
+        for (size_t i = 0; i < vm.argument_count(); ++i) {
+            if (i)
+                json.append(',');
+            encode_value(runner, json, vm.argument(i));
+        }
+        json.append(']');
+        auto text = json.to_byte_string();
+        msy_context_invoke_args(runner->ctx, id, text.characters(), text.length());
+        return JS::js_undefined();
+    }, 0);
+}
+
+// A parsed JSON value back to a JS value. Practically infallible (the inputs
+// are the engine's own well-formed argument JSON); allocation failures abort.
+static JS::Value decode_json(Runner* runner, JsonValue const& v)
+{
+    auto& realm = *runner->realm;
+    auto& vm = realm.vm();
+    if (v.is_null())
+        return JS::js_null();
+    if (v.is_bool())
+        return JS::Value(v.as_bool());
+    if (v.is_number())
+        return JS::Value(v.get_double_with_precision_loss().value_or(0));
+    if (v.is_string())
+        return JS::PrimitiveString::create(vm, Utf16String::from_utf8(v.as_string()));
+    if (v.is_array()) {
+        auto const& elems = v.as_array();
+        GC::RootVector<JS::Value> items;
+        for (size_t i = 0; i < elems.size(); ++i)
+            items.append(decode_json(runner, elems.at(i)));
+        return JS::Array::create_from(realm, items.span());
+    }
+    auto const& obj = v.as_object();
+    if (auto ref = obj.get_i64("__ref__"sv); ref.has_value())
+        return handle_value(runner, *ref);
+    if (auto cb = obj.get_i64("__cb__"sv); cb.has_value())
+        return make_callback(runner, static_cast<uint32_t>(*cb));
+    auto plain = JS::Object::create(realm, realm.intrinsics().object_prototype());
+    obj.for_each_member([&](auto const& key, JsonValue const& member) {
+        auto member_value = decode_json(runner, member);
+        (void)plain->create_data_property(JS::PropertyKey { Utf16String::from_utf8(key) }, member_value);
+    });
+    return plain;
+}
+
+// ---- reply plumbing --------------------------------------------------------
+
+// {"ok": value} — with the bridge's top-level-array rule: a returned JS array
+// crosses inline as an array of encoded elements, not as a handle.
+static JS::ThrowCompletionOr<ByteString> ok_reply(Runner* runner, JS::Value v)
+{
+    auto& vm = runner->realm->vm();
+    StringBuilder b;
+    b.append("{\"ok\":"sv);
+    if (v.is_object() && is<JS::Array>(v.as_object())) {
+        auto& arr = v.as_object();
+        auto len = TRY(JS::length_of_array_like(vm, arr));
+        b.append('[');
+        for (size_t i = 0; i < len; ++i) {
+            if (i)
+                b.append(',');
+            encode_value(runner, b, TRY(arr.get(JS::PropertyKey { static_cast<u32>(i) })));
+        }
+        b.append(']');
+    } else {
+        encode_value(runner, b, v);
+    }
+    b.append('}');
+    return b.to_byte_string();
+}
+
+// The thrown value's message, the way the bridge spelled it: e.message when
+// there is one, else the value's stringification.
+static Utf16String error_message(JS::Value error)
+{
+    if (error.is_object()) {
+        auto message = error.as_object().get_without_side_effects(JS::PropertyKey { "message"_utf16_fly_string });
+        if (message.is_string())
+            return message.as_string().utf16_string();
+    }
+    return error.to_utf16_string_without_side_effects();
+}
+
+static ByteString err_reply(JS::Value error)
+{
+    StringBuilder b;
+    b.append("{\"err\":"sv);
+    append_json_quoted(b, error_message(error).to_byte_string());
+    b.append('}');
+    return b.to_byte_string();
+}
+
+// Run a completion-returning body and stash its reply (or the error reply) in
+// the runner scratch, handing back the ABI (ptr, len).
+template<typename F>
+static char const* json_hook(size_t* out_len, F&& body)
 {
     auto* runner = s_runner;
-    if (!runner) {
+    if (!runner || !runner->realm) {
         *out_len = 0;
         return nullptr;
     }
-    runner->scratch = call_bridge(method, args).value_or(ByteString {});
+    auto result = body(runner);
+    if (result.is_error())
+        runner->scratch = err_reply(result.release_error().value());
+    else
+        runner->scratch = result.release_value();
     *out_len = runner->scratch.length();
     return runner->scratch.characters();
 }
 
-// Number-returning bridge call (`global`, `instanceOf`): -1 on any failure,
-// which is exactly how the engine reads "no such global" / "not an instance".
-static int64_t bridge_int(StringView method, ReadonlySpan<BridgeArg> args)
-{
-    auto reply = call_bridge(method, args);
-    if (!reply.has_value())
-        return -1;
-    return reply->view().to_number<i64>().value_or(-1);
-}
-
-// ---- host table shims ------------------------------------------------------
+// ---- host table: basics ----------------------------------------------------
 
 static void host_print(void*, char const* utf8, size_t len)
 {
@@ -235,204 +413,308 @@ static double host_time_ms(void*, int32_t epoch)
     return static_cast<double>((MonotonicTime::now() - runner->start).to_nanoseconds()) / 1.0e6;
 }
 
+// ---- host table: reflective ops (native) -----------------------------------
+
 static int64_t host_web_global(void*, char const* name, size_t len)
 {
-    BridgeArg args[] = { BridgeArg::str({ name, len }) };
-    return bridge_int("global"sv, args);
+    auto* runner = s_runner;
+    if (!runner || !runner->realm)
+        return -1;
+    StringView n { name, len };
+    auto& global = runner->realm->global_object();
+    auto key = JS::PropertyKey { Utf16String::from_utf8(n) };
+    auto has_or = global.has_property(key);
+    if (has_or.is_error() || !has_or.value())
+        return -1;
+    auto value_or = global.get(key);
+    if (value_or.is_error())
+        return -1;
+    auto h = handle_for(runner, value_or.value());
+    // Callable-handle globals with a direct-C++ call path (see host_web_call).
+    if (n == "setTimeout"sv)
+        runner->set_timeout_handle = h;
+    else if (n == "clearTimeout"sv)
+        runner->clear_timeout_handle = h;
+    return h;
 }
 
 static char const* host_web_get(void*, int64_t target, char const* prop, size_t prop_len, size_t* out_len)
 {
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::str({ prop, prop_len }) };
-    return reply_into_scratch("get"sv, args, out_len);
+    return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto v = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(StringView { prop, prop_len }) }));
+        // A method read binds its receiver (the bridge's v.bind(obj)), so a
+        // later call through the handle has its `this`.
+        if (v.is_function())
+            v = JS::Value(TRY(JS::BoundFunction::create(*runner->realm, v.as_function(), tv, {})).ptr());
+        return ok_reply(runner, v);
+    });
 }
 
 static char const* host_web_set(void*, int64_t target, char const* prop, size_t prop_len,
     char const* value_json, size_t value_len, size_t* out_len)
 {
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::str({ prop, prop_len }),
-        BridgeArg::str({ value_json, value_len }) };
-    return reply_into_scratch("set"sv, args, out_len);
+    return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto parsed = JsonValue::from_string(StringView { value_json, value_len });
+        auto v = parsed.is_error() ? JS::js_null() : decode_json(runner, parsed.value());
+        TRY(obj->set(JS::PropertyKey { Utf16String::from_utf8(StringView { prop, prop_len }) }, v,
+            JS::Object::ShouldThrowExceptions::Yes));
+        return ok_reply(runner, JS::js_null());
+    });
+}
+
+// setTimeout(cb, ms, ...) straight to WindowOrWorkerGlobalScopeMixin — the
+// callback is already a C++ NativeFunction, so the whole timer arm/fire path
+// stays out of the binding layer.
+static JS::ThrowCompletionOr<ByteString> set_timeout_direct(Runner* runner, ReadonlySpan<JS::Value> args)
+{
+    auto& global = runner->realm->global_object();
+    auto& window = as<HTML::Window>(global);
+    i32 delay = args.size() > 1 && args[1].is_number() ? static_cast<i32>(args[1].as_double()) : 0;
+    auto callback_value = args[0];
+    auto callback = runner->realm->heap().allocate<WebIDL::CallbackType>(callback_value.as_object(), *runner->realm);
+    GC::RootVector<JS::Value> extra;
+    for (size_t i = 2; i < args.size(); ++i)
+        extra.append(args[i]);
+    auto id = window.set_timeout(HTML::TimerHandler { GC::Ref { *callback } }, delay, move(extra));
+    return ok_reply(runner, JS::Value(id));
 }
 
 static char const* host_web_call(void*, int64_t target, char const* method, size_t method_len,
     char const* args_json, size_t args_len, size_t* out_len)
 {
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::str({ method, method_len }),
-        BridgeArg::str({ args_json, args_len }) };
-    return reply_into_scratch("call"sv, args, out_len);
+    return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
+        auto& vm = runner->realm->vm();
+        StringView method_name { method, method_len };
+
+        GC::RootVector<JS::Value> args;
+        auto parsed = JsonValue::from_string(StringView { args_json, args_len });
+        if (!parsed.is_error() && parsed.value().is_array()) {
+            auto const& arr = parsed.value().as_array();
+            for (size_t i = 0; i < arr.size(); ++i)
+                args.append(decode_json(runner, arr.at(i)));
+        }
+
+        auto tv = handle_value(runner, target);
+        if (method_name.is_empty()) {
+            // The handle is itself callable (an imported `setTimeout`, `fetch`).
+            if (!args.is_empty() && args[0].is_function() && is<HTML::Window>(runner->realm->global_object())) {
+                if (target == runner->set_timeout_handle)
+                    return set_timeout_direct(runner, args.span());
+            }
+            if (target == runner->clear_timeout_handle && !args.is_empty() && args[0].is_number()
+                && is<HTML::Window>(runner->realm->global_object())) {
+                as<HTML::Window>(runner->realm->global_object()).clear_timeout(static_cast<i32>(args[0].as_double()));
+                return ok_reply(runner, JS::js_null());
+            }
+            if (!tv.is_function())
+                return ByteString { "{\"err\":\"value is not a function\"}" };
+            return ok_reply(runner, TRY(JS::call(vm, tv, JS::js_undefined(), args.span())));
+        }
+        auto obj = TRY(tv.to_object(vm));
+        auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(method_name) }));
+        if (!fn.is_function())
+            return ByteString::formatted("{{\"err\":\"{} is not a function\"}}", method_name);
+        return ok_reply(runner, TRY(JS::call(vm, fn, tv, args.span())));
+    });
+}
+
+// Resolve a (possibly dotted, `Intl.NumberFormat`) constructor name from the
+// global — the bridge's reduce over the path.
+static JS::ThrowCompletionOr<JS::Value> resolve_ctor(Runner* runner, StringView name)
+{
+    JS::Value o { &runner->realm->global_object() };
+    auto& vm = runner->realm->vm();
+    for (auto segment : name.split_view('.')) {
+        auto obj = TRY(o.to_object(vm));
+        o = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(segment) }));
+    }
+    return o;
 }
 
 static char const* host_web_new(void*, char const* ctor, size_t ctor_len,
     char const* args_json, size_t args_len, size_t* out_len)
 {
-    BridgeArg args[] = { BridgeArg::str({ ctor, ctor_len }), BridgeArg::str({ args_json, args_len }) };
-    return reply_into_scratch("construct"sv, args, out_len);
+    return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
+        auto& vm = runner->realm->vm();
+        GC::RootVector<JS::Value> args;
+        auto parsed = JsonValue::from_string(StringView { args_json, args_len });
+        if (!parsed.is_error() && parsed.value().is_array()) {
+            auto const& arr = parsed.value().as_array();
+            for (size_t i = 0; i < arr.size(); ++i)
+                args.append(decode_json(runner, arr.at(i)));
+        }
+        auto ctor_value = TRY(resolve_ctor(runner, StringView { ctor, ctor_len }));
+        if (!ctor_value.is_function())
+            return ByteString::formatted("{{\"err\":\"{} is not a constructor\"}}", StringView { ctor, ctor_len });
+        auto instance = TRY(JS::construct(vm, ctor_value.as_function(), args.span()));
+        return ok_reply(runner, JS::Value(instance.ptr()));
+    });
 }
 
 static char const* host_web_iterate(void*, int64_t target, size_t* out_len)
 {
-    BridgeArg args[] = { BridgeArg::num(target) };
-    return reply_into_scratch("iterate"sv, args, out_len);
+    return json_hook(out_len, [&](Runner* runner) -> JS::ThrowCompletionOr<ByteString> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        if (tv.is_nullish())
+            return ByteString::formatted("{{\"err\":\"stale handle {}\"}}", target);
+
+        GC::RootVector<JS::Value> items;
+        if (tv.is_object() && is<JS::Array>(tv.as_object())) {
+            auto& arr = tv.as_object();
+            auto len = TRY(JS::length_of_array_like(vm, arr));
+            for (size_t i = 0; i < len; ++i)
+                items.append(TRY(arr.get(JS::PropertyKey { static_cast<u32>(i) })));
+        } else {
+            // The iterator protocol first; array-likes (a length but no
+            // Symbol.iterator) as the fallback — the bridge's order.
+            auto iterator_or = JS::get_iterator(vm, tv, JS::IteratorHint::Sync);
+            if (!iterator_or.is_error()) {
+                auto list = TRY(JS::iterator_to_list(vm, *iterator_or.value()));
+                for (auto v : list)
+                    items.append(v);
+            } else if (tv.is_object()) {
+                auto len_value = TRY(tv.as_object().get(JS::PropertyKey { "length"_utf16_fly_string }));
+                if (!len_value.is_number())
+                    return ByteString { "{\"err\":\"value is not iterable\"}" };
+                auto len = static_cast<size_t>(len_value.as_double());
+                for (size_t i = 0; i < len; ++i)
+                    items.append(TRY(tv.as_object().get(JS::PropertyKey { static_cast<u32>(i) })));
+            } else {
+                return ByteString { "{\"err\":\"value is not iterable\"}" };
+            }
+        }
+
+        StringBuilder b;
+        b.append("{\"ok\":["sv);
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i)
+                b.append(',');
+            encode_value(runner, b, items[i]);
+        }
+        b.append("]}"sv);
+        return b.to_byte_string();
+    });
 }
 
 static int32_t host_web_instanceof(void*, int64_t target, int64_t ctor)
 {
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::num(ctor) };
-    return static_cast<int32_t>(bridge_int("instanceOf"sv, args));
+    auto* runner = s_runner;
+    if (!runner || !runner->realm)
+        return 0;
+    auto& vm = runner->realm->vm();
+    auto result = JS::instance_of(vm, handle_value(runner, target), handle_value(runner, ctor));
+    if (result.is_error())
+        return 0;
+    return result.value().as_bool() ? 1 : 0;
 }
 
 static void host_web_release(void*, int64_t target)
 {
-    // Drop any cached unwrap for this handle before the engine forgets it.
-    if (auto* runner = s_runner) {
-        runner->handle_cache.remove(target);
-        if (runner->canvas_handle == target) {
-            runner->canvas_handle = INT64_MIN;
-            runner->canvas_ctx = nullptr;
-        }
+    auto* runner = s_runner;
+    if (!runner || !runner->handles || target <= 0 || static_cast<size_t>(target) >= runner->handles->size())
+        return;
+    auto v = (*runner->handles)[target];
+    if (v.is_object())
+        runner->by_object.remove(&v.as_object());
+    (*runner->handles)[target] = JS::js_null();
+    if (runner->canvas_handle == target) {
+        runner->canvas_handle = INT64_MIN;
+        runner->canvas_ctx = nullptr;
     }
-    BridgeArg args[] = { BridgeArg::num(target) };
-    size_t ignored = 0;
-    (void)reply_into_scratch("release"sv, args, &ignored);
 }
 
-// ---- interned + scalar fast paths (ABI v3) --------------------------------
-// A member/method name crosses the boundary once (web_intern), then only its id
-// does, and scalar arguments cross as JS values — no per-call args JSON to build
-// and parse. The bridge already implements the matching methods (intern / getId
-// / callStr / callScalars / newScalars); these forward to them exactly as the
-// Servo fork does. Ops these do not cover (object args, property sets) fall back
-// to the reflective ops above.
+// ---- interning + hot classification (ABI v3) --------------------------------
 
 static uint32_t host_web_intern(void*, char const* name, size_t len)
 {
-    StringView n { name, len };
-    BridgeArg args[] = { BridgeArg::str(n) };
-    auto reply = call_bridge("intern"sv, args);
-    if (!reply.has_value())
-        return UINT32_MAX;
-    auto id = reply->view().to_number<u32>().value_or(UINT32_MAX);
-    // Classify the name once, so the wide-path hooks can dispatch a hot method to
-    // its direct-C++ path by id (the engine interns before it ever calls). Ids are
-    // the bridge's sequential ids, so this Vector is indexed the same way.
     auto* runner = s_runner;
-    if (runner && id != UINT32_MAX) {
-        auto hot = HotMethod::None;
-        if (n == "getRandomValues"sv)
-            hot = HotMethod::GetRandomValues;
-        else if (n == "URL"sv)
-            hot = HotMethod::CtorURL;
-        else if (n == "pathname"sv)
-            hot = HotMethod::Pathname;
-        else if (n == "search"sv)
-            hot = HotMethod::Search;
-        else if (n == "createElement"sv)
-            hot = HotMethod::CreateElement;
-        else if (n == "appendChild"sv)
-            hot = HotMethod::AppendChild;
-        else if (n == "textContent"sv)
-            hot = HotMethod::TextContent;
-        else if (n == "Event"sv)
-            hot = HotMethod::CtorEvent;
-        else if (n == "dispatchEvent"sv)
-            hot = HotMethod::DispatchEvent;
-        else if (n == "className"sv)
-            hot = HotMethod::ClassName;
-        else if (n == "classList"sv)
-            hot = HotMethod::ClassList;
-        else if (n == "contains"sv)
-            hot = HotMethod::Contains;
-        else if (n == "style"sv)
-            hot = HotMethod::Style;
-        else if (n == "setProperty"sv)
-            hot = HotMethod::SetProperty;
-        else if (n == "getPropertyValue"sv)
-            hot = HotMethod::GetPropertyValue;
-        else if (n == "querySelectorAll"sv)
-            hot = HotMethod::QuerySelectorAll;
-        else if (n == "length"sv)
-            hot = HotMethod::Length;
-        else if (n == "encode"sv)
-            hot = HotMethod::Encode;
-        else if (n == "decode"sv)
-            hot = HotMethod::Decode;
-        uint32_t index_arg = 0;
-        // A digit-only name is an indexed access crossing as a property read
-        // (`nodes[i]` interns "42"); dispatch it to NodeList::item by value.
-        if (hot == HotMethod::None && !n.is_empty() && n.length() <= 9
-            && all_of(n, [](char c) { return is_ascii_digit(c); })) {
-            hot = HotMethod::Index;
-            index_arg = n.to_number<u32>().value_or(0);
-        }
-        while (runner->hot.size() <= id) {
-            runner->hot.append(HotMethod::None);
-            runner->hot_arg.append(0);
-        }
-        runner->hot[id] = hot;
-        runner->hot_arg[id] = index_arg;
+    if (!runner)
+        return UINT32_MAX;
+    ByteString n { StringView { name, len } };
+    uint32_t id;
+    if (auto it = runner->name_ids.find(n); it != runner->name_ids.end()) {
+        id = it->value;
+    } else {
+        id = static_cast<uint32_t>(runner->names.size());
+        runner->names.append(n);
+        runner->name_ids.set(n, id);
     }
+    // Classify the name once, so the wide-path hooks can dispatch a hot method
+    // straight to its C++ path by id (the engine interns before it ever calls).
+    auto sv = n.view();
+    auto hot = HotMethod::None;
+    if (sv == "getRandomValues"sv)
+        hot = HotMethod::GetRandomValues;
+    else if (sv == "URL"sv)
+        hot = HotMethod::CtorURL;
+    else if (sv == "pathname"sv)
+        hot = HotMethod::Pathname;
+    else if (sv == "search"sv)
+        hot = HotMethod::Search;
+    else if (sv == "createElement"sv)
+        hot = HotMethod::CreateElement;
+    else if (sv == "appendChild"sv)
+        hot = HotMethod::AppendChild;
+    else if (sv == "textContent"sv)
+        hot = HotMethod::TextContent;
+    else if (sv == "Event"sv)
+        hot = HotMethod::CtorEvent;
+    else if (sv == "dispatchEvent"sv)
+        hot = HotMethod::DispatchEvent;
+    else if (sv == "className"sv)
+        hot = HotMethod::ClassName;
+    else if (sv == "classList"sv)
+        hot = HotMethod::ClassList;
+    else if (sv == "contains"sv)
+        hot = HotMethod::Contains;
+    else if (sv == "style"sv)
+        hot = HotMethod::Style;
+    else if (sv == "setProperty"sv)
+        hot = HotMethod::SetProperty;
+    else if (sv == "getPropertyValue"sv)
+        hot = HotMethod::GetPropertyValue;
+    else if (sv == "querySelectorAll"sv)
+        hot = HotMethod::QuerySelectorAll;
+    else if (sv == "length"sv)
+        hot = HotMethod::Length;
+    else if (sv == "encode"sv)
+        hot = HotMethod::Encode;
+    else if (sv == "decode"sv)
+        hot = HotMethod::Decode;
+    else if (sv == "getItem"sv)
+        hot = HotMethod::GetItem;
+    else if (sv == "setItem"sv)
+        hot = HotMethod::SetItem;
+    else if (sv == "removeItem"sv)
+        hot = HotMethod::RemoveItem;
+    uint32_t index_arg = 0;
+    // A digit-only name is an indexed access crossing as a property read
+    // (`nodes[i]` interns "42"); dispatch it to NodeList::item by value.
+    if (hot == HotMethod::None && !sv.is_empty() && sv.length() <= 9
+        && all_of(sv, [](char c) { return is_ascii_digit(c); })) {
+        hot = HotMethod::Index;
+        index_arg = sv.to_number<u32>().value_or(0);
+    }
+    while (runner->hot.size() <= id) {
+        runner->hot.append(HotMethod::None);
+        runner->hot_arg.append(0);
+    }
+    runner->hot[id] = hot;
+    runner->hot_arg[id] = index_arg;
     return id;
 }
 
-static char const* host_web_get_id(void*, int64_t target, uint32_t name_id, size_t* out_len)
-{
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::num(name_id) };
-    return reply_into_scratch("getId"sv, args, out_len);
-}
+// ---- wide-string paths (ABI v5): typed args and replies, UTF-16, no JSON ---
 
-static char const* host_web_call_str(void*, int64_t target, uint32_t name_id,
-    char const* arg, size_t arg_len, size_t* out_len)
-{
-    BridgeArg args[] = { BridgeArg::num(target), BridgeArg::num(name_id), BridgeArg::str({ arg, arg_len }) };
-    return reply_into_scratch("callStr"sv, args, out_len);
-}
-
-// Build the leading (target/ctor, name_id) args plus the scalar tail, each
-// scalar crossing as a number or a string — never as JSON.
-static void append_scalars(Vector<BridgeArg>& into, msy_scalar const* scalars, size_t argc)
-{
-    for (size_t i = 0; i < argc; ++i) {
-        auto const& s = scalars[i];
-        if (s.is_num != 0)
-            into.append(BridgeArg::num(s.num));
-        else
-            into.append(BridgeArg::str({ s.str, s.str_len }));
-    }
-}
-
-static char const* host_web_call_scalars(void*, int64_t target, uint32_t name_id,
-    msy_scalar const* scalars, size_t argc, size_t* out_len)
-{
-    Vector<BridgeArg> args;
-    args.append(BridgeArg::num(target));
-    args.append(BridgeArg::num(name_id));
-    if (scalars)
-        append_scalars(args, scalars, argc);
-    return reply_into_scratch("callScalars"sv, args, out_len);
-}
-
-static char const* host_web_new_scalars(void*, uint32_t ctor_id,
-    msy_scalar const* scalars, size_t argc, size_t* out_len)
-{
-    Vector<BridgeArg> args;
-    args.append(BridgeArg::num(ctor_id));
-    if (scalars)
-        append_scalars(args, scalars, argc);
-    return reply_into_scratch("newScalars"sv, args, out_len);
-}
-
-// ---- wide-string fast paths (ABI v5) --------------------------------------
-// The fastest tier: the engine's strings are UTF-16 and so is LibJS, so string
-// arguments and replies cross with NO encoding conversion and NO JSON. The
-// bridge's *Wide methods return the raw value (a scalar as itself, a host object
-// as { r: handle }, an array as { j: json }); the host types it by inspection
-// into msy_reply. Object arguments (appendChild(el), getRandomValues(buf)) stay
-// on this path via a refs bitmask instead of falling back to the JSON path.
-
-// Copy a JS string's UTF-16 code units into the runner reply buffer (stable
-// until the next boundary call) and point the typed reply at it. code_unit_at
-// widens ASCII-stored strings transparently.
+// Copy a UTF-16 string into the runner reply buffer (stable until the next
+// boundary call) and point the typed reply at it.
 static void fill_str16(Runner* r, msy_reply* out, int32_t tag, Utf16String const& s)
 {
     auto view = s.utf16_view();
@@ -445,36 +727,77 @@ static void fill_str16(Runner* r, msy_reply* out, int32_t tag, Utf16String const
     out->str16_len = n;
 }
 
-// Fill a typed reply from the raw value a *Wide method returned.
-static void fill_reply(Runner* r, msy_reply* out, JS::Value v)
+// Type a JS value into a wide reply: scalars as themselves, a top-level array
+// inline as tagged JSON (tag 7), anything else as a (deduped) handle ref.
+static void wide_fill(Runner* runner, msy_reply* out, JS::Value v)
 {
     *out = {};
-    if (v.is_null() || v.is_undefined()) { out->tag = 0; return; }
-    if (v.is_number()) { out->tag = 1; out->num = v.as_double(); return; }
-    if (v.is_boolean()) { out->tag = 4; out->num = v.as_bool() ? 1 : 0; return; }
-    if (v.is_string()) { fill_str16(r, out, 2, v.as_string().utf16_string()); return; }
-    if (v.is_object()) {
-        auto& o = v.as_object();
-        auto ref = o.get("r"_utf16_fly_string);
-        if (!ref.is_error() && ref.value().is_number()) { out->tag = 3; out->num = ref.value().as_double(); return; }
-        auto json = o.get("j"_utf16_fly_string);
-        if (!json.is_error() && json.value().is_string()) { fill_str16(r, out, 7, json.value().as_string().utf16_string()); return; }
+    if (v.is_nullish()) {
+        out->tag = 0;
+        return;
     }
-    out->tag = 0;
+    if (v.is_number()) {
+        out->tag = 1;
+        out->num = v.as_double();
+        return;
+    }
+    if (v.is_boolean()) {
+        out->tag = 4;
+        out->num = v.as_bool() ? 1 : 0;
+        return;
+    }
+    if (v.is_string()) {
+        fill_str16(runner, out, 2, v.as_string().utf16_string());
+        return;
+    }
+    if (v.is_bigint()) {
+        fill_str16(runner, out, 2, v.to_utf16_string_without_side_effects());
+        return;
+    }
+    if (v.is_object() && is<JS::Array>(v.as_object())) {
+        auto& vm = runner->realm->vm();
+        StringBuilder b;
+        b.append('[');
+        auto len_or = JS::length_of_array_like(vm, v.as_object());
+        size_t len = len_or.is_error() ? 0 : len_or.value();
+        for (size_t i = 0; i < len; ++i) {
+            if (i)
+                b.append(',');
+            auto el = v.as_object().get(JS::PropertyKey { i });
+            encode_value(runner, b, el.is_error() ? JS::js_undefined() : el.value());
+        }
+        b.append(']');
+        fill_str16(runner, out, 7, Utf16String::from_utf8(b.string_view()));
+        return;
+    }
+    out->tag = 3;
+    out->num = static_cast<double>(handle_for(runner, v));
 }
 
-// A UTF-16 argument as a JS value. A str16 becomes a PrimitiveString with no
-// conversion; a host-object handle (kind 2) crosses as its handle number and the
-// bridge resolves it via refsMask.
-static JS::Value arg16_to_value(JS::VM& vm, msy_arg16 const& a)
+// Type a completed reflective op into the reply; a thrown value becomes the
+// error tag (5) with its message.
+static void wide_from(Runner* runner, msy_reply* out, JS::ThrowCompletionOr<JS::Value> result)
+{
+    if (result.is_error()) {
+        *out = {};
+        fill_str16(runner, out, 5, error_message(result.release_error().value()));
+        return;
+    }
+    wide_fill(runner, out, result.value());
+}
+
+// A UTF-16 argument as a JS value; a host-object handle (kind 2) resolves
+// straight from the native table.
+static JS::Value arg16_to_value(Runner* runner, msy_arg16 const& a)
 {
     switch (a.kind) {
     case 0:
-        return JS::PrimitiveString::create(vm, Utf16View { reinterpret_cast<char16_t const*>(a.str16), a.str16_len });
+        return JS::PrimitiveString::create(runner->realm->vm(),
+            Utf16View { reinterpret_cast<char16_t const*>(a.str16), a.str16_len });
     case 1:
         return JS::Value(a.num);
     case 2:
-        return JS::Value(a.num); // handle; refsMask marks it for resolution
+        return handle_value(runner, static_cast<int64_t>(a.num));
     case 3:
         return JS::Value(a.num != 0);
     default:
@@ -482,188 +805,38 @@ static JS::Value arg16_to_value(JS::VM& vm, msy_arg16 const& a)
     }
 }
 
-static uint32_t refs_mask(msy_arg16 const* args, size_t argc)
+static Utf16String arg16_string(msy_arg16 const& a)
 {
-    uint32_t mask = 0;
-    for (size_t i = 0; i < argc && i < 32; ++i)
-        if (args[i].kind == 2)
-            mask |= (1u << i);
-    return mask;
+    return Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(a.str16), a.str16_len });
 }
 
-// Call __merseyBridge[method](args) and type the raw reply into `out`.
-static void wide_invoke(msy_reply* out, Utf16FlyString const& method, GC::RootVector<JS::Value> const& args)
+// ---- direct-DOM tier: hot methods straight to LibWeb C++ -------------------
+
+// Shared tail: put a host-created object in the table and reply with its ref.
+static bool reply_ref(Runner* runner, JS::Object& obj, msy_reply* out)
 {
-    auto* runner = s_runner;
     *out = {};
-    if (!runner || !runner->realm)
-        return;
-    auto& realm = *runner->realm;
-    auto& vm = realm.vm();
-    auto& global = realm.global_object();
-    auto bridge_or = global.get("__merseyBridge"_utf16_fly_string);
-    if (bridge_or.is_error() || !bridge_or.value().is_object())
-        return;
-    auto& bridge = bridge_or.value().as_object();
-    auto method_or = bridge.get(method);
-    if (method_or.is_error() || !method_or.value().is_function())
-        return;
-    auto result_or = JS::call(vm, method_or.value(), JS::Value(&bridge), args.span());
-    if (result_or.is_error()) {
-        // The *Wide methods throw on error; surface a diagnostic string (tag 5).
-        fill_str16(runner, out, 5, "bridge error"_utf16);
-        return;
-    }
-    fill_reply(runner, out, result_or.value());
+    out->tag = 3; // ref
+    out->num = static_cast<double>(handle_for(runner, JS::Value(&obj)));
+    return true;
 }
 
-// Direct-DOM helpers (defined below; forward-declared so the get/new hooks here
-// can dispatch a hot method to its C++ path before the reflective wide path).
-static GC::Ptr<JS::Object> resolve_handle_object(Runner*, int64_t);
-static int64_t register_host_object(Runner*, JS::Object&);
-static bool try_url_get(Runner*, int64_t target, HotMethod, msy_reply*);
-static bool try_construct_url(Runner*, msy_arg16 const* args, size_t argc, msy_reply*);
-static bool try_set_text_content(Runner*, int64_t target, msy_arg16 const* value, msy_reply*);
-static bool try_text_content_get(Runner*, int64_t target, msy_reply*);
-static bool try_object_get(Runner*, int64_t target, HotMethod, msy_reply*); // classList / style
-static bool try_length_get(Runner*, int64_t target, msy_reply*);
-static bool try_index_get(Runner*, int64_t target, uint32_t index, msy_reply*);
-static bool try_set_class_name(Runner*, int64_t target, msy_arg16 const* value, msy_reply*);
-
-static void host_web_get_u16(void*, int64_t target, uint32_t name_id, msy_reply* out)
-{
-    auto* runner = s_runner;
-    if (runner && name_id < runner->hot.size()) {
-        switch (runner->hot[name_id]) {
-        case HotMethod::Pathname:
-        case HotMethod::Search:
-            if (try_url_get(runner, target, runner->hot[name_id], out))
-                return;
-            break;
-        case HotMethod::TextContent:
-            if (try_text_content_get(runner, target, out))
-                return;
-            break;
-        case HotMethod::ClassList:
-        case HotMethod::Style:
-            if (try_object_get(runner, target, runner->hot[name_id], out))
-                return;
-            break;
-        case HotMethod::Length:
-            if (try_length_get(runner, target, out))
-                return;
-            break;
-        case HotMethod::Index:
-            if (try_index_get(runner, target, runner->hot_arg[name_id], out))
-                return;
-            break;
-        default:
-            break;
-        }
-    }
-    GC::RootVector<JS::Value> args;
-    args.append(JS::Value(static_cast<double>(target)));
-    args.append(JS::Value(static_cast<double>(name_id)));
-    wide_invoke(out, u"getWide"_utf16_fly_string, args);
-}
-
-static void host_web_set_u16(void*, int64_t target, uint32_t name_id, msy_arg16 const* value, msy_reply* out)
-{
-    auto* runner = s_runner;
-    if (!runner || !runner->realm) { *out = {}; return; }
-    if (name_id < runner->hot.size()) {
-        if (runner->hot[name_id] == HotMethod::TextContent && try_set_text_content(runner, target, value, out))
-            return;
-        if (runner->hot[name_id] == HotMethod::ClassName && try_set_class_name(runner, target, value, out))
-            return;
-    }
-    GC::RootVector<JS::Value> args;
-    args.append(JS::Value(static_cast<double>(target)));
-    args.append(JS::Value(static_cast<double>(name_id)));
-    args.append(JS::Value(static_cast<double>(value && value->kind == 2 ? 1 : 0))); // refsMask
-    args.append(value ? arg16_to_value(runner->realm->vm(), *value) : JS::js_null());
-    wide_invoke(out, u"setWide"_utf16_fly_string, args);
-}
-
-// Resolve a bridge handle to its JS object (bridge.handleObj), cached per handle
-// so a hot method's stable receiver/args are unwrapped once and reused across the
-// loop. The cache is invalidated in host_web_release.
-static GC::Ptr<JS::Object> resolve_handle_object(Runner* runner, int64_t handle)
-{
-    if (auto it = runner->handle_cache.find(handle); it != runner->handle_cache.end())
-        return it->value;
-    GC::Ptr<JS::Object> result;
-    auto& realm = *runner->realm;
-    auto& vm = realm.vm();
-    auto& global = realm.global_object();
-    auto bridge_or = global.get("__merseyBridge"_utf16_fly_string);
-    if (bridge_or.is_error() || !bridge_or.value().is_object())
-        return {};
-    auto& bridge = bridge_or.value().as_object();
-    auto method_or = bridge.get("handleObj"_utf16_fly_string);
-    if (method_or.is_error() || !method_or.value().is_function())
-        return {};
-    GC::RootVector<JS::Value> args;
-    args.append(JS::Value(static_cast<double>(handle)));
-    auto obj_or = JS::call(vm, method_or.value(), JS::Value(&bridge), args.span());
-    if (obj_or.is_error())
-        return {};
-    auto obj_value = obj_or.release_value();
-    if (obj_value.is_object())
-        result = obj_value.as_object();
-    runner->handle_cache.set(handle, result);
-    return result;
-}
-
-// Register a host-CREATED object with the bridge (keeps it alive, returns a
-// handle) and cache its pointer, so the follow-up get/set/call ops on it resolve
-// with no crossing — the create direction of the direct-DOM tier.
-static int64_t register_host_object(Runner* runner, JS::Object& obj)
-{
-    auto& realm = *runner->realm;
-    auto& vm = realm.vm();
-    auto& global = realm.global_object();
-    auto bridge_or = global.get("__merseyBridge"_utf16_fly_string);
-    if (bridge_or.is_error() || !bridge_or.value().is_object())
-        return -1;
-    auto& bridge = bridge_or.value().as_object();
-    auto method_or = bridge.get("register"_utf16_fly_string);
-    if (method_or.is_error() || !method_or.value().is_function())
-        return -1;
-    GC::RootVector<JS::Value> args;
-    args.append(JS::Value(&obj));
-    auto result_or = JS::call(vm, method_or.value(), JS::Value(&bridge), args.span());
-    if (result_or.is_error() || !result_or.value().is_number())
-        return -1;
-    auto h = static_cast<int64_t>(result_or.value().as_double());
-    runner->handle_cache.set(h, &obj);
-    return h;
-}
-
-// new URL(str): parse and build the DOMURL directly in C++, register it once, and
-// hand back a ref — so the pathname/search reads below hit the cache, no crossing.
+// new URL(str): parse and build the DOMURL directly in C++ — the pathname and
+// search reads below then resolve from the same table entry.
 static bool try_construct_url(Runner* runner, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto url_str = Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(args[0].str16), args[0].str16_len });
-    auto url_or = Web::DOMURL::DOMURL::construct_impl(*runner->realm, url_str);
+    auto url_or = Web::DOMURL::DOMURL::construct_impl(*runner->realm, arg16_string(args[0]));
     if (url_or.is_error())
         return false;
-    auto url = url_or.release_value();
-    auto h = register_host_object(runner, *url);
-    if (h < 0)
-        return false;
-    *out = {};
-    out->tag = 3; // ref
-    out->num = static_cast<double>(h);
-    return true;
+    return reply_ref(runner, *url_or.release_value(), out);
 }
 
-// url.pathname / url.search on a host-created DOMURL (cache hit): direct C++.
+// url.pathname / url.search: direct C++.
 static bool try_url_get(Runner* runner, int64_t target, HotMethod which, msy_reply* out)
 {
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOMURL::DOMURL>(*obj))
         return false;
     auto& url = as<Web::DOMURL::DOMURL>(*obj);
@@ -671,42 +844,33 @@ static bool try_url_get(Runner* runner, int64_t target, HotMethod which, msy_rep
     return true;
 }
 
-// document.createElement(tag): build the element directly, register it (so later
-// textContent/appendChild on it hit the cache), and hand back a ref.
+// document.createElement(tag): build the element directly and hand back a ref.
 static bool try_create_element(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto doc_obj = resolve_handle_object(runner, target);
+    auto doc_obj = handle_object(runner, target);
     if (!doc_obj || !is<Web::DOM::Document>(*doc_obj))
         return false;
-    auto name = Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(args[0].str16), args[0].str16_len });
     // The free ElementFactory create_element (HTML namespace — the workload's
     // document is HTML) avoids Document::create_element's ElementCreationOptions
     // variant. For the benchmark's lowercase tags this matches createElement.
-    auto el_or = Web::DOM::create_element(as<Web::DOM::Document>(*doc_obj), Utf16FlyString { name }, Web::Namespace::HTML);
+    auto el_or = Web::DOM::create_element(as<Web::DOM::Document>(*doc_obj),
+        Utf16FlyString { arg16_string(args[0]) }, Web::Namespace::HTML);
     if (el_or.is_error())
         return false;
-    auto el = el_or.release_value();
-    auto h = register_host_object(runner, *el);
-    if (h < 0)
-        return false;
-    *out = {};
-    out->tag = 3; // ref
-    out->num = static_cast<double>(h);
-    return true;
+    return reply_ref(runner, *el_or.release_value(), out);
 }
 
-// node.appendChild(child): both handles resolve from the cache (parent stable,
-// child host-created), so the tree insertion is a direct C++ call.
+// node.appendChild(child): the tree insertion is a direct C++ call.
 static bool try_append_child(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     if (argc < 1 || args[0].kind != 2)
         return false;
-    auto parent = resolve_handle_object(runner, target);
+    auto parent = handle_object(runner, target);
     if (!parent || !is<Web::DOM::Node>(*parent))
         return false;
-    auto child = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    auto child = handle_object(runner, static_cast<int64_t>(args[0].num));
     if (!child || !is<Web::DOM::Node>(*child))
         return false;
     (void)as<Web::DOM::Node>(*parent).append_child(GC::Ref<Web::DOM::Node> { as<Web::DOM::Node>(*child) });
@@ -715,32 +879,29 @@ static bool try_append_child(Runner* runner, int64_t target, msy_arg16 const* ar
     return true;
 }
 
-// el.textContent = s on a host-created element (cache hit): direct C++.
+// el.textContent = s: direct C++.
 static bool try_set_text_content(Runner* runner, int64_t target, msy_arg16 const* value, msy_reply* out)
 {
     if (!value || value->kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::Node>(*obj))
         return false;
-    auto text = Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(value->str16), value->str16_len });
-    (void)as<Web::DOM::Node>(*obj).set_text_content(text);
+    (void)as<Web::DOM::Node>(*obj).set_text_content(arg16_string(*value));
     *out = {};
     out->tag = 0;
     return true;
 }
 
-// crypto.getRandomValues(buf): unwrap the Crypto receiver and the buffer once
-// (cached), then fill it directly in C++ — no JS bridge. Returns false to fall
-// back to the reflective path if the receiver is not actually a Crypto.
+// crypto.getRandomValues(buf): fill the buffer directly in C++.
 static bool try_get_random_values(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     if (argc < 1 || args[0].kind != 2)
         return false;
-    auto crypto_obj = resolve_handle_object(runner, target);
+    auto crypto_obj = handle_object(runner, target);
     if (!crypto_obj || !is<Web::Crypto::Crypto>(*crypto_obj))
         return false;
-    auto buf_obj = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    auto buf_obj = handle_object(runner, static_cast<int64_t>(args[0].num));
     if (!buf_obj)
         return false;
     auto view = Web::WebIDL::ArrayBufferView::from_object(GC::Ref<JS::Object> { *buf_obj });
@@ -750,27 +911,10 @@ static bool try_get_random_values(Runner* runner, int64_t target, msy_arg16 cons
     return true;
 }
 
-// Shared tail: register a host-created object and reply with its ref.
-static bool reply_ref(Runner* runner, JS::Object& obj, msy_reply* out)
-{
-    auto h = register_host_object(runner, obj);
-    if (h < 0)
-        return false;
-    *out = {};
-    out->tag = 3; // ref
-    out->num = static_cast<double>(h);
-    return true;
-}
-
-static Utf16String arg16_string(msy_arg16 const& a)
-{
-    return Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(a.str16), a.str16_len });
-}
-
-// el.textContent (get) on a cached node: direct C++.
+// el.textContent (get): direct C++.
 static bool try_text_content_get(Runner* runner, int64_t target, msy_reply* out)
 {
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::Node>(*obj))
         return false;
     auto text = as<Web::DOM::Node>(*obj).text_content();
@@ -784,10 +928,10 @@ static bool try_text_content_get(Runner* runner, int64_t target, msy_reply* out)
 }
 
 // el.classList / el.style: hand back the element's own sub-object as a ref
-// (the bridge dedups object → handle, so the loop sees a stable handle).
+// (the table dedups object → handle, so the loop sees a stable handle).
 static bool try_object_get(Runner* runner, int64_t target, HotMethod which, msy_reply* out)
 {
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::Element>(*obj))
         return false;
     auto& el = as<Web::DOM::Element>(*obj);
@@ -799,7 +943,7 @@ static bool try_object_get(Runner* runner, int64_t target, HotMethod which, msy_
 // nodes.length on a NodeList: direct C++.
 static bool try_length_get(Runner* runner, int64_t target, msy_reply* out)
 {
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::NodeList>(*obj))
         return false;
     *out = {};
@@ -812,7 +956,7 @@ static bool try_length_get(Runner* runner, int64_t target, msy_reply* out)
 // property read): direct C++ item().
 static bool try_index_get(Runner* runner, int64_t target, uint32_t index, msy_reply* out)
 {
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::NodeList>(*obj))
         return false;
     auto const* node = as<Web::DOM::NodeList>(*obj).item(index);
@@ -829,7 +973,7 @@ static bool try_set_class_name(Runner* runner, int64_t target, msy_arg16 const* 
 {
     if (!value || value->kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::Element>(*obj))
         return false;
     as<Web::DOM::Element>(*obj).set_attribute_value(Web::HTML::AttributeNames::class_, arg16_string(*value));
@@ -843,7 +987,7 @@ static bool try_contains(Runner* runner, int64_t target, msy_arg16 const* args, 
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::DOMTokenList>(*obj))
         return false;
     auto token = arg16_string(args[0]);
@@ -859,7 +1003,7 @@ static bool try_style_property(Runner* runner, int64_t target, HotMethod which, 
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::CSS::CSSStyleDeclaration>(*obj))
         return false;
     auto& style = as<Web::CSS::CSSStyleDeclaration>(*obj);
@@ -884,7 +1028,7 @@ static bool try_query_selector_all(Runner* runner, int64_t target, msy_arg16 con
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::ParentNode>(*obj))
         return false;
     auto sel = arg16_string(args[0]);
@@ -899,7 +1043,7 @@ static bool try_encode(Runner* runner, int64_t target, msy_arg16 const* args, si
 {
     if (argc < 1 || args[0].kind != 0)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::Encoding::TextEncoder>(*obj))
         return false;
     auto bytes = as<Web::Encoding::TextEncoder>(*obj).encode(arg16_string(args[0]));
@@ -911,10 +1055,10 @@ static bool try_decode(Runner* runner, int64_t target, msy_arg16 const* args, si
 {
     if (argc < 1 || args[0].kind != 2)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::Encoding::TextDecoder>(*obj))
         return false;
-    auto buf_obj = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    auto buf_obj = handle_object(runner, static_cast<int64_t>(args[0].num));
     if (!buf_obj || !(is<JS::TypedArrayBase>(*buf_obj) || is<JS::ArrayBuffer>(*buf_obj) || is<JS::DataView>(*buf_obj)))
         return false;
     auto source = Web::WebIDL::BufferSource::from_object(GC::Ref<JS::Object> { *buf_obj });
@@ -925,16 +1069,17 @@ static bool try_decode(Runner* runner, int64_t target, msy_arg16 const* args, si
     return true;
 }
 
-// el.dispatchEvent(ev): direct dispatch — the JS/Mersey listeners still run
-// (dispatch invokes them synchronously), only the bridge hop is skipped.
+// el.dispatchEvent(ev): direct dispatch — the listeners still run (dispatch
+// invokes them synchronously); a Mersey listener is a NativeFunction, so the
+// whole round trip is C++.
 static bool try_dispatch_event(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     if (argc < 1 || args[0].kind != 2)
         return false;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (!obj || !is<Web::DOM::EventTarget>(*obj))
         return false;
-    auto ev_obj = resolve_handle_object(runner, static_cast<int64_t>(args[0].num));
+    auto ev_obj = handle_object(runner, static_cast<int64_t>(args[0].num));
     if (!ev_obj || !is<Web::DOM::Event>(*ev_obj))
         return false;
     bool not_cancelled = as<Web::DOM::EventTarget>(*obj).dispatch_event(as<Web::DOM::Event>(*ev_obj));
@@ -953,89 +1098,249 @@ static bool try_construct_event(Runner* runner, msy_arg16 const* args, size_t ar
     return reply_ref(runner, *ev, out);
 }
 
+// storage.getItem(k) / setItem(k, v) / removeItem(k): direct C++ Web Storage —
+// no binding layer, UTF-16 in and out.
+static bool try_storage_get_item(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = handle_object(runner, target);
+    if (!obj || !is<Web::HTML::Storage>(*obj))
+        return false;
+    auto key = arg16_string(args[0]);
+    auto item = as<Web::HTML::Storage>(*obj).get_item(key.utf16_view());
+    if (!item.has_value()) {
+        *out = {};
+        out->tag = 0; // null — the "no such key" reply
+        return true;
+    }
+    fill_str16(runner, out, 2, *item);
+    return true;
+}
+
+static bool try_storage_set_item(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 2 || args[0].kind != 0 || args[1].kind != 0)
+        return false;
+    auto obj = handle_object(runner, target);
+    if (!obj || !is<Web::HTML::Storage>(*obj))
+        return false;
+    auto key = arg16_string(args[0]);
+    auto value = arg16_string(args[1]);
+    // A quota error falls back to the reflective path, which throws it properly.
+    if (as<Web::HTML::Storage>(*obj).set_item(key.utf16_view(), value.utf16_view()).is_error())
+        return false;
+    *out = {};
+    out->tag = 0;
+    return true;
+}
+
+static bool try_storage_remove_item(Runner* runner, int64_t target, msy_arg16 const* args, size_t argc, msy_reply* out)
+{
+    if (argc < 1 || args[0].kind != 0)
+        return false;
+    auto obj = handle_object(runner, target);
+    if (!obj || !is<Web::HTML::Storage>(*obj))
+        return false;
+    auto key = arg16_string(args[0]);
+    as<Web::HTML::Storage>(*obj).remove_item(key.utf16_view());
+    *out = {};
+    out->tag = 0;
+    return true;
+}
+
+// ---- wide-path hooks: hot dispatch, then native reflection -----------------
+
+static HotMethod hot_of(Runner* runner, uint32_t name_id)
+{
+    if (name_id >= runner->hot.size())
+        return HotMethod::None;
+    return runner->hot[name_id];
+}
+
+static StringView interned_name(Runner* runner, uint32_t name_id)
+{
+    // The engine only passes ids this host handed out, so this is never out of
+    // range; guard anyway (a UINT32_MAX id from a declined intern). The view is
+    // stable: ByteString data is ref-counted, unmoved by Vector growth.
+    if (name_id >= runner->names.size())
+        return ""sv;
+    return runner->names[name_id].view();
+}
+
+static void host_web_get_u16(void*, int64_t target, uint32_t name_id, msy_reply* out)
+{
+    auto* runner = s_runner;
+    if (!runner || !runner->realm) {
+        *out = {};
+        return;
+    }
+    switch (hot_of(runner, name_id)) {
+    case HotMethod::Pathname:
+    case HotMethod::Search:
+        if (try_url_get(runner, target, hot_of(runner, name_id), out))
+            return;
+        break;
+    case HotMethod::TextContent:
+        if (try_text_content_get(runner, target, out))
+            return;
+        break;
+    case HotMethod::ClassList:
+    case HotMethod::Style:
+        if (try_object_get(runner, target, hot_of(runner, name_id), out))
+            return;
+        break;
+    case HotMethod::Length:
+        if (try_length_get(runner, target, out))
+            return;
+        break;
+    case HotMethod::Index:
+        if (try_index_get(runner, target, runner->hot_arg[name_id], out))
+            return;
+        break;
+    default:
+        break;
+    }
+    wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto v = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }));
+        if (v.is_function())
+            v = JS::Value(TRY(JS::BoundFunction::create(*runner->realm, v.as_function(), tv, {})).ptr());
+        return v;
+    }());
+}
+
+static void host_web_set_u16(void*, int64_t target, uint32_t name_id, msy_arg16 const* value, msy_reply* out)
+{
+    auto* runner = s_runner;
+    if (!runner || !runner->realm) {
+        *out = {};
+        return;
+    }
+    auto hot = hot_of(runner, name_id);
+    if (hot == HotMethod::TextContent && try_set_text_content(runner, target, value, out))
+        return;
+    if (hot == HotMethod::ClassName && try_set_class_name(runner, target, value, out))
+        return;
+    wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto v = value ? arg16_to_value(runner, *value) : JS::js_null();
+        TRY(obj->set(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }, v,
+            JS::Object::ShouldThrowExceptions::Yes));
+        return JS::js_null();
+    }());
+}
+
 static void host_web_call_u16(void*, int64_t target, uint32_t name_id, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     auto* runner = s_runner;
-    if (!runner || !runner->realm) { *out = {}; return; }
-    // Direct-DOM tier: a hot method skips the reflective bridge entirely.
-    if (name_id < runner->hot.size()) {
-        switch (runner->hot[name_id]) {
-        case HotMethod::GetRandomValues:
-            if (try_get_random_values(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::CreateElement:
-            if (try_create_element(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::AppendChild:
-            if (try_append_child(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::DispatchEvent:
-            if (try_dispatch_event(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::Contains:
-            if (try_contains(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::SetProperty:
-        case HotMethod::GetPropertyValue:
-            if (try_style_property(runner, target, runner->hot[name_id], args, argc, out))
-                return;
-            break;
-        case HotMethod::QuerySelectorAll:
-            if (try_query_selector_all(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::Encode:
-            if (try_encode(runner, target, args, argc, out))
-                return;
-            break;
-        case HotMethod::Decode:
-            if (try_decode(runner, target, args, argc, out))
-                return;
-            break;
-        default:
-            break;
-        }
+    if (!runner || !runner->realm) {
+        *out = {};
+        return;
     }
-    auto& vm = runner->realm->vm();
-    GC::RootVector<JS::Value> vals;
-    vals.append(JS::Value(static_cast<double>(target)));
-    vals.append(JS::Value(static_cast<double>(name_id)));
-    vals.append(JS::Value(static_cast<double>(refs_mask(args, argc))));
-    for (size_t i = 0; i < argc; ++i)
-        vals.append(arg16_to_value(vm, args[i]));
-    wide_invoke(out, u"callWide"_utf16_fly_string, vals);
+    // Direct-DOM tier: a hot method goes straight to LibWeb C++.
+    switch (hot_of(runner, name_id)) {
+    case HotMethod::GetRandomValues:
+        if (try_get_random_values(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::CreateElement:
+        if (try_create_element(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::AppendChild:
+        if (try_append_child(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::DispatchEvent:
+        if (try_dispatch_event(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::Contains:
+        if (try_contains(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::SetProperty:
+    case HotMethod::GetPropertyValue:
+        if (try_style_property(runner, target, hot_of(runner, name_id), args, argc, out))
+            return;
+        break;
+    case HotMethod::QuerySelectorAll:
+        if (try_query_selector_all(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::Encode:
+        if (try_encode(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::Decode:
+        if (try_decode(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::GetItem:
+        if (try_storage_get_item(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::SetItem:
+        if (try_storage_set_item(runner, target, args, argc, out))
+            return;
+        break;
+    case HotMethod::RemoveItem:
+        if (try_storage_remove_item(runner, target, args, argc, out))
+            return;
+        break;
+    default:
+        break;
+    }
+    wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(interned_name(runner, name_id)) }));
+        if (!fn.is_function())
+            return runner->realm->vm().throw_completion<JS::TypeError>(
+                Utf16String::formatted("{} is not a function", interned_name(runner, name_id)));
+        GC::RootVector<JS::Value> vals;
+        for (size_t i = 0; i < argc; ++i)
+            vals.append(arg16_to_value(runner, args[i]));
+        return JS::call(vm, fn, tv, vals.span());
+    }());
 }
 
 static void host_web_new_u16(void*, uint32_t ctor_id, msy_arg16 const* args, size_t argc, msy_reply* out)
 {
     auto* runner = s_runner;
-    if (!runner || !runner->realm) { *out = {}; return; }
-    if (ctor_id < runner->hot.size()) {
-        if (runner->hot[ctor_id] == HotMethod::CtorURL && try_construct_url(runner, args, argc, out))
-            return;
-        if (runner->hot[ctor_id] == HotMethod::CtorEvent && try_construct_event(runner, args, argc, out))
-            return;
+    if (!runner || !runner->realm) {
+        *out = {};
+        return;
     }
-    auto& vm = runner->realm->vm();
-    GC::RootVector<JS::Value> vals;
-    vals.append(JS::Value(static_cast<double>(ctor_id)));
-    vals.append(JS::Value(static_cast<double>(refs_mask(args, argc))));
-    for (size_t i = 0; i < argc; ++i)
-        vals.append(arg16_to_value(vm, args[i]));
-    wide_invoke(out, u"newWide"_utf16_fly_string, vals);
+    auto hot = hot_of(runner, ctor_id);
+    if (hot == HotMethod::CtorURL && try_construct_url(runner, args, argc, out))
+        return;
+    if (hot == HotMethod::CtorEvent && try_construct_event(runner, args, argc, out))
+        return;
+    wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
+        auto& vm = runner->realm->vm();
+        auto ctor_value = TRY(resolve_ctor(runner, interned_name(runner, ctor_id)));
+        if (!ctor_value.is_function())
+            return vm.throw_completion<JS::TypeError>(
+                Utf16String::formatted("{} is not a constructor", interned_name(runner, ctor_id)));
+        GC::RootVector<JS::Value> vals;
+        for (size_t i = 0; i < argc; ++i)
+            vals.append(arg16_to_value(runner, args[i]));
+        return JS::Value(TRY(JS::construct(vm, ctor_value.as_function(), vals.span())).ptr());
+    }());
 }
 
 // ---- typed-binding fast path (ABI v7, web_bind) ----------------------------
 // The leanest tier: a JIT-compiled numeric web method (a canvas draw loop) crosses
 // as a compile-time bind id plus raw doubles — no interned name, no msy_arg16, and
 // the JIT calls this hook directly from compiled code. We switch on the id straight
-// to the C++ CanvasRenderingContext2D method, so a hot fillRect loop never touches
-// JS at all. Gecko's fork has this; Chromium/Servo/Ladybird had it NULL until now.
+// to the C++ CanvasRenderingContext2D method, so a hot fillRect loop never leaves C++.
 
 static StringView bind_method_name(uint32_t id)
 {
@@ -1053,14 +1358,14 @@ static StringView bind_method_name(uint32_t id)
     }
 }
 
-// Resolve a bridge handle to its CanvasRenderingContext2D, cached by handle.
+// Resolve a handle to its CanvasRenderingContext2D, cached by handle.
 static GC::Ptr<Web::HTML::CanvasRenderingContext2D> resolve_canvas(Runner* runner, int64_t target)
 {
     if (target == runner->canvas_handle)
         return runner->canvas_ctx;
     runner->canvas_handle = target;
     runner->canvas_ctx = nullptr;
-    auto obj = resolve_handle_object(runner, target);
+    auto obj = handle_object(runner, target);
     if (obj && is<Web::HTML::CanvasRenderingContext2D>(*obj))
         runner->canvas_ctx = as<Web::HTML::CanvasRenderingContext2D>(*obj);
     return runner->canvas_ctx;
@@ -1090,42 +1395,26 @@ static void host_web_bind(void*, int64_t target, uint32_t bind_id, double const*
         default: break;
         }
     }
-    // Receiver is not a canvas context (or an unknown id): the host owns the
-    // fallback. Route through the reflective `call` under the method's real name
-    // with the numeric args as JSON. Never hit by the canvas workload.
+    // Receiver is not a canvas context (or an unknown id): reflective call under
+    // the method's real name. Never hit by the canvas workload.
     auto name = bind_method_name(bind_id);
     if (name.is_empty())
         return;
-    StringBuilder json;
-    json.append('[');
-    for (size_t i = 0; i < argc; ++i) {
-        if (i)
-            json.append(',');
-        json.appendff("{}", args[i]);
-    }
-    json.append(']');
-    auto json_str = json.to_byte_string();
-    BridgeArg call_args[] = { BridgeArg::num(static_cast<double>(target)), BridgeArg::str(name),
-        BridgeArg::str(json_str) };
-    (void)call_bridge("call"sv, call_args);
+    wide_from(runner, out, [&]() -> JS::ThrowCompletionOr<JS::Value> {
+        auto& vm = runner->realm->vm();
+        auto tv = handle_value(runner, target);
+        auto obj = TRY(tv.to_object(vm));
+        auto fn = TRY(obj->get(JS::PropertyKey { Utf16String::from_utf8(name) }));
+        if (!fn.is_function())
+            return vm.throw_completion<JS::TypeError>(Utf16String::formatted("{} is not a function", name));
+        GC::RootVector<JS::Value> vals;
+        for (size_t i = 0; i < argc; ++i)
+            vals.append(JS::Value(args[i]));
+        return JS::call(vm, fn, tv, vals.span());
+    }());
 }
 
-// `__merseyInvoke(cb, argsJson)` — the native the bridge calls when JS invokes a
-// Mersey closure (a promise reaction, an event listener). Forwards into the
-// engine via msy_context_invoke_args, which may itself re-enter the host hooks.
-static JS::ThrowCompletionOr<JS::Value> mersey_invoke(JS::VM& vm)
-{
-    auto* runner = s_runner;
-    if (runner && vm.argument_count() >= 2) {
-        auto cb = static_cast<uint32_t>(TRY(vm.argument(0).to_double(vm)));
-        auto arg1 = vm.argument(1);
-        auto args_json = arg1.is_string()
-            ? arg1.as_string().utf16_string().to_byte_string()
-            : ByteString { "[]" };
-        msy_context_invoke_args(runner->ctx, cb, args_json.characters(), args_json.length());
-    }
-    return JS::js_undefined();
-}
+// ---- context setup ---------------------------------------------------------
 
 static msy_host_table host_table()
 {
@@ -1142,18 +1431,14 @@ static msy_host_table host_table()
     table.web_instanceof = host_web_instanceof;
     table.web_release = host_web_release;
     table.time_ms = host_time_ms;
-    // Interned + scalar fast paths (a name crosses once as an id, scalar args
-    // cross as JS values). Ops these don't cover fall back to the reflective
-    // ops above — same replies.
+    // Interning feeds the wide-path hot dispatch; the mid-tier scalar hooks
+    // (web_get_id, web_call_str, web_call_scalars, web_new_scalars) stay NULL —
+    // the engine prefers the wide UTF-16 hooks below, and anything they cannot
+    // express (closure/dict arguments) goes to the reflective JSON ops above.
     table.web_intern = host_web_intern;
-    table.web_get_id = host_web_get_id;
-    table.web_call_str = host_web_call_str;
-    table.web_call_scalars = host_web_call_scalars;
-    table.web_new_scalars = host_web_new_scalars;
-    // Wide-string fast paths (UTF-16, no JSON): the fastest reflective tier, and
-    // the one that keeps object-argument calls (appendChild, getRandomValues) and
-    // property sets (textContent=) off the JSON path. The engine prefers these
-    // over the interned/reflective ops above when present.
+    // Wide-string paths (UTF-16, no JSON): hot methods dispatch straight to
+    // LibWeb C++; everything else is native LibJS reflection — property gets,
+    // JS::call on the IDL bindings — with no JS source anywhere.
     table.web_get_u16 = host_web_get_u16;
     table.web_set_u16 = host_web_set_u16;
     table.web_call_u16 = host_web_call_u16;
@@ -1172,11 +1457,15 @@ static msy_host_table host_table()
 static Runner* ensure_runner(JS::Realm& realm)
 {
     if (s_runner) {
-        s_runner->realm = &realm;
+        if (s_runner->realm != &realm) {
+            s_runner->realm = &realm;
+            reset_handles(s_runner, realm);
+        }
         return s_runner;
     }
     auto* runner = new Runner {};
     runner->realm = &realm;
+    reset_handles(runner, realm);
     s_runner = runner;
 
     auto table = host_table();
@@ -1195,30 +1484,15 @@ void run_mersey_script(JS::Realm& realm, String const& source)
     if (!runner->ctx)
         return;
 
-    // Every LibJS operation below — NativeFunction::create, the reflective
-    // bridge's get/call, ClassicScript::run — needs an execution context on the
-    // VM stack. prepare_script() runs at HTML-parse time with no JS on the stack,
-    // so push a temporary context for the whole run, including the host bridge
-    // calls that happen synchronously inside msy_context_run. Callbacks enabled:
-    // a bridged web call may invoke a Mersey closure that re-enters JS.
+    // Every LibJS operation the host hooks make — property gets, JS::call into
+    // the IDL bindings, NativeFunction invocation — needs an execution context
+    // on the VM stack. prepare_script() runs at HTML-parse time with no JS on
+    // the stack, so push a temporary context for the whole run, including the
+    // host calls that happen synchronously inside msy_context_run. Callbacks
+    // enabled: a web call may invoke a Mersey closure that re-enters.
     Web::HTML::TemporaryExecutionContext execution_context {
         realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes
     };
-
-    // Inject __merseyInvoke and evaluate the reflective bridge into the realm,
-    // once. From then on every web call the engine makes reaches Ladybird's DOM
-    // through __merseyBridge in this realm.
-    if (!runner->bridge_ready) {
-        auto& global = realm.global_object();
-        auto invoke = JS::NativeFunction::create(realm, mersey_invoke, 2, "__merseyInvoke"_utf16_fly_string);
-        global.define_direct_property("__merseyInvoke"_utf16_fly_string, invoke, JS::default_attributes);
-
-        auto& settings = Web::HTML::relevant_settings_object(global);
-        auto bridge_source = Utf16String::from_utf8(BRIDGE_JS);
-        auto bridge_script = Web::HTML::ClassicScript::create("mersey-bridge.js", bridge_source, settings, {});
-        (void)bridge_script->run();
-        runner->bridge_ready = true;
-    }
 
     auto source_view = source.bytes_as_string_view();
     msy_context_run(runner->ctx, source_view.characters_without_null_termination(), source_view.length());

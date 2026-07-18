@@ -60,8 +60,10 @@ Browser forks (checkouts live BESIDE this repo, not in it):
   branch `mersey`), `~/servo-src` (components/script/mersey), `~/ladybird`
   (Libraries/LibWeb/Mersey). The repo keeps each fork's glue under `servo/`,
   `ladybird/`, `chromium/` with an idempotent `apply.sh` that installs it into
-  the checkout; `refresh-bridge.sh` regenerates each fork's embedded copy of
-  `web/mersey-bridge.js` — never edit the embedded copies by hand.
+  the checkout; `servo/refresh-bridge.sh` regenerates Servo's embedded copy of
+  `web/mersey-bridge.js` — never edit the embedded copy by hand. The Ladybird
+  fork has NO embedded bridge: its host table is native C++ end to end (own
+  handle table, LibJS reflection in C++, closures as NativeFunctions).
 - Gecko and Chromium fork changes are committed in their own checkouts;
   Servo/Ladybird glue is versioned here and applied.
 
@@ -72,8 +74,9 @@ Playwright), `run-tjs.mjs`, `run-servo.mjs`, `run-ladybird.mjs` (stock
 Ladybird via `test-web`, fully self-contained inlined pages), and
 `run-native{,-servo,-ladybird,-chromium}.mjs` for the forks. Most take
 `WL=name,…` (and ladybird `IMPL=`) filters. Results land in
-`results.*.json`; `report.mjs` regenerates `REPORT.md`;
-`gen-report-data.mjs` regenerates `report.html`'s baked DATA block — never
+`results.*.json`; after ANY results refresh regenerate all three report
+surfaces: `report.mjs` → `REPORT.md`; `gen-report-data.mjs` → `report.html`'s
+baked DATA block; `report-pertech.mjs` → `report-pertech.html` — never
 hand-edit those numbers. Adding a workload = the two twin files (auto-
 discovered) + the hardcoded lists in `run-native-servo.mjs`,
 `run-native-ladybird.mjs`, `run-ladybird.mjs`.
