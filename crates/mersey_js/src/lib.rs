@@ -137,6 +137,7 @@ pub fn transpile_graph(mods: &[(String, String)]) -> GraphOutput {
                 out: String::new(),
                 line: 1,
                 maps: Vec::new(),
+                user_classes: std::collections::HashSet::new(),
                 indent: 0,
                 mode: Mode::Module,
                 spec: spec.clone(),
@@ -190,6 +191,7 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
         out: String::new(),
         line: 1,
         maps: Vec::new(),
+        user_classes: std::collections::HashSet::new(),
         indent: 0,
         mode: Mode::Single,
         spec: name.to_string(),
@@ -246,6 +248,11 @@ struct Emit {
     /// src_col) recorded at each statement — the source map's raw material.
     line: u32,
     maps: Vec<(u32, u32, u32, u32)>,
+    /// Class names the USER defined (declared here or imported from another
+    /// module). A base outside this set is a host/ambient class (the WebIDL
+    /// surface needs no import), which JS refuses to `new` outside
+    /// custom-element upgrade — those bases emit as `$rt.hostBase(...)`.
+    user_classes: std::collections::HashSet<String>,
     /// Top-level functions the WASM tier compiled: bound from $w, not emitted.
     wasm_fns: std::collections::HashSet<String>,
 }
@@ -343,6 +350,34 @@ impl Emit {
     }
 
     fn module(&mut self, m: &Module) {
+        // Which class names are the user's own (a base outside this set is a
+        // host/ambient class): declared, exported, or imported names — an
+        // imported name that isn't a class never appears in `extends`.
+        for item in &m.items {
+            match item {
+                Item::Decl(Decl::Class(c)) => {
+                    self.user_classes.insert(c.name.text.clone());
+                }
+                Item::Export(e) => {
+                    if let ExportKind::Decl(Decl::Class(c)) = &e.kind {
+                        self.user_classes.insert(c.name.text.clone());
+                    }
+                }
+                Item::Import(im) => {
+                    if im.from.starts_with("browser:") {
+                        continue; // host names, by definition
+                    }
+                    if let Some(ImportClause::Named(list)) = &im.clause {
+                        for spec in list {
+                            self.user_classes.insert(
+                                spec.alias.as_ref().unwrap_or(&spec.name).text.clone(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.mode == Mode::Module {
             // A real ES module: $rt from the shared runtime module, imports
             // and exports at top level, statements run at import time.
@@ -596,7 +631,18 @@ impl Emit {
         self.w(&c.name.text);
         if let Some(base) = &c.extends {
             self.w(" extends ");
-            self.w(&type_head(base));
+            let head = type_head(base);
+            if self.user_classes.contains(&head) {
+                self.w(&head);
+            } else {
+                // A host/ambient base: `new` on a real host subclass throws
+                // (browsers construct elements only through upgrade), so
+                // extend a constructable stand-in chaining to the host's
+                // prototype — `attach` welds instances onto real objects.
+                // globalThis-qualified: absent hosts (Node) stay undefined
+                // rather than throwing, and hostBase handles that.
+                self.w(&format!("$rt.hostBase(globalThis.{head})"));
+            }
         }
         self.w(" {");
         self.indent += 1;

@@ -31,8 +31,10 @@ export function defineElement(tag: string, create: () => CustomElement): void {
         if (existing != null) {
             return existing;
         }
-        const created = create();
-        attach(created, el);   // this instance now IS that element
+        // `attach` returns the welded instance: on the engine that is the
+        // same object (now host-backed); on the transpiled path it is the
+        // element itself, carrying the class's methods and fields.
+        const created = attach(create(), el) as CustomElement;
         instances.set(el, created);
         return created;
     };

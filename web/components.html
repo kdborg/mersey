@@ -5,11 +5,7 @@
   mersey-counter, mersey-hello { display: inline-block; padding: .4rem .8rem; margin: .3rem;
     background: #0af; color: #fff; border-radius: 5px; cursor: pointer; }
 </style>
-<!-- Pinned to the engine backend: Custom Elements need host-backed `this`
-     (the Mersey instance IS the element via `attach`), which the transpiled-JS
-     backend does not implement yet — tracked gap; rt.js carries the
-     defineElement half already. -->
-<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm" data-backend="wasm"></script>
+<script type="module" src="mersey-loader.js" data-engine="mersey_wasm.wasm"></script>
 </head><body>
 <h1>Custom elements as Mersey classes</h1>
 <!-- Declared in HTML, upgraded by Mersey: -->

@@ -795,9 +795,30 @@ const $rt = (() => {
 
   // browser:dom — bind the real global, or a "not defined" thrower so the
   // error surfaces at USE, not import (feature detection, like the engine).
+  // A constructable stand-in for a host class: JS refuses to `new` a real
+  // host subclass outside custom-element upgrade, so transpiled classes
+  // extend this instead — its prototype chains to the host's, and `attach`
+  // welds instances onto real host objects.
+  const hostBase = (HostClass) => {
+    class Base {}
+    if (HostClass && HostClass.prototype) {
+      Object.setPrototypeOf(Base.prototype, HostClass.prototype);
+    }
+    return Base;
+  };
+
   const WEB_NATIVES = {
     // Handles are GC'd by the JS engine itself; release is free.
     release: () => {},
+    // Weld a Mersey instance onto a host object: the object takes the
+    // instance's class chain (whose tail reaches the host prototype via
+    // hostBase) and its fields, and IS the instance from here on — the
+    // transpiled twin of the engine's web.attach, which sets instance.host.
+    attach: (instance, el) => {
+      Object.setPrototypeOf(el, Object.getPrototypeOf(instance));
+      for (const k of Object.keys(instance)) el[k] = instance[k];
+      return el;
+    },
     performance: typeof performance !== "undefined" ? performance : undefined,
     // Custom Elements: Mersey can't subclass a host class, so the runtime
     // builds the JS class and calls the handler closures directly — the
@@ -888,6 +909,6 @@ const $rt = (() => {
     wI64, wU64, wI32, wU32, wI16, wU16, wI8, wU8, wF64,
     cast, castRef, is, eq, add, arith, ord, index, iter, call, get, dflt, kindOf,
     classes, std: new Proxy(std, { get: (t, k) => stdGet(k) }),
-    web, bigdec, dynImport, wasm, main, uncaught, print,
+    web, bigdec, dynImport, wasm, main, uncaught, print, hostBase,
   };
 })();
