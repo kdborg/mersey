@@ -1,0 +1,13 @@
+{
+  "_comment": "Same-host fairness audit (2026-07-17): all measured in the Mersey Chromium fork (DCHECK + libc++ extensive hardening; is_official_build=false) over file://, headless=new, n=3 medians. JS is plain hand-written JS; native is the Mersey Tier-1 JIT. This removes the origin (http vs file://) and browser-build (stock release vs fork) confounds present in the main chart, where JS/poly/tjs run in stock release browsers over http. Caveat: the Mersey engine .so is a release build while the fork's V8 is DCHECK'd, so these margins still overstate the pure engine gap somewhat.",
+  "env": { "browser": "mersey-chromium-fork", "origin": "file://", "headless": "new", "build": "is_debug=false, dcheck_always_on=true, libc++ extensive hardening, is_official_build=false", "repeats": 3, "stat": "median" },
+  "ms": {
+    "compute": { "native": 97.5, "js": 96.5 },
+    "url":     { "native": 53.9, "js": 443.9 },
+    "dom":     { "native": 26.1, "js": 28.9 },
+    "crypto":  { "native": 17.3, "js": 38.8 },
+    "canvas":  { "native": 11.6, "js": 18.4 },
+    "json":    { "native": 5.7,  "js": 15.7 },
+    "storage": { "native": 217.9,"js": 435.6 }
+  }
+}

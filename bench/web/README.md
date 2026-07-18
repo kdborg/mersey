@@ -2,7 +2,7 @@
 
 Performance and memory for real web technologies — Web Storage, JSON, URL, Web
 Crypto, Canvas 2D, and DOM mutation — across three ways of running the same
-program, in two browsers.
+program, in three browsers (Chromium, Firefox, and Servo).
 
 The three implementations of each workload:
 
@@ -47,8 +47,17 @@ run reports the same checksum, so the three are doing identical work.
 # Stock browsers (js + polyfill, Chromium + Firefox) via Playwright:
 node bench/web/run.mjs          # -> results.stock.json
 
+# Stock Servo (js + polyfill + transpiled), headless, built from source at
+# ~/servo-src/target/release/servoshell (console.log is read from stdout;
+# Playwright does not drive Servo). Override the binary with SERVO_BIN=…:
+node bench/web/run-servo.mjs    # -> results.servo.json
+
 # Native, via the Firefox fork (needs the fork built at ~/gecko/obj-mersey):
 node bench/web/run-native.mjs   # -> results.native.json
+
+# Native, via the Servo fork (needs servoshell built at ~/servo-src with the
+# components/script/mersey engine; reflective bridge, Cranelift JIT vendored):
+node bench/web/run-native-servo.mjs   # -> results.native.servo.json
 
 # Merge into REPORT.md:
 node bench/web/report.mjs

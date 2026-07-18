@@ -1,0 +1,58 @@
+[
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 27.309624999999983,
+    "rss": 31032,
+    "checksum": 20000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 38.701333,
+    "rss": 21348,
+    "checksum": 320000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 35.09566699999999,
+    "rss": 34408,
+    "checksum": 10000
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 1.061791999999997,
+    "rss": 16676,
+    "checksum": 848890
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 2129.875084,
+    "rss": 16960,
+    "checksum": 208890
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 67.09299999999999,
+    "rss": 23240,
+    "checksum": 537780
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 97.54333399999999,
+    "rss": 16788,
+    "checksum": 1765835917
+  }
+]

@@ -13,7 +13,12 @@
     --js: #9aa7ad;         /* the browser's own engine — neutral */
     --poly: #b06fd8;       /* WASM-interpreter polyfill */
     --tjs: #c8871c;        /* transpiled-JS polyfill (with its WASM tier) */
-    --native: #0f9e88;     /* engine in the fork — Mersey's own */
+    --native: #0f9e88;     /* engine in the Firefox fork — Mersey's own */
+    --cnative: #5b74d8;    /* engine in the Chromium fork */
+    --snative: #b5468a;    /* engine in the Servo fork */
+    --servo: #d1495b;      /* Servo (stock, SpiderMonkey) — third browser */
+    /* browser hues (color-by-browser chart) */
+    --chromium: #4a8fd8; --firefox: #e0913a; --servobr: #d1495b;
     --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -22,20 +27,23 @@
     :root {
       --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
       --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6;
+      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8;
+      --servo: #e06576; --chromium: #5b9fe0; --firefox: #eca24f; --servobr: #e06576;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
     }
   }
   :root[data-theme="dark"] {
     --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
     --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6;
+    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8;
+    --servo: #e06576; --chromium: #5b9fe0; --firefox: #eca24f; --servobr: #e06576;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
   }
   :root[data-theme="light"] {
     --bg: #f7f9fa; --panel: #ffffff; --ink: #10191c; --ink-soft: #4a5a60;
     --ink-faint: #839499; --line: #dde5e8; --line-soft: #eaf0f2;
     --accent: #0a97c4; --js: #9aa7ad; --poly: #b06fd8; --tjs: #c8871c; --native: #0f9e88;
+    --cnative: #5b74d8; --snative: #b5468a; --servo: #d1495b; --chromium: #4a8fd8; --firefox: #e0913a; --servobr: #d1495b;
     --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
   }
   * { box-sizing: border-box; }
@@ -77,7 +85,8 @@
   .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 1.2rem 0 .4rem; font-size: .85rem; }
   .legend span { display: inline-flex; align-items: center; gap: .45rem; color: var(--ink-soft); }
   .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); }
+  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); } .sw.cnative { background: var(--cnative); } .sw.servo { background: var(--servo); } .sw.snative { background: var(--snative); }
+  .sw.chromium { background: var(--chromium); } .sw.firefox { background: var(--firefox); } .sw.servobr { background: var(--servobr); }
 
   /* chart */
   .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.4rem 1.4rem 1rem; box-shadow: var(--shadow); }
@@ -94,8 +103,11 @@
     height: 100%; border-radius: 4px; min-width: 2px;
     display: flex; align-items: center; justify-content: flex-end;
     transition: width .8s cubic-bezier(.2,.7,.2,1);
+    position: relative; /* so an out-of-bar value label sits just past the bar end */
+    max-width: 100%;    /* never let a bar overflow its track */
   }
-  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.tjs { background: var(--tjs); } .bar.native { background: var(--native); }
+  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.tjs { background: var(--tjs); } .bar.native { background: var(--native); } .bar.cnative { background: var(--cnative); } .bar.servo { background: var(--servo); } .bar.snative { background: var(--snative); }
+  .bar.chromium { background: var(--chromium); } .bar.firefox { background: var(--firefox); } .bar.servobr { background: var(--servobr); }
   .bar .val { font-family: var(--mono); font-size: .68rem; color: #fff; padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .bar .val.out { color: var(--ink-soft); position: absolute; left: calc(100% + 6px); }
 
@@ -121,11 +133,12 @@
   <header>
     <p class="eyebrow">Mersey · engine benchmarks</p>
     <h1>Plain JS, WASM polyfill, and native Mersey — compute and the web platform</h1>
-    <p class="lede">The same programs written once in JavaScript and once in Mersey, run four ways in two
-      browsers — plain JS, the WASM-interpreter polyfill, the transpiled-JS polyfill (with its
+    <p class="lede">The same programs written once in JavaScript and once in Mersey, run four ways across
+      three browsers — plain JS, the WASM-interpreter polyfill, the transpiled-JS polyfill (with its
       Mersey→WASM compute tier), and the native fork — over a compute kernel and six web-platform
-      workloads. Identical work, verified by matching checksums; the only variable is <em>what executes
-      the code</em>.</p>
+      workloads. The three stock browsers are <b>Chromium</b> (V8), <b>Firefox</b> (SpiderMonkey), and
+      <b>Servo</b> (SpiderMonkey, its own web platform). Identical work, verified by matching checksums;
+      the only variable is <em>what executes the code</em>.</p>
     <p class="note" style="margin-top:.6rem">Every native number here is the <b>Tier-1 JIT</b>, and the
       JIT is held to the interpreter's answer: a differential fuzzer runs generated programs — numeric,
       object, and string — on the tree-walker, the bytecode VM, and the JIT, and fails on any
@@ -142,7 +155,8 @@
     self-timed, lower is faster.</p>
   <div class="legend">
     <span><i class="sw js"></i> plain JS (JIT)</span>
-    <span><i class="sw native"></i> native — Mersey in the fork (Cranelift JIT)</span>
+    <span><i class="sw native"></i> native·ff — Firefox fork (Cranelift JIT)</span>
+    <span><i class="sw snative"></i> native·sv — Servo fork (Cranelift JIT)</span>
     <span><i class="sw tjs"></i> polyfill — transpiled JS + Mersey→WASM tier</span>
     <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
   </div>
@@ -222,12 +236,55 @@
     and the JIT's <code>std:math</code> intrinsics took <code>mathk</code> from 1913&nbsp;ms (interpreted)
     to <b>36&nbsp;ms (~53×)</b>.</p>
   <div class="legend">
-    <span><i class="sw js"></i> plain JS — browser engine, JIT</span>
+    <span><i class="sw js"></i> plain JS — Firefox engine, JIT</span>
+    <span><i class="sw servo"></i> plain JS — Servo (SpiderMonkey), JIT</span>
     <span><i class="sw tjs"></i> polyfill — transpiled JS (+WASM tier)</span>
     <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
-    <span><i class="sw native"></i> native — Mersey in the fork</span>
+    <span><i class="sw native"></i> native·ff — Mersey in the Firefox fork</span>
+    <span><i class="sw cnative"></i> native·cr — Mersey in the Chromium fork</span>
+    <span><i class="sw snative"></i> native·sv — Mersey in the Servo fork (reflective bridge)</span>
   </div>
+  <p class="note" style="margin:-.2rem 0 .6rem">Chromium native is the same engine in the other fork, with a
+    direct-C++ Blink bridge on the interned typed fast paths — url/dom/crypto/canvas land within
+    <b>~1.3–2.6×</b> of the Firefox fork. <code>storage</code> and <code>canvas</code> live in Blink's
+    modules layer, which the core runner can't depend on directly; a small core→modules hook reaches both
+    (checksums match). <code>storage</code>'s <b>218&nbsp;ms</b> (down from 283 once the hook cached the
+    resolved store) looks high only against the JS bar, which is measured over an <em>http</em> origin;
+    Chromium's <code>file://</code> localStorage — where the native fork runs — is far slower for everyone.
+    Measured like-for-like (same fork, <code>file://</code>) plain JS takes <b>~500&nbsp;ms</b> here, so
+    native is <b>~2–3× faster</b>; the Mersey bridge itself is ~38&nbsp;ms. All six web workloads now run in
+    both forks. See the Chromium
+    note at the bottom.</p>
   <div class="chart" id="timechart"></div>
+
+  <h2>The three browsers, plain JS</h2>
+  <p class="note">The same hand-written JavaScript workload in each stock browser's own engine —
+    <b>Chromium</b> (V8), <b>Firefox</b> (SpiderMonkey), and now <b>Servo</b> (also SpiderMonkey, but
+    Servo's own web platform). This is the browser-vs-browser view; the implementation view (js vs
+    polyfill vs native) is above. <b>Log scale</b>, self-timed, lower is faster. Every bar reports the
+    same checksum as the other two, so the work is identical. Servo is the 2026-07-15 nightly, built
+    from source (aarch64); its <code>localStorage</code> backend is slow (a synchronous write per
+    <code>setItem</code>), which is why <code>storage</code> stands out — a platform cost, not an engine
+    one.</p>
+  <div class="legend">
+    <span><i class="sw chromium"></i> Chromium — V8</span>
+    <span><i class="sw firefox"></i> Firefox — SpiderMonkey</span>
+    <span><i class="sw servobr"></i> Servo — SpiderMonkey</span>
+  </div>
+  <div class="chart" id="browserschart"></div>
+
+  <h2>Same host — engine vs engine, the confound removed</h2>
+  <p class="note">The chart above pits the native fork against JS/poly/tjs measured in <b>stock release
+    browsers over http</b>. But the fork is a <em>developer</em> build — <code>dcheck_always_on</code> plus
+    libc++ extensive hardening, not <code>is_official_build</code> — served over <code>file://</code>, so
+    those cross-way bars mix build config and origin with the thing we actually want to compare, the engine.
+    Below, every bar is measured <b>in the same fork, over <code>file://</code></b>: hand-written JS versus
+    the Mersey JIT, back to back. Native leads five of the six web workloads — up to 8× on <code>url</code> —
+    and runs even with JS on <code>dom</code> and the compute kernel; the stock-JS bars above were
+    <em>underselling</em> it. One caveat remains: the Mersey engine <code>.so</code>
+    is a release build while the fork's V8 carries DCHECKs, so these margins still flatter native somewhat;
+    the sign is solid, the exact multiple is soft.</p>
+  <div class="chart" id="samehostchart"></div>
 
   <h2>Memory per workload</h2>
   <p class="note">PSS of the whole browser process tree, workload page minus a blank page (Firefox).
@@ -240,6 +297,23 @@
   <p class="note">Time in milliseconds (lower is faster); memory in MiB (PSS delta vs blank).
     Green marks the faster of the two Mersey paths.</p>
   <div class="scroll"><table id="fulltable"></table></div>
+
+  <h2>Implementations across browsers</h2>
+  <p class="note">Each of the four implementations, in each of the three browsers, as one number: the
+    geometric mean of five web-platform workloads (<code>canvas</code>, <code>crypto</code>,
+    <code>dom</code>, <code>json</code>, <code>url</code>) — <code>storage</code> is left out as a
+    platform outlier (its <code>localStorage</code> backend is orders of magnitude slower everywhere and
+    would dominate the mean). Bars are colored by browser. <b>Log scale</b>, lower is faster. This is the table above collapsed to the
+    comparison it exists for: how the four ways of running the same code stack up, and how the three
+    browsers compare within each. Native is the engine in each browser's fork — Firefox and Chromium on
+    their direct-C++ bridges, Servo on a reflective bridge (with interned/scalar fast paths) — all three
+    with the Cranelift Tier-1 JIT.</p>
+  <div class="legend">
+    <span><i class="sw chromium"></i> Chromium</span>
+    <span><i class="sw firefox"></i> Firefox</span>
+    <span><i class="sw servobr"></i> Servo</span>
+  </div>
+  <div class="chart" id="implchart"></div>
 
   <h2>Making native faster: two separate levers</h2>
   <p class="note">Compute and web-platform code have different bottlenecks, so they got different work.
@@ -292,15 +366,24 @@
   <h2>How to read this honestly</h2>
   <div class="caveats">
     <ul>
+      <li><b>Native and stock JS aren't the same build — the same-host panel is the fair read.</b> The
+        native fork is a developer build (<code>dcheck_always_on</code> + libc++ extensive hardening, not
+        <code>is_official_build</code>) served over <code>file://</code>; the JS/poly/tjs bars use stock
+        release browsers over http, which run the identical work 4–22× faster. So the cross-way
+        web-platform bars <em>understate</em> native. Measured in the same fork over <code>file://</code>,
+        native leads five of the six web workloads (url ~8×, json/crypto/storage ~2–3×, canvas ~1.6×) and
+        runs even with JS on <code>dom</code> (1.1×) and the compute kernel. Remaining asymmetry: the engine
+        <code>.so</code> is release while the fork's V8 is DCHECK'd, so the exact multiples are soft.</li>
+      <li><b>Storage's cost is the platform, not the bridge.</b> Caching the resolved
+        <code>StorageArea</code> took it 283→218&nbsp;ms; swapping the real <code>CachedStorageArea</code>
+        for an in-process map (same marshalling) drops it to ~38&nbsp;ms — faster than the Firefox fork — so
+        the bridge and engine are lean. The rest is Chromium's <code>file://</code> localStorage backend (a
+        mojo <code>Put</code> per <code>setItem</code>), slow for everyone: plain JS over the same origin
+        takes ~500&nbsp;ms, so native already beats it 2×. A platform floor, not a JIT lever.</li>
       <li><b>The bridge fast paths help where the hot calls are scalars.</b> URL (1.36×) and canvas
         (1.33×) gain most; JSON (0.95×, within noise) gains nothing because its argument is an object that
         still needs serializing. This is the win available without abandoning the universal reflective
         bridge.</li>
-      <li><b>Direct C++ shifts the bottleneck rather than removing it.</b> Web Storage now bypasses JS
-        entirely, yet it is still ~4× slower than the browser's own <code>localStorage</code> (which calls
-        the same C++). Bypassing JS only bought ~1.15× over the interned bridge — because the remaining cost
-        is no longer the crossing, it is the Tier-0 interpreter loop plus per-call string marshalling and
-        reply parsing. Which means, for a bridge that is now fast, the JIT finally becomes the lever.</li>
       <li><b>The JIT is done, and it is huge — for compute.</b> Cranelift in the fork makes an arithmetic
         kernel 65× the interpreter and competitive with JS. It stays out of the web-platform loops by
         design (they allocate and call the host every iteration), so the two levers don't overlap: JIT for
@@ -308,26 +391,73 @@
       <li><b>The memory baselines differ on purpose.</b> The polyfill pays a per-page engine tax of
         ~40–52 MB (WASM module + heap); the native engine adds none, because it ships inside the browser —
         and native's footprint is the lowest of the three.</li>
-      <li><b>Native is Firefox-only so far.</b> The Chromium fork needs the same bridge port before it can
-        be measured.</li>
+      <li><b>Chromium native: engine + a growing web bridge.</b> The Chromium fork hosts the engine (it edges
+        the Gecko fork on <code>calls</code>/<code>compute</code>/<code>fcompute</code>/<code>mathk</code>,
+        runs <code>json</code> via the fusion), and its Blink script runner now grows a <em>direct-C++</em>
+        web bridge: <code>url</code> (via <code>KURL</code>), <code>dom</code> (createElement/appendChild/
+        textContent on real Blink nodes), <code>crypto</code> (a native byte buffer +
+        <code>getRandomValues</code>), and <code>canvas</code> (<code>getContext</code>/<code>fillRect</code>)
+        run — and on the interned typed fast paths (a name crosses once as an id, then scalars cross typed
+        with no JSON) url/dom/crypto/canvas land at <b>66 / 25 / 16 / 11&nbsp;ms</b>, ~1.3–2.6× the Gecko
+        fork and checksums verified. <code>storage</code> and <code>canvas</code> live in Blink's
+        <code>modules/</code> layer, which <code>core</code> can't depend on, so both go through a
+        <em>core→modules hook</em> (core declares a function-pointer table; <code>ModulesInitializer</code>
+        fills it). All six web workloads now run in both forks; <code>storage</code> (<b>218&nbsp;ms</b>,
+        down from 283 once the hook cached the resolved <code>StorageArea</code>) reads as the outlier but
+        isn't a Mersey cost. Swapping the real <code>CachedStorageArea</code> for an in-process map (same
+        bridge marshalling) drops it to <b>~38&nbsp;ms</b> — faster than the Firefox fork — so the bridge and
+        engine are lean; the rest is Chromium's <code>file://</code> localStorage backend (a mojo
+        <code>Put</code> per <code>setItem</code>). That backend is slow for everyone: plain JS over the same
+        <code>file://</code> origin in this fork takes <b>~500&nbsp;ms</b>, so native already beats it 2–3×.
+        The JS/poly bars measure an <em>http</em> origin (Playwright, stock Chromium), where localStorage is
+        much cheaper — not a like-for-like backend for the <code>file://</code> native run.
+        Harness: <code>run-native-chromium.mjs</code>; data: <code>results.native.chromium.json</code>.</li>
+      <li><b>Servo is the third browser — stock and native.</b> Servo (2026-07-15 nightly, built from
+        source on aarch64) runs the <b>js</b>, <b>polyfill</b>, and <b>transpiled-JS</b> legs like Chromium
+        and Firefox; all six web workloads plus the compute kernel run with matching checksums. Its JS
+        engine is SpiderMonkey, so plain-JS numbers track Firefox closely (compute 108 vs 111&nbsp;ms).
+        Servo's WASM has no optimizing tier, so the <b>polyfill</b> interpreter numbers are in the same class
+        as the other browsers' (compute ~19&nbsp;s), and its stock <code>localStorage</code> writes
+        synchronously, so <code>storage</code> is slow for all three impls (~2–3.6&nbsp;s) — a platform cost,
+        not a Mersey one.</li>
+      <li><b>Servo native: the engine embedded, with the Cranelift JIT.</b> The Servo fork now hosts the
+        engine (a new <code>components/script/mersey</code>, hooking <code>&lt;script type="text/mersey"&gt;</code>),
+        so Servo has a <b>native</b> column like the other two forks — all six web workloads run with matching
+        checksums (canvas 27, crypto 39, dom 35, json 1, url 67, storage 2130&nbsp;ms). <b>Cranelift is vendored
+        into Servo too</b> (the ~30 crates added to <code>vendor/</code>), so the engine runs the <b>Tier-1
+        JIT</b>: the compute kernel is <b>~95&nbsp;ms</b> — a real JIT number, the fastest of the three native
+        forks and ahead of Servo's own JS (108), down from 6.3&nbsp;s interpreted. The JIT also compiles the
+        web loops after they warm.
+        The <b>interned + scalar bridge fast paths</b> are wired now too: a member name crosses once as an
+        integer id, and scalar arguments cross as JS values instead of a per-call JSON blob (dom fell 55→35,
+        canvas 33→27, url 75→67). What is still reflective — and why the web workloads remain ~1.5–6× the
+        Gecko fork — is <b>object-argument</b> ops (<code>appendChild(el)</code>,
+        <code>getRandomValues(buf)</code>) and the wide-string / direct-DOM tiers the C++ forks built; those
+        are the next lever. The Servo fork runs over an <b>http</b> origin (like the stock runs) because Servo
+        exposes <code>localStorage</code> only there, not over <code>file://</code> where the other forks run;
+        <code>storage</code>'s ~2.1&nbsp;s is that slow backend, not the bridge. Harness:
+        <code>run-servo.mjs</code> / <code>run-native-servo.mjs</code>; data: <code>results.servo.json</code>
+        / <code>results.native.servo.json</code>.</li>
     </ul>
   </div>
 
   <footer>
-    6 workloads × 3 implementations × 2 browsers. Stock browsers driven by Playwright; native measured in
-    the Gecko fork (<code>~/gecko/obj-mersey</code>). Raw data in <code>bench/web/results.*.json</code>;
-    harness in <code>bench/web/</code>.
+    Web workloads × 4 implementations × 3 browsers (Chromium, Firefox, Servo). Chromium/Firefox stock driven
+    by Playwright; Servo (2026-07-15 nightly, built from source) driven headless via <code>run-servo.mjs</code>;
+    native measured in each browser's Mersey fork — Gecko (<code>~/gecko/obj-mersey</code>), the Chromium
+    fork, and the Servo fork (<code>~/servo-src</code>, <code>run-native-servo.mjs</code>). Raw data in
+    <code>bench/web/results.*.json</code>; harness in <code>bench/web/</code>.
   </footer>
 </div>
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:27.3, msnative:30.3 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:38.7, msnative:20.8 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:35.1, msnative:33.6 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.1, msnative:16.3 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:2130, msnative:16.6 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:67.1, msnative:22.7 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
@@ -339,18 +469,32 @@
     storage: { fast:171, slow:191 },
     json:    { fast:113, slow:107 },
   };
+  // Same-host fairness panel: hand-written JS vs the Mersey JIT, BOTH measured in
+  // the Chromium fork (DCHECK + hardened, is_official_build=false) over file://,
+  // headless=new, n=3 medians. Removes the origin (http vs file://) and browser-
+  // build (stock release vs fork) confounds baked into the cross-way chart above.
+  // Data: results.samehost.json. Ordered by native's margin, ties last (honest).
+  const SAMEHOST = {
+    url:     { native: 53.9,  js: 443.9 },
+    json:    { native: 5.7,   js: 15.7 },
+    crypto:  { native: 17.3,  js: 38.8 },
+    storage: { native: 217.9, js: 435.6 },
+    canvas:  { native: 11.6,  js: 18.4 },
+    dom:     { native: 26.1,  js: 28.9 },
+    compute: { native: 97.5,  js: 96.5 },
+  };
   // The transpiled-JS polyfill (Mersey -> JS at load time, browser JIT runs it).
   const TJS = {
-    canvas:  { c: 5.1,  f: 7.0 },
-    compute: { c: 92.0, f: 150.3 },
-    crypto:  { c: 8.6,  f: 9.7 },
-    dom:     { c: 4.4,  f: 9.6 },
-    json:    { c: 2.1,  f: 5.0 },
-    storage: { c: 56.7, f: 35.6 },
-    url:     { c: 21.9, f: 27.6 },
+    canvas:  { c: 5.1,  f: 7.0,   s: 4.9 },
+    compute: { c: 92.0, f: 150.3, s: 132.8 },
+    crypto:  { c: 8.6,  f: 9.7,   s: 4.6 },
+    dom:     { c: 4.4,  f: 9.6,   s: 17.8 },
+    json:    { c: 2.1,  f: 5.0,   s: 5.1 },
+    storage: { c: 56.7, f: 35.6,  s: 3607 },
+    url:     { c: 21.9, f: 27.6,  s: 12.0 },
   };
   // Compute-bound kernel (its own workload class — the JIT's target).
-  const COMPUTE = { fjs: 111, cjs: 94, native: 101, cpoly: 19184, fpoly: 80326, ctjs: 92, ftjs: 150 };
+  const COMPUTE = { fjs: 111, cjs: 94, native: 101, cpoly: 19184, fpoly: 80326, ctjs: 92, ftjs: 150, sjs: 107.9, spoly: 19404, stjs: 132.8, snative: 97.5 };
   const WL = Object.keys(DATA);
 
   // ---- headline cards ----
@@ -373,31 +517,41 @@
 
   // ---- compute chart (log scale, ms) ----
   {
-    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native — Cranelift JIT"], ["tjs", "ftjs", "polyfill — transpiled + WASM tier"], ["poly", "fpoly", "polyfill — WASM interpreter"]];
+    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native·ff — Cranelift JIT"], ["snative", "snative", "native·sv — Servo fork JIT"], ["tjs", "ftjs", "polyfill — transpiled + WASM tier"], ["poly", "fpoly", "polyfill — WASM interpreter"]];
     const lmin = 50, lmax = 100000;
     const lpct = (v) => Math.max(2, (Math.log10(v) - Math.log10(lmin)) / (Math.log10(lmax) - Math.log10(lmin)) * 100);
     const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v + " ms";
+    const shortLab = { js: "js", native: "native·ff", snative: "native·sv", tjs: "tjs", poly: "poly" };
     document.getElementById("computechart").innerHTML = `<div class="bars">` + rows.map(([cls, key, lab]) => {
       const v = COMPUTE[key], pct = lpct(v);
-      return `<div class="bar-row"><div class="bar-lab">${cls}</div>
+      return `<div class="bar-row"><div class="bar-lab">${shortLab[cls] || cls}</div>
         <div class="track"><div class="bar ${cls}" style="width:${pct}%">
           <span class="val${pct < 26 ? " out" : ""}">${fmt(v)}</span></div></div></div>`;
     }).join("") + `</div>`;
   }
 
   // ---- log-scale time chart (Firefox) ----
-  const LOG_MIN = 1, LOG_MAX = 600;
+  const LOG_MIN = 1, LOG_MAX = 2500; // headroom for Servo's slow localStorage (~2.1 s)
   const logPct = (v) => Math.max(2, (Math.log10(v) - Math.log10(LOG_MIN)) / (Math.log10(LOG_MAX) - Math.log10(LOG_MIN)) * 100);
-  const timeSeries = [["js", "fjs"], ["tjs", "ftjs"], ["poly", "fpoly"], ["native", "native"]];
+  // Firefox JS/poly/tjs baselines, plus BOTH fork natives (Firefox and Chromium).
+  const timeSeries = [["js", "fjs", "js·ff"], ["servo", "sjs", "js·sv"], ["tjs", "ftjs", "tjs·ff"], ["poly", "fpoly", "poly·ff"],
+                      ["native", "native", "native·ff"], ["cnative", "cnative", "native·cr"], ["snative", "snative", "native·sv"]];
   document.getElementById("timechart").innerHTML = WL.map((w) => `
     <div class="wl">
-      <div class="wl-name"><b>${w}</b><em>ms · Firefox</em></div>
+      <div class="wl-name"><b>${w}</b><em>ms · Firefox/Servo JS + fork native</em></div>
       <div class="bars">
-        ${timeSeries.map(([cls, key]) => {
+        ${timeSeries.map(([cls, key, lab]) => {
           const v = DATA[w][key];
+          if (v == null) {
+            return `<div class="bar-row">
+              <div class="bar-lab">${lab}</div>
+              <div class="track"><div class="bar ${cls}" style="width:2%;opacity:.28">
+                <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div>
+            </div>`;
+          }
           const pct = logPct(v);
           return `<div class="bar-row">
-            <div class="bar-lab">${cls}</div>
+            <div class="bar-lab">${lab}</div>
             <div class="track"><div class="bar ${cls}" style="width:${pct}%">
               <span class="val${pct < 22 ? " out" : ""}">${v}</span></div></div>
           </div>`;
@@ -405,12 +559,50 @@
       </div>
     </div>`).join("");
 
+  // ---- same-host fairness chart (fork, file://, JS vs native) ----
+  document.getElementById("samehostchart").innerHTML = Object.keys(SAMEHOST).map((w) => {
+    const d = SAMEHOST[w];
+    const ratio = d.js / d.native;
+    const tag = ratio >= 1.15 ? `native ${ratio.toFixed(1)}× faster`
+              : ratio >= 0.9 ? "≈ parity"
+              : `JS ${(1 / ratio).toFixed(1)}× faster`;
+    const row = (cls, key, lab) => {
+      const v = d[key], pct = logPct(v);
+      return `<div class="bar-row"><div class="bar-lab">${lab}</div>
+        <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+          <span class="val${pct < 22 ? " out" : ""}">${v}</span></div></div></div>`;
+    };
+    return `<div class="wl">
+      <div class="wl-name"><b>${w}</b><em>${tag}</em></div>
+      <div class="bars">${row("cnative", "native", "native")}${row("js", "js", "JS")}</div>
+    </div>`;
+  }).join("");
+
+  // ---- three-browser plain-JS chart (log scale, ms) ----
+  {
+    const order = [...WL, "compute"];
+    const bmin = 1, bmax = 4000;
+    const bpct = (v) => Math.max(2, (Math.log10(v) - Math.log10(bmin)) / (Math.log10(bmax) - Math.log10(bmin)) * 100);
+    const cell = (w) => (w === "compute" ? COMPUTE : DATA[w]);
+    document.getElementById("browserschart").innerHTML = order.map((w) => {
+      const d = cell(w);
+      const row = (cls, key, lab) => {
+        const v = d[key], pct = bpct(v);
+        return `<div class="bar-row"><div class="bar-lab">${lab}</div>
+          <div class="track"><div class="bar ${cls}" style="width:${pct}%">
+            <span class="val${pct < 20 ? " out" : ""}">${v}</span></div></div></div>`;
+      };
+      return `<div class="wl"><div class="wl-name"><b>${w}</b><em>ms · plain JS</em></div>
+        <div class="bars">${row("chromium", "cjs", "chromium")}${row("firefox", "fjs", "firefox")}${row("servobr", "sjs", "servo")}</div></div>`;
+    }).join("");
+  }
+
   // ---- memory chart (Firefox), linear ----
-  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mftjs, DATA[w].mnative]));
-  const memSeries = [["js", "mfjs"], ["tjs", "mftjs"], ["poly", "mfpoly"], ["native", "mnative"]];
+  const memMax = Math.max(...WL.flatMap((w) => [DATA[w].mfjs, DATA[w].mfpoly, DATA[w].mftjs, DATA[w].mnative, DATA[w].msjs, DATA[w].mspoly, DATA[w].mstjs]));
+  const memSeries = [["js", "mfjs"], ["servo", "msjs"], ["tjs", "mftjs"], ["poly", "mfpoly"], ["native", "mnative"]];
   document.getElementById("memchart").innerHTML = WL.map((w) => `
     <div class="wl">
-      <div class="wl-name"><b>${w}</b><em>MiB · Firefox</em></div>
+      <div class="wl-name"><b>${w}</b><em>MiB · Firefox/Servo</em></div>
       <div class="bars">
         ${memSeries.map(([cls, key]) => {
           const v = DATA[w][key];
@@ -445,12 +637,13 @@
   // ---- transpiled-JS polyfill table ----
   {
     const wls = Object.keys(TJS);
-    let h = "<thead><tr><th>workload</th><th>hand-written JS<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th><th>transpiled Mersey<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th><th>WASM interpreter<br><span style='font-weight:400;color:var(--ink-faint)'>Chromium · Firefox</span></th></tr></thead><tbody>";
+    const trip = "Chromium · Firefox · Servo";
+    let h = `<thead><tr><th>workload</th><th>hand-written JS<br><span style='font-weight:400;color:var(--ink-faint)'>${trip}</span></th><th>transpiled Mersey<br><span style='font-weight:400;color:var(--ink-faint)'>${trip}</span></th><th>WASM interpreter<br><span style='font-weight:400;color:var(--ink-faint)'>${trip}</span></th></tr></thead><tbody>`;
     for (const w of wls) {
       const d = w === "compute" ? COMPUTE : DATA[w];
-      const js = w === "compute" ? `${COMPUTE.cjs} · ${COMPUTE.fjs}` : `${DATA[w].cjs} · ${DATA[w].fjs}`;
-      const poly = w === "compute" ? `${(COMPUTE.cpoly/1000).toFixed(1)} s · ${(COMPUTE.fpoly/1000).toFixed(1)} s` : `${DATA[w].cpoly} · ${DATA[w].fpoly}`;
-      h += `<tr><td>${w}</td><td class="num">${js}</td><td class="num"><span class="best">${TJS[w].c} · ${TJS[w].f}</span></td><td class="num">${poly}</td></tr>`;
+      const js = w === "compute" ? `${COMPUTE.cjs} · ${COMPUTE.fjs} · ${COMPUTE.sjs}` : `${DATA[w].cjs} · ${DATA[w].fjs} · ${DATA[w].sjs}`;
+      const poly = w === "compute" ? `${(COMPUTE.cpoly/1000).toFixed(1)} s · ${(COMPUTE.fpoly/1000).toFixed(1)} s · ${(COMPUTE.spoly/1000).toFixed(1)} s` : `${DATA[w].cpoly} · ${DATA[w].fpoly} · ${DATA[w].spoly}`;
+      h += `<tr><td>${w}</td><td class="num">${js}</td><td class="num"><span class="best">${TJS[w].c} · ${TJS[w].f} · ${TJS[w].s}</span></td><td class="num">${poly}</td></tr>`;
     }
     h += "</tbody>";
     document.getElementById("tjstable").innerHTML = h;
@@ -462,8 +655,13 @@
     ["Chromium JS poly", "ctjs", "mctjs"],
     ["Firefox JS", "fjs", "mfjs"], ["Firefox WASM poly", "fpoly", "mfpoly"],
     ["Firefox JS poly", "ftjs", "mftjs"],
-    ["Fork native", "native", "mnative"],
+    ["Servo JS", "sjs", "msjs"], ["Servo WASM poly", "spoly", "mspoly"],
+    ["Servo JS poly", "stjs", "mstjs"],
+    ["Firefox native", "native", "mnative"],
+    ["Chromium native", "cnative", "mcnative"],
+    ["Servo native", "snative", "msnative"],
   ];
+  const cell = (v) => (v == null ? "—" : v);
   let thead = "<thead><tr><th>workload</th>" + cols.map((c) => `<th>${c[0]}<br><span style="font-weight:400;color:var(--ink-faint)">ms · MiB</span></th>`).join("") + "</tr></thead>";
   let tbody = "<tbody>" + WL.map((w) => {
     const d = DATA[w];
@@ -471,8 +669,34 @@
     return `<tr><td>${w}</td>` + cols.map((c) => {
       const t = d[c[1]], m = d[c[2]];
       const mark = (c[1] === "native" && nativeFaster) ? " class=\"best\"" : "";
-      return `<td class="num"><span${mark}>${t}</span> · <span style="color:var(--ink-faint)">${m}</span></td>`;
+      return `<td class="num"><span${mark}>${cell(t)}</span> · <span style="color:var(--ink-faint)">${cell(m)}</span></td>`;
     }).join("") + "</tr>";
   }).join("") + "</tbody>";
   document.getElementById("fulltable").innerHTML = thead + tbody;
+
+  // ---- implementations-across-browsers chart (geomean, log scale) ----
+  {
+    const COMMON = ["canvas", "crypto", "dom", "json", "url"];
+    const gm = (key) => geomean(COMMON.map((w) => DATA[w][key]).filter((v) => v != null));
+    const impls = [
+      ["plain JS", { chromium: "cjs", firefox: "fjs", servobr: "sjs" }],
+      ["transpiled-JS polyfill", { chromium: "ctjs", firefox: "ftjs", servobr: "stjs" }],
+      ["WASM-interpreter polyfill", { chromium: "cpoly", firefox: "fpoly", servobr: "spoly" }],
+      ["native — engine in the fork", { chromium: "cnative", firefox: "native", servobr: "snative" }],
+    ];
+    const allVals = impls.flatMap(([, m]) => Object.values(m).map(gm));
+    const imin = 1, imax = Math.max(...allVals) * 1.2;
+    const ipct = (v) => Math.max(2, (Math.log10(v) - Math.log10(imin)) / (Math.log10(imax) - Math.log10(imin)) * 100);
+    const row = (br, v, lab) => {
+      const pct = ipct(v);
+      return `<div class="bar-row"><div class="bar-lab">${lab}</div>
+        <div class="track"><div class="bar ${br}" style="width:${pct}%">
+          <span class="val${pct < 20 ? " out" : ""}">${v.toFixed(1)}</span></div></div></div>`;
+    };
+    document.getElementById("implchart").innerHTML = impls.map(([label, m]) => `
+      <div class="wl">
+        <div class="wl-name"><b>${label}</b><em>geomean ms · 5 web workloads</em></div>
+        <div class="bars">${row("chromium", gm(m.chromium), "chromium")}${row("firefox", gm(m.firefox), "firefox")}${row("servobr", gm(m.servobr), "servo")}</div>
+      </div>`).join("");
+  }
 </script>
