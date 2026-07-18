@@ -6,3 +6,4 @@ mersey.lock
 
 # `mersey doc` output: generated, never edited by hand.
 site/
+test-dumps/

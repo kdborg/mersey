@@ -1,3 +1,9 @@
+// Generated from web/mersey-bridge.js by ladybird/refresh-bridge.sh.
+// Do not edit by hand — edit web/mersey-bridge.js and re-run the script.
+#pragma once
+#include <AK/StringView.h>
+namespace Web::Mersey {
+inline constexpr AK::StringView BRIDGE_JS = R"MERSEYBRIDGE(
 /* Universal web bridge (shared by the browser loader and the test harness).
  *
  * This is what makes *every* web technology reachable from Mersey: instead
@@ -408,3 +414,5 @@ function makeBridge(globalObject, invokeCallback) {
 globalThis.__merseyBridge = makeBridge(globalThis, function (cb, argsJson) {
   return globalThis.__merseyInvoke(cb, argsJson);
 });
+)MERSEYBRIDGE"sv;
+}

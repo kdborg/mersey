@@ -16,6 +16,7 @@
     --native: #0f9e88;     /* engine in the Firefox fork — Mersey's own */
     --cnative: #5b74d8;    /* engine in the Chromium fork */
     --snative: #b5468a;    /* engine in the Servo fork */
+    --lbnative: #7d5ba6;   /* engine in the Ladybird fork */
     --servo: #d1495b;      /* Servo (stock, SpiderMonkey) — third browser */
     /* browser hues (color-by-browser chart) */
     --chromium: #4a8fd8; --firefox: #e0913a; --servobr: #d1495b;
@@ -27,7 +28,7 @@
     :root {
       --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
       --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8;
+      --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8; --lbnative: #a385cf;
       --servo: #e06576; --chromium: #5b9fe0; --firefox: #eca24f; --servobr: #e06576;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
     }
@@ -35,7 +36,7 @@
   :root[data-theme="dark"] {
     --bg: #0d1416; --panel: #131e21; --ink: #eaf2f4; --ink-soft: #9fb2b8;
     --ink-faint: #6b7f85; --line: #253437; --line-soft: #1b282b;
-    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8;
+    --accent: #34c0e8; --js: #6b7a80; --poly: #c58ce8; --tjs: #e5ab45; --native: #2bc0a6; --cnative: #7d92e8; --snative: #d06aa8; --lbnative: #a385cf;
     --servo: #e06576; --chromium: #5b9fe0; --firefox: #eca24f; --servobr: #e06576;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -14px rgba(0,0,0,.5);
   }
@@ -43,7 +44,7 @@
     --bg: #f7f9fa; --panel: #ffffff; --ink: #10191c; --ink-soft: #4a5a60;
     --ink-faint: #839499; --line: #dde5e8; --line-soft: #eaf0f2;
     --accent: #0a97c4; --js: #9aa7ad; --poly: #b06fd8; --tjs: #c8871c; --native: #0f9e88;
-    --cnative: #5b74d8; --snative: #b5468a; --servo: #d1495b; --chromium: #4a8fd8; --firefox: #e0913a; --servobr: #d1495b;
+    --cnative: #5b74d8; --snative: #b5468a; --lbnative: #7d5ba6; --servo: #d1495b; --chromium: #4a8fd8; --firefox: #e0913a; --servobr: #d1495b;
     --shadow: 0 1px 2px rgba(16,25,28,.04), 0 8px 24px -12px rgba(16,25,28,.12);
   }
   * { box-sizing: border-box; }
@@ -85,7 +86,7 @@
   .legend { display: flex; flex-wrap: wrap; gap: 1.1rem; margin: 1.2rem 0 .4rem; font-size: .85rem; }
   .legend span { display: inline-flex; align-items: center; gap: .45rem; color: var(--ink-soft); }
   .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); } .sw.cnative { background: var(--cnative); } .sw.servo { background: var(--servo); } .sw.snative { background: var(--snative); }
+  .sw.js { background: var(--js); } .sw.poly { background: var(--poly); } .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); } .sw.cnative { background: var(--cnative); } .sw.servo { background: var(--servo); } .sw.snative { background: var(--snative); } .sw.lbnative { background: var(--lbnative); }
   .sw.chromium { background: var(--chromium); } .sw.firefox { background: var(--firefox); } .sw.servobr { background: var(--servobr); }
 
   /* chart */
@@ -106,7 +107,7 @@
     position: relative; /* so an out-of-bar value label sits just past the bar end */
     max-width: 100%;    /* never let a bar overflow its track */
   }
-  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.tjs { background: var(--tjs); } .bar.native { background: var(--native); } .bar.cnative { background: var(--cnative); } .bar.servo { background: var(--servo); } .bar.snative { background: var(--snative); }
+  .bar.js { background: var(--js); } .bar.poly { background: var(--poly); } .bar.tjs { background: var(--tjs); } .bar.native { background: var(--native); } .bar.cnative { background: var(--cnative); } .bar.servo { background: var(--servo); } .bar.snative { background: var(--snative); } .bar.lbnative { background: var(--lbnative); }
   .bar.chromium { background: var(--chromium); } .bar.firefox { background: var(--firefox); } .bar.servobr { background: var(--servobr); }
   .bar .val { font-family: var(--mono); font-size: .68rem; color: #fff; padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .bar .val.out { color: var(--ink-soft); position: absolute; left: calc(100% + 6px); }
@@ -157,6 +158,7 @@
     <span><i class="sw js"></i> plain JS (JIT)</span>
     <span><i class="sw native"></i> native·ff — Firefox fork (Cranelift JIT)</span>
     <span><i class="sw snative"></i> native·sv — Servo fork (Cranelift JIT)</span>
+    <span><i class="sw lbnative"></i> native·lb — Ladybird fork (Cranelift JIT)</span>
     <span><i class="sw tjs"></i> polyfill — transpiled JS + Mersey→WASM tier</span>
     <span><i class="sw poly"></i> polyfill — WASM interpreter</span>
   </div>
@@ -243,6 +245,7 @@
     <span><i class="sw native"></i> native·ff — Mersey in the Firefox fork</span>
     <span><i class="sw cnative"></i> native·cr — Mersey in the Chromium fork</span>
     <span><i class="sw snative"></i> native·sv — Mersey in the Servo fork (reflective bridge)</span>
+    <span><i class="sw lbnative"></i> native·lb — Mersey in the Ladybird fork (reflective bridge)</span>
   </div>
   <p class="note" style="margin:-.2rem 0 .6rem">Chromium native is the same engine in the other fork, with a
     direct-C++ Blink bridge on the interned typed fast paths — url/dom/crypto/canvas land within
@@ -423,41 +426,73 @@
       <li><b>Servo native: the engine embedded, with the Cranelift JIT.</b> The Servo fork now hosts the
         engine (a new <code>components/script/mersey</code>, hooking <code>&lt;script type="text/mersey"&gt;</code>),
         so Servo has a <b>native</b> column like the other two forks — all six web workloads run with matching
-        checksums (canvas 27, crypto 39, dom 35, json 1, url 67, storage 2130&nbsp;ms). <b>Cranelift is vendored
+        checksums (canvas 19, crypto 18, dom 32, json 1, url 36, storage 1953&nbsp;ms). <b>Cranelift is vendored
         into Servo too</b> (the ~30 crates added to <code>vendor/</code>), so the engine runs the <b>Tier-1
         JIT</b>: the compute kernel is <b>~95&nbsp;ms</b> — a real JIT number, the fastest of the three native
         forks and ahead of Servo's own JS (108), down from 6.3&nbsp;s interpreted. The JIT also compiles the
         web loops after they warm.
-        The <b>interned + scalar bridge fast paths</b> are wired now too: a member name crosses once as an
-        integer id, and scalar arguments cross as JS values instead of a per-call JSON blob (dom fell 55→35,
-        canvas 33→27, url 75→67). What is still reflective — and why the web workloads remain ~1.5–6× the
-        Gecko fork — is <b>object-argument</b> ops (<code>appendChild(el)</code>,
-        <code>getRandomValues(buf)</code>) and the wide-string / direct-DOM tiers the C++ forks built; those
-        are the next lever. The Servo fork runs over an <b>http</b> origin (like the stock runs) because Servo
-        exposes <code>localStorage</code> only there, not over <code>file://</code> where the other forks run;
-        <code>storage</code>'s ~2.1&nbsp;s is that slow backend, not the bridge. Harness:
-        <code>run-servo.mjs</code> / <code>run-native-servo.mjs</code>; data: <code>results.servo.json</code>
-        / <code>results.native.servo.json</code>.</li>
+        The <b>interned + scalar</b> and now the <b>wide-string</b> bridge fast paths are wired: a member name
+        crosses once as an integer id, and get/set/call/new cross with <b>no JSON</b> and, on the wide path,
+        no encoding conversion — object arguments (<code>appendChild(el)</code>,
+        <code>getRandomValues(buf)</code>) stay off the JSON path via a refs bitmask. Wiring the wide-string
+        tier (the <code>web_*_u16</code> hooks) cut crypto 39→<b>18</b>, url 67→<b>36</b>, canvas 27→<b>18</b>,
+        dom 35→<b>32</b> — url now edges out the Gecko fork — with checksums unchanged. What remains is the
+        <b>direct-DOM</b> tier the C++ forks built (<code>web_bind</code> → the DOM method with no JS at all),
+        the last lever to the Gecko fork. The Servo fork runs over an <b>http</b> origin (like the stock runs)
+        because Servo exposes <code>localStorage</code> only there, not over <code>file://</code>;
+        <code>storage</code>'s ~2&nbsp;s is that slow backend, not the bridge (the wide path did not move it).
+        Harness: <code>run-servo.mjs</code> / <code>run-native-servo.mjs</code>; data:
+        <code>results.servo.json</code> / <code>results.native.servo.json</code>.</li>
+      <li><b>Ladybird native: the newest fork, engine + Cranelift JIT.</b> Ladybird (LibWeb + LibJS, built from
+        source via <code>test-web</code> — it ships no <code>--headless</code> binary) now hosts the engine
+        through a C++ module (<code>Libraries/LibWeb/Mersey</code>), the fifth host of the one C ABI. All six web
+        workloads + compute run with <b>matching checksums</b>. <b>Compute is <b>~93&nbsp;ms</b> — the fastest of
+        the three native forks</b> (pure JIT, no bridge). The reflective bridge is C++→LibJS (UTF-16 end to end),
+        with the interned <b>and</b> wide-string fast paths wired — the same lever as Servo, which cut crypto
+        117→<b>50</b>, url 220→<b>124</b>, canvas 56→<b>38</b>, dom 94→<b>68</b>. The <b>typed-binding tier
+        (<code>web_bind</code>) is wired too</b>: the JIT-compiled canvas loop calls the C++
+        <code>CanvasRenderingContext2D::fill_rect</code> directly — no JS, no marshalling — dropping canvas
+        38→<b>10&nbsp;ms</b>, on par with Chromium. The <b>direct-DOM tier</b> then reached the rest of the web
+        workloads: each hot method is classified when its name is interned, and the wide-path hook unwraps the
+        receiver (and object args) to their C++ types and calls the method directly — <code>getRandomValues</code>
+        (crypto 117→<b>26</b>), <code>new URL</code>+<code>pathname</code>/<code>search</code> (url 220→<b>55</b>,
+        now ahead of the Chromium fork), and <code>createElement</code>+<code>textContent</code>+
+        <code>appendChild</code> (dom 94→<b>29</b>, ahead of Servo). Objects the host <em>creates</em> (URL,
+        elements) are registered once and their C++ pointer cached, so the follow-up reads never cross.
+        <code>storage</code> (~9.8&nbsp;s) is the lone holdout — bound by Ladybird's own <code>localStorage</code>,
+        not the crossing. Harness:
+        <code>run-native-ladybird.mjs</code>; data: <code>results.native.ladybird.json</code>. The stock leg
+        (js/poly/tjs) is not collected yet.</li>
+      <li><b>Why <code>storage</code> is the one workload no fork tier moves.</b> It is the cleanest evidence
+        that the engine and bridge are <em>not</em> the cost: wiring the wide-string path (no JSON) changed it by
+        &lt;1% in both Servo and Ladybird. The cost is each browser's <code>localStorage</code> backend, which
+        must persist and sync across contexts, so it is <b>synchronous cross-process IPC</b>. Ladybird does
+        three IPC round-trips per iteration — <code>page_did_set_storage_item</code>, a storage-event
+        <code>broadcast</code>, and <code>page_did_request_storage_item</code> — for <b>~10&nbsp;s</b>; Servo
+        proxies to a storage thread (<b>~2&nbsp;s</b>); Chromium's <code>StorageArea</code> caches, so it is far
+        faster (<b>~218&nbsp;ms</b>). A Mersey fork cannot close this — bypassing the IPC would break persistence
+        and <code>storage</code> events. It is a <b>browser-storage-architecture</b> cost, identical for the
+        browser's own JS, and the gap between the three is theirs, not the engine's.</li>
     </ul>
   </div>
 
   <footer>
-    Web workloads × 4 implementations × 3 browsers (Chromium, Firefox, Servo). Chromium/Firefox stock driven
-    by Playwright; Servo (2026-07-15 nightly, built from source) driven headless via <code>run-servo.mjs</code>;
-    native measured in each browser's Mersey fork — Gecko (<code>~/gecko/obj-mersey</code>), the Chromium
-    fork, and the Servo fork (<code>~/servo-src</code>, <code>run-native-servo.mjs</code>). Raw data in
-    <code>bench/web/results.*.json</code>; harness in <code>bench/web/</code>.
+    Web workloads × 4 implementations × 3 stock browsers (Chromium, Firefox, Servo), plus <b>native in four
+    forks</b> — Gecko (<code>~/gecko/obj-mersey</code>), Chromium, Servo (<code>~/servo-src</code>), and now
+    <b>Ladybird</b> (<code>~/ladybird</code>, driven through <code>test-web</code>). Chromium/Firefox stock via
+    Playwright; Servo headless via <code>run-servo.mjs</code>. Raw data in <code>bench/web/results.*.json</code>;
+    harness in <code>bench/web/</code>.
   </footer>
 </div>
 
 <script>
   const DATA = {
-    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:27.3, msnative:30.3 },
-    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:38.7, msnative:20.8 },
-    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:35.1, msnative:33.6 },
-    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.1, msnative:16.3 },
-    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:2130, msnative:16.6 },
-    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:67.1, msnative:22.7 },
+    canvas:  { cjs:3.6, cpoly:71.5, fjs:4.6, fpoly:170.3, native:4.4, cnative:11.2,  mcjs:29.3, mcpoly:80.4, mfjs:57.6, mfpoly:104.5, mnative:20.5 , ctjs:3.3, ftjs:7.0, mctjs:63.1, mftjs:107.6, sjs:2.6, spoly:74.5, stjs:4.9, msjs:20.2, mspoly:70.6, mstjs:74.3, snative:18.6, msnative:29.0, lbnative:9.8 },
+    crypto:  { cjs:9.1, cpoly:102.0, fjs:8.1, fpoly:227.9, native:10.4, cnative:17.6,  mcjs:21.5, mcpoly:77.7, mfjs:44.6, mfpoly:90.9,  mnative:19.1 , ctjs:8.7, ftjs:9.7, mctjs:59.2, mftjs:72.5, sjs:2.4, spoly:82.5, stjs:4.6, msjs:3.2, mspoly:58.3, mstjs:57.6, snative:18.3, msnative:20.8, lbnative:26.4 },
+    dom:     { cjs:3.3, cpoly:107.3, fjs:6.3, fpoly:209.8, native:13.1, cnative:23.8,  mcjs:62.5, mcpoly:114.0,mfjs:63.8, mfpoly:118.6, mnative:32.8 , ctjs:4.6, ftjs:9.6, mctjs:99.3, mftjs:107.5, sjs:12.4, spoly:99.7, stjs:17.8, msjs:26.3, mspoly:74.0, mstjs:75.2, snative:31.9, msnative:58.8, lbnative:29.1 },
+    json:    { cjs:2.3, cpoly:118.5, fjs:3.6, fpoly:303.4, native:3.2, cnative:5.8,  mcjs:23.5, mcpoly:74.7, mfjs:53.0, mfpoly:89.5,  mnative:20.3 , ctjs:1.9, ftjs:5.0, mctjs:59.9, mftjs:92.4, sjs:3.5, spoly:26.2, stjs:5.1, msjs:3.6, mspoly:56.4, mstjs:57.3, snative:1.0, msnative:18.2, lbnative:1.4 },
+    storage: { cjs:65.9,cpoly:261.2, fjs:31.0,fpoly:353.6, native:55.1, cnative:217.9,  mcjs:33.7, mcpoly:89.2, mfjs:53.6, mfpoly:88.6,  mnative:22.4 , ctjs:81.3, ftjs:35.6, mctjs:69.5, mftjs:98.7, sjs:1982, spoly:2425, stjs:3607, msjs:5.1, mspoly:59.7, mstjs:56.3, snative:1953, msnative:18.7, lbnative:10089 },
+    url:     { cjs:19.8,cpoly:191.4, fjs:25.5,fpoly:486.1, native:41.3, cnative:55.0, mcjs:38.6, mcpoly:100.2,mfjs:58.3, mfpoly:98.2,  mnative:28.2 , ctjs:21.2, ftjs:27.6, mctjs:74.6, mftjs:118.8, sjs:11.4, spoly:150.5, stjs:12.0, msjs:8.9, mspoly:63.7, mstjs:61.0, snative:38.0, msnative:24.4, lbnative:54.5 },
   };
   // Controlled A/B on the fork (same build, back-to-back): the interned +
   // multi-scalar bridge fast paths vs the fully reflective JSON path.
@@ -494,7 +529,7 @@
     url:     { c: 21.9, f: 27.6,  s: 12.0 },
   };
   // Compute-bound kernel (its own workload class — the JIT's target).
-  const COMPUTE = { fjs: 111, cjs: 94, native: 101, cpoly: 19184, fpoly: 80326, ctjs: 92, ftjs: 150, sjs: 107.9, spoly: 19404, stjs: 132.8, snative: 97.5 };
+  const COMPUTE = { fjs: 111, cjs: 94, native: 101, cpoly: 19184, fpoly: 80326, ctjs: 92, ftjs: 150, sjs: 107.9, spoly: 19404, stjs: 132.8, snative: 92.7, lbnative: 94.9 };
   const WL = Object.keys(DATA);
 
   // ---- headline cards ----
@@ -517,11 +552,11 @@
 
   // ---- compute chart (log scale, ms) ----
   {
-    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native·ff — Cranelift JIT"], ["snative", "snative", "native·sv — Servo fork JIT"], ["tjs", "ftjs", "polyfill — transpiled + WASM tier"], ["poly", "fpoly", "polyfill — WASM interpreter"]];
+    const rows = [["js", "fjs", "plain JS (Firefox)"], ["native", "native", "native·ff — Cranelift JIT"], ["snative", "snative", "native·sv — Servo fork JIT"], ["lbnative", "lbnative", "native·lb — Ladybird fork JIT"], ["tjs", "ftjs", "polyfill — transpiled + WASM tier"], ["poly", "fpoly", "polyfill — WASM interpreter"]];
     const lmin = 50, lmax = 100000;
     const lpct = (v) => Math.max(2, (Math.log10(v) - Math.log10(lmin)) / (Math.log10(lmax) - Math.log10(lmin)) * 100);
     const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v + " ms";
-    const shortLab = { js: "js", native: "native·ff", snative: "native·sv", tjs: "tjs", poly: "poly" };
+    const shortLab = { js: "js", native: "native·ff", snative: "native·sv", lbnative: "native·lb", tjs: "tjs", poly: "poly" };
     document.getElementById("computechart").innerHTML = `<div class="bars">` + rows.map(([cls, key, lab]) => {
       const v = COMPUTE[key], pct = lpct(v);
       return `<div class="bar-row"><div class="bar-lab">${shortLab[cls] || cls}</div>
@@ -531,11 +566,11 @@
   }
 
   // ---- log-scale time chart (Firefox) ----
-  const LOG_MIN = 1, LOG_MAX = 2500; // headroom for Servo's slow localStorage (~2.1 s)
+  const LOG_MIN = 1, LOG_MAX = 11000; // headroom for Ladybird's slow localStorage (~10 s)
   const logPct = (v) => Math.max(2, (Math.log10(v) - Math.log10(LOG_MIN)) / (Math.log10(LOG_MAX) - Math.log10(LOG_MIN)) * 100);
   // Firefox JS/poly/tjs baselines, plus BOTH fork natives (Firefox and Chromium).
   const timeSeries = [["js", "fjs", "js·ff"], ["servo", "sjs", "js·sv"], ["tjs", "ftjs", "tjs·ff"], ["poly", "fpoly", "poly·ff"],
-                      ["native", "native", "native·ff"], ["cnative", "cnative", "native·cr"], ["snative", "snative", "native·sv"]];
+                      ["native", "native", "native·ff"], ["cnative", "cnative", "native·cr"], ["snative", "snative", "native·sv"], ["lbnative", "lbnative", "native·lb"]];
   document.getElementById("timechart").innerHTML = WL.map((w) => `
     <div class="wl">
       <div class="wl-name"><b>${w}</b><em>ms · Firefox/Servo JS + fork native</em></div>
@@ -660,6 +695,7 @@
     ["Firefox native", "native", "mnative"],
     ["Chromium native", "cnative", "mcnative"],
     ["Servo native", "snative", "msnative"],
+    ["Ladybird native", "lbnative", "mlbnative"],
   ];
   const cell = (v) => (v == null ? "—" : v);
   let thead = "<thead><tr><th>workload</th>" + cols.map((c) => `<th>${c[0]}<br><span style="font-weight:400;color:var(--ink-faint)">ms · MiB</span></th>`).join("") + "</tr></thead>";
@@ -682,7 +718,7 @@
       ["plain JS", { chromium: "cjs", firefox: "fjs", servobr: "sjs" }],
       ["transpiled-JS polyfill", { chromium: "ctjs", firefox: "ftjs", servobr: "stjs" }],
       ["WASM-interpreter polyfill", { chromium: "cpoly", firefox: "fpoly", servobr: "spoly" }],
-      ["native — engine in the fork", { chromium: "cnative", firefox: "native", servobr: "snative" }],
+      ["native — engine in the fork", { chromium: "cnative", firefox: "native", servobr: "snative", ladybird: "lbnative" }],
     ];
     const allVals = impls.flatMap(([, m]) => Object.values(m).map(gm));
     const imin = 1, imax = Math.max(...allVals) * 1.2;
@@ -696,7 +732,7 @@
     document.getElementById("implchart").innerHTML = impls.map(([label, m]) => `
       <div class="wl">
         <div class="wl-name"><b>${label}</b><em>geomean ms · 5 web workloads</em></div>
-        <div class="bars">${row("chromium", gm(m.chromium), "chromium")}${row("firefox", gm(m.firefox), "firefox")}${row("servobr", gm(m.servobr), "servo")}</div>
+        <div class="bars">${row("chromium", gm(m.chromium), "chromium")}${row("firefox", gm(m.firefox), "firefox")}${row("servobr", gm(m.servobr), "servo")}${m.ladybird ? row("lbnative", gm(m.ladybird), "ladybird") : ""}</div>
       </div>`).join("");
   }
 </script>

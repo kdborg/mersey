@@ -35,7 +35,7 @@ use std::time::Instant;
 use js::context::JSContext;
 use js::conversions::{jsstr_to_string, Utf8Chars};
 use js::jsapi::{CallArgs, JSObject, Value};
-use js::jsval::{DoubleValue, StringValue, UndefinedValue};
+use js::jsval::{BooleanValue, DoubleValue, NullValue, StringValue, UndefinedValue};
 use js::rust::wrappers2::{
     JS_CallFunctionName, JS_DefineFunction, JS_GetProperty, JS_NewStringCopyUTF8N,
 };
@@ -43,7 +43,8 @@ use js::rust::HandleObject;
 use script_bindings::reflector::DomObject;
 
 use mersey_capi::{
-    msy_context_invoke_args, msy_context_new, msy_context_run, MsyContext, MsyHostTable, MsyScalar,
+    msy_context_invoke_args, msy_context_new, msy_context_run, MsyArg16, MsyContext, MsyHostTable,
+    MsyReply, MsyScalar,
 };
 
 use crate::dom::globalscope::GlobalScope;
@@ -66,6 +67,8 @@ struct Runner {
     /// Backing store for a reply the engine reads — valid until the next host
     /// call on this runner, exactly the C-ABI contract.
     scratch: String,
+    /// Backing store for a typed UTF-16 reply (MsyReply::str16) on the wide path.
+    reply16: Vec<u16>,
     start: Instant,
 }
 
@@ -477,6 +480,180 @@ unsafe extern "C" fn mersey_invoke(cx: *mut js::jsapi::JSContext, argc: u32, vp:
     true
 }
 
+// ---- wide-string fast paths (ABI v5) --------------------------------------
+// The fastest reflective tier: the bridge's *Wide methods return the raw value
+// (a scalar as itself, a host object as {r: handle}, an array as {j: json}), so
+// there is NO JSON on args or replies, and object arguments (appendChild(el),
+// getRandomValues(buf)) stay on this path via a refs bitmask instead of falling
+// back to the JSON `call`. Reply strings are re-encoded to UTF-16 for the typed
+// MsyReply; the args reuse the UTF-8 string plumbing above (SpiderMonkey does not
+// care what encoding the JS string was built from) — same lever as the Ladybird
+// fork's web_*_u16, whose LibJS is UTF-16 end to end.
+
+/// Stash a reply string as UTF-16 in the runner buffer and point `out` at it.
+unsafe fn fill_str16(r: *mut Runner, out: *mut MsyReply, tag: i32, s: &str) {
+    (*r).reply16 = s.encode_utf16().collect();
+    (*out).tag = tag;
+    (*out).str16 = (*r).reply16.as_ptr();
+    (*out).str16_len = (*r).reply16.len();
+}
+
+/// Call `__merseyBridge[method](lead…, args…)` and type the raw reply into `out`.
+unsafe fn bridge_wide(method: &CStr, lead: &[f64], args: &[MsyArg16], out: *mut MsyReply) {
+    *out = MsyReply::default();
+    let r = runner_ptr();
+    if r.is_null() {
+        return;
+    }
+    let Some(mut cx) = JSContext::get_from_thread() else {
+        return;
+    };
+    let cx = &mut cx;
+    let global = HandleObject::from_marked_location(&(*r).global);
+
+    rooted!(&in(cx) let mut bridge_val = UndefinedValue());
+    if !JS_GetProperty(cx, global, c"__merseyBridge".as_ptr(), bridge_val.handle_mut())
+        || !bridge_val.is_object()
+    {
+        return;
+    }
+    rooted!(&in(cx) let bridge_obj = bridge_val.to_object());
+
+    // Own any UTF-16 string args as Rust strings for the duration of the call.
+    let mut owned: Vec<String> = Vec::new();
+    for a in args {
+        if a.kind == 0 {
+            owned.push(String::from_utf16_lossy(std::slice::from_raw_parts(a.str16, a.str16_len)));
+        }
+    }
+
+    rooted_vec!(let mut argv);
+    for n in lead {
+        rooted!(&in(cx) let v = DoubleValue(*n));
+        argv.push(v.get());
+    }
+    let mut oi = 0usize;
+    for a in args {
+        match a.kind {
+            0 => {
+                let s = &owned[oi];
+                oi += 1;
+                let chars = Utf8Chars::from(s.as_str());
+                let js = JS_NewStringCopyUTF8N(cx, &*chars as *const _);
+                if js.is_null() {
+                    return;
+                }
+                rooted!(&in(cx) let v = StringValue(&*js));
+                argv.push(v.get());
+            },
+            3 => {
+                rooted!(&in(cx) let v = BooleanValue(a.num != 0.0));
+                argv.push(v.get());
+            },
+            4 => {
+                rooted!(&in(cx) let v = NullValue());
+                argv.push(v.get());
+            },
+            // number (1) or host-object handle (2): both cross as a number.
+            _ => {
+                rooted!(&in(cx) let v = DoubleValue(a.num));
+                argv.push(v.get());
+            },
+        }
+    }
+
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let hva = js::jsapi::HandleValueArray::from(&argv);
+    if !JS_CallFunctionName(cx, bridge_obj.handle(), method.as_ptr(), &hva, rval.handle_mut()) {
+        (*out).tag = 5; // the *Wide methods throw on error
+        return;
+    }
+
+    if rval.is_null() || rval.is_undefined() {
+        (*out).tag = 0;
+    } else if rval.is_boolean() {
+        (*out).tag = 4;
+        (*out).num = if rval.to_boolean() { 1.0 } else { 0.0 };
+    } else if rval.is_number() {
+        (*out).tag = 1;
+        (*out).num = rval.to_number();
+    } else if rval.is_string() {
+        let s = jsstr_to_string(cx, NonNull::new(rval.to_string()).unwrap());
+        fill_str16(r, out, 2, &s);
+    } else if rval.is_object() {
+        rooted!(&in(cx) let obj = rval.to_object());
+        rooted!(&in(cx) let mut refv = UndefinedValue());
+        rooted!(&in(cx) let mut jsonv = UndefinedValue());
+        if JS_GetProperty(cx, obj.handle(), c"r".as_ptr(), refv.handle_mut()) && refv.is_number() {
+            (*out).tag = 3;
+            (*out).num = refv.to_number();
+        } else if JS_GetProperty(cx, obj.handle(), c"j".as_ptr(), jsonv.handle_mut())
+            && jsonv.is_string()
+        {
+            let s = jsstr_to_string(cx, NonNull::new(jsonv.to_string()).unwrap());
+            fill_str16(r, out, 7, &s);
+        } else {
+            (*out).tag = 0;
+        }
+    } else {
+        (*out).tag = 0;
+    }
+}
+
+fn refs_mask(args: &[MsyArg16]) -> f64 {
+    let mut mask = 0u32;
+    for (i, a) in args.iter().enumerate() {
+        if a.kind == 2 && i < 32 {
+            mask |= 1u32 << i;
+        }
+    }
+    mask as f64
+}
+
+extern "C" fn host_web_get_u16(_d: *mut c_void, target: i64, name_id: u32, out: *mut MsyReply) {
+    unsafe { bridge_wide(c"getWide", &[target as f64, name_id as f64], &[], out) }
+}
+
+extern "C" fn host_web_set_u16(
+    _d: *mut c_void,
+    target: i64,
+    name_id: u32,
+    value: *const MsyArg16,
+    out: *mut MsyReply,
+) {
+    unsafe {
+        let slice = if value.is_null() { &[][..] } else { std::slice::from_ref(&*value) };
+        bridge_wide(c"setWide", &[target as f64, name_id as f64, refs_mask(slice)], slice, out)
+    }
+}
+
+extern "C" fn host_web_call_u16(
+    _d: *mut c_void,
+    target: i64,
+    name_id: u32,
+    args: *const MsyArg16,
+    argc: usize,
+    out: *mut MsyReply,
+) {
+    unsafe {
+        let a = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        bridge_wide(c"callWide", &[target as f64, name_id as f64, refs_mask(a)], a, out)
+    }
+}
+
+extern "C" fn host_web_new_u16(
+    _d: *mut c_void,
+    ctor_id: u32,
+    args: *const MsyArg16,
+    argc: usize,
+    out: *mut MsyReply,
+) {
+    unsafe {
+        let a = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        bridge_wide(c"newWide", &[ctor_id as f64, refs_mask(a)], a, out)
+    }
+}
+
 fn host_table() -> MsyHostTable {
     MsyHostTable {
         data: ptr::null_mut(),
@@ -509,11 +686,14 @@ fn host_table() -> MsyHostTable {
         web_call_str: Some(host_web_call_str),
         web_call_scalars: Some(host_web_call_scalars),
         web_new_scalars: Some(host_web_new_scalars),
-        // Wide-string (UTF-16) and typed-binding fast paths not built yet.
-        web_get_u16: None,
-        web_set_u16: None,
-        web_call_u16: None,
-        web_new_u16: None,
+        // Wide-string fast paths (UTF-16, no JSON): the fastest reflective tier,
+        // and the one that keeps object-argument calls (appendChild,
+        // getRandomValues) and property sets (textContent=) off the JSON path.
+        web_get_u16: Some(host_web_get_u16),
+        web_set_u16: Some(host_web_set_u16),
+        web_call_u16: Some(host_web_call_u16),
+        web_new_u16: Some(host_web_new_u16),
+        // Typed-binding (web_bind) fast path not built yet.
         web_bind: None,
     }
 }
@@ -530,6 +710,7 @@ unsafe fn ensure_runner(global_obj: *mut JSObject) -> *mut Runner {
         global: global_obj,
         bridge_ready: false,
         scratch: String::new(),
+        reply16: Vec::new(),
         start: Instant::now(),
     }));
     RUNNER.with(|c| c.set(runner));

@@ -10,7 +10,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json"))];
+const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json"))];
 const workloads = [...new Set(rows.map((r) => r.wl))].sort();
 const key = (browser, impl) => `${browser}/${impl}`;
 const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
@@ -26,8 +26,12 @@ const cols = [
   ["servo", "js", "Servo JS"],
   ["servo", "poly", "Servo WASM poly"],
   ["servo", "tjs", "Servo JS-backend"],
+  ["ladybird", "js", "Ladybird JS"],
+  ["ladybird", "poly", "Ladybird WASM poly"],
+  ["ladybird", "tjs", "Ladybird JS-backend"],
   ["firefox-fork", "native", "Firefox fork native"],
   ["servo-fork", "native", "Servo fork native"],
+  ["ladybird-fork", "native", "Ladybird fork native"],
 ];
 
 const fmtMs = (r) => (r && r.ms != null ? `${r.ms.toFixed(1)}` : "—");
@@ -60,11 +64,11 @@ for (const wl of workloads) {
 
 // Polyfill and native slowdown vs JS (Chromium JS as the baseline).
 md += "\n## Slowdown vs plain JS (Chromium JS = 1×)\n\n";
-md += "| workload | Chromium polyfill | Firefox polyfill | Servo polyfill | Firefox fork native | Servo fork native |\n|---|---|---|---|---|---|\n";
+md += "| workload | Chromium polyfill | Firefox polyfill | Servo polyfill | Ladybird polyfill | Firefox fork native | Servo fork native | Ladybird fork native |\n|---|---|---|---|---|---|---|---|\n";
 for (const wl of workloads) {
   const base = get(wl, "chromium", "js");
   const ratio = (r) => (base && base.ms && r && r.ms != null ? `${(r.ms / base.ms).toFixed(1)}×` : "—");
-  md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} |\n`;
+  md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "ladybird", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} | ${ratio(get(wl, "ladybird-fork", "native"))} |\n`;
 }
 
 await writeFile(join(here, "REPORT.md"), md);
