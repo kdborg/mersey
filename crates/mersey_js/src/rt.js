@@ -709,6 +709,33 @@ const $rt = (() => {
     // Handles are GC'd by the JS engine itself; release is free.
     release: () => {},
     performance: typeof performance !== "undefined" ? performance : undefined,
+    // Custom Elements: Mersey can't subclass a host class, so the runtime
+    // builds the JS class and calls the handler closures directly — the
+    // transpiled twin of mersey-bridge.js's defineElement (which does the
+    // same for the engine path, forwarding through the bridge).
+    merseyDefineElement:
+      typeof customElements !== "undefined" && typeof HTMLElement !== "undefined"
+        ? (tag, handlers) => {
+            const h = handlers ?? {};
+            const observed = Array.isArray(h.observed) ? h.observed : [];
+            class MerseyElement extends HTMLElement {
+              static get observedAttributes() {
+                return observed;
+              }
+              connectedCallback() {
+                if (h.connected) h.connected(this);
+              }
+              disconnectedCallback() {
+                if (h.disconnected) h.disconnected(this);
+              }
+              attributeChangedCallback(name, oldV, newV) {
+                if (h.attributeChanged) h.attributeChanged(this, name, oldV ?? "", newV ?? "");
+              }
+            }
+            customElements.define(tag, MerseyElement);
+            return null;
+          }
+        : undefined,
   };
   const web = (name) => {
     if (name in WEB_NATIVES && WEB_NATIVES[name] !== undefined) return WEB_NATIVES[name];

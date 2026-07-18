@@ -53,6 +53,33 @@ examples/            Sample .mersey programs
 ROADMAP.md           Phased implementation plan
 ```
 
+## Debugging
+
+`mersey dap` is a Debug Adapter Protocol server on stdin/stdout: line
+breakpoints in `.mersey` files, continue/step over/step in/step out, the call
+stack (outer frames show their call-site lines), and locals — from any DAP
+editor. In VS Code, a generic adapter configuration is enough:
+
+```jsonc
+// .vscode/launch.json
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "type": "mersey",             // with a debugAdapter mapping, or use
+    "request": "launch",          // an extension that runs: mersey dap
+    "name": "Debug app.mersey",
+    "program": "${workspaceFolder}/app.mersey"
+  }]
+}
+```
+
+Point the editor's DAP client at the `mersey dap` command (VS Code needs a
+thin extension or a generic-DAP wrapper such as debugpy-style launchers; any
+editor that speaks DAP directly — Helix, Zed, nvim-dap — takes the command
+as-is). Debugging runs the pure tree-walker; async/generator bodies execute
+on the VM and are not stepped, breakpoints match by line, and variables are
+served for the top frame (v1 limits, tracked in ROADMAP.md).
+
 ## Status
 
 **MVP working end-to-end.** The frontend (lexer → parser → binder) is done;
