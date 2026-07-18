@@ -169,7 +169,8 @@ const html = `<!doctype html>
     blank page). The same program four ways — plain JS, transpiled JS, the WASM interpreter, and the
     Mersey engine native in the browser fork — each in Firefox (·ff), Chromium (·cr), Servo (·sv) and
     Ladybird (·lb). Every bar reports the same checksum. A dimmed row is honest absence
-    (fetch has no http origin under Ladybird's test harness and no native path in the Chromium fork).
+    (fetch has no native path in the Chromium fork; the Ladybird legs reach the echo endpoint
+    by absolute URL + CORS, since its harness loads pages from file://).
     A memory bar of ≈0 is the measurement floor, not zero cost: Ladybird runs one process per
     test, so its memory is peak PSS minus a blank page's peak — a workload whose allocations
     stay under startup's crest is invisible to that method.</p>

@@ -12,7 +12,8 @@
 //   - WebAssembly.instantiate(bytes) works — only fetch is blocked;
 //   - import(blobURL) works — so the transpiled-JS backend runs as a real
 //     ES module, exactly like in the other browsers.
-// fetch (the workload) stays uncollected: no http origin exists here.
+// fetch (the workload) reaches the runner's echo server by absolute URL +
+// CORS (file:// origins are opaque; the endpoint admits them).
 //
 // Time is self-reported (RESULT line -> actual.txt via a println'd console
 // hook); memory is the peak PSS of the Ladybird process tree while the test
@@ -36,9 +37,9 @@ const POLL_MS = 40;
 // The WASM engine runs on LibWasm, an interpreter — give poly real room.
 const TIMEOUT_S = { js: 60, tjs: 300, poly: 900 };
 
-// fetch needs an http origin (none under test-web); compute-on-WASM is the
+// compute-on-WASM is the
 // LibWasm interpreter interpreting an interpreter — excluded from poly/tjs.
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "storage", "timers", "url"];
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
 const PLAN = {
   js: [...WEB_WORKLOADS, "compute"],
   tjs: [...WEB_WORKLOADS],
@@ -95,6 +96,15 @@ console.error = (...a) => { __origErr(...a); try { println("CONSOLE-ERROR " + a.
 `;
 
 const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
+
+// The fetch workload's echo endpoint: pages load from file:// (test-web has
+// no http mode), but RequestServer reaches absolute http URLs and the echo
+// endpoint admits opaque origins via CORS — so the runner serves it and the
+// generated pages carry the absolute URL.
+import { startServer } from "./server.mjs";
+const { server: echoServer, port: echoPort } = await startServer();
+const ECHO = `http://127.0.0.1:${echoPort}/bench/echo`;
+const absEcho = (text) => text.replaceAll("/bench/echo", ECHO);
 const pageDir = join(testRoot, "Text", "input", "mersey-stock");
 const resultsDir = join(here, "..", "..", "test-dumps", "ladybird-stock");
 await mkdir(pageDir, { recursive: true });
@@ -108,7 +118,7 @@ ${body}
 </body>`;
 
 for (const wl of PLAN.js) {
-  const src = guard(`js/${wl}`, await readFile(join(here, "js", `${wl}.js`), "utf8"));
+  const src = guard(`js/${wl}`, absEcho(await readFile(join(here, "js", `${wl}.js`), "utf8")));
   await writeFile(join(pageDir, `js-${wl}.html`), page(`lb-stock js ${wl}`, `<script>
 ${stripModule(src)}
 asyncTest(async (done) => {
@@ -127,10 +137,16 @@ asyncTest(async (done) => {
 
 for (const impl of ["tjs", "poly"]) {
   for (const wl of PLAN[impl]) {
-    const src = guard(`mersey/${wl}`, await readFile(join(here, "mersey", `${wl}.mersey`), "utf8"));
+    const src = guard(`mersey/${wl}`, absEcho(await readFile(join(here, "mersey", `${wl}.mersey`), "utf8")));
     const run = impl === "poly"
       ? `const status = engine.run(SOURCE);
-    if (status !== 0) println("STATUS " + status);`
+    if (status !== 0) println("STATUS " + status);
+    await new Promise((resolve) => {
+      const t = setInterval(() => {
+        if (globalThis.__merseyResultSeen) { clearInterval(t); resolve(); }
+      }, 10);
+      setTimeout(() => { clearInterval(t); resolve(); }, 240000);
+    });`
       : `const js = engine.transpile(SOURCE);
     const url = URL.createObjectURL(new Blob([js], { type: "text/javascript" }));
     await import(url);
@@ -262,5 +278,6 @@ try {
   const seen = new Set(rows.map((r) => `${r.impl}/${r.wl}`));
   merged = [...prior.filter((r) => !seen.has(`${r.impl}/${r.wl}`)), ...rows];
 } catch { /* first run */ }
+echoServer.close();
 await writeFile(join(here, "results.ladybird.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${merged.length} rows to bench/web/results.ladybird.json`);

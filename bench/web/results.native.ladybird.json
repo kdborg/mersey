@@ -93,5 +93,13 @@
     "wl": "compute",
     "ms": 96.81145799999999,
     "checksum": 1765835917
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "fetch",
+    "ms": 75.184584,
+    "checksum": 20990,
+    "rss": 34333
   }
 ]

@@ -37,7 +37,7 @@ const REPEATS = 3;
 const PER_TEST_TIMEOUT = 20; // seconds; a fallback — tests complete in well under 1s
 // fetch is excluded: test-web loads pages from file:// (no http origin for the
 // echo endpoint) and its test(() => {}) completes before an async RESULT lands.
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "storage", "timers", "url"];
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 // Reference checksums (the other native forks); the engine must match them.
@@ -53,14 +53,20 @@ if (!existsSync(TEST_WEB)) {
 // The Ladybird test tree: put the generated pages under Text/input/mersey so
 // test-web's file:// loader and its hardcoded standard-tree paths both work.
 const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
+
+// fetch: pages are file:// but RequestServer reaches absolute http URLs, and
+// the echo endpoint admits opaque origins via CORS (see server.mjs).
+import { startServer } from "./server.mjs";
+const { server: echoServer, port: echoPort } = await startServer();
+const absEcho = (text) => text.replaceAll("/bench/echo", `http://127.0.0.1:${echoPort}/bench/echo`);
 const pageDir = join(testRoot, "Text", "input", "mersey");
-const resultsDir = join(here, "..", "..", "test-dumps", "ladybird");
+const resultsDir = process.env.LB_RESULTS_DIR || join(here, "..", "..", "test-dumps", "ladybird");
 await mkdir(pageDir, { recursive: true });
 
 // Generate one inline text/mersey Text test per workload. The trailing
 // include.js + test(() => {}) signals completion so the test ends at once.
 for (const wl of WORKLOADS) {
-  const src = await readFile(join(here, "mersey", `${wl}.mersey`), "utf8");
+  const src = absEcho(await readFile(join(here, "mersey", `${wl}.mersey`), "utf8"));
   const html = `<!doctype html>
 <meta charset="utf-8">
 <title>native-ladybird ${wl}</title>
@@ -69,23 +75,38 @@ for (const wl of WORKLOADS) {
 ${src}
 </script>
 <script src="../include.js"></script>
-<script>test(() => {});</script>
+<script>${wl === "fetch"
+    ? "asyncTest((done) => setTimeout(done, 8000));"
+    : "test(() => {});"}</script>
 </body>`;
   await writeFile(join(pageDir, `${wl}.html`), html);
 }
 
 // Run one workload once; return { ms, checksum } parsed from the per-test log.
-function runOnce(wl) {
-  try {
-    execFileSync(TEST_WEB,
+async function runOnce(wl) {
+  // --verbose echoes each test's captured output (the engine's stdout
+  // RESULT among it) onto test-web's own stdout — read it there, with the
+  // per-test logs.html as fallback. Async workloads (fetch) only reliably
+  // surface on the echo path. Async spawn: the sync variant was observed to
+  // lose the echo (buffering interacts with the harness's capture teardown).
+  const { execFile } = await import("node:child_process");
+  const text = await new Promise((resolve) => {
+    execFile(TEST_WEB,
       ["--test-path", testRoot, "-f", `mersey/${wl}`, "-P", PYTHON,
-        "-j1", "-t", String(PER_TEST_TIMEOUT), "-R", resultsDir],
-      { env: { ...process.env, LADYBIRD_SOURCE_DIR: LADYBIRD_SRC }, stdio: "ignore", timeout: 120000 });
-  } catch { /* test-web exits non-zero (no expectation file); we read the log */ }
-  const log = join(resultsDir, "Text", "input", "mersey", `${wl}.html.logs.html`);
-  let text = "";
-  try { text = readFileSync(log, "utf8"); } catch { return null; }
-  const m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(text);
+        "-j1", "-t", String(PER_TEST_TIMEOUT), "-R", resultsDir, "--verbose"],
+      { env: { ...process.env, LADYBIRD_SOURCE_DIR: LADYBIRD_SRC },
+        timeout: 120000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => resolve(String(stdout ?? "") + String(stderr ?? "")));
+  });
+  if (process.env.DEBUG_LB) console.error("captured", text.length, "bytes; tail:", JSON.stringify(text.slice(-300)));
+  let m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(text);
+  if (!m) {
+    try {
+      const log = readFileSync(
+        join(resultsDir, "Text", "input", "mersey", `${wl}.html.logs.html`), "utf8");
+      m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(log);
+    } catch { /* no log either */ }
+  }
   return m ? { ms: Number(m[2]), checksum: Number(m[3]) } : null;
 }
 
@@ -96,7 +117,7 @@ const rows = [];
 for (const wl of WORKLOADS) {
   const samples = [];
   for (let r = 0; r < REPEATS; r++) {
-    const res = runOnce(wl);
+    const res = await runOnce(wl);
     if (res) samples.push(res);
   }
   if (samples.length === 0) {
@@ -129,5 +150,6 @@ async function mergeRows(file, fresh) {
 }
 
 const merged = await mergeRows("results.native.ladybird.json", rows);
+echoServer.close();
 await writeFile(join(here, "results.native.ladybird.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.ladybird.json`);

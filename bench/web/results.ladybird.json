@@ -270,5 +270,29 @@
     "ms": 5343.100000023842,
     "rss": 432141,
     "checksum": 537780
+  },
+  {
+    "browser": "ladybird",
+    "impl": "js",
+    "wl": "fetch",
+    "ms": 63.39999997615814,
+    "rss": 41007,
+    "checksum": 20990
+  },
+  {
+    "browser": "ladybird",
+    "impl": "tjs",
+    "wl": "fetch",
+    "ms": 73.2999999821186,
+    "rss": 480308,
+    "checksum": 20990
+  },
+  {
+    "browser": "ladybird",
+    "impl": "poly",
+    "wl": "fetch",
+    "ms": 181.5,
+    "rss": 495497,
+    "checksum": 20990
   }
 ]

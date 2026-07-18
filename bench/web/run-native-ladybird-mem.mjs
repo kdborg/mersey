@@ -31,7 +31,7 @@ const REPEATS = Number(process.env.MEM_REPEATS || 5);
 const POLL_MS = Number(process.env.POLL_MS || 8);
 const PER_TEST_TIMEOUT = 20;
 // fetch excluded for the same reason as the time runner (file:// + async RESULT).
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "json", "query", "storage", "timers", "url"];
+const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : WEB_WORKLOADS;
 
 if (!existsSync(TEST_WEB)) {
@@ -40,6 +40,12 @@ if (!existsSync(TEST_WEB)) {
 }
 
 const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
+
+// fetch reaches the runner's echo server by absolute URL (see the time
+// runner); the pages regenerated here need the same rewrite.
+import { startServer } from "./server.mjs";
+const { server: echoServer, port: echoPort } = await startServer();
+const absEcho = (text) => text.replaceAll("/bench/echo", `http://127.0.0.1:${echoPort}/bench/echo`);
 const pageDir = join(testRoot, "Text", "input", "mersey");
 const resultsDir = join(here, "..", "..", "test-dumps", "ladybird-mem");
 await mkdir(pageDir, { recursive: true });
@@ -48,7 +54,7 @@ await mkdir(pageDir, { recursive: true });
 // just the completion scripts, so it measures the browser with the engine
 // compiled in but doing no work).
 for (const wl of WORKLOADS) {
-  const src = await readFile(join(here, "mersey", `${wl}.mersey`), "utf8");
+  const src = absEcho(await readFile(join(here, "mersey", `${wl}.mersey`), "utf8"));
   await writeFile(join(pageDir, `${wl}.html`), `<!doctype html>
 <meta charset="utf-8">
 <title>native-ladybird-mem ${wl}</title>
@@ -57,7 +63,9 @@ for (const wl of WORKLOADS) {
 ${src}
 </script>
 <script src="../include.js"></script>
-<script>test(() => {});</script>
+<script>${wl === "fetch"
+    ? "asyncTest((done) => setTimeout(done, 8000));"
+    : "test(() => {});"}</script>
 </body>`);
 }
 await writeFile(join(pageDir, `blank.html`), `<!doctype html>
@@ -139,4 +147,5 @@ for (const wl of WORKLOADS) {
 }
 
 await writeFile(resultsPath, JSON.stringify(rows, null, 2));
+echoServer.close();
 console.log(`\nupdated rss in ${resultsPath}`);
