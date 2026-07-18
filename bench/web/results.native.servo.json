@@ -3,56 +3,56 @@
     "browser": "servo-fork",
     "impl": "native",
     "wl": "canvas",
-    "ms": 32.75250000000001,
-    "rss": 33384,
+    "ms": 27.309624999999983,
+    "rss": 31032,
     "checksum": 20000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 38.983,
-    "rss": 20966,
+    "ms": 38.701333,
+    "rss": 21348,
     "checksum": 320000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "dom",
-    "ms": 54.57562500000001,
-    "rss": 45640,
+    "ms": 35.09566699999999,
+    "rss": 34408,
     "checksum": 10000
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "json",
-    "ms": 1.0221659999999986,
-    "rss": 18776,
+    "ms": 1.061791999999997,
+    "rss": 16676,
     "checksum": 848890
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "storage",
-    "ms": 2119.928418,
-    "rss": 19408,
+    "ms": 2129.875084,
+    "rss": 16960,
     "checksum": 208890
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 75.213583,
-    "rss": 25764,
+    "ms": 67.09299999999999,
+    "rss": 23240,
     "checksum": 537780
   },
   {
     "browser": "servo-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 92.603792,
-    "rss": 18904,
+    "ms": 97.54333399999999,
+    "rss": 16788,
     "checksum": 1765835917
   }
 ]

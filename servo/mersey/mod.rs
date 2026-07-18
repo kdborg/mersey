@@ -35,7 +35,7 @@ use std::time::Instant;
 use js::context::JSContext;
 use js::conversions::{jsstr_to_string, Utf8Chars};
 use js::jsapi::{CallArgs, JSObject, Value};
-use js::jsval::{StringValue, UndefinedValue};
+use js::jsval::{DoubleValue, StringValue, UndefinedValue};
 use js::rust::wrappers2::{
     JS_CallFunctionName, JS_DefineFunction, JS_GetProperty, JS_NewStringCopyUTF8N,
 };
@@ -43,7 +43,7 @@ use js::rust::HandleObject;
 use script_bindings::reflector::DomObject;
 
 use mersey_capi::{
-    msy_context_invoke_args, msy_context_new, msy_context_run, MsyContext, MsyHostTable,
+    msy_context_invoke_args, msy_context_new, msy_context_run, MsyContext, MsyHostTable, MsyScalar,
 };
 
 use crate::dom::globalscope::GlobalScope;
@@ -209,6 +209,163 @@ unsafe fn call_bridge_int(method: &CStr, args: &[&str]) -> i64 {
     }
 }
 
+// ---- interned + scalar fast paths (ABI v3) --------------------------------
+// A member name crosses the boundary once (web_intern), then only its integer
+// id does, and scalar arguments cross as JS values — no per-call args JSON to
+// build and parse. The bridge already implements the matching methods
+// (intern / getId / callStr / callScalars / newScalars); these just forward,
+// passing numbers as numbers and strings as strings instead of a JSON blob.
+
+enum JsArg<'a> {
+    Num(f64),
+    Str(&'a str),
+}
+
+/// Call `__merseyBridge[method](args...)` with mixed number/string args; return
+/// the reply string (empty on failure). Shared by the string-returning and
+/// number-returning wrappers below.
+unsafe fn call_bridge_vals(method: &CStr, args: &[JsArg]) -> Option<String> {
+    let r = runner_ptr();
+    if r.is_null() {
+        return None;
+    }
+    let Some(mut cx) = JSContext::get_from_thread() else {
+        return None;
+    };
+    let cx = &mut cx;
+    let global = HandleObject::from_marked_location(&(*r).global);
+    rooted!(&in(cx) let mut bridge_val = UndefinedValue());
+    if !JS_GetProperty(cx, global, c"__merseyBridge".as_ptr(), bridge_val.handle_mut())
+        || !bridge_val.is_object()
+    {
+        return None;
+    }
+    rooted!(&in(cx) let bridge_obj = bridge_val.to_object());
+    rooted_vec!(let mut argv);
+    for a in args {
+        match a {
+            JsArg::Num(n) => {
+                rooted!(&in(cx) let v = DoubleValue(*n));
+                argv.push(v.get());
+            },
+            JsArg::Str(s) => {
+                let chars = Utf8Chars::from(*s);
+                let js = JS_NewStringCopyUTF8N(cx, &*chars as *const _);
+                if js.is_null() {
+                    return None;
+                }
+                rooted!(&in(cx) let v = StringValue(&*js));
+                argv.push(v.get());
+            },
+        }
+    }
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let hva = js::jsapi::HandleValueArray::from(&argv);
+    if !JS_CallFunctionName(cx, bridge_obj.handle(), method.as_ptr(), &hva, rval.handle_mut()) {
+        return None;
+    }
+    if rval.is_string() {
+        Some(jsstr_to_string(cx, NonNull::new(rval.to_string()).unwrap()))
+    } else if rval.is_number() {
+        // Numeric reply (intern) — encode so the number-returning wrapper reads it.
+        Some(rval.to_number().to_string())
+    } else {
+        Some(String::new())
+    }
+}
+
+/// Store a reply into the runner scratch and return its pointer (ABI lifetime).
+unsafe fn reply(method: &CStr, args: &[JsArg], out_len: *mut usize) -> *const c_char {
+    let r = runner_ptr();
+    if r.is_null() {
+        *out_len = 0;
+        return ptr::null();
+    }
+    (*r).scratch = call_bridge_vals(method, args).unwrap_or_default();
+    let scratch: &String = &(*r).scratch;
+    *out_len = scratch.len();
+    scratch.as_ptr() as *const c_char
+}
+
+extern "C" fn host_web_intern(_data: *mut c_void, name: *const c_char, len: usize) -> u32 {
+    let name = unsafe { str_from(name, len) };
+    match unsafe { call_bridge_vals(c"intern", &[JsArg::Str(name)]) } {
+        Some(s) => s.parse::<f64>().map(|n| n as u32).unwrap_or(u32::MAX),
+        None => u32::MAX,
+    }
+}
+
+extern "C" fn host_web_get_id(
+    _data: *mut c_void,
+    target: i64,
+    name_id: u32,
+    out_len: *mut usize,
+) -> *const c_char {
+    unsafe { reply(c"getId", &[JsArg::Num(target as f64), JsArg::Num(name_id as f64)], out_len) }
+}
+
+extern "C" fn host_web_call_str(
+    _data: *mut c_void,
+    target: i64,
+    name_id: u32,
+    arg: *const c_char,
+    arg_len: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    let arg = unsafe { str_from(arg, arg_len) };
+    unsafe {
+        reply(
+            c"callStr",
+            &[JsArg::Num(target as f64), JsArg::Num(name_id as f64), JsArg::Str(arg)],
+            out_len,
+        )
+    }
+}
+
+unsafe fn scalar_args<'a>(lead: &[JsArg<'a>], scalars: &'a [MsyScalar]) -> Vec<JsArg<'a>> {
+    let mut v: Vec<JsArg> = lead.iter().map(|a| match a {
+        JsArg::Num(n) => JsArg::Num(*n),
+        JsArg::Str(s) => JsArg::Str(s),
+    }).collect();
+    for s in scalars {
+        if s.is_num != 0 {
+            v.push(JsArg::Num(s.num));
+        } else {
+            v.push(JsArg::Str(str_from(s.str_ptr, s.str_len)));
+        }
+    }
+    v
+}
+
+extern "C" fn host_web_call_scalars(
+    _data: *mut c_void,
+    target: i64,
+    name_id: u32,
+    args: *const MsyScalar,
+    argc: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    unsafe {
+        let scalars = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        let v = scalar_args(&[JsArg::Num(target as f64), JsArg::Num(name_id as f64)], scalars);
+        reply(c"callScalars", &v, out_len)
+    }
+}
+
+extern "C" fn host_web_new_scalars(
+    _data: *mut c_void,
+    ctor_id: u32,
+    args: *const MsyScalar,
+    argc: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    unsafe {
+        let scalars = if args.is_null() { &[][..] } else { std::slice::from_raw_parts(args, argc) };
+        let v = scalar_args(&[JsArg::Num(ctor_id as f64)], scalars);
+        reply(c"newScalars", &v, out_len)
+    }
+}
+
 extern "C" fn host_web_global(_data: *mut c_void, name: *const c_char, len: usize) -> i64 {
     let name = unsafe { str_from(name, len) };
     unsafe { call_bridge_int(c"global", &[name]) }
@@ -342,14 +499,17 @@ fn host_table() -> MsyHostTable {
         dom_set_text: None,
         dom_get_text: None,
         dom_add_listener: None,
-        // Every fast path NULL: the engine falls back to the reflective ops above.
-        web_intern: None,
-        web_get_id: None,
+        // Interned + scalar fast paths: a name crosses once as an id, scalar args
+        // cross as JS values (no per-call args JSON). Ops these don't cover
+        // (object args, property sets) fall back to the reflective ops above.
+        web_intern: Some(host_web_intern),
+        web_get_id: Some(host_web_get_id),
         web_set_str: None,
         web_set_num: None,
-        web_call_str: None,
-        web_call_scalars: None,
-        web_new_scalars: None,
+        web_call_str: Some(host_web_call_str),
+        web_call_scalars: Some(host_web_call_scalars),
+        web_new_scalars: Some(host_web_new_scalars),
+        // Wide-string (UTF-16) and typed-binding fast paths not built yet.
         web_get_u16: None,
         web_set_u16: None,
         web_call_u16: None,
