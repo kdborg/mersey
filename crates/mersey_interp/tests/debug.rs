@@ -169,7 +169,13 @@ async function work(): int32 {
 work();
 console.log(\"done\");
 ";
-    let (out, lines, _) = run_with_hook(ASYNC_PROGRAM, 0);
+    let (out, lines, hits) = run_with_hook(ASYNC_PROGRAM, 5);
     assert_eq!(out, "done\n");
     assert!(lines.contains(&4) && lines.contains(&5), "async body lines reported: {lines:?}");
+    // Slot-resolved locals surface as the innermost scope of a VM frame.
+    let flat: Vec<(String, String)> = hits[0].1.iter().flatten().cloned().collect();
+    assert!(
+        flat.iter().any(|(k, v)| k == "a" && v == "1"),
+        "slot local a=1 visible in the async frame: {flat:?}"
+    );
 }

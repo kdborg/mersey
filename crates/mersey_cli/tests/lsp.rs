@@ -199,7 +199,15 @@ mod cross_module {
     use super::*;
 
     fn project() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("mersey-lsp-xmod-{}", std::process::id()));
+        // Unique per CALL, not per process: cargo runs tests as threads of
+        // one process, and a shared dir let one test rewrite lib.mersey
+        // while another read it mid-write (an observed flake).
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mersey-lsp-xmod-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("lib.mersey"),

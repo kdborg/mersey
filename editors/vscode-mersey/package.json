@@ -4,23 +4,47 @@
   "description": "Debug Mersey programs (.mersey) via the mersey dap adapter: breakpoints, stepping, stack, variables.",
   "version": "0.1.0",
   "publisher": "mersey",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Debuggers", "Programming Languages"],
-  "activationEvents": ["onDebugResolve:mersey"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onDebugResolve:mersey"
+  ],
   "main": "./extension.js",
   "contributes": {
     "languages": [
-      { "id": "mersey", "extensions": [".mersey"], "aliases": ["Mersey"] }
+      {
+        "id": "mersey",
+        "extensions": [
+          ".mersey"
+        ],
+        "aliases": [
+          "Mersey"
+        ],
+        "configuration": "./language-configuration.json"
+      }
     ],
-    "breakpoints": [{ "language": "mersey" }],
+    "breakpoints": [
+      {
+        "language": "mersey"
+      }
+    ],
     "debuggers": [
       {
         "type": "mersey",
         "label": "Mersey Debug",
-        "languages": ["mersey"],
+        "languages": [
+          "mersey"
+        ],
         "configurationAttributes": {
           "launch": {
-            "required": ["program"],
+            "required": [
+              "program"
+            ],
             "properties": {
               "program": {
                 "type": "string",
@@ -38,6 +62,13 @@
             "program": "${file}"
           }
         ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mersey",
+        "scopeName": "source.mersey",
+        "path": "./syntaxes/mersey.tmLanguage.json"
       }
     ]
   }

@@ -3055,7 +3055,12 @@ impl Interp {
     /// this is how their line changes reach the hook. Same contract as
     /// `debug_stmt`; the VM's slot-resolved locals may not all live in the
     /// scope chain, so snapshots there are best-effort.
-    pub(crate) fn debug_vm_stmt(&mut self, pos: mersey_front::diag::Pos, env: &Env) {
+    pub(crate) fn debug_vm_stmt(
+        &mut self,
+        pos: mersey_front::diag::Pos,
+        env: &Env,
+        slots: &[(String, Value)],
+    ) {
         if let Some(f) = self.frames.last_mut() {
             f.pos = pos;
         }
@@ -3063,7 +3068,19 @@ impl Interp {
         let envs = &self.debug_envs;
         hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut |from_top| {
             if from_top == 0 {
-                snapshot_scopes(env)
+                // Slot-resolved locals are the innermost scope (registers the
+                // scope chain never sees), then the chain itself.
+                let mut out = Vec::new();
+                if !slots.is_empty() {
+                    let mut vars: Vec<(String, String)> = slots
+                        .iter()
+                        .map(|(k, v)| (k.clone(), to_display(v)))
+                        .collect();
+                    vars.sort();
+                    out.push(vars);
+                }
+                out.extend(snapshot_scopes(env));
+                out
             } else {
                 match envs.len().checked_sub(from_top + 1).and_then(|i| envs.get(i)) {
                     Some(e) => snapshot_scopes(e),

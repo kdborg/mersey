@@ -50,6 +50,9 @@ pub struct Chunk {
     /// and a function that mixes `int32` and `float64` stops being a function it
     /// has to refuse.
     pub slot_types: Vec<Option<Num>>,
+    /// What each slot is CALLED — the debugger's view of slot-resolved locals
+    /// ('#'-prefixed entries are compiler temps and are not shown).
+    pub slot_names: Vec<String>,
     /// Does anything in this body actually live in the environment?
     ///
     /// If nothing does, the call needs no `Scope` — no `Rc`, no `GcCell`, no
@@ -854,6 +857,7 @@ struct C {
     param_slots: Vec<(u16, u16)>,
     /// What each slot holds, indexed by slot.
     slot_types: Vec<Option<Num>>,
+    slot_names: Vec<String>,
     /// The slot `this` lives in, allocated the first time the body needs it.
     this_slot: Option<u16>,
     /// Every parameter is a plain name with no default and no rest.
@@ -886,6 +890,7 @@ impl C {
             n_slots: 0,
             param_slots: vec![],
             slot_types: vec![],
+            slot_names: vec![],
             this_slot: None,
             simple_params: true,
             temp: 0,
@@ -918,6 +923,7 @@ impl C {
                 .collect(),
             n_slots: self.n_slots,
             slot_types: std::mem::take(&mut self.slot_types),
+            slot_names: std::mem::take(&mut self.slot_names),
             needs_env,
             simple_params: self.simple_params,
             this_slot: self.this_slot,
@@ -996,6 +1002,7 @@ impl C {
         let slot = self.n_slots;
         self.n_slots += 1;
         self.slot_types.push(ty);
+        self.slot_names.push(name.to_string());
         self.slot_scopes
             .last_mut()
             .expect("a scope")
@@ -1145,6 +1152,7 @@ impl C {
         let slot = self.n_slots;
         self.n_slots += 1;
         self.slot_types.push(None); // a compiler temp: an array, an index, a value
+        self.slot_names.push(name.clone());
         self.slot_scopes
             .last_mut()
             .expect("a scope")
@@ -2876,7 +2884,16 @@ fn exec(
             if dpos.line != 0 && dpos.line != last_debug_line {
                 last_debug_line = dpos.line;
                 if let Some(env) = scopes.last().cloned() {
-                    i.debug_vm_stmt(dpos, &env);
+                    let slots: Vec<(String, Value)> = chunk
+                        .slot_names
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, name)| !name.starts_with('#'))
+                        .filter_map(|(k, name)| {
+                            frame.get(frame_base + k).map(|v| (name.clone(), v.clone()))
+                        })
+                        .collect();
+                    i.debug_vm_stmt(dpos, &env, &slots);
                 }
             }
         }

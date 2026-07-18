@@ -1,0 +1,95 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mersey",
+  "scopeName": "source.mersey",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#templates" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#functions" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.triple-slash.mersey", "match": "///.*$" },
+        { "name": "comment.line.double-slash.mersey", "match": "//.*$" },
+        { "name": "comment.block.mersey", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.mersey",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.mersey", "match": "\\\\." }]
+    },
+    "templates": {
+      "name": "string.template.mersey",
+      "begin": "`",
+      "end": "`",
+      "patterns": [
+        { "name": "constant.character.escape.mersey", "match": "\\\\." },
+        {
+          "name": "meta.embedded.expression.mersey",
+          "begin": "\\$\\{",
+          "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.mersey" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.mersey" } },
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.mersey",
+      "begin": "'",
+      "end": "'",
+      "patterns": [{ "name": "constant.character.escape.mersey", "match": "\\\\." }]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.mersey", "match": "\\b0[xX][0-9a-fA-F_]+n?\\b" },
+        { "name": "constant.numeric.float.mersey", "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*(?:[eE][+-]?\\d+)?\\b" },
+        { "name": "constant.numeric.integer.mersey", "match": "\\b\\d[\\d_]*(?:[eE][+-]?\\d+)?n?\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.mersey",
+          "match": "\\b(if|else|while|do|for|of|switch|case|default|break|continue|return|throw|try|catch|finally|yield|await)\\b"
+        },
+        {
+          "name": "keyword.declaration.mersey",
+          "match": "\\b(function|class|interface|enum|type|let|const|import|export|from|extends|implements|async)\\b"
+        },
+        {
+          "name": "storage.modifier.mersey",
+          "match": "\\b(public|private|protected|readonly|override|abstract|static)\\b"
+        },
+        { "name": "keyword.operator.expression.mersey", "match": "\\b(new|as|is|in)\\b" },
+        { "name": "variable.language.mersey", "match": "\\b(this|super)\\b" }
+      ]
+    },
+    "types": {
+      "name": "support.type.primitive.mersey",
+      "match": "\\b(int8|int16|int32|int64|uint8|uint16|uint32|uint64|int|float32|float64|bool|string|char|bigint|bigdec|void|any|unknown|never)\\b"
+    },
+    "constants": {
+      "name": "constant.language.mersey",
+      "match": "\\b(true|false|null)\\b"
+    },
+    "functions": {
+      "name": "entity.name.function.mersey",
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()"
+    },
+    "identifiers": {
+      "name": "variable.other.mersey",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+    }
+  }
+}
