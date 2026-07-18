@@ -96,6 +96,10 @@ node bench/web/run-ladybird.mjs         # -> results.ladybird.json
 
 # Merge into REPORT.md:
 node bench/web/report.mjs
+
+# Standalone per-technology page (just the 4-implementations × 4-browsers
+# panels, statically generated from the results JSONs):
+node bench/web/report-pertech.mjs   # -> bench/web/report-pertech.html
 ```
 
 `run.mjs` needs Playwright's browsers (`cd web && npx playwright install`).
