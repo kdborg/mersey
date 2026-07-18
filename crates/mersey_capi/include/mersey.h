@@ -265,6 +265,15 @@ uint32_t msy_context_invoke(msy_context *ctx, uint32_t cb);
  * reuses released ids for later callbacks. */
 void msy_context_release_callback(msy_context *ctx, uint32_t cb);
 
+/* One browser-console REPL turn: the session is one growing module,
+ * re-checked whole each turn, executing only the new items (the language has
+ * no eval — this is a host feature over the ordinary compile pipeline).
+ * Reply, valid until the next msy_* call: the echo of a trailing bare
+ * expression ("" when none; "runtime error:"-prefixed when the accepted turn
+ * threw), or "!"-prefixed diagnostics for a rejected (never-run) turn. */
+const char *msy_context_repl_turn(msy_context *ctx, const char *src,
+                                  size_t len, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -23,6 +23,7 @@
 #include <AK/Vector.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/Runtime/AbstractOperations.h>
+#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/BoundFunction.h>
@@ -165,6 +166,26 @@ static void reset_handles(Runner* runner, JS::Realm& realm)
     // Announce native Mersey to the page: the Stage A polyfill loader sees
     // this and stands down (no WASM fetch, no double execution).
     (void)global.create_data_property(JS::PropertyKey { "merseyNative"_utf16_fly_string }, JS::Value(true));
+    // `mersey(source)` — the browser-console REPL: one growing,
+    // always-typechecked module against this page's engine
+    // (msy_context_repl_turn). Echoes a trailing bare expression; a rejected
+    // turn's diagnostics throw. NativeFunction::create consults the running
+    // execution context, and realm setup has none — borrow one.
+    Web::HTML::TemporaryExecutionContext temp_ctx { realm };
+    auto repl = JS::NativeFunction::create(realm, [runner](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+        if (!runner->ctx || vm.argument_count() < 1)
+            return JS::js_undefined();
+        auto source = TRY(vm.argument(0).to_utf16_string(vm)).to_byte_string();
+        size_t out_len = 0;
+        char const* reply = msy_context_repl_turn(runner->ctx, source.characters(), source.length(), &out_len);
+        auto text = reply ? ByteString { StringView { reply, out_len } } : ByteString {};
+        if (text.starts_with('!'))
+            return JS::throw_completion(JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8(text.substring_view(1)))));
+        if (text.is_empty())
+            return JS::js_undefined();
+        return JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8(text)));
+    }, 1);
+    (void)global.create_data_property(JS::PropertyKey { "mersey"_utf16_fly_string }, JS::Value(repl.ptr()));
     runner->handles->append(JS::Value(&global));
     runner->by_object.set(&global, 0);
     runner->set_timeout_handle = INT64_MIN;

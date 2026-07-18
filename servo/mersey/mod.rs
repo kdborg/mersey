@@ -45,7 +45,8 @@ use js::rust::HandleObject;
 use script_bindings::reflector::DomObject;
 
 use mersey_capi::{
-    msy_context_invoke_args, msy_context_new, msy_context_run, MsyArg16, MsyContext, MsyHostTable,
+    msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
+    MsyContext, MsyHostTable,
     MsyReply, MsyScalar,
 };
 
@@ -630,6 +631,49 @@ unsafe fn str_from<'a>(p: *const c_char, len: usize) -> &'a str {
     }
     let bytes = std::slice::from_raw_parts(p as *const u8, len);
     std::str::from_utf8(bytes).unwrap_or("")
+}
+
+/// `mersey(source)` — the browser-console REPL: one growing, always-typechecked
+/// module against this page's engine (see msy_context_repl_turn). Echoes a
+/// trailing bare expression; a rejected turn's diagnostics throw.
+unsafe extern "C" fn mersey_repl(cx: *mut js::jsapi::JSContext, argc: u32, vp: *mut Value) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let r = runner_ptr();
+    if r.is_null() || argc < 1 || !args.get(0).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut cx_safe = JSContext::from_ptr(NonNull::new(cx).unwrap());
+    let source = jsstr_to_string(&cx_safe, NonNull::new(args.get(0).to_string()).unwrap());
+    let mut out_len = 0usize;
+    let reply = msy_context_repl_turn(
+        (*r).ctx,
+        source.as_ptr() as *const c_char,
+        source.len(),
+        &mut out_len,
+    );
+    let text = if reply.is_null() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(std::slice::from_raw_parts(reply as *const u8, out_len)).to_string()
+    };
+    if let Some(diags) = text.strip_prefix('!') {
+        let msg = std::ffi::CString::new(diags.replace('%', "%%")).unwrap_or_default();
+        js::jsapi::JS_ReportErrorUTF8(cx, msg.as_ptr());
+        return false;
+    }
+    if text.is_empty() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let chars = js::conversions::Utf8Chars::from(text.as_str());
+    let jsstr = JS_NewStringCopyUTF8N(&mut cx_safe, &*chars as *const _);
+    if jsstr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(js::jsval::StringValue(&*jsstr));
+    }
+    true
 }
 
 /// `__merseyInvoke(cb, argsJson)` — the hook the bridge calls when JS invokes a
@@ -1577,6 +1621,7 @@ pub(crate) fn run_mersey_script(global: &GlobalScope, cx: &mut JSContext, source
             let global_handle = HandleObject::from_marked_location(&(*runner).global);
             let name = c"__merseyInvoke";
             let _ = JS_DefineFunction(cx, global_handle, name.as_ptr(), Some(mersey_invoke), 2, 0);
+            let _ = JS_DefineFunction(cx, global_handle, c"mersey".as_ptr(), Some(mersey_repl), 1, 0);
             let _ = global.evaluate_js_on_global(
                 cx,
                 Cow::Borrowed(BRIDGE_JS),

@@ -598,6 +598,9 @@ pub struct MsyContext {
     /// Backing store for strings the engine returns to the host — valid until
     /// the next msy_* call on this context, which is the documented contract.
     scratch: UnsafeCell<String>,
+    /// The browser-console REPL session (msy_context_repl_turn) — one
+    /// growing, always-typechecked module against this context's engine.
+    repl: UnsafeCell<mersey_interp::ReplSession>,
 }
 
 impl MsyContext {
@@ -651,6 +654,7 @@ pub unsafe extern "C" fn msy_context_new_ex(
         error_cb: table.error,
         error_data: table.data,
         scratch: UnsafeCell::new(String::new()),
+        repl: UnsafeCell::new(mersey_interp::ReplSession::new()),
     }))
 }
 
@@ -754,6 +758,40 @@ pub unsafe extern "C" fn msy_context_invoke_args(
 /// # Safety
 /// `ctx` valid.
 #[no_mangle]
+/// One browser-console REPL turn (ReplSession semantics: one growing module,
+/// re-checked whole each turn, executing only the new items — see the engine
+/// crate). Reply, valid until the next msy_* call on this context: the echo
+/// text ("" when none; "runtime error:"-prefixed when the accepted turn
+/// threw), or "!"-prefixed diagnostics for a rejected turn.
+///
+/// # Safety
+/// `ctx` from msy_context_new; `src` points at `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_repl_turn(
+    ctx: *mut MsyContext,
+    src: *const c_char,
+    len: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    let ctx = &*ctx;
+    let bytes = std::slice::from_raw_parts(src as *const u8, len);
+    let fragment = String::from_utf8_lossy(bytes);
+    let text = {
+        use mersey_interp::ReplOutcome;
+        let session = &mut *ctx.repl.get();
+        match session.turn(ctx.interp(), &fragment) {
+            ReplOutcome::Ran(Some(echo)) => echo,
+            ReplOutcome::Ran(None) => String::new(),
+            ReplOutcome::Threw(msg) => msg,
+            ReplOutcome::Rejected(diags) => format!("!{diags}"),
+        }
+    };
+    let scratch = &mut *ctx.scratch.get();
+    *scratch = text;
+    *out_len = scratch.len();
+    scratch.as_ptr() as *const c_char
+}
+
 pub unsafe extern "C" fn msy_context_release_callback(ctx: *mut MsyContext, cb: u32) {
     if let Some(ctx) = ctx.as_ref() {
         ctx.interp().release_callback(cb);
