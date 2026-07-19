@@ -313,6 +313,31 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 /// JS-backend polyfill calls this once per script, then the browser's own
 /// JIT runs the output; the interpreter below stays as the test vehicle.
 #[no_mangle]
+thread_local! {
+    /// The console REPL session (msy_repl_turn / msy_repl_complete).
+    static REPL_SESSION: std::cell::RefCell<mersey_interp::ReplSession> =
+        std::cell::RefCell::new(mersey_interp::ReplSession::new());
+}
+
+/// The REPL session's visible top-level names, as a JSON array — what a
+/// console's completion offers in Mersey mode.
+#[no_mangle]
+pub extern "C" fn msy_repl_complete() -> u64 {
+    let names = REPL_SESSION.with(|s| s.borrow().completions());
+    let mut json = String::from("[");
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        mersey_interp::webjson::write_str(&mut json, n);
+    }
+    json.push(']');
+    let boxed = json.into_bytes().into_boxed_slice();
+    let plen = boxed.len();
+    let pptr = Box::leak(boxed).as_ptr();
+    ((pptr as u64) << 32) | plen as u64
+}
+
 /// One browser-console REPL turn against the page's engine (the loader
 /// exposes this as `globalThis.mersey`). Same growing-module session as the
 /// CLI REPL — and it shares the page interpreter, so the console can inspect
@@ -321,17 +346,12 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
 /// turn (the loader throws those).
 #[no_mangle]
 pub extern "C" fn msy_repl_turn(ptr: *const u8, len: usize) -> u64 {
-    use std::cell::RefCell;
-    thread_local! {
-        static REPL: RefCell<mersey_interp::ReplSession> =
-            RefCell::new(mersey_interp::ReplSession::new());
-    }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let fragment = String::from_utf8_lossy(bytes);
     // The transpiled default path never interprets, so the engine's
     // interpreter may not exist yet — the REPL is what creates it then.
     ensure_interp();
-    let text = REPL.with(|session| {
+    let text = REPL_SESSION.with(|session| {
         let mut session = session.borrow_mut();
         with_interp(|interp| {
             use mersey_interp::ReplOutcome;

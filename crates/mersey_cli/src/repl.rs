@@ -85,15 +85,8 @@ pub fn serve(caps: Vec<String>) -> ExitCode {
     println!("`console` is pre-imported; a bare expression echoes its value.");
 
     let mut interp = interp::new_interp(Box::new(CapsHost(caps)));
+    // The session seeds its own console prelude on the first turn.
     let mut session = ReplSession::new();
-    // The prelude is an ordinary first turn: `console` exists from turn one.
-    if !matches!(
-        session.turn(&mut interp, "import { console } from \"std:console\";"),
-        ReplOutcome::Ran(_)
-    ) {
-        eprintln!("mersey repl: prelude failed");
-        return ExitCode::FAILURE;
-    }
 
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();

@@ -273,6 +273,9 @@ void msy_context_release_callback(msy_context *ctx, uint32_t cb);
  * threw), or "!"-prefixed diagnostics for a rejected (never-run) turn. */
 const char *msy_context_repl_turn(msy_context *ctx, const char *src,
                                   size_t len, size_t *out_len);
+/* The REPL session's visible top-level names, as a JSON array — what a
+ * console's completion offers in Mersey mode. */
+const char *msy_context_repl_complete(msy_context *ctx, size_t *out_len);
 
 #ifdef __cplusplus
 }

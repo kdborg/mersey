@@ -9174,7 +9174,84 @@ impl ReplSession {
         Self::default()
     }
 
+    /// The names the session can see at its top level — what a console's
+    /// completion should offer in Mersey mode: imported bindings, declared
+    /// functions/classes/enums/types, and top-level variable bindings. The
+    /// accumulated program always parses (rejected turns never enter it).
+    pub fn completions(&self) -> Vec<String> {
+        fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
+            match p {
+                Pattern::Name(n) => out.push(n.text.clone()),
+                Pattern::Array { elems, rest } => {
+                    for e in elems {
+                        pattern_names(&e.target, out);
+                    }
+                    if let Some(r) = rest {
+                        pattern_names(r, out);
+                    }
+                }
+                Pattern::Record(fields) => {
+                    for f in fields {
+                        match &f.target {
+                            Some(t) => pattern_names(t, out),
+                            None => out.push(f.name.text.clone()),
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let src = match mersey_front::source::decode("<repl>", self.accumulated.as_bytes()) {
+            Ok(s) => s,
+            Err(_) => return out,
+        };
+        let parsed = mersey_front::parser::parse(&src);
+        for item in &parsed.module.items {
+            match item {
+                Item::Import(im) => {
+                    if let Some(ImportClause::Named(list)) = &im.clause {
+                        for spec in list {
+                            out.push(spec.alias.as_ref().unwrap_or(&spec.name).text.clone());
+                        }
+                    } else if let Some(ImportClause::Namespace(n)) = &im.clause {
+                        out.push(n.text.clone());
+                    }
+                }
+                Item::Decl(d) | Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => {
+                    match d {
+                        Decl::Function(f) => out.push(f.name.text.clone()),
+                        Decl::Class(c) => out.push(c.name.text.clone()),
+                        Decl::Interface(i) => out.push(i.name.text.clone()),
+                        Decl::Enum(e) => out.push(e.name.text.clone()),
+                        Decl::TypeAlias(t) => out.push(t.name.text.clone()),
+                    }
+                }
+                Item::Stmt(Stmt::Var(v)) | Item::Export(ExportDecl { kind: ExportKind::Var(v), .. }) => {
+                    for b in &v.bindings {
+                        pattern_names(&b.target, &mut out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn turn(&mut self, interp: &mut Interp, fragment: &str) -> ReplOutcome {
+        // Every session begins with the console import — seeded lazily so all
+        // hosts (CLI, WASM, C ABI) share the behavior without each arranging
+        // a prelude turn of its own.
+        if self.accumulated.is_empty() {
+            self.accumulated = "import { console } from \"std:console\";\n".to_string();
+            let src = mersey_front::source::decode("<repl>", self.accumulated.as_bytes())
+                .expect("prelude decodes");
+            let parsed = mersey_front::parser::parse(&src);
+            let module: &'static Module = Box::leak(Box::new(parsed.module));
+            self.executed_items = module.items.len();
+            let _ = interp.run_repl_turn(module, 0);
+        }
         let mut fragment = fragment.trim_end().to_string();
         if !(fragment.ends_with(';') || fragment.ends_with('}')) {
             fragment.push(';');

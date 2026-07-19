@@ -42,6 +42,12 @@ const rejected = await page.evaluate(() => {
 check("ill-typed turn throws diagnostics", rejected !== null && rejected.includes("E0401"), String(rejected));
 const r4 = await page.evaluate(() => mersey("answer"));
 check("rejected turn left the session intact", r4 === "21", String(r4));
+const names = await page.evaluate(() => mersey.completions());
+check(
+    "completions are the session's own visible names",
+    Array.isArray(names) && names.includes("answer") && names.includes("console") &&
+        !names.includes("window") && !names.includes("document"),
+    JSON.stringify(names));
 
 await browser.close();
 server.close();

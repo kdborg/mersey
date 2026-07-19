@@ -792,6 +792,32 @@ pub unsafe extern "C" fn msy_context_repl_turn(
     scratch.as_ptr() as *const c_char
 }
 
+/// The REPL session's visible top-level names as a JSON array (see
+/// msy_context_repl_turn). Same reply lifetime as every other string.
+///
+/// # Safety
+/// `ctx` from msy_context_new.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_repl_complete(
+    ctx: *mut MsyContext,
+    out_len: *mut usize,
+) -> *const c_char {
+    let ctx = &*ctx;
+    let names = (*ctx.repl.get()).completions();
+    let mut json = String::from("[");
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        mersey_interp::webjson::write_str(&mut json, n);
+    }
+    json.push(']');
+    let scratch = &mut *ctx.scratch.get();
+    *scratch = json;
+    *out_len = scratch.len();
+    scratch.as_ptr() as *const c_char
+}
+
 pub unsafe extern "C" fn msy_context_release_callback(ctx: *mut MsyContext, cb: u32) {
     if let Some(ctx) = ctx.as_ref() {
         ctx.interp().release_callback(cb);

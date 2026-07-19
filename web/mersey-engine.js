@@ -273,6 +273,12 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
       if (out.startsWith("!")) throw new Error(out.slice(1));
       return out;
     },
+    /// The REPL session's visible names (JSON array) for console completion.
+    replComplete() {
+      if (!exports.msy_repl_complete) return "[]";
+      const packed = exports.msy_repl_complete();
+      return readStr(Number(packed >> 32n), Number(packed & 0xffffffffn));
+    },
     /// The standalone runtime module text ($rt), shared by a graph's modules.
     runtimeJs() {
       const packed = exports.msy_rt_js();

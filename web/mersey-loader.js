@@ -96,6 +96,8 @@ async function boot() {
     const echo = engine.replTurn(source);
     return echo === "" ? undefined : echo;
   };
+  // What the session can see — a console's Mersey-mode completion source.
+  globalThis.mersey.completions = () => JSON.parse(engine.replComplete());
   // Execution backend: "js" (default) transpiles Mersey to JavaScript and the
   // browser's own JIT runs it — the fast polyfill. "wasm" interprets inside
   // the WASM engine — the conformance vehicle, kept for testing.
