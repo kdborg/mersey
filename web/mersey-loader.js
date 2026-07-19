@@ -84,6 +84,9 @@ async function boot() {
     return;
   }
   const engine = await startEngine({ engineUrl, realm: globalThis });
+  console.info(
+    "[mersey] running via the WASM polyfill — no native Mersey engine detected."
+  );
   // The console REPL: `mersey(source)` — or the tagged form, mersey\`x * 2\` —
   // is one growing, always-typechecked module against the page's engine (so
   // it can inspect live globals). Echoes a trailing bare expression; throws
