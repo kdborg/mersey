@@ -43,6 +43,7 @@ use js::rust::wrappers2::{
 };
 use js::rust::HandleObject;
 use script_bindings::reflector::DomObject;
+use script_bindings::settings_stack::run_a_script;
 
 use mersey_capi::{
     msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
@@ -1632,6 +1633,14 @@ pub(crate) fn run_mersey_script(global: &GlobalScope, cx: &mut JSContext, source
             (*runner).bridge_ready = true;
         }
         let src = source.as_bytes();
-        msy_context_run((*runner).ctx, src.as_ptr() as *const c_char, src.len());
+        // The mersey program is a running script: push the entry-script
+        // settings (spec "prepare to run a script") for the whole run, the
+        // way evaluate_js_on_global does for JS. Without it, bindings the
+        // bridge reaches reflectively that consult entry_global() —
+        // Location's cross-origin getters (location.host) — panic on the
+        // empty settings stack. One push per run; per-bridge-call cost: none.
+        run_a_script::<crate::DomTypeHolder, _, _>(cx, global, |_cx| {
+            msy_context_run((*runner).ctx, src.as_ptr() as *const c_char, src.len());
+        });
     }
 }

@@ -638,8 +638,8 @@ pub fn api_reference() -> Vec<ApiGroup> {
         }
     }
 
-    // The web platform (`browser:dom`). The generated surface declares 1391
-    // globals and 1122 interfaces — a list of all of them would be a copy of the
+    // The web platform (`browser:dom`). The generated surface declares 1355
+    // globals and 1103 interfaces — a list of all of them would be a copy of the
     // IDL, not documentation. What the page carries instead is the surface people
     // actually reach for, typed by the same checker as everything else; the rest
     // is still importable, and the editor knows it.

@@ -27,7 +27,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
   `${process.env.HOME}/servo-src/target/release/servoshell`;
 const REPEATS = 3;
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
+// idb + locks excluded: Servo implements neither IndexedDB nor Web Locks
+// (the stock legs prove both absences).
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "geometry", "json", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "worker", "xhr"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killServo(); process.exit(3); });

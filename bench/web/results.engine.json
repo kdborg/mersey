@@ -1,0 +1,263 @@
+[
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "bchannel",
+    "ms": 18.964291000000003,
+    "rss": 50084,
+    "heap": 14811136,
+    "checksum": 5890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "blob",
+    "ms": 147.34000000000003,
+    "rss": 82036,
+    "heap": 10551296,
+    "checksum": 198890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "calls",
+    "ms": 13823.094589999999,
+    "rss": 62576,
+    "heap": 10551296,
+    "checksum": 452320592
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "canvas",
+    "ms": 55.743626000000006,
+    "rss": 63472,
+    "heap": 10551296,
+    "checksum": 20000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "compression",
+    "ms": 113.380584,
+    "rss": 79592,
+    "heap": 14811136,
+    "checksum": 8690
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "compute",
+    "ms": 20564.279843,
+    "rss": 62404,
+    "heap": 10551296,
+    "checksum": 1765835917
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "crypto",
+    "ms": 109.867042,
+    "rss": 73312,
+    "heap": 10551296,
+    "checksum": 320000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "cssom",
+    "ms": 115.08200000000002,
+    "rss": 73028,
+    "heap": 10551296,
+    "checksum": 48000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "dom",
+    "ms": 73.145667,
+    "rss": 89904,
+    "heap": 10551296,
+    "checksum": 10000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "encoding",
+    "ms": 74.999417,
+    "rss": 87664,
+    "heap": 10551296,
+    "checksum": 437780
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "events",
+    "ms": 76.876,
+    "rss": 81524,
+    "heap": 14811136,
+    "checksum": 10000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "fcompute",
+    "ms": 7439.903378999999,
+    "rss": 61800,
+    "heap": 10551296,
+    "checksum": null
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "fetch",
+    "ms": 181.77075,
+    "rss": 83576,
+    "heap": 14811136,
+    "checksum": 20990
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "geometry",
+    "ms": 569.048542,
+    "rss": 78140,
+    "heap": 10551296,
+    "checksum": 95000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "idb",
+    "ms": 23.524667000000008,
+    "rss": 51204,
+    "heap": 14811136,
+    "checksum": 4390
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "json",
+    "ms": 9.754834000000017,
+    "rss": 36192,
+    "heap": 10551296,
+    "checksum": 848890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "locks",
+    "ms": 21.610833000000014,
+    "rss": 50336,
+    "heap": 14811136,
+    "checksum": 5500
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "mathk",
+    "ms": 4490.199752,
+    "rss": 66236,
+    "heap": 10551296,
+    "checksum": null
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "msgchannel",
+    "ms": 19.42754099999999,
+    "rss": 49956,
+    "heap": 14811136,
+    "checksum": 5890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "query",
+    "ms": 85.27770800000002,
+    "rss": 72596,
+    "heap": 11599872,
+    "checksum": 214900
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "sse",
+    "ms": 48.41812500000002,
+    "rss": 55716,
+    "heap": 14811136,
+    "checksum": 14890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "storage",
+    "ms": 101.43525,
+    "rss": 72220,
+    "heap": 10551296,
+    "checksum": 208890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "streams",
+    "ms": 49.65808299999999,
+    "rss": 60700,
+    "heap": 14811136,
+    "checksum": 18890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "timers",
+    "ms": 83.517292,
+    "rss": 71080,
+    "heap": 10551296,
+    "checksum": 20000
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "url",
+    "ms": 145.99637499999997,
+    "rss": 83540,
+    "heap": 10551296,
+    "checksum": 537780
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "urlpattern",
+    "ms": 91.389917,
+    "rss": 124384,
+    "heap": 10551296,
+    "checksum": 88890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "websocket",
+    "ms": 38.00245799999999,
+    "rss": 45612,
+    "heap": 14811136,
+    "checksum": 1290
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "worker",
+    "ms": 31.30079099999999,
+    "rss": 51688,
+    "heap": 14811136,
+    "checksum": 7890
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "xhr",
+    "ms": 186.41825,
+    "rss": 77820,
+    "heap": 14811136,
+    "checksum": 20990
+  }
+]

@@ -11,13 +11,13 @@ and emits `crates/mersey_front/src/webapi.gen.mersey`:
 
 | | count |
 |---|---|
-| interfaces | 1,122 |
-| members (attributes + operations) | 8,101 |
-| — of which CSS properties (from `@webref/css`) | 743 |
+| interfaces | 1,103 |
+| members (attributes + operations) | 7,905 |
+| — of which CSS properties (from `@webref/css`) | 737 |
 | dictionaries | 903 |
 | typedefs / enums | 538 |
 | callbacks | 78 |
-| ambient globals (Window + interface objects) | 381 |
+| ambient globals (Window + interface objects) | 1,355 |
 
 Interface objects are emitted too, so constants and statics work
 (`Node.ELEMENT_NODE`, `Response.error()`), indexed getters become both
@@ -38,7 +38,19 @@ IDL types — including precision the hand-written surface lacked
 (`getElementById` returns `Element?`; `value` lives on `HTMLInputElement`,
 not `Element`).
 
-Regenerate with: `cd tools/webidl-gen && npm install && node generate.mjs`.
+**Standards-status filtering.** The generator gates the whole surface through
+`@mdn/browser-compat-data` (the dataset behind MDN's Deprecated/Non-standard
+badges): anything BCD marks `deprecated` or off the `standard_track` is
+excluded — interfaces, members, statics, constructors, namespaces, harvested
+globals and CSS properties alike (`document.all`, the `init*Event` family,
+`HTMLFontElement`, `Performance.timing`, CSS `clip`, …). Experimental APIs
+are kept, and an item with no BCD entry is kept — a lookup miss can only
+over-keep, never over-drop. The full drop list is committed as
+`tools/webidl-gen/dropped.txt`, so a webref/BCD bump shows surface changes
+as a reviewable diff.
+
+Regenerate with: `cd tools/webidl-gen && npm install && node generate.mjs`
+(also rewrites `dropped.txt`).
 
 Type mapping (v1): integers → `int32`; 64-bit ints and floats → `float64`;
 `DOMString`/`USVString` → `string`; `sequence<T>` → `T[]`; `Promise<T>` →
@@ -53,11 +65,11 @@ property lookup:
 
 | table | entries |
 |---|---|
-| method calls | 2,460 |
-| getters | 5,623 |
-| setters | 2,806 |
-| constructors | 438 |
-| **total** | **11,327** |
+| method calls | 2,398 |
+| getters | 5,378 |
+| setters | 2,631 |
+| constructors | 428 |
+| **total** | **10,835** |
 
 The bridge resolves `(interface, member) → thunk` once per shape and caches
 it (walking the prototype chain, so `Node.textContent` is found on an

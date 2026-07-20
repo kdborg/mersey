@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native-servo sse</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: Server-sent events. One EventSource; the server
+// pushes N events immediately and holds the stream open (ending it would
+// trigger auto-reconnect); each event is a message task re-entering the
+// engine. Timed from before the EventSource opens.
+import { console } from "std:console";
+import { time } from "std:time";
+import { EventSource } from "browser:dom";
+
+const N: int32 = 2000;
+
+let sum = 0;
+let i = 0;
+
+const t0 = time.monotonic();
+const es = new EventSource(`/bench/sse?n=${N}`);
+es.addEventListener("message", (ev: Event) => {
+    const data = (ev as MessageEvent).data as string;
+    sum = sum + data.length;
+    i += 1;
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT sse ${t1 - t0} ${sum}`);
+        es.close();
+    }
+});
+
+</script>
+</body>

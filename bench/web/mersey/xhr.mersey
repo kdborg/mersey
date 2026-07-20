@@ -1,0 +1,31 @@
+// Web-platform workload: XMLHttpRequest. The legacy HTTP API — one request
+// per iteration, chained through the load event; status + body read back.
+// The same endpoint the fetch workload uses, so the two are comparable.
+import { console } from "std:console";
+import { time } from "std:time";
+import { XMLHttpRequest } from "browser:dom";
+
+const N: int32 = 100;
+
+let sum = 0;
+let i = 0;
+let t0 = 0.0;
+
+function step(): void {
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT xhr ${t1 - t0} ${sum}`);
+        return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", `/bench/echo?i=${i}`);
+    xhr.addEventListener("load", () => {
+        sum = sum + xhr.status + xhr.responseText.length;
+        i += 1;
+        step();
+    });
+    xhr.send();
+}
+
+t0 = time.monotonic();
+step();

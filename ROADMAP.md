@@ -309,9 +309,15 @@ gate regressions.
 ## Web platform coverage (complete 2026-07-12)
 
 - [x] **WebIDL type generator** (`tools/webidl-gen`) over `@webref/idl`:
-      1,122 interfaces / 7,340 members / 903 dictionaries / 256 globals,
+      1,103 interfaces / 7,905 members / 903 dictionaries / 1,355 globals,
       emitted as ambient Mersey declarations and validated by Mersey's own
       parser+checker on every build
+- [x] **BCD standards-status filtering** (2026-07-18): the generator gates
+      the surface through `@mdn/browser-compat-data` — APIs MDN marks
+      deprecated or non-standard are excluded (experimental kept; missing
+      BCD entry keeps the item). Drop list committed as
+      `tools/webidl-gen/dropped.txt` (19 interfaces, 193 members, 10
+      globals, 6 CSS properties, …)
 - [x] **Universal bridge** (`web/mersey-bridge.js` + `webjson.rs` +
       `JsRef` values): five reflective ops reach any host object; identity
       preserved via a handle table; Mersey closures cross as real JS
@@ -327,8 +333,8 @@ gate regressions.
       `std:async` (`Promise.all`/`resolve`/`reject`), host-promise adoption
       (`await fetch(…)`), throws crossing `await` into `try`/`catch`.
       Verified in headless Chromium
-- [x] **Generated bindings for every member** (11,327 thunks: 2,460 calls,
-      5,623 getters, 2,806 setters, 438 constructors) — the bridge no longer
+- [x] **Generated bindings for every member** (10,835 thunks: 2,398 calls,
+      5,378 getters, 2,631 setters, 428 constructors) — the bridge no longer
       reflects; Stage B consumes the same tables natively
 - [x] Marshalling fast paths (interned member names + scalar ABI paths):
       **22% / 16% faster** DOM writes/calls in real Chromium. Measured
@@ -1179,6 +1185,44 @@ different `value` in another scope. The LSP no longer leaks an AST per keystroke
   breakpoints match by line across the graph; variables serve the top frame.
   The browser half (CDP in a fork, or transpiler source maps) drives the same
   hook — tracked, not started.
+
+## Benchmark suite: 25 technologies + perf regression gate (2026-07-19)
+
+- [x] **Thirteen new workload twins** (2026-07-18/19, four tranches over MDN's
+      Specifications index): WebSockets, IndexedDB, Streams, XMLHttpRequest,
+      Web Workers, Compression Streams, Broadcast Channel, Geometry
+      (DOMMatrix), File API (Blob), Server-sent events, URL Pattern, Web
+      Locks, Channel Messaging — 12 → 25 technologies (20 of MDN's 147
+      Specifications entries; the full feasible-headless set — the rest need
+      rendering, hardware, or user gestures). Infra: `/bench/ws` (RFC 6455
+      echo, no deps) and `/bench/sse` (held-open event stream) endpoints,
+      `worker-echo.js`.
+- [x] **Engine-only leg** (`run-engine.mjs` + `engine-child.mjs`): the wasm
+      engine over a deterministic stub realm in Node — no browser; fresh
+      child per sample, peak-RSS (VmHWM) minus a blank child, wasm-heap
+      reported. Checksums match every browser leg bit-for-bit (the proof the
+      stubs are faithful).
+- [x] **Perf regression tests** (`perf-test.mjs` vs committed
+      `perf-baselines.json`): checksum mismatch always fails; time (min-of-2,
+      1.5× + 20 ms floor) and peak-RSS/heap (1.4× + 8 MiB floor) gate the
+      engine leg. `--update` re-baselines.
+- [x] **Five real bugs found by the checksum discipline**: mersey-engine.js's
+      stale `msy_transpile` fallback (broke ALL Ladybird tjs), the bridge's
+      ctor thunks throwing ReferenceError instead of falling back to
+      reflection (realm-object hosts), the tjs runtime rejecting casts to
+      WebIDL dictionary aliases (tier divergence vs VM/wasm/native), Servo's
+      empty settings stack panicking in `Location::GetHost` through the
+      bridge (glue now wraps `msy_context_run` in `run_a_script`), and the
+      Chromium runner storing checksums as strings.
+- [x] **Fork legs completed to their architectural limits**: Gecko runs all
+      25; Ladybird all but worker (file:// cross-origin — what looked like an
+      async re-entry gap was the Text-test page completing before an async
+      RESULT; async pages now use `asyncTest`); Servo runs everything Servo
+      implements (no IndexedDB/Web Locks upstream); Chromium runs every sync
+      workload in its no-V8 native-object design (new kMatrix/kBlob kinds;
+      async + ScriptState-bound APIs are its documented boundary).
+- [x] Full-matrix refresh on current binaries: 548 rows, 501
+      checksum-verified, 41 honest nulls, 0 mismatches; perf gate 29/29.
 
 ## Explicitly deferred (tracked, not forgotten)
 

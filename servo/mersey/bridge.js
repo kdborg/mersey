@@ -47,6 +47,21 @@ function makeBridge(globalObject, invokeCallback) {
     thunkCache.set(key, thunk);
     return thunk;
   };
+  // Generated ctor thunks reference the IDL global by its bare name; a realm
+  // built over a plain object (the tests, the engine bench leg) may define
+  // the constructor only on the realm, so the thunk throws ReferenceError
+  // where the reflective path would succeed. Treat that as "no thunk" and
+  // let the caller fall through to reflection.
+  const boundCtor = (name, args) => {
+    const c = useBindings ? CTORS.get(name) : null;
+    if (!c) return null;
+    try {
+      return { v: c(args) };
+    } catch (e) {
+      if (e instanceof ReferenceError) return null;
+      throw e;
+    }
+  };
 
   const handles = [globalObject]; // handle 0 = the global object
   const byObject = new Map([[globalObject, 0]]);
@@ -196,8 +211,8 @@ function makeBridge(globalObject, invokeCallback) {
     newScalars(ctorId, ...args) {
       try {
         const name = names[ctorId];
-        const c = useBindings ? CTORS.get(name) : null;
-        if (c) return ok(c(args));
+        const b = boundCtor(name, args);
+        if (b) return ok(b.v);
         const Ctor = name.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
         if (typeof Ctor !== "function") return err(`${name} is not a constructor`);
         return ok(new Ctor(...args));
@@ -258,8 +273,8 @@ function makeBridge(globalObject, invokeCallback) {
         else if ((cbMask >> i) & 1) args[i] = cbFor(args[i]);
       }
       const name = names[ctorId];
-      const c = useBindings ? CTORS.get(name) : null;
-      if (c) return wideResult(c(args));
+      const b = boundCtor(name, args);
+      if (b) return wideResult(b.v);
       const Ctor = name.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);
       if (typeof Ctor !== "function") throw new Error(`${name} is not a constructor`);
       return wideResult(new Ctor(...args));
@@ -409,8 +424,8 @@ function makeBridge(globalObject, invokeCallback) {
     construct(ctorName, argsJson) {
       try {
         const args = JSON.parse(argsJson).map(decode);
-        const c = useBindings ? CTORS.get(ctorName) : null; // generated binding
-        if (c) return ok(c(args));
+        const b = boundCtor(ctorName, args); // generated binding
+        if (b) return ok(b.v);
         // A dotted name is a *namespaced* constructor — `Intl.NumberFormat`. Walk
         // the path rather than looking up one flat key, which would never find it.
         const Ctor = ctorName.split(".").reduce((o, k) => (o == null ? o : o[k]), globalObject);

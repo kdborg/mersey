@@ -31,7 +31,13 @@ const REPEATS = Number(process.env.MEM_REPEATS || 5);
 const POLL_MS = Number(process.env.POLL_MS || 8);
 const PER_TEST_TIMEOUT = 20;
 // fetch excluded for the same reason as the time runner (file:// + async RESULT).
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "compute", "crypto", "cssom", "dom", "encoding", "events", "fetch", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
+// Async workloads self-report from a later task: their test must stay open
+// long enough for the RESULT (and the workload's allocations) to happen.
+const ASYNC_WORKLOADS = new Set([
+  "bchannel", "compression", "fetch", "idb", "locks", "msgchannel", "sse",
+  "streams", "websocket", "xhr",
+]);
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : WEB_WORKLOADS;
 
 if (!existsSync(TEST_WEB)) {
@@ -63,7 +69,7 @@ for (const wl of WORKLOADS) {
 ${src}
 </script>
 <script src="../include.js"></script>
-<script>${wl === "fetch"
+<script>${ASYNC_WORKLOADS.has(wl)
     ? "asyncTest((done) => setTimeout(done, 8000));"
     : "test(() => {});"}</script>
 </body>`);

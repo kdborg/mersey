@@ -67,15 +67,19 @@ Browser forks (checkouts live BESIDE this repo, not in it):
 - Gecko and Chromium fork changes are committed in their own checkouts;
   Servo/Ladybird glue is versioned here and applied.
 
-Benchmarks (`bench/web/`): twelve web technologies as line-for-line
+Benchmarks (`bench/web/`): twenty-five web technologies as line-for-line
 `js/<wl>.js` + `mersey/<wl>.mersey` twins, self-timed, checksum-verified
 bit-for-bit across every leg. Runners: `run.mjs` (stock Chromium/Firefox via
 Playwright), `run-tjs.mjs`, `run-firefox-real.mjs` (system Firefox headless,
 driverless — Playwright attaches the debugger, which forces all wasm onto
 SpiderMonkey's baseline compiler and inflates Firefox wasm legs 5-7×),
 `run-servo.mjs`, `run-ladybird.mjs` (stock
-Ladybird via `test-web`, fully self-contained inlined pages), and
-`run-native{,-servo,-ladybird,-chromium}.mjs` for the forks. Most take
+Ladybird via `test-web`, fully self-contained inlined pages),
+`run-native{,-servo,-ladybird,-chromium}.mjs` for the forks, and
+`run-engine.mjs` (no browser: wasm engine over a deterministic stub realm in
+Node — the leg `perf-test.mjs` gates on against the committed
+`perf-baselines.json`; checksum mismatch always fails, time/mem have
+tolerance factors, `--update` re-baselines). Most take
 `WL=name,…` (and ladybird `IMPL=`) filters. Results land in
 `results.*.json`; re-running `run-native-ladybird.mjs` drops the `rss` fields —
 follow it with `run-native-ladybird-mem.mjs` (a separate peak-PSS poller; the
@@ -84,7 +88,10 @@ refresh regenerate all three report surfaces: `report.mjs` → `REPORT.md`;
 `gen-report-data.mjs` → `report.html`'s baked DATA block; `report-pertech.mjs`
 → `report-pertech.html` — never hand-edit those numbers. Adding a workload = the two twin files (auto-
 discovered) + the hardcoded lists in `run-native-servo.mjs`,
-`run-native-ladybird.mjs`, `run-ladybird.mjs`.
+`run-native-ladybird.mjs`, `run-ladybird.mjs`, `run-native-ladybird-mem.mjs`,
+`perf-test.mjs` (update list) + `perf-test.mjs --update` for its baseline; if
+it needs a web API the engine leg's stub realm (`engine-child.mjs`) may need
+the stub too.
 
 ## Conventions that bite
 

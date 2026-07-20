@@ -1,0 +1,26 @@
+// Web-platform workload: File API. Each iteration constructs a Blob from
+// two parts (an array argument crossing the bridge), reads its size, and
+// takes a slice — constructor, attribute and method, all synchronous, so
+// this one runs on every leg including the forks without an async path.
+import { console } from "std:console";
+import { time } from "std:time";
+import { Blob } from "browser:dom";
+
+const N: int32 = 10000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        const b = new Blob([`part-${i}`, "-suffix"]);
+        sum = sum + (b.size as int32) + (b.slice(0, 4).size as int32);
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT blob ${t1 - t0} ${c}`);

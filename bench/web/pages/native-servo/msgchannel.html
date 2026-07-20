@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native-servo msgchannel</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: Channel Messaging. One MessageChannel; each
+// iteration posts on port1 and is delivered as a message event task on
+// port2 (started explicitly, as addEventListener requires).
+import { console } from "std:console";
+import { time } from "std:time";
+import { MessageChannel } from "browser:dom";
+
+const N: int32 = 1000;
+
+let sum = 0;
+let i = 0;
+
+const t0 = time.monotonic();
+const mc = new MessageChannel();
+mc.port2.addEventListener("message", (ev: Event) => {
+    const data = (ev as MessageEvent).data as string;
+    sum = sum + data.length;
+    i += 1;
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT msgchannel ${t1 - t0} ${sum}`);
+        mc.port1.close();
+        return;
+    }
+    mc.port1.postMessage(`mc-${i}`);
+});
+mc.port2.start();
+mc.port1.postMessage(`mc-${i}`);
+
+</script>
+</body>

@@ -39,7 +39,9 @@ const TIMEOUT_S = { js: 60, tjs: 300, poly: 900 };
 
 // compute-on-WASM is the
 // LibWasm interpreter interpreting an interpreter — excluded from poly/tjs.
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
+// worker excluded: pages load from file:// and the worker script would be an
+// absolute-http (cross-origin) URL, which dedicated workers refuse.
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
 const PLAN = {
   js: [...WEB_WORKLOADS, "compute"],
   tjs: [...WEB_WORKLOADS],
@@ -104,7 +106,12 @@ const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
 import { startServer } from "./server.mjs";
 const { server: echoServer, port: echoPort } = await startServer();
 const ECHO = `http://127.0.0.1:${echoPort}/bench/echo`;
-const absEcho = (text) => text.replaceAll("/bench/echo", ECHO);
+// The websocket workload derives its URL from location.host, which is empty
+// on file:// pages — rewrite it to the echo server's host, like /bench/echo.
+const absEcho = (text) => text
+  .replaceAll("/bench/echo", ECHO)
+  .replaceAll("/bench/sse", `http://127.0.0.1:${echoPort}/bench/sse`)
+  .replaceAll("ws://${location.host}", `ws://127.0.0.1:${echoPort}`);
 const pageDir = join(testRoot, "Text", "input", "mersey-stock");
 const resultsDir = join(here, "..", "..", "test-dumps", "ladybird-stock");
 await mkdir(pageDir, { recursive: true });

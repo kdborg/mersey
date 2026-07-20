@@ -2,6 +2,60 @@
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "bchannel",
+    "ms": 96.06,
+    "rss": 59709,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "bchannel",
+    "ms": 103.64000000000001,
+    "rss": 108035,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "bchannel",
+    "ms": 116.61999999999998,
+    "rss": 64568,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "blob",
+    "ms": 19.880000000000003,
+    "rss": 24417,
+    "heap": 0,
+    "checksum": 198890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "blob",
+    "ms": 21.28,
+    "rss": 96213,
+    "heap": 0,
+    "checksum": 198890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "blob",
+    "ms": 107.73999999999998,
+    "rss": 83033,
+    "heap": 0,
+    "checksum": 198890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "calls",
     "ms": null
   },
@@ -9,8 +63,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "calls",
-    "ms": 88.41999999999999,
-    "rss": 94579,
+    "ms": 88.53999999999999,
+    "rss": 92678,
     "heap": 0,
     "checksum": 452320592
   },
@@ -18,8 +72,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "calls",
-    "ms": 13852.84,
-    "rss": -5996,
+    "ms": 13723.640000000001,
+    "rss": -49767,
     "heap": 0,
     "checksum": 452320592
   },
@@ -27,8 +81,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "canvas",
-    "ms": 4.719999999999999,
-    "rss": 73257,
+    "ms": 5.920000000000002,
+    "rss": 33498,
     "heap": 0,
     "checksum": 20000
   },
@@ -36,8 +90,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "canvas",
-    "ms": 6.360000000000014,
-    "rss": 59303,
+    "ms": 5.8799999999999955,
+    "rss": 98487,
     "heap": 0,
     "checksum": 20000
   },
@@ -45,17 +99,44 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "canvas",
-    "ms": 66.84,
-    "rss": 62732,
+    "ms": 65.41999999999999,
+    "rss": 77985,
     "heap": 0,
     "checksum": 20000
   },
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "compression",
+    "ms": 43.620000000000005,
+    "rss": 102157,
+    "heap": 0,
+    "checksum": 8690
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "compression",
+    "ms": 43.599999999999994,
+    "rss": 128935,
+    "heap": 0,
+    "checksum": 8690
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "compression",
+    "ms": 59.380000000000024,
+    "rss": 134256,
+    "heap": 0,
+    "checksum": 8690
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "compute",
-    "ms": 113.76000000000002,
-    "rss": 60866,
+    "ms": 109.84,
+    "rss": 43537,
     "heap": 0,
     "checksum": 1765835917
   },
@@ -63,8 +144,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "compute",
-    "ms": 120.54000000000002,
-    "rss": 91531,
+    "ms": 119.41999999999999,
+    "rss": 71441,
     "heap": 0,
     "checksum": 1765835917
   },
@@ -72,8 +153,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "compute",
-    "ms": 18537.08,
-    "rss": 155269,
+    "ms": 18654.56,
+    "rss": 200619,
     "heap": 0,
     "checksum": 1765835917
   },
@@ -81,8 +162,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "crypto",
-    "ms": 8.760000000000005,
-    "rss": 71226,
+    "ms": 9.46,
+    "rss": 41536,
     "heap": 0,
     "checksum": 320000
   },
@@ -90,8 +171,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 9.420000000000016,
-    "rss": 87773,
+    "ms": 9.300000000000011,
+    "rss": 114556,
     "heap": 0,
     "checksum": 320000
   },
@@ -99,8 +180,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "crypto",
-    "ms": 85.01999999999998,
-    "rss": 99237,
+    "ms": 86.47999999999999,
+    "rss": 81141,
     "heap": 0,
     "checksum": 320000
   },
@@ -108,8 +189,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "cssom",
-    "ms": 10.660000000000004,
-    "rss": 115105,
+    "ms": 10.960000000000008,
+    "rss": 75663,
     "heap": 0,
     "checksum": 48000
   },
@@ -117,8 +198,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "cssom",
-    "ms": 15.76000000000002,
-    "rss": 103736,
+    "ms": 14.620000000000005,
+    "rss": 76472,
     "heap": 0,
     "checksum": 48000
   },
@@ -126,8 +207,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "cssom",
-    "ms": 141.34,
-    "rss": 86934,
+    "ms": 134.24,
+    "rss": 74245,
     "heap": 0,
     "checksum": 48000
   },
@@ -135,8 +216,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "dom",
-    "ms": 6.740000000000009,
-    "rss": 109493,
+    "ms": 6.219999999999999,
+    "rss": 87340,
     "heap": 0,
     "checksum": 10000
   },
@@ -144,8 +225,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "dom",
-    "ms": 8.980000000000018,
-    "rss": 99370,
+    "ms": 9.079999999999984,
+    "rss": 96777,
     "heap": 0,
     "checksum": 10000
   },
@@ -153,8 +234,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "dom",
-    "ms": 97.70000000000002,
-    "rss": 96437,
+    "ms": 79.70000000000002,
+    "rss": 123338,
     "heap": 0,
     "checksum": 10000
   },
@@ -162,8 +243,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "encoding",
-    "ms": 3.3200000000000003,
-    "rss": 61665,
+    "ms": 2.3599999999999994,
+    "rss": 44912,
     "heap": 0,
     "checksum": 437780
   },
@@ -171,8 +252,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "encoding",
-    "ms": 3.840000000000032,
-    "rss": 113015,
+    "ms": 3.5,
+    "rss": 66854,
     "heap": 0,
     "checksum": 437780
   },
@@ -180,8 +261,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "encoding",
-    "ms": 81.53999999999999,
-    "rss": 104588,
+    "ms": 73.92000000000002,
+    "rss": 116742,
     "heap": 0,
     "checksum": 437780
   },
@@ -189,8 +270,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "events",
-    "ms": 13.619999999999997,
-    "rss": 58363,
+    "ms": 11.840000000000003,
+    "rss": 34887,
     "heap": 0,
     "checksum": 10000
   },
@@ -198,8 +279,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "events",
-    "ms": 11.319999999999993,
-    "rss": 97567,
+    "ms": 10.780000000000001,
+    "rss": 98883,
     "heap": 0,
     "checksum": 10000
   },
@@ -207,8 +288,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "events",
-    "ms": 97.19999999999999,
-    "rss": 113622,
+    "ms": 95.63999999999999,
+    "rss": 77795,
     "heap": 0,
     "checksum": 10000
   },
@@ -234,8 +315,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "fetch",
-    "ms": 102.64000000000001,
-    "rss": 59797,
+    "ms": 102.17999999999998,
+    "rss": 36275,
     "heap": 0,
     "checksum": 20990
   },
@@ -243,8 +324,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "fetch",
-    "ms": 141.23999999999995,
-    "rss": 123136,
+    "ms": 103.16000000000003,
+    "rss": 103111,
     "heap": 0,
     "checksum": 20990
   },
@@ -252,17 +333,71 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "fetch",
-    "ms": 108.72000000000003,
-    "rss": 89364,
+    "ms": 106.66,
+    "rss": 78205,
     "heap": 0,
     "checksum": 20990
   },
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "geometry",
+    "ms": 4.980000000000004,
+    "rss": 83037,
+    "heap": 0,
+    "checksum": 95000
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "geometry",
+    "ms": 6.819999999999993,
+    "rss": 57073,
+    "heap": 0,
+    "checksum": 95000
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "geometry",
+    "ms": 109.76000000000002,
+    "rss": 71922,
+    "heap": 0,
+    "checksum": 95000
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "idb",
+    "ms": 134.34,
+    "rss": 57419,
+    "heap": 0,
+    "checksum": 4390
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "idb",
+    "ms": 156.94000000000003,
+    "rss": 57745,
+    "heap": 0,
+    "checksum": 4390
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "idb",
+    "ms": 187.14,
+    "rss": 69134,
+    "heap": 0,
+    "checksum": 4390
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "json",
-    "ms": 4.299999999999997,
-    "rss": 128196,
+    "ms": 3.4200000000000017,
+    "rss": 63044,
     "heap": 0,
     "checksum": 848890
   },
@@ -270,8 +405,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "json",
-    "ms": 5.199999999999989,
-    "rss": 97762,
+    "ms": 4.699999999999989,
+    "rss": 75344,
     "heap": 0,
     "checksum": 848890
   },
@@ -279,10 +414,37 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "json",
-    "ms": 8.439999999999998,
-    "rss": 106631,
+    "ms": 8.480000000000018,
+    "rss": 96047,
     "heap": 0,
     "checksum": 848890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "locks",
+    "ms": 50.579999999999984,
+    "rss": 21051,
+    "heap": 0,
+    "checksum": 5500
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "locks",
+    "ms": 45.420000000000016,
+    "rss": 80443,
+    "heap": 0,
+    "checksum": 5500
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "locks",
+    "ms": 53.559999999999974,
+    "rss": 85620,
+    "heap": 0,
+    "checksum": 5500
   },
   {
     "browser": "firefox-real",
@@ -305,9 +467,36 @@
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "msgchannel",
+    "ms": 3.6999999999999993,
+    "rss": 51260,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "msgchannel",
+    "ms": 5.800000000000011,
+    "rss": 95123,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "msgchannel",
+    "ms": 15.519999999999982,
+    "rss": 100077,
+    "heap": 0,
+    "checksum": 5890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "query",
-    "ms": 5.899999999999999,
-    "rss": 106131,
+    "ms": 5.52,
+    "rss": 27878,
     "heap": 0,
     "checksum": 214900
   },
@@ -315,8 +504,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "query",
-    "ms": 6.699999999999989,
-    "rss": 103585,
+    "ms": 6.5800000000000125,
+    "rss": 90005,
     "heap": 0,
     "checksum": 214900
   },
@@ -324,17 +513,44 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "query",
-    "ms": 21.899999999999977,
-    "rss": 104397,
+    "ms": 21,
+    "rss": 93927,
     "heap": 0,
     "checksum": 214900
   },
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "sse",
+    "ms": 8.100000000000001,
+    "rss": 70901,
+    "heap": 0,
+    "checksum": 14890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "sse",
+    "ms": 8.23999999999998,
+    "rss": 74999,
+    "heap": 0,
+    "checksum": 14890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "sse",
+    "ms": 19.45999999999998,
+    "rss": 65135,
+    "heap": 0,
+    "checksum": 14890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "storage",
-    "ms": 32.9,
-    "rss": 61037,
+    "ms": 34.999999999999986,
+    "rss": 51529,
     "heap": 0,
     "checksum": 208890
   },
@@ -342,8 +558,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "storage",
-    "ms": 37.640000000000015,
-    "rss": 130271,
+    "ms": 35.72,
+    "rss": 87996,
     "heap": 0,
     "checksum": 208890
   },
@@ -351,17 +567,44 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "storage",
-    "ms": 144.64,
-    "rss": 85283,
+    "ms": 147.8,
+    "rss": 70901,
     "heap": 0,
     "checksum": 208890
   },
   {
     "browser": "firefox-real",
     "impl": "js",
+    "wl": "streams",
+    "ms": 4.420000000000002,
+    "rss": 41044,
+    "heap": 0,
+    "checksum": 18890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "streams",
+    "ms": 6.579999999999984,
+    "rss": 97384,
+    "heap": 0,
+    "checksum": 18890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "streams",
+    "ms": 45.84,
+    "rss": 68787,
+    "heap": 0,
+    "checksum": 18890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
     "wl": "timers",
-    "ms": 23.88000000000001,
-    "rss": 68654,
+    "ms": 22.46,
+    "rss": 83255,
     "heap": 0,
     "checksum": 20000
   },
@@ -369,8 +612,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "timers",
-    "ms": 21.539999999999992,
-    "rss": 97603,
+    "ms": 20.639999999999986,
+    "rss": 109176,
     "heap": 0,
     "checksum": 20000
   },
@@ -378,8 +621,8 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "timers",
-    "ms": 137.36,
-    "rss": 133585,
+    "ms": 123.23999999999998,
+    "rss": 63328,
     "heap": 0,
     "checksum": 20000
   },
@@ -387,8 +630,8 @@
     "browser": "firefox-real",
     "impl": "js",
     "wl": "url",
-    "ms": 28.659999999999997,
-    "rss": 118744,
+    "ms": 28.08,
+    "rss": 67060,
     "heap": 0,
     "checksum": 537780
   },
@@ -396,8 +639,8 @@
     "browser": "firefox-real",
     "impl": "tjs",
     "wl": "url",
-    "ms": 30.279999999999973,
-    "rss": 120693,
+    "ms": 27.379999999999995,
+    "rss": 85336,
     "heap": 0,
     "checksum": 537780
   },
@@ -405,9 +648,117 @@
     "browser": "firefox-real",
     "impl": "poly",
     "wl": "url",
-    "ms": 184.74000000000004,
-    "rss": 121429,
+    "ms": 162.54,
+    "rss": 86874,
     "heap": 0,
     "checksum": 537780
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "urlpattern",
+    "ms": 58.500000000000014,
+    "rss": 58687,
+    "heap": 0,
+    "checksum": 88890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "urlpattern",
+    "ms": 54.72,
+    "rss": 102716,
+    "heap": 0,
+    "checksum": 88890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "urlpattern",
+    "ms": 105.17999999999998,
+    "rss": 64263,
+    "heap": 0,
+    "checksum": 88890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "websocket",
+    "ms": 39.53999999999999,
+    "rss": 30326,
+    "heap": 0,
+    "checksum": 1290
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "websocket",
+    "ms": 43.94,
+    "rss": 86063,
+    "heap": 0,
+    "checksum": 1290
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "websocket",
+    "ms": 43.900000000000034,
+    "rss": 90699,
+    "heap": 0,
+    "checksum": 1290
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "worker",
+    "ms": 60.719999999999985,
+    "rss": 45375,
+    "heap": 0,
+    "checksum": 7890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "worker",
+    "ms": 41.60000000000002,
+    "rss": 87171,
+    "heap": 0,
+    "checksum": 7890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "worker",
+    "ms": 73.68,
+    "rss": 85012,
+    "heap": 0,
+    "checksum": 7890
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "js",
+    "wl": "xhr",
+    "ms": 83.63999999999999,
+    "rss": 68393,
+    "heap": 0,
+    "checksum": 20990
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "tjs",
+    "wl": "xhr",
+    "ms": 99.72000000000003,
+    "rss": 91029,
+    "heap": 0,
+    "checksum": 20990
+  },
+  {
+    "browser": "firefox-real",
+    "impl": "poly",
+    "wl": "xhr",
+    "ms": 103.44,
+    "rss": 80653,
+    "heap": 0,
+    "checksum": 20990
   }
 ]

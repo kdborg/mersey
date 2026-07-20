@@ -92,7 +92,8 @@
     "impl": "native",
     "wl": "compute",
     "ms": 96.81145799999999,
-    "checksum": 1765835917
+    "checksum": 1765835917,
+    "rss": 24443
   },
   {
     "browser": "ladybird-fork",
@@ -101,5 +102,101 @@
     "ms": 75.184584,
     "checksum": 20990,
     "rss": 34333
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "streams",
+    "ms": 19.193041,
+    "checksum": 18890,
+    "rss": 28037
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "geometry",
+    "ms": 38.981875,
+    "checksum": 95000,
+    "rss": 28109
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "blob",
+    "ms": 39.054874999999996,
+    "checksum": 198890,
+    "rss": 29088
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "urlpattern",
+    "ms": 63.093500000000006,
+    "checksum": 88890,
+    "rss": 31614
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "websocket",
+    "ms": 49.66158399999999,
+    "checksum": 1290,
+    "rss": 27162
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "idb",
+    "ms": 14.688208000000003,
+    "checksum": 4390,
+    "rss": 29875
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "xhr",
+    "ms": 64.938001,
+    "checksum": 20990,
+    "rss": 33703
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "bchannel",
+    "ms": 12.869166999999997,
+    "checksum": 5890,
+    "rss": 28993
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "sse",
+    "ms": 17.092416,
+    "checksum": 14890,
+    "rss": 27278
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "msgchannel",
+    "ms": 13.573416000000002,
+    "checksum": 5890,
+    "rss": 28268
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "locks",
+    "ms": 11.098832999999999,
+    "checksum": 5500,
+    "rss": 32353
+  },
+  {
+    "browser": "ladybird-fork",
+    "impl": "native",
+    "wl": "compression",
+    "ms": 47.181416999999996,
+    "checksum": 8690,
+    "rss": 72442
   }
 ]

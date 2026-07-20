@@ -246,7 +246,12 @@ const $rt = (() => {
           return Array.isArray(v) && v.every((x) => is(x, el));
         }
         const C = classes.get(ty) ?? globalThis[ty];
-        return typeof C === "function" && v instanceof C;
+        if (typeof C === "function") return v instanceof C;
+        // A name with no runtime class is a checker-side alias — a WebIDL
+        // dictionary or typedef (URLPatternResult, ReadableStreamReadResult).
+        // The engine tiers treat casts to those structurally; match them and
+        // accept any object rather than diverging by throwing.
+        return v !== null && typeof v === "object";
       }
     }
   };

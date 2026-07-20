@@ -238,8 +238,8 @@ export async function startEngine({ engineUrl = "mersey_wasm.wasm", realm = glob
     transpile(source, name) {
       const [ptr, len] = writeStr(source);
       let packed;
-      if (name && exports.msy_transpile_named) {
-        const [nptr, nlen] = writeStr(name);
+      if (exports.msy_transpile_named) {
+        const [nptr, nlen] = writeStr(name || "module");
         packed = exports.msy_transpile_named(ptr, len, nptr, nlen);
       } else {
         packed = exports.msy_transpile(ptr, len);

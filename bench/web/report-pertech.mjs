@@ -82,18 +82,22 @@ const column = (d, title, get, pctFn, fmtV) => `
       }).join("")).join("") + `</div>
     </div>`;
 
+// Panels are collapsed <details> — the page opens as a scannable index; the
+// TOC links (and a URL fragment) expand the one you came for.
 const panels = WL.map((w) => {
   const d = DATA[w];
   const memVals = IMPLS.flatMap(([, keys]) => BROWSERS.map((b) => d["m" + keys[b]])).filter((v) => v != null);
   const memMax = Math.max(...memVals, 1);
-  return `<div class="pt">
-    <div class="wl-name"><b>${w}</b><em>4 implementations × ff / cr / sv / lb</em></div>
+  return `<details class="pt" id="wl-${w}">
+    <summary class="wl-name"><span class="chev"></span><b>${w}</b><em>4 implementations × ff / cr / sv / lb</em></summary>
     <div class="pt-grid">
       ${column(d, "time — ms, log scale", (k) => d[k], logPct, fmtMs)}
       ${column(d, "memory — PSS delta, MiB", (k) => d["m" + k], (v) => Math.max(2, v / memMax * 100), (v) => (v === 0 ? "≈0" : v))}
     </div>
-  </div>`;
+  </details>`;
 }).join("\n");
+
+const toc = `<nav class="toc">${WL.map((w) => `<a href="#wl-${w}">${w}</a>`).join("\n    ")}</nav>`;
 
 const html = `<!doctype html>
 <html lang="en">
@@ -139,14 +143,28 @@ const html = `<!doctype html>
   .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
   .sw.js { background: var(--js); } .sw.poly { background: var(--poly); }
   .sw.tjs { background: var(--tjs); } .sw.native { background: var(--native); }
+  .toc { display: flex; flex-wrap: wrap; gap: .35rem .5rem; margin: 0 0 1.1rem; }
+  .toc a { font-family: var(--mono); font-size: .75rem; color: var(--accent); text-decoration: none;
+           border: 1px solid var(--line); border-radius: 999px; padding: .18rem .65rem;
+           background: var(--panel); }
+  .toc a:hover { border-color: var(--accent); }
   .pt { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-        padding: 1.1rem 1.4rem .9rem; box-shadow: var(--shadow); margin: 0 0 1rem; }
+        padding: .55rem 1.4rem .55rem; box-shadow: var(--shadow); margin: 0 0 .6rem;
+        scroll-margin-top: 1rem; }
+  .pt[open] { padding: 1.1rem 1.4rem .9rem; }
   .pt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.8rem; }
   .pt-title { font-family: var(--mono); font-size: .72rem; color: var(--ink-faint); margin: .15rem 0 .4rem; }
   @media (max-width: 760px) { .pt-grid { grid-template-columns: 1fr; } }
-  .wl-name { font-family: var(--mono); font-size: .8rem; color: var(--ink); margin-bottom: .45rem; display: flex; justify-content: space-between; }
+  .wl-name { font-family: var(--mono); font-size: .8rem; color: var(--ink); display: flex;
+             align-items: center; cursor: pointer; list-style: none; }
+  .wl-name::-webkit-details-marker { display: none; }
+  .pt[open] .wl-name { margin-bottom: .45rem; }
+  .wl-name .chev { flex: none; margin-right: .55rem; border: solid var(--ink-faint);
+                   border-width: 0 2px 2px 0; padding: 2.5px; transform: rotate(-45deg);
+                   transition: transform .12s ease; }
+  .pt[open] .wl-name .chev { transform: rotate(45deg); }
   .wl-name b { font-weight: 600; }
-  .wl-name em { font-style: normal; color: var(--ink-faint); }
+  .wl-name em { font-style: normal; color: var(--ink-faint); margin-left: auto; }
   .bars { display: grid; gap: 5px; }
   .bar-row { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: .6rem; }
   .bar-lab { font-family: var(--mono); font-size: .7rem; color: var(--ink-faint); text-align: right; }
@@ -166,14 +184,20 @@ const html = `<!doctype html>
   <h1>Mersey — per-technology benchmarks</h1>
   <p class="note">One panel per web technology: wall-clock of the workload loop (self-timed in-language,
     median of 3, <b>log scale</b>) and memory (PSS of the browser process tree, workload page minus a
-    blank page). The same program four ways — plain JS, transpiled JS, the WASM interpreter, and the
-    Mersey engine native in the browser fork — each in Firefox (·ff), Chromium (·cr), Servo (·sv) and
+    blank page). The same program four ways — plain JS (js), transpiled JS (tjs), the WASM interpreter (poly), and the
+    Mersey engine native (native) in the browser fork — each in Firefox (·ff), Chromium (·cr), Servo (·sv) and
     Ladybird (·lb). Every bar reports the same checksum. A dimmed row is honest absence
-    (fetch has no native path in the Chromium fork; the Ladybird legs reach the echo endpoint
-    by absolute URL + CORS, since its harness loads pages from file://).
+    (the Chromium fork has no async result path, and its no-V8 glue can't reach the
+    ScriptState-bound URLPattern — its sync workloads incl. geometry and blob run; Servo
+    implements neither IndexedDB nor Web Locks — its fork leg runs
+    everything else; the Ladybird fork runs everything except worker, which no Ladybird leg
+    can run — its file:// pages would need a cross-origin worker script; the Ladybird legs
+    reach the echo, sse and ws endpoints by absolute URL + CORS, since its harness loads pages
+    from file://).
     A memory bar of ≈0 is the measurement floor, not zero cost: Ladybird runs one process per
     test, so its memory is peak PSS minus a blank page's peak — a workload whose allocations
     stay under startup's crest is invisible to that method.</p>
+${toc}
   <div class="legend">
     <span><i class="sw js"></i> plain JS — the browser's own engine, JIT</span>
     <span><i class="sw tjs"></i> transpiled JS — Mersey→JS at load time, browser JIT runs it</span>
@@ -184,6 +208,16 @@ ${panels}
   <footer>Generated by <code>bench/web/report-pertech.mjs</code> from <code>bench/web/results.*.json</code>.
     The full report with methodology and caveats is <code>report.html</code>.</footer>
 </div>
+<script>
+  // Fragment navigation must expand the panel it points at — <details> stays
+  // closed on anchor jumps in some browsers.
+  const openHash = () => {
+    const el = location.hash && document.querySelector(location.hash);
+    if (el && el.tagName === "DETAILS") { el.open = true; el.scrollIntoView(); }
+  };
+  addEventListener("hashchange", openHash);
+  openHash();
+</script>
 </body>
 </html>
 `;

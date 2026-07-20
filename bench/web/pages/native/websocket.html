@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native websocket</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: WebSockets. One connection, then N sequential
+// echo roundtrips — each iteration is a send, a server echo, and a message
+// event re-entering the engine. Timed from before the connection opens, so
+// the handshake is part of the measurement (the js twin times the same way).
+import { console } from "std:console";
+import { time } from "std:time";
+import { WebSocket, location } from "browser:dom";
+
+const N: int32 = 200;
+
+let sum = 0;
+let i = 0;
+
+const t0 = time.monotonic();
+const ws = new WebSocket(`ws://${location.host}/bench/ws`);
+ws.addEventListener("message", (ev: Event) => {
+    const data = (ev as MessageEvent).data as string;
+    sum = sum + data.length;
+    i += 1;
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT websocket ${t1 - t0} ${sum}`);
+        ws.close();
+        return;
+    }
+    ws.send(`msg-${i}`);
+});
+ws.addEventListener("open", () => {
+    ws.send(`msg-${i}`);
+});
+
+</script>
+</body>

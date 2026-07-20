@@ -35,9 +35,12 @@ const TEST_WEB = process.env.TEST_WEB ||
 const PYTHON = process.env.PYTHON || "python3";
 const REPEATS = 3;
 const PER_TEST_TIMEOUT = 20; // seconds; a fallback — tests complete in well under 1s
-// fetch is excluded: test-web loads pages from file:// (no http origin for the
-// echo endpoint) and its test(() => {}) completes before an async RESULT lands.
-const WEB_WORKLOADS = ["canvas", "crypto", "cssom", "dom", "encoding", "events", "fetch", "json", "query", "storage", "timers", "url"];
+// worker excluded: file:// pages can't load a cross-origin (absolute-http)
+// worker script. Everything else runs — the C++ glue re-enters the engine
+// from both promise reactions and event tasks; what once read as a re-entry
+// gap was the page template ending the test before an async RESULT could
+// land (see ASYNC_WORKLOADS below).
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 // Reference checksums (the other native forks); the engine must match them.
@@ -58,13 +61,25 @@ const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
 // the echo endpoint admits opaque origins via CORS (see server.mjs).
 import { startServer } from "./server.mjs";
 const { server: echoServer, port: echoPort } = await startServer();
-const absEcho = (text) => text.replaceAll("/bench/echo", `http://127.0.0.1:${echoPort}/bench/echo`);
+const absEcho = (text) => text
+  .replaceAll("/bench/echo", `http://127.0.0.1:${echoPort}/bench/echo`)
+  .replaceAll("/bench/sse", `http://127.0.0.1:${echoPort}/bench/sse`)
+  // websocket derives its URL from location.host — empty on file:// pages.
+  .replaceAll("ws://${location.host}", `ws://127.0.0.1:${echoPort}`);
 const pageDir = join(testRoot, "Text", "input", "mersey");
 const resultsDir = process.env.LB_RESULTS_DIR || join(here, "..", "..", "test-dumps", "ladybird");
 await mkdir(pageDir, { recursive: true });
 
-// Generate one inline text/mersey Text test per workload. The trailing
-// include.js + test(() => {}) signals completion so the test ends at once.
+// Generate one inline text/mersey Text test per workload. Sync workloads
+// emit RESULT during parse, so test(() => {}) can end the test at once;
+// async workloads self-report from a later callback/event task, so their
+// test must stay open long enough for the RESULT to land — otherwise the
+// leg falsely reads as "no result" (that masquerade cost this leg seven
+// workloads before the list below existed).
+const ASYNC_WORKLOADS = new Set([
+  "bchannel", "compression", "fetch", "idb", "locks", "msgchannel", "sse",
+  "streams", "websocket", "worker", "xhr",
+]);
 for (const wl of WORKLOADS) {
   const src = absEcho(await readFile(join(here, "mersey", `${wl}.mersey`), "utf8"));
   const html = `<!doctype html>
@@ -75,7 +90,7 @@ for (const wl of WORKLOADS) {
 ${src}
 </script>
 <script src="../include.js"></script>
-<script>${wl === "fetch"
+<script>${ASYNC_WORKLOADS.has(wl)
     ? "asyncTest((done) => setTimeout(done, 8000));"
     : "test(() => {});"}</script>
 </body>`;

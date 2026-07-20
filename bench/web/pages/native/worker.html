@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native worker</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: Web Workers. One dedicated worker (a plain JS echo
+// script — infrastructure, like the ws echo server), then N sequential
+// postMessage roundtrips chained through the message event. Worker startup
+// is inside the timed region; both twins pay it.
+import { console } from "std:console";
+import { time } from "std:time";
+import { Worker } from "browser:dom";
+
+const N: int32 = 1000;
+
+let sum = 0;
+let i = 0;
+let t0 = 0.0;
+
+t0 = time.monotonic();
+const w = new Worker("/bench/web/worker-echo.js");
+w.addEventListener("message", (ev: Event) => {
+    const data = (ev as MessageEvent).data as string;
+    sum = sum + data.length;
+    i += 1;
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT worker ${t1 - t0} ${sum}`);
+        w.terminate();
+        return;
+    }
+    w.postMessage(`ping-${i}`);
+});
+w.postMessage(`ping-${i}`);
+
+</script>
+</body>

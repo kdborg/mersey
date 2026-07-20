@@ -1,0 +1,30 @@
+// Web-platform workload: Web Locks. N sequential exclusive acquisitions of
+// the same lock — each iteration is a request whose granted callback runs
+// with the lock held (a closure crossing into the lock manager) and whose
+// returned promise chains the next acquisition.
+import { console } from "std:console";
+import { time } from "std:time";
+import { navigator } from "browser:dom";
+
+const N: int32 = 500;
+
+let sum = 0;
+let i = 0;
+let t0 = 0.0;
+
+function step(): void {
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT locks ${t1 - t0} ${sum}`);
+        return;
+    }
+    navigator.locks.request("mersey-lock", (l: JsAny) => {
+        sum = sum + ((l as Lock).name).length;
+    }).then((v: JsAny) => {
+        i += 1;
+        step();
+    });
+}
+
+t0 = time.monotonic();
+step();

@@ -22,10 +22,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FORK = "/home/parallels/chromium/src/out/mersey-arm64/chrome";
 const REPEATS = 3;
 
-const WORKLOADS = (await readdir(join(here, "mersey")))
-  .filter((f) => f.endsWith(".mersey"))
-  .map((f) => f.replace(/\.mersey$/, ""))
-  .sort();
+const WORKLOADS = process.env.WL
+  ? process.env.WL.split(",")
+  : (await readdir(join(here, "mersey")))
+      .filter((f) => f.endsWith(".mersey"))
+      .map((f) => f.replace(/\.mersey$/, ""))
+      .sort();
 
 // Reuse the same inlined pages run-native.mjs writes (regenerate to be safe).
 const pageDir = join(here, "pages", "native");
@@ -110,7 +112,7 @@ async function runPage(pageUrl, profileDir, expectResult = true) {
       // Blink's console wraps the message in quotes ("RESULT …", source: …),
       // so stop the checksum at the first space, quote, or comma.
       const m = /RESULT (\S+) ([\d.]+) ([^\s",]+)/.exec(out);
-      if (m && !result) result = { ms: Number(m[2]), checksum: m[3] };
+      if (m && !result) result = { ms: Number(m[2]), checksum: Number(m[3]) };
     };
     child.stdout.on("data", scan);
     child.stderr.on("data", scan);

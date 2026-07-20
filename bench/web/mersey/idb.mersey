@@ -1,0 +1,41 @@
+// Web-platform workload: IndexedDB. Each iteration opens a readwrite
+// transaction, puts a value and reads it back — the request/event
+// completion path, twice per iteration, plus a transaction lifecycle.
+import { console } from "std:console";
+import { time } from "std:time";
+import { indexedDB } from "browser:dom";
+
+const N: int32 = 500;
+
+let sum = 0;
+let i = 0;
+let t0 = 0.0;
+
+function step(db: IDBDatabase): void {
+    if (i >= N) {
+        const t1 = time.monotonic();
+        console.log(`RESULT idb ${t1 - t0} ${sum}`);
+        db.close();
+        return;
+    }
+    const tx = db.transaction("kv", "readwrite");
+    const store = tx.objectStore("kv");
+    store.put(`value-${i}`, "k");
+    const g = store.get("k");
+    g.addEventListener("success", () => {
+        sum = sum + (g.result as string).length;
+        i += 1;
+        step(db);
+    });
+}
+
+t0 = time.monotonic();
+const open = indexedDB.open("mersey-bench", 1);
+open.addEventListener("upgradeneeded", () => {
+    const db = open.result as IDBDatabase;
+    db.createObjectStore("kv");
+});
+open.addEventListener("success", () => {
+    const db = open.result as IDBDatabase;
+    step(db);
+});

@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native-servo streams</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: Streams. A ReadableStream whose pull callback
+// re-enters the engine to produce each chunk, consumed through a reader's
+// read() promise chain — N chunks of backpressure-paced producer/consumer
+// handoff, both directions across the bridge.
+import { console } from "std:console";
+import { time } from "std:time";
+import { ReadableStream } from "browser:dom";
+
+const N: int32 = 2000;
+
+let produced = 0;
+let sum = 0;
+
+const t0 = time.monotonic();
+const stream = new ReadableStream({
+    pull: (c: ReadableStreamController) => {
+        if (produced < N) {
+            (c as ReadableStreamDefaultController).enqueue(`chunk-${produced}`);
+            produced += 1;
+        } else {
+            (c as ReadableStreamDefaultController).close();
+        }
+    },
+});
+const reader = stream.getReader() as ReadableStreamDefaultReader;
+function pump(): void {
+    reader.read().then((r: ReadableStreamReadResult) => {
+        if (r.done as bool) {
+            const t1 = time.monotonic();
+            console.log(`RESULT streams ${t1 - t0} ${sum}`);
+            return;
+        }
+        sum = sum + (r.value as string).length;
+        pump();
+    });
+}
+pump();
+
+</script>
+</body>

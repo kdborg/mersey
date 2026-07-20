@@ -2,7 +2,7 @@
 
 Performance and memory for real web technologies, across three ways of running
 the same program, in four browsers (Chromium, Firefox, Servo, and Ladybird).
-Twelve technologies are measured:
+Twenty-five technologies are measured:
 
 | workload | technology | per iteration |
 |---|---|---|
@@ -18,6 +18,19 @@ Twelve technologies are measured:
 | `encoding` | Encoding           | TextEncoder.encode + TextDecoder.decode roundtrip |
 | `timers`   | Timers             | setTimeout arm + clearTimeout disarm (registration cost — a fired chain measures the spec's 4ms nesting clamp, not the API) |
 | `fetch`    | Fetch              | sequential HTTP GETs of `/bench/echo` (no-store), status + body read, chained via `.then` |
+| `websocket`| WebSockets         | one connection to `/bench/ws`, then sequential echo roundtrips chained through the message event (handshake inside the timed region) |
+| `idb`      | IndexedDB          | put + get roundtrip in a fresh readwrite transaction per iteration, chained through request success events |
+| `streams`  | Streams            | pull-sourced ReadableStream, one chunk per pull, consumed via the reader's read() promise chain |
+| `xhr`      | XMLHttpRequest     | one request per iteration to `/bench/echo`, chained through the load event (fetch's legacy counterpart, same endpoint) |
+| `worker`   | Web Workers        | one echo worker (`worker-echo.js`), N sequential postMessage roundtrips via the message event (startup inside the timed region) |
+| `compression` | Compression Streams | gzip compress + decompress roundtrip per iteration; checksum on the roundtripped text (compressed bytes differ across engines) |
+| `bchannel` | Broadcast Channel   | sender + receiver channel pair, N postMessage roundtrips chained through the receiver's message event |
+| `geometry` | Geometry interfaces | a DOMMatrix per iteration, translate + scale chained, three components read back (all integral, exact checksum) |
+| `blob`     | File API            | a two-part Blob per iteration (array argument across the bridge), size read + a slice's size — fully synchronous |
+| `sse`      | Server-sent events  | one EventSource, N server-pushed events counted via the message event; the server holds the stream open (ending it would auto-reconnect) |
+| `urlpattern` | URL Pattern       | one compiled URLPattern; a test() + exec() per iteration with the matched pathname input read back |
+| `locks`    | Web Locks           | N sequential exclusive acquisitions of one lock, chained through the request promise; the granted callback crosses into the lock manager |
+| `msgchannel` | Channel Messaging | one MessageChannel, N postMessage roundtrips port1 → port2 via port2's (explicitly started) message event |
 
 `fetch` and any future async workloads self-report RESULT from their last
 callback; `pages/js.html` awaits `work()` so a Promise-returning js twin times
@@ -58,8 +71,9 @@ run reports the same checksum, so the three are doing identical work.
 - The **native memory delta excludes the engine** (it is in the browser binary);
   the **polyfill delta includes it** (~40–52 MB of WASM engine + heap loaded per
   page). That difference is the point, not noise.
-- Native is measured only in the Firefox fork so far; the Chromium fork needs the
-  same bridge port (pending).
+- Native is measured in **all four forks** (Gecko, Chromium, Servo, Ladybird),
+  each to its architectural limit — see the per-leg absence list under
+  "Running" for exactly what each can't measure and why.
 
 ## Running
 
@@ -104,6 +118,13 @@ node bench/web/run-native-ladybird.mjs  # -> results.native.ladybird.json
 # measure LibWasm's interpreter interpreting an interpreter):
 node bench/web/run-ladybird.mjs         # -> results.ladybird.json
 
+# Engine only — no browser: the wasm engine over a deterministic stub realm
+# in Node (real URL/TextEncoder/crypto/JSON/fetch, spec-faithful DOM stubs;
+# every checksum matches the browser legs bit-for-bit). One fresh child
+# process per sample; memory is the child's peak RSS (VmHWM) minus a blank
+# engine child, `heap` is the engine's wasm linear memory. WL=… to filter:
+node bench/web/run-engine.mjs   # -> results.engine.json
+
 # Merge into REPORT.md:
 node bench/web/report.mjs
 
@@ -118,7 +139,48 @@ node bench/web/report-pertech.mjs   # -> bench/web/report-pertech.html
 headless harness can read the `RESULT` line).
 
 The Gecko and Chromium native runners serve their generated pages over http
-(`server.mjs`, rooted at the repo) rather than `file://`, so the fetch
-workload's same-origin `/bench/echo` requests work. The Ladybird native leg
-skips `fetch`: `test-web` loads pages from `file://` and its `test(() => {})`
-harness completes before an async RESULT lands.
+(`server.mjs`, rooted at the repo) rather than `file://`, so the fetch, xhr
+and websocket workloads' same-origin requests work (`/bench/echo`,
+`/bench/ws` — the Ladybird runners rewrite both to absolute URLs at inline
+time, since `test-web` loads pages from `file://`). Known per-leg absences,
+all recorded as null rows or list exclusions:
+
+- **Chromium fork**: no async result path at all — fetch, websocket, idb,
+  streams, xhr, worker, compression, bchannel, sse, locks, msgchannel (the
+  engine's `fetch` import itself reports absent there). Its direct-C++
+  bridge's constructor set now covers DOMMatrix and Blob (geometry and blob
+  run natively); urlpattern stays absent — Blink's URLPattern API is
+  ScriptState-bound, which the no-V8 glue deliberately avoids.
+- **Servo**: no IndexedDB and no Web Locks anywhere — everything else runs
+  natively, websocket included (the glue pushes the entry-script settings
+  around each mersey run, per the spec's "prepare to run a script", so
+  bindings that consult `entry_global()` — Location's cross-origin getters —
+  work through the bridge).
+- **Ladybird stock + fork**: worker is impossible from `file://` pages — the
+  worker script would be a cross-origin (absolute-http) URL, which dedicated
+  workers refuse. Everything else runs natively: the C++ glue re-enters the
+  engine from promise reactions and event tasks alike. (A caution from this
+  leg's history: async workloads once read as absent here, but the cause was
+  the generated test page ending — `test(() => {})` — before an async RESULT
+  could land, not the glue. Async pages now hold the test open; verify the
+  harness's completion model before believing an absence.)
+
+## Perf regression tests
+
+The engine-only leg doubles as a pass/fail suite — no browsers, deterministic
+checksums, a couple of minutes end to end:
+
+```sh
+node bench/web/perf-test.mjs            # compare against perf-baselines.json; exit 1 on regression
+node bench/web/perf-test.mjs --update   # re-baseline (commit the new perf-baselines.json)
+PERF_WL=storage,json node bench/web/perf-test.mjs   # filter workloads
+```
+
+Each technology's time (min of 2 runs), peak RSS and wasm heap are checked
+against the committed `perf-baselines.json`. A checksum mismatch always fails
+(that is a correctness regression, not a perf question). Tolerances are
+generous by design — `PERF_TIME_TOL` (default 1.5×, with a 20 ms floor) and
+`PERF_MEM_TOL` (default 1.4×, 8 MiB floor) — this suite exists to catch an
+accidental O(n²) or a leaked handle table, not 5% noise. Baselines are
+machine-relative: after moving to new hardware, `--update` once. Don't run it
+concurrently with builds or other benchmarks.

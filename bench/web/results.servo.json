@@ -2,313 +2,613 @@
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "bchannel",
+    "ms": 5.099999999999998,
+    "rss": 5584,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "bchannel",
+    "ms": 21.150000000000006,
+    "rss": 61444,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "bchannel",
+    "ms": 6.819999999999993,
+    "rss": 60192,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "blob",
+    "ms": 10.04,
+    "rss": 16984,
+    "checksum": 198890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "blob",
+    "ms": 103.45999999999998,
+    "rss": 74596,
+    "checksum": 198890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "blob",
+    "ms": 11.940000000000026,
+    "rss": 72728,
+    "checksum": 198890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "canvas",
-    "ms": 2.7699999999999996,
-    "rss": 20456,
+    "ms": 3.09,
+    "rss": 21736,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "canvas",
-    "ms": 72.21000000000001,
-    "rss": 70180,
+    "ms": 72.36000000000001,
+    "rss": 71340,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "canvas",
-    "ms": 4.510000000000005,
-    "rss": 72544,
+    "ms": 4.410000000000011,
+    "rss": 71544,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "compression",
+    "ms": 33.93000000000001,
+    "rss": 116044,
+    "checksum": 8690
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "compression",
+    "ms": 68.87,
+    "rss": 115792,
+    "checksum": 8690
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "compression",
+    "ms": 36.609999999999985,
+    "rss": 115420,
+    "checksum": 8690
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "compute",
-    "ms": 101.11,
-    "rss": 3836,
+    "ms": 109.50999999999999,
+    "rss": 3372,
     "checksum": 1765835917
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "compute",
-    "ms": 18928.120000000003,
-    "rss": 58488,
+    "ms": 19734.27,
+    "rss": 78592,
     "checksum": 1765835917
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "compute",
-    "ms": 131.89,
-    "rss": 58428,
+    "ms": 137.55999999999997,
+    "rss": 59596,
     "checksum": 1765835917
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "crypto",
-    "ms": 2.4799999999999986,
-    "rss": 4048,
+    "ms": 2.5500000000000007,
+    "rss": 3536,
     "checksum": 320000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "crypto",
-    "ms": 79.22999999999999,
-    "rss": 60912,
+    "ms": 82.98000000000002,
+    "rss": 62588,
     "checksum": 320000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 4.4199999999999875,
-    "rss": 59440,
+    "ms": 4.450000000000003,
+    "rss": 59260,
     "checksum": 320000
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "cssom",
-    "ms": 11.33,
-    "rss": 5296,
+    "ms": 11.639999999999999,
+    "rss": 5284,
     "checksum": 48000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "cssom",
-    "ms": 153.23,
-    "rss": 60784,
+    "ms": 141.91,
+    "rss": 61592,
     "checksum": 48000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "cssom",
-    "ms": 17.400000000000006,
-    "rss": 61024,
+    "ms": 20.03,
+    "rss": 60648,
     "checksum": 48000
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "dom",
-    "ms": 12.519999999999998,
-    "rss": 29656,
+    "ms": 12.55,
+    "rss": 21880,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "dom",
-    "ms": 85.44,
-    "rss": 102716,
+    "ms": 88.19,
+    "rss": 78928,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "dom",
-    "ms": 17.109999999999985,
-    "rss": 111535,
+    "ms": 17.159999999999997,
+    "rss": 77244,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "encoding",
-    "ms": 4.489999999999998,
-    "rss": 4628,
+    "ms": 4.469999999999999,
+    "rss": 4180,
     "checksum": 437780
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "encoding",
-    "ms": 78.53,
-    "rss": 70120,
+    "ms": 83.16999999999999,
+    "rss": 67476,
     "checksum": 437780
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "encoding",
-    "ms": 6.859999999999985,
-    "rss": 58384,
+    "ms": 6.6299999999999955,
+    "rss": 59608,
     "checksum": 437780
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "events",
-    "ms": 8.07,
-    "rss": 8476,
+    "ms": 8.52,
+    "rss": 7996,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "events",
-    "ms": 91.39000000000001,
-    "rss": 64548,
+    "ms": 93.08000000000001,
+    "rss": 63708,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "events",
-    "ms": 9.5,
-    "rss": 62552,
+    "ms": 9.83999999999999,
+    "rss": 63220,
     "checksum": 10000
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "fetch",
-    "ms": 33.1,
-    "rss": 8080,
+    "ms": 31.979999999999997,
+    "rss": 7984,
     "checksum": 20990
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "fetch",
-    "ms": 42.14,
-    "rss": 63284,
+    "ms": 42.66000000000001,
+    "rss": 60744,
     "checksum": 20990
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "fetch",
-    "ms": 36.66,
-    "rss": 58888,
+    "ms": 33.66,
+    "rss": 60688,
     "checksum": 20990
   },
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "geometry",
+    "ms": 5.580000000000002,
+    "rss": 10388,
+    "checksum": 95000
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "geometry",
+    "ms": 118.37000000000003,
+    "rss": 67512,
+    "checksum": 95000
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "geometry",
+    "ms": 8.249999999999986,
+    "rss": 66544,
+    "checksum": 95000
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "idb",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "idb",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "idb",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "json",
-    "ms": 3.66,
-    "rss": 3916,
+    "ms": 3.629999999999999,
+    "rss": 3452,
     "checksum": 848890
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "json",
-    "ms": 26.120000000000005,
-    "rss": 59088,
+    "ms": 8.969999999999999,
+    "rss": 59580,
     "checksum": 848890
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "json",
-    "ms": 5.040000000000006,
-    "rss": 60916,
+    "ms": 4.360000000000014,
+    "rss": 58708,
     "checksum": 848890
   },
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "locks",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "locks",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "locks",
+    "ms": null
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "msgchannel",
+    "ms": 2.8100000000000023,
+    "rss": 5168,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "msgchannel",
+    "ms": 16.019999999999982,
+    "rss": 59932,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "msgchannel",
+    "ms": 4.440000000000012,
+    "rss": 61428,
+    "checksum": 5890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "query",
-    "ms": 9.330000000000002,
-    "rss": 22827,
+    "ms": 9.410000000000004,
+    "rss": 22188,
     "checksum": 214900
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "query",
-    "ms": 25.890000000000015,
-    "rss": 80461,
+    "ms": 25.430000000000007,
+    "rss": 76364,
     "checksum": 214900
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "query",
-    "ms": 11.330000000000013,
-    "rss": 74277,
+    "ms": 11.050000000000011,
+    "rss": 75236,
     "checksum": 214900
   },
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "sse",
+    "ms": 9.999999999999996,
+    "rss": 10884,
+    "checksum": 14890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "sse",
+    "ms": 22.61,
+    "rss": 67872,
+    "checksum": 14890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "sse",
+    "ms": 12.120000000000005,
+    "rss": 65640,
+    "checksum": 14890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "storage",
-    "ms": 1958.8,
-    "rss": 4868,
+    "ms": 1876.73,
+    "rss": 5216,
     "checksum": 208890
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "storage",
-    "ms": 2339.11,
-    "rss": 56752,
+    "ms": 2272.54,
+    "rss": 58764,
     "checksum": 208890
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "storage",
-    "ms": 3372.94,
-    "rss": 57832,
+    "ms": 3319.84,
+    "rss": 59168,
     "checksum": 208890
   },
   {
     "browser": "servo",
     "impl": "js",
+    "wl": "streams",
+    "ms": 8.510000000000002,
+    "rss": 5212,
+    "checksum": 18890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "streams",
+    "ms": 114.82000000000001,
+    "rss": 65096,
+    "checksum": 18890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "streams",
+    "ms": 12.190000000000012,
+    "rss": 60176,
+    "checksum": 18890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
     "wl": "timers",
-    "ms": 9.88,
-    "rss": 7688,
+    "ms": 10.459999999999997,
+    "rss": 7600,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "timers",
-    "ms": 107.91999999999999,
-    "rss": 64156,
+    "ms": 107.67000000000002,
+    "rss": 62564,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "timers",
-    "ms": 9.309999999999988,
-    "rss": 62696,
+    "ms": 9.400000000000006,
+    "rss": 63636,
     "checksum": 20000
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "url",
-    "ms": 11.520000000000001,
-    "rss": 9240,
+    "ms": 10.959999999999999,
+    "rss": 8344,
     "checksum": 537780
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "url",
-    "ms": 137.26,
-    "rss": 62240,
+    "ms": 136.54000000000002,
+    "rss": 64524,
     "checksum": 537780
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "url",
-    "ms": 13.170000000000016,
-    "rss": 63716,
+    "ms": 11.72999999999999,
+    "rss": 64628,
     "checksum": 537780
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "urlpattern",
+    "ms": 19.64,
+    "rss": 5412,
+    "checksum": 88890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "urlpattern",
+    "ms": 71.97999999999999,
+    "rss": 77128,
+    "checksum": 88890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "urlpattern",
+    "ms": 25.379999999999995,
+    "rss": 60272,
+    "checksum": 88890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "websocket",
+    "ms": 26.309999999999995,
+    "rss": 3808,
+    "checksum": 1290
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "websocket",
+    "ms": 30.090000000000003,
+    "rss": 59880,
+    "checksum": 1290
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "websocket",
+    "ms": 29.030000000000015,
+    "rss": 60896,
+    "checksum": 1290
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "worker",
+    "ms": 50.11,
+    "rss": 9804,
+    "checksum": 7890
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "worker",
+    "ms": 70.15,
+    "rss": 64452,
+    "checksum": 7890
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "worker",
+    "ms": 52.03,
+    "rss": 62724,
+    "checksum": 7890
+  },
+  {
+    "browser": "servo",
+    "impl": "js",
+    "wl": "xhr",
+    "ms": 31.5,
+    "rss": 5320,
+    "checksum": 20990
+  },
+  {
+    "browser": "servo",
+    "impl": "poly",
+    "wl": "xhr",
+    "ms": 39,
+    "rss": 60744,
+    "checksum": 20990
+  },
+  {
+    "browser": "servo",
+    "impl": "tjs",
+    "wl": "xhr",
+    "ms": 31.97999999999999,
+    "rss": 59848,
+    "checksum": 20990
   }
 ]
