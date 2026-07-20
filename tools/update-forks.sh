@@ -2,11 +2,11 @@
 # Manage the four browser-fork checkouts' GitHub forks: create them, keep the
 # `mersey` branch rebased onto the latest upstream release, and push.
 #
-# The checkouts live beside the mersey repo (see CLAUDE.md):
-#   gecko     ~/gecko          origin mozilla-firefox/firefox   base: FIREFOX_*_RELEASE tags
-#   chromium  ~/chromium/src   origin chromium googlesource     base: chromiumdash latest Stable
-#   servo     ~/servo-src      origin servo/servo               base: origin/main tip
-#   ladybird  ~/ladybird       origin LadybirdBrowser/ladybird  base: origin/master tip
+# The checkouts live beside the mersey repo, i.e. at <repo>/../ (see CLAUDE.md):
+#   gecko     ../gecko          origin mozilla-firefox/firefox   base: FIREFOX_*_RELEASE tags
+#   chromium  ../chromium/src   origin chromium googlesource     base: chromiumdash latest Stable
+#   servo     ../servo-src      origin servo/servo               base: origin/main tip
+#   ladybird  ../ladybird       origin LadybirdBrowser/ladybird  base: origin/master tip
 #
 # Each checkout gets a second remote named `fork` pointing at your GitHub fork;
 # the Mersey work lives on a `mersey` branch pushed there.
@@ -29,11 +29,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+BESIDE="$(cd "$HERE/.." && pwd)"
 
-GECKO_SRC="${GECKO_SRC:-$HOME/gecko}"
-CHROMIUM_SRC="${CHROMIUM_SRC:-$HOME/chromium/src}"
-SERVO_SRC="${SERVO_SRC:-$HOME/servo-src}"
-LADYBIRD_SRC="${LADYBIRD_SRC:-$HOME/ladybird}"
+GECKO_SRC="${GECKO_SRC:-$BESIDE/gecko}"
+CHROMIUM_SRC="${CHROMIUM_SRC:-$BESIDE/chromium/src}"
+SERVO_SRC="${SERVO_SRC:-$BESIDE/servo-src}"
+LADYBIRD_SRC="${LADYBIRD_SRC:-$BESIDE/ladybird}"
 
 die() { echo "error: $*" >&2; exit 1; }
 

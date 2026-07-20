@@ -25,7 +25,7 @@ import { startServer } from "./server.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
-  `${process.env.HOME}/servo-src/target/release/servoshell`;
+  join(here, "../../../servo-src/target/release/servoshell");
 const REPEATS = 3;
 // idb + locks excluded: Servo implements neither IndexedDB nor Web Locks
 // (the stock legs prove both absences).

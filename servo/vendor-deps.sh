@@ -20,12 +20,12 @@
 # engine in the Mersey repo first: `cargo build --release -p mersey_capi`).
 #
 # Usage:  servo/vendor-deps.sh [SERVO_SRC] [MERSEY_REPO]
-#         defaults: ~/servo-src, the repo this script lives in
+#         defaults: ../servo-src beside the repo this script lives in
 set -euo pipefail
 
-SERVO_SRC="${1:-$HOME/servo-src}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MERSEY_REPO="${2:-$HERE}"
+SERVO_SRC="${1:-$(cd "$MERSEY_REPO/.." && pwd)/servo-src}"
 LOCK="$MERSEY_REPO/Cargo.lock"
 VENDOR="$SERVO_SRC/vendor"
 

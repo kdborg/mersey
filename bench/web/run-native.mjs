@@ -20,7 +20,9 @@ process.on("exit", () => killForks());
 process.on("SIGINT", () => { killForks(); process.exit(130); });
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FORK_DIR = "/home/parallels/gecko/obj-mersey";
+const FORK_DIR = process.env.GECKO_SRC
+  ? `${process.env.GECKO_SRC}/obj-mersey`
+  : join(here, "../../../gecko/obj-mersey");
 const FORK = `${FORK_DIR}/dist/bin/firefox`;
 const PAGE_SIZE = 4096;
 const REPEATS = 3;

@@ -14,12 +14,12 @@
 #   dom/html/htmlscriptelement.rs   ScriptType::Mersey + the text/mersey hook
 #
 # Usage:  servo/apply.sh [SERVO_SRC] [MERSEY_REPO]
-#         defaults: ~/servo-src, the repo this script lives in
+#         defaults: ../servo-src beside the repo this script lives in
 set -euo pipefail
 
-SERVO_SRC="${1:-$HOME/servo-src}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MERSEY_REPO="${2:-$(cd "$HERE/.." && pwd)}"
+SERVO_SRC="${1:-$(cd "$MERSEY_REPO/.." && pwd)/servo-src}"
 SC="$SERVO_SRC/components/script"
 
 [ -d "$SC" ] || { echo "no components/script at $SERVO_SRC — is SERVO_SRC right?" >&2; exit 1; }

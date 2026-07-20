@@ -19,7 +19,9 @@ process.on("exit", () => killForks());
 process.on("SIGINT", () => { killForks(); process.exit(130); });
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FORK = "/home/parallels/chromium/src/out/mersey-arm64/chrome";
+const FORK = process.env.CHROMIUM_SRC
+  ? `${process.env.CHROMIUM_SRC}/out/mersey-arm64/chrome`
+  : join(here, "../../../chromium/src/out/mersey-arm64/chrome");
 const REPEATS = 3;
 
 const WORKLOADS = process.env.WL

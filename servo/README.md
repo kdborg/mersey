@@ -32,7 +32,7 @@ the compiled canvas loop dispatches straight to
 The Servo tree is not *in* this repo (a checkout is large). It lives beside it:
 
 ```
-~/servo-src   nightly 2026-07-15 src-vendored, built for aarch64-linux-gnu
+~/Work/servo-src   nightly 2026-07-15 src-vendored, built for aarch64-linux-gnu
   components/script/mersey/         the engine module + reflective bridge
   components/script/{lib.rs,Cargo.toml,dom/html/htmlscriptelement.rs}  the hook
   vendor/                           the engine's crates (interp + Cranelift)
@@ -50,7 +50,7 @@ The Servo tree is not *in* this repo (a checkout is large). It lives beside it:
 
 ## Building it
 
-Prerequisites: an `~/servo-src` checkout (the nightly `*-src-vendored.tar.gz`
+Prerequisites: an `~/Work/servo-src` checkout (the nightly `*-src-vendored.tar.gz`
 extracted), `uv` on `PATH`, and Servo's system build deps (`./mach bootstrap`
 or the apt list in `python/servo/platform/linux_packages/apt/`). The engine's
 crates must be in the local cargo cache first, which building the engine here
@@ -59,10 +59,10 @@ does:
 ```bash
 cargo build --release -p mersey_capi        # populate ~/.cargo cache (jit on)
 
-servo/apply.sh    ~/servo-src               # install the module + the hook
-servo/vendor-deps.sh ~/servo-src            # vendor the engine's crates into vendor/
+servo/apply.sh    ~/Work/servo-src               # install the module + the hook
+servo/vendor-deps.sh ~/Work/servo-src            # vendor the engine's crates into vendor/
 
-cd ~/servo-src
+cd ~/Work/servo-src
 PATH="$HOME/.local/bin:$PATH" ./mach build --release   # -> target/release/servoshell
 ```
 

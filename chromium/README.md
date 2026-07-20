@@ -9,7 +9,7 @@ The Chromium tree is not *in* this repo (a checkout is 29GB), but the fork is
 built and committed in the checkout beside it:
 
 ```
-~/chromium/src   branch: mersey
+~/Work/chromium/src   branch: mersey
   arm64 linux host: system gperf instead of the missing CIPD package
   Mersey: run <script type="text/mersey"> on the Mersey engine
   Mersey: document the arm64-host toolchain substitutions
@@ -27,9 +27,9 @@ built and committed in the checkout beside it:
 ## Building it
 
 ```bash
-chromium/setup-arm64-host.sh ~/chromium/src   # the host substitutions, scripted
-cp chromium/args.arm64.gn ~/chromium/src/out/mersey-arm64/args.gn
-cd ~/chromium/src && gn gen out/mersey-arm64
+chromium/setup-arm64-host.sh ~/Work/chromium/src   # the host substitutions, scripted
+cp chromium/args.arm64.gn ~/Work/chromium/src/out/mersey-arm64/args.gn
+cd ~/Work/chromium/src && gn gen out/mersey-arm64
 autoninja -C out/mersey-arm64 libblink_core.so
 ```
 

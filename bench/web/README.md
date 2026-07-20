@@ -92,18 +92,18 @@ node bench/web/run.mjs          # -> results.stock.json
 node bench/web/run-firefox-real.mjs   # -> results.firefox-real.json
 
 # Stock Servo (js + polyfill + transpiled), headless, built from source at
-# ~/servo-src/target/release/servoshell (console.log is read from stdout;
+# ~/Work/servo-src/target/release/servoshell (console.log is read from stdout;
 # Playwright does not drive Servo). Override the binary with SERVO_BIN=…:
 node bench/web/run-servo.mjs    # -> results.servo.json
 
-# Native, via the Firefox fork (needs the fork built at ~/gecko/obj-mersey):
+# Native, via the Firefox fork (needs the fork built at ~/Work/gecko/obj-mersey):
 node bench/web/run-native.mjs   # -> results.native.json
 
-# Native, via the Servo fork (needs servoshell built at ~/servo-src with the
+# Native, via the Servo fork (needs servoshell built at ~/Work/servo-src with the
 # components/script/mersey engine; reflective bridge, Cranelift JIT vendored):
 node bench/web/run-native-servo.mjs   # -> results.native.servo.json
 
-# Native Ladybird (needs the fork built at ~/ladybird via ladybird/apply.sh;
+# Native Ladybird (needs the fork built at ~/Work/ladybird via ladybird/apply.sh;
 # reflective C++→LibJS bridge, Cranelift JIT via the linked libmersey_capi.a).
 # Driven through Ladybird's `test-web` harness (no --headless binary exists);
 # RESULT is read from each test's captured log. Override with LADYBIRD_SRC/TEST_WEB:

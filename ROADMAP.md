@@ -998,7 +998,7 @@ extension, not a design problem.
 ## The Chromium fork, and the ABI it needed first (2026-07-13)
 
 **`<script type="text/mersey">` runs on the Mersey engine inside Blink.** The
-fork is checked out, patched and committed (`~/chromium/src`, branch `mersey`);
+fork is checked out, patched and committed (`~/Work/chromium/src`, branch `mersey`);
 `mersey_script_runner.o` and the patched `script_loader.o` compile against real
 Chromium on arm64. See `chromium/README.md`.
 
@@ -1078,7 +1078,7 @@ works" into all six platform/arch targets.
 **`<script type="text/mersey">` runs in Firefox too** — a page whose only script
 is Mersey renders `Clicks: 0` from the engine, type-checked and interpreted, and
 a click drives a Mersey closure through `nsIDOMEventListener`. SpiderMonkey never
-touches it. Verified by screenshot; the fork is `~/gecko`, branch `mersey`.
+touches it. Verified by screenshot; the fork is `~/Work/gecko`, branch `mersey`.
 
 This is the **development** host, and the reason is speed. Chromium's arm64
 bring-up took three full rebuilds and a week of toolchain archaeology; a fix to

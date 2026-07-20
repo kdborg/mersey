@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const LADYBIRD_SRC = process.env.LADYBIRD_SRC || `${process.env.HOME}/ladybird`;
+const LADYBIRD_SRC = process.env.LADYBIRD_SRC || join(here, "../../../ladybird");
 const TEST_WEB = process.env.TEST_WEB ||
   `${LADYBIRD_SRC}/Build/release/bin/test-web`;
 const PYTHON = process.env.PYTHON || "python3";

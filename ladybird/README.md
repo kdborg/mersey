@@ -36,10 +36,10 @@ callback re-enters the engine with no JS trampoline). Ladybird's LibJS is
 conversion; arguments are a `GC::RootVector`.
 
 The Ladybird tree is not *in* this repo (a checkout is large). It lives beside
-it, the way `~/chromium`, `~/gecko` and `~/servo-src` do:
+it, the way `~/Work/chromium`, `~/Work/gecko` and `~/Work/servo-src` do:
 
 ```
-~/ladybird
+~/Work/ladybird
   Libraries/LibWeb/Mersey/            the engine module (native C++ bridge)
   Libraries/LibWeb/CMakeLists.txt     compile the module, link libmersey_capi.a
   Libraries/LibWeb/HTML/HTMLScriptElement.cpp   the text/mersey hook
@@ -146,9 +146,9 @@ staticlib**, so build it in this repo first:
 ```bash
 cargo build --release -p mersey_capi        # -> target/release/libmersey_capi.a (jit on)
 
-ladybird/apply.sh ~/ladybird                # install the module + wire CMake + hook
+ladybird/apply.sh ~/Work/ladybird                # install the module + wire CMake + hook
 
-cd ~/ladybird
+cd ~/Work/ladybird
 ./Meta/ladybird.py build test-web           # builds LibWeb (+ the fork) and the helper processes
 ```
 
@@ -160,7 +160,7 @@ node bench/web/report.mjs                    # merge into REPORT.md
 ```
 
 `run-native-ladybird.mjs` writes each workload as an inline `text/mersey` Text
-test under `~/ladybird/Tests/LibWeb/Text/input/mersey/`, plus a trailing
+test under `~/Work/ladybird/Tests/LibWeb/Text/input/mersey/`, plus a trailing
 `include.js` + `test(() => {})` so the test completes at once. The engine's host
 `print` hook writes the `RESULT` line to WebContent's stdout, which `test-web`
 captures into a per-test `.logs.html` — that is where the harness reads it

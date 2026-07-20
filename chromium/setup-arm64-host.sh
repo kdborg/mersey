@@ -14,10 +14,10 @@
 # shell history.
 #
 # Usage:   chromium/setup-arm64-host.sh [CHROMIUM_SRC]
-#          (default CHROMIUM_SRC: ~/chromium/src)
+#          (default CHROMIUM_SRC: ../chromium/src beside the mersey repo)
 set -euo pipefail
 
-CHROMIUM_SRC="${1:-$HOME/chromium/src}"
+CHROMIUM_SRC="${1:-$(cd "$(dirname "$0")/../.." && pwd)/chromium/src}"
 OPT="$HOME/opt"
 LLVM_VER=21
 RUST_NIGHTLY=nightly-2026-06-15   # rustc 1.98 — see "why this exact one" below

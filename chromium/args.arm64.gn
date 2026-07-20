@@ -33,9 +33,9 @@ rust_std_in_executable_only = false  # not needed in a static build
 # Reproducing this host setup from scratch:  chromium/setup-arm64-host.sh
 #
 # Then:
-#   mkdir -p ~/chromium/src/out/mersey-arm64
-#   cp chromium/args.arm64.gn ~/chromium/src/out/mersey-arm64/args.gn
-#   cd ~/chromium/src && gn gen out/mersey-arm64
+#   mkdir -p ~/Work/chromium/src/out/mersey-arm64
+#   cp chromium/args.arm64.gn ~/Work/chromium/src/out/mersey-arm64/args.gn
+#   cd ~/Work/chromium/src && gn gen out/mersey-arm64
 #   autoninja -C out/mersey-arm64 content_shell
 #
 # Paths assume $HOME=/home/parallels; edit if that is not true.

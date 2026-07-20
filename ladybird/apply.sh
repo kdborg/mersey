@@ -18,12 +18,12 @@
 # in this repo:  cargo build --release -p mersey_capi  -> target/release/libmersey_capi.a
 #
 # Usage:  ladybird/apply.sh [LADYBIRD_SRC] [MERSEY_REPO]
-#         defaults: ~/ladybird, the repo this script lives in
+#         defaults: ../ladybird beside the repo this script lives in
 set -euo pipefail
 
-LADYBIRD_SRC="${1:-$HOME/ladybird}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MERSEY_REPO="${2:-$(cd "$HERE/.." && pwd)}"
+LADYBIRD_SRC="${1:-$(cd "$MERSEY_REPO/.." && pwd)/ladybird}"
 LIBWEB="$LADYBIRD_SRC/Libraries/LibWeb"
 
 [ -d "$LIBWEB" ] || { echo "no Libraries/LibWeb at $LADYBIRD_SRC — is LADYBIRD_SRC right?" >&2; exit 1; }
