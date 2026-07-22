@@ -17,7 +17,6 @@
 //! bodies report through the VM loop's line callouts, so they break and step
 //! too (their slot-resolved locals are best-effort).
 
-use std::collections::HashSet;
 use std::io;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -25,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use mersey_interp as interp;
+use mersey_interp::debug::{self, DebugController};
 use mersey_interp::webjson::{self, Json};
 use mersey_interp::{DebugHook, DebugPause};
 
@@ -118,23 +118,21 @@ fn output_event(text: &str) {
 }
 
 /// `setBreakpoints` REPLACES the set for its source; reply verifies each.
-/// Sources are matched to executing modules by path suffix/basename, so an
-/// editor's absolute path finds the graph's relative spec and vice versa.
-type Breakpoints = Vec<(String, HashSet<u32>)>;
-
-fn apply_breakpoints(req: &Json, bps: &mut Breakpoints) {
+/// The matching rule (suffix/basename, so an editor's absolute path finds the
+/// graph's relative spec) is the controller's — this only translates DAP JSON.
+fn apply_breakpoints(req: &Json, ctl: &mut DebugController) {
     let path = get(req, "arguments")
         .and_then(|a| get(a, "source"))
         .and_then(|s| get_str(s, "path"))
         .unwrap_or("")
         .to_string();
-    let mut lines = HashSet::new();
+    let mut lines = Vec::new();
     let mut verified = Vec::new();
     if let Some(args) = get(req, "arguments") {
         if let Some(Json::Arr(items)) = get(args, "breakpoints") {
             for item in items {
                 if let Some(line) = get_num(item, "line") {
-                    lines.insert(line as u32);
+                    lines.push(line as u32);
                     verified.push(obj(vec![
                         ("verified", Json::Bool(true)),
                         ("line", n(line)),
@@ -143,24 +141,8 @@ fn apply_breakpoints(req: &Json, bps: &mut Breakpoints) {
             }
         }
     }
-    bps.retain(|(p, _)| *p != path);
-    bps.push((path, lines));
+    ctl.set_breakpoints(&path, &lines);
     respond(req, Some(obj(vec![("breakpoints", Json::Arr(verified))])));
-}
-
-fn basename(p: &str) -> &str {
-    p.rsplit(['/', '\\']).next().unwrap_or(p)
-}
-
-fn bp_hit(bps: &Breakpoints, module: &str, line: u32) -> bool {
-    bps.iter().any(|(path, lines)| {
-        lines.contains(&line)
-            && (path.is_empty()
-                || path == module
-                || path.ends_with(module)
-                || module.ends_with(path.as_str())
-                || basename(path) == basename(module))
-    })
 }
 
 // ---- the debuggee's host ---------------------------------------------------
@@ -182,22 +164,11 @@ impl interp::Host for DapHost {
 
 // ---- the hook: all breakpoint/step policy ----------------------------------
 
-enum Step {
-    Run,
-    In,
-    Over(usize),
-    Out(usize),
-}
-
 struct DapDebugger {
     rx: Rc<mpsc::Receiver<Json>>,
     program: String,
-    bps: Breakpoints,
-    step: Step,
-    pause_pending: bool,
-    /// The previous callout's line, so consecutive statements on a
-    /// breakpoint's line stop once, not per statement.
-    prev_line: u32,
+    /// Breakpoint/step policy, shared with every other front-end.
+    ctl: DebugController,
 }
 
 impl DapDebugger {
@@ -205,7 +176,7 @@ impl DapDebugger {
     /// inline; resume-family commands are meaningless here and get errors.
     fn handle_running(&mut self, req: &Json) {
         match get_str(req, "command").unwrap_or("") {
-            "setBreakpoints" => apply_breakpoints(req, &mut self.bps),
+            "setBreakpoints" => apply_breakpoints(req, &mut self.ctl),
             "threads" => respond(
                 req,
                 Some(obj(vec![(
@@ -214,7 +185,7 @@ impl DapDebugger {
                 )])),
             ),
             "pause" => {
-                self.pause_pending = true;
+                self.ctl.request_pause();
                 respond(req, None);
             }
             "disconnect" => {
@@ -235,34 +206,15 @@ impl DebugHook for DapDebugger {
         while let Ok(req) = self.rx.try_recv() {
             self.handle_running(&req);
         }
-        let line = pause.pos.line;
         let depth = pause.frames.len();
-        let module = pause.frames.last().map(|f| f.module.to_string()).unwrap_or_default();
-        let hit_bp = bp_hit(&self.bps, &module, line) && self.prev_line != line;
-        let hit_step = match self.step {
-            Step::Run => false,
-            Step::In => true,
-            Step::Over(d) => depth <= d,
-            Step::Out(d) => depth < d,
-        };
-        let reason = if self.pause_pending {
-            "pause"
-        } else if hit_bp {
-            "breakpoint"
-        } else if hit_step {
-            "step"
-        } else {
-            self.prev_line = line;
+        let Some(reason) = self.ctl.should_stop(pause) else {
             return;
         };
-        self.prev_line = line;
-        self.pause_pending = false;
-        self.step = Step::Run;
 
         event(
             "stopped",
             Some(obj(vec![
-                ("reason", s(reason)),
+                ("reason", s(reason.as_str())),
                 ("threadId", n(1.0)),
                 ("allThreadsStopped", Json::Bool(true)),
             ])),
@@ -279,28 +231,21 @@ impl DebugHook for DapDebugger {
             };
             match get_str(&req, "command").unwrap_or("") {
                 "stackTrace" => {
-                    let frames: Vec<Json> = pause
-                        .frames
+                    let frames: Vec<Json> = debug::frame_infos(pause)
                         .iter()
-                        .rev()
                         .enumerate()
                         .map(|(i, f)| {
-                            let (fline, fcol) = if i == 0 {
-                                (pause.pos.line, pause.pos.col)
-                            } else {
-                                (f.pos.line.max(1), f.pos.col.max(1))
-                            };
-                            let source = if f.module.is_empty() || &*f.module == "<script>" {
+                            let source = if f.module.is_empty() || f.module == "<script>" {
                                 self.program.clone()
                             } else {
-                                f.module.to_string()
+                                f.module.clone()
                             };
                             obj(vec![
                                 ("id", n(i as f64)),
                                 ("name", s(&f.name)),
                                 ("source", obj(vec![("path", s(&source))])),
-                                ("line", n(fline as f64)),
-                                ("column", n(fcol as f64)),
+                                ("line", n(f.line as f64)),
+                                ("column", n(f.col as f64)),
                             ])
                         })
                         .collect();
@@ -323,13 +268,7 @@ impl DebugHook for DapDebugger {
                         .iter()
                         .enumerate()
                         .map(|(i, _)| {
-                            let name = if i == 0 {
-                                "Locals".to_string()
-                            } else if i == last {
-                                "Globals".to_string()
-                            } else {
-                                format!("Closure {i}")
-                            };
+                            let name = debug::scope_name(i, last + 1);
                             obj(vec![
                                 ("name", s(&name)),
                                 ("variablesReference", n((frame_id * 64 + i + 1) as f64)),
@@ -367,25 +306,25 @@ impl DebugHook for DapDebugger {
                         &req,
                         Some(obj(vec![("allThreadsContinued", Json::Bool(true))])),
                     );
-                    self.step = Step::Run;
+                    self.ctl.resume();
                     return;
                 }
                 "next" => {
                     respond(&req, None);
-                    self.step = Step::Over(depth);
+                    self.ctl.step_over(depth);
                     return;
                 }
                 "stepIn" => {
                     respond(&req, None);
-                    self.step = Step::In;
+                    self.ctl.step_in();
                     return;
                 }
                 "stepOut" => {
                     respond(&req, None);
-                    self.step = Step::Out(depth);
+                    self.ctl.step_out(depth);
                     return;
                 }
-                "setBreakpoints" => apply_breakpoints(&req, &mut self.bps),
+                "setBreakpoints" => apply_breakpoints(&req, &mut self.ctl),
                 "threads" => respond(
                     &req,
                     Some(obj(vec![(
@@ -408,7 +347,9 @@ impl DebugHook for DapDebugger {
 
 pub fn serve() -> ExitCode {
     let mut program: Option<String> = None;
-    let mut bps: Breakpoints = Vec::new();
+    // Breakpoints set during configuration go straight into the controller
+    // the hook will carry.
+    let mut ctl = DebugController::new();
 
     // Configuration phase, on this thread: initialize → launch →
     // setBreakpoints → configurationDone.
@@ -439,7 +380,7 @@ pub fn serve() -> ExitCode {
                         .map(str::to_string);
                     respond(&req, None);
                 }
-                "setBreakpoints" => apply_breakpoints(&req, &mut bps),
+                "setBreakpoints" => apply_breakpoints(&req, &mut ctl),
                 "configurationDone" => {
                     respond(&req, None);
                     break;
@@ -505,10 +446,7 @@ pub fn serve() -> ExitCode {
     interp.set_debug_hook(Box::new(DapDebugger {
         rx: rx.clone(),
         program: program.clone(),
-        bps,
-        step: Step::Run,
-        pause_pending: false,
-        prev_line: 0,
+        ctl,
     }));
     let (eager, lazy) = graph.split();
     for (spec, module) in lazy {

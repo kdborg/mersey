@@ -25,6 +25,7 @@ use mersey_front::ast::*;
 use mersey_front::check;
 
 pub mod bignum;
+pub mod debug;
 pub mod embed;
 pub mod gc;
 use gc::GcCell;
@@ -3127,6 +3128,16 @@ impl Interp {
     pub fn set_debug_hook(&mut self, hook: Box<dyn DebugHook>) {
         self.use_vm = false;
         self.debug_hook = Some(hook);
+    }
+
+    /// Detach the debugger: drop the hook and restore the VM tier. A browser
+    /// closing DevTools should get its speed back, so this is not merely
+    /// "stop reporting" — `use_vm` returns to the constructor's default.
+    /// Callable between statements, never from inside a callout (the hook is
+    /// taken out for the call; see `debug_stmt`).
+    pub fn clear_debug_hook(&mut self) {
+        self.debug_hook = None;
+        self.use_vm = true;
     }
 
     /// The debugger callout: this statement's position, the call stack, and

@@ -19,6 +19,7 @@ use mersey_capi::{
     msy_context_new_ex, msy_context_run, msy_context_run_graph, msy_context_scan_imports,
     MsyHostTable, MSY_ABI_VERSION, MSY_FLAG_NO_JIT,
 };
+use mersey_interp::webjson;
 
 /// The mock page: what the "browser" remembers happening.
 #[derive(Default)]
@@ -481,5 +482,169 @@ fn diagnostics_cross_as_errors() {
         "{:?}",
         page(|p| p.errors.clone())
     );
+    unsafe { msy_context_free(ctx) };
+}
+
+// ---- the debugger ----------------------------------------------------------
+
+/// What the mock DevTools front-end recorded, and what it does next. The
+/// pause callback BLOCKS the engine by contract; here it returns promptly
+/// after choosing a resume mode, which is the same protocol a nested message
+/// loop follows — just without the loop.
+thread_local! {
+    static PAUSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Field of the first object in `frames`, etc. — enough JSON reach for the
+/// assertions below, using the engine's own reader.
+fn jget<'a>(j: &'a webjson::Json, key: &str) -> Option<&'a webjson::Json> {
+    match j {
+        webjson::Json::Obj(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+fn jstr(j: &webjson::Json, key: &str) -> String {
+    match jget(j, key) {
+        Some(webjson::Json::Str(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn jnum(j: &webjson::Json, key: &str) -> f64 {
+    match jget(j, key) {
+        Some(webjson::Json::Num(n)) => *n,
+        _ => f64::NAN,
+    }
+}
+
+fn jarr<'a>(j: &'a webjson::Json, key: &str) -> &'a [webjson::Json] {
+    match jget(j, key) {
+        Some(webjson::Json::Arr(items)) => items,
+        _ => &[],
+    }
+}
+
+/// The front-end: record the snapshot, then step once and run on. `data` is
+/// the context pointer, which is how a real agent re-enters to choose.
+extern "C" fn h_paused(data: *mut c_void, json: *const c_char, len: usize) {
+    let text = s(json, len);
+    let nth = PAUSES.with(|p| {
+        p.borrow_mut().push(text);
+        p.borrow().len()
+    });
+    let ctx = data as *mut mersey_capi::MsyContext;
+    unsafe {
+        // First stop: step over, to see the assignment's effect. Then run.
+        if nth == 1 {
+            mersey_capi::msy_context_debug_step_over(ctx);
+        } else {
+            mersey_capi::msy_context_debug_resume(ctx);
+        }
+    }
+}
+
+/// A breakpoint stops the engine, the snapshot carries the stack top-first
+/// with each frame's scopes, stepping advances a statement, and the program
+/// finishes normally afterwards. This is the whole contract a fork's CDP or
+/// RDP agent translates.
+#[test]
+fn a_breakpoint_pauses_steps_and_resumes() {
+    reset("[]");
+    PAUSES.with(|p| p.borrow_mut().clear());
+    let t = table();
+    let ctx = unsafe { msy_context_new(&t) };
+    unsafe {
+        mersey_capi::msy_context_debug_enable(ctx, Some(h_paused), ctx as *mut c_void);
+        // Empty source matches every module: the front-end need not know the
+        // engine's spelling of this script's name.
+        let lines: [u32; 1] = [4];
+        mersey_capi::msy_context_debug_set_breakpoints(
+            ctx,
+            std::ptr::null(),
+            0,
+            lines.as_ptr(),
+            lines.len(),
+        );
+    }
+
+    // Line 4 is `const sum = ...`; line 5 is `return sum;`.
+    let code = run(
+        ctx,
+        "import { console } from \"std:console\";\n\
+         function add(a: int32, b: int32): int32 {\n\
+         \x20   const scaled = a * 10;\n\
+         \x20   const sum = scaled + b;\n\
+         \x20   return sum;\n\
+         }\n\
+         console.log(\"r:\", add(2, 3));\n",
+    );
+    assert_eq!(code, 0, "errors: {:?}", page(|p| p.errors.clone()));
+    // The program ran to completion despite being debugged.
+    assert_eq!(page(|p| p.printed.clone()), vec!["r: 23".to_string()]);
+
+    let pauses = PAUSES.with(|p| p.borrow().clone());
+    assert_eq!(pauses.len(), 2, "one breakpoint stop, one step stop: {pauses:?}");
+
+    let first = webjson::parse(&pauses[0]).expect("pause snapshot is JSON");
+    assert_eq!(jstr(&first, "reason"), "breakpoint");
+    let frames = jarr(&first, "frames");
+    assert!(frames.len() >= 2, "callee and module at least: {frames:?}");
+    // Top-first: the paused function, then its caller.
+    assert_eq!(jstr(&frames[0], "name"), "add");
+    assert_eq!(jnum(&frames[0], "line"), 4.0);
+
+    // The innermost scope of the top frame holds the bindings live at the
+    // statement about to run: the parameters and the earlier `const`.
+    let scopes = jarr(&frames[0], "scopes");
+    assert!(!scopes.is_empty(), "a frame reports its scope chain");
+    assert_eq!(jstr(&scopes[0], "name"), "Locals");
+    let vars: Vec<(String, String)> = jarr(&scopes[0], "variables")
+        .iter()
+        .map(|v| (jstr(v, "name"), jstr(v, "value")))
+        .collect();
+    assert!(
+        vars.contains(&("scaled".to_string(), "20".to_string())),
+        "the line-3 binding is live at line 4: {vars:?}"
+    );
+    assert!(
+        !vars.iter().any(|(n, _)| n == "sum"),
+        "the line-4 binding is NOT live before its statement runs: {vars:?}"
+    );
+
+    // Stepping over landed on the next statement, where `sum` now exists.
+    let second = webjson::parse(&pauses[1]).expect("pause snapshot is JSON");
+    assert_eq!(jstr(&second, "reason"), "step");
+    let frames2 = jarr(&second, "frames");
+    assert_eq!(jnum(&frames2[0], "line"), 5.0);
+    let vars2: Vec<(String, String)> = jarr(&jarr(&frames2[0], "scopes")[0], "variables")
+        .iter()
+        .map(|v| (jstr(v, "name"), jstr(v, "value")))
+        .collect();
+    assert!(
+        vars2.contains(&("sum".to_string(), "23".to_string())),
+        "stepping ran the assignment: {vars2:?}"
+    );
+
+    unsafe { msy_context_free(ctx) };
+}
+
+/// Detaching restores the undebugged engine: no callback fires afterwards,
+/// and the program still runs.
+#[test]
+fn disabling_the_debugger_stops_the_callouts() {
+    reset("[]");
+    PAUSES.with(|p| p.borrow_mut().clear());
+    let t = table();
+    let ctx = unsafe { msy_context_new(&t) };
+    unsafe {
+        mersey_capi::msy_context_debug_enable(ctx, Some(h_paused), ctx as *mut c_void);
+        mersey_capi::msy_context_debug_pause(ctx); // stop at the very next statement
+        mersey_capi::msy_context_debug_disable(ctx);
+    }
+    let code = run(ctx, "import { console } from \"std:console\";\nconsole.log(\"quiet\");\n");
+    assert_eq!(code, 0, "errors: {:?}", page(|p| p.errors.clone()));
+    assert_eq!(page(|p| p.printed.clone()), vec!["quiet".to_string()]);
+    assert!(PAUSES.with(|p| p.borrow().is_empty()), "detached: no pauses");
     unsafe { msy_context_free(ctx) };
 }

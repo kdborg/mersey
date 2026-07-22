@@ -1613,4 +1613,62 @@ void run_mersey_script(JS::Realm& realm, String const& source)
     msy_context_run(runner->ctx, source_view.characters_without_null_termination(), source_view.length());
 }
 
+// ---- the DevTools console, Mersey mode -------------------------------------
+
+ReplResult repl_turn(JS::Realm& realm, String const& source)
+{
+    VERIFY(msy_abi_version() == MSY_ABI_VERSION);
+
+    // A console turn may be the FIRST Mersey on the page — the dropdown works
+    // on any document, not only ones carrying a text/mersey script.
+    auto* runner = ensure_runner(realm);
+    if (!runner->ctx)
+        return { {}, true };
+
+    // Same reason as run_mersey_script: the turn's host calls need an
+    // execution context, and a console turn runs with no JS on the stack.
+    Web::HTML::TemporaryExecutionContext execution_context {
+        realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes
+    };
+
+    auto source_view = source.bytes_as_string_view();
+    size_t out_len = 0;
+    char const* reply = msy_context_repl_turn(
+        runner->ctx, source_view.characters_without_null_termination(), source_view.length(), &out_len);
+    if (!reply)
+        return {};
+
+    // The ABI's reply contract: "!" prefix = rejected (diagnostics, never
+    // ran); "runtime error:" prefix = accepted but threw; anything else is
+    // the echo. Both failure shapes render as console errors.
+    auto text = StringView { reply, out_len };
+    if (text.starts_with('!'))
+        return { MUST(String::from_utf8(text.substring_view(1))), true };
+    if (text.starts_with("runtime error:"sv))
+        return { MUST(String::from_utf8(text)), true };
+    return { MUST(String::from_utf8(text)), false };
+}
+
+Vector<String> repl_completions(JS::Realm& realm)
+{
+    Vector<String> names;
+    auto* runner = ensure_runner(realm);
+    if (!runner->ctx)
+        return names;
+
+    size_t out_len = 0;
+    char const* reply = msy_context_repl_complete(runner->ctx, &out_len);
+    if (!reply)
+        return names;
+
+    auto parsed = JsonValue::from_string(StringView { reply, out_len });
+    if (parsed.is_error() || !parsed.value().is_array())
+        return names;
+    parsed.value().as_array().for_each([&](JsonValue const& entry) {
+        if (entry.is_string())
+            names.append(entry.as_string());
+    });
+    return names;
+}
+
 }

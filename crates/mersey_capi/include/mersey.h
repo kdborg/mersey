@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 8u
+#define MSY_ABI_VERSION 9u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -276,6 +276,60 @@ const char *msy_context_repl_turn(msy_context *ctx, const char *src,
 /* The REPL session's visible top-level names, as a JSON array — what a
  * console's completion offers in Mersey mode. */
 const char *msy_context_repl_complete(msy_context *ctx, size_t *out_len);
+
+/* ---- Debugger ------------------------------------------------------------
+ *
+ * The engine reports; the host decides. Breakpoint and step POLICY lives in
+ * the engine's shared controller (mersey_interp::debug), so every fork's
+ * DevTools agent — CDP in Chromium, RDP in Gecko/Servo, Ladybird's Inspector
+ * — is a wire-format translator and nothing more.
+ *
+ * Pausing IS blocking. When the engine stops it calls the host's paused
+ * callback and does not continue until that callback RETURNS, so a host
+ * pauses by running a nested message loop inside it — exactly what V8 does
+ * for `Debugger.paused`. Nothing in the engine resumes on its own. */
+
+/* The pause snapshot, as JSON:
+ *   {"reason":"breakpoint"|"step"|"pause",
+ *    "frames":[{"name":…,"module":…,"line":…,"column":…,
+ *               "scopes":[{"name":"Locals"|"Closure N"|"Globals",
+ *                          "variables":[{"name":…,"value":…},…]},…]},…]}
+ * Frames are TOP-first; every frame's scopes are snapshotted eagerly (a stop
+ * is human-paced, so the cost is paid only when actually stopped, and the
+ * host may then query freely without re-entering the engine). `json` is
+ * valid ONLY for the duration of this call — copy what you keep.
+ *
+ * Before returning, call one of the resume-family functions below to choose
+ * what happens next; doing nothing means resume. */
+typedef void (*msy_debug_paused_fn)(void *data, const char *json, size_t len);
+
+/* Attach. Forces the tree-walker for sync code (statement-grained callouts),
+ * so it costs speed — that is the deliberate trade. Async and generator
+ * bodies run on the VM and report line changes instead. */
+void msy_context_debug_enable(msy_context *ctx, msy_debug_paused_fn on_paused,
+                              void *data);
+/* Detach and restore the VM tier. Not callable from inside the callback. */
+void msy_context_debug_disable(msy_context *ctx);
+
+/* REPLACES the breakpoint set for `source` (pass count 0 to clear just it).
+ * `source` is matched to executing modules by suffix/basename, so a
+ * DevTools URL or an editor's absolute path finds a graph-relative spec and
+ * vice versa; an empty `source` matches every module. */
+void msy_context_debug_set_breakpoints(msy_context *ctx, const char *source,
+                                       size_t source_len,
+                                       const uint32_t *lines, size_t count);
+void msy_context_debug_clear_breakpoints(msy_context *ctx);
+
+/* Stop at the next statement (DevTools' pause button). */
+void msy_context_debug_pause(msy_context *ctx);
+
+/* The resume family — call from inside the paused callback. Step depths are
+ * the engine's business: it knows the paused frame count, so the host never
+ * computes one. Outside a pause these just arm the mode. */
+void msy_context_debug_resume(msy_context *ctx);
+void msy_context_debug_step_over(msy_context *ctx);
+void msy_context_debug_step_in(msy_context *ctx);
+void msy_context_debug_step_out(msy_context *ctx);
 
 #ifdef __cplusplus
 }

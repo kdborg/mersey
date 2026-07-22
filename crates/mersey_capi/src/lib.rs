@@ -20,15 +20,17 @@
 //! contract (and by construction in the fork: one context per Blink
 //! ExecutionContext, always called from its task runner).
 
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::os::raw::c_char;
+use std::rc::Rc;
 
-use mersey_interp::{embed, new_interp, Host, Interp, WebScalar};
+use mersey_interp::debug::{DebugController, StopReason};
+use mersey_interp::{embed, new_interp, DebugHook, DebugPause, Host, Interp, WebScalar};
 
 /// Bumped whenever the table layout or a boundary contract changes. The
 /// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 8;
+pub const MSY_ABI_VERSION: u32 = 9;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).
@@ -601,6 +603,104 @@ pub struct MsyContext {
     /// The browser-console REPL session (msy_context_repl_turn) — one
     /// growing, always-typechecked module against this context's engine.
     repl: UnsafeCell<mersey_interp::ReplSession>,
+    /// Debugger state, SHARED with the installed hook rather than owned by
+    /// it: the hook lives inside the Interp, but the host reaches the same
+    /// controller through the context — including re-entrantly, from inside
+    /// the paused callback, which is where DevTools sets the next step.
+    debug: Rc<RefCell<DebugState>>,
+}
+
+/// Breakpoint/step policy plus the depth of the pause being serviced.
+#[derive(Default)]
+struct DebugState {
+    ctl: DebugController,
+    /// Frame count of the current pause; 0 when running. Keeping it here is
+    /// what lets `msy_context_debug_step_over/out` take no depth argument —
+    /// the engine knows it, so no host has to.
+    depth: usize,
+}
+
+/// The C-ABI debugger hook: decide with the shared controller, then hand the
+/// host one JSON snapshot and BLOCK in its callback.
+struct CDebugHook {
+    state: Rc<RefCell<DebugState>>,
+    on_paused: MsyDebugPausedFn,
+    data: *mut c_void,
+}
+
+impl DebugHook for CDebugHook {
+    fn on_stmt(
+        &mut self,
+        pause: &DebugPause,
+        locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+    ) {
+        // Borrow, decide, release — the callback below re-enters through the
+        // context and must find the RefCell free.
+        let stop = self.state.borrow_mut().ctl.should_stop(pause);
+        let Some(reason) = stop else { return };
+
+        let json = pause_json(reason, pause, locals);
+        {
+            let mut st = self.state.borrow_mut();
+            st.depth = pause.frames.len();
+            // A host that inspects and returns without choosing gets a plain
+            // resume; anything else it wants, it sets from inside the call.
+            st.ctl.resume();
+        }
+        // Blocks for as long as the host keeps the engine paused.
+        let (p, l) = as_parts(&json);
+        (self.on_paused)(self.data, p, l);
+        self.state.borrow_mut().depth = 0;
+    }
+}
+
+/// The pause snapshot documented in `mersey.h`. Scopes for every frame are
+/// materialized here: a stop is human-paced, so paying once beats making the
+/// host re-enter the engine (and re-entering mid-callout is exactly what the
+/// hook's borrow discipline forbids).
+fn pause_json(
+    reason: StopReason,
+    pause: &DebugPause,
+    locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+) -> String {
+    use mersey_interp::webjson::write_str;
+    let mut out = String::from("{\"reason\":");
+    write_str(&mut out, reason.as_str());
+    out.push_str(",\"frames\":[");
+    for (i, f) in mersey_interp::debug::frame_infos(pause).iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        write_str(&mut out, &f.name);
+        out.push_str(",\"module\":");
+        write_str(&mut out, &f.module);
+        out.push_str(&format!(",\"line\":{},\"column\":{}", f.line, f.col));
+        out.push_str(",\"scopes\":[");
+        let scopes = locals(i);
+        for (si, scope) in scopes.iter().enumerate() {
+            if si > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"name\":");
+            write_str(&mut out, &mersey_interp::debug::scope_name(si, scopes.len()));
+            out.push_str(",\"variables\":[");
+            for (vi, (name, value)) in scope.iter().enumerate() {
+                if vi > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"name\":");
+                write_str(&mut out, name);
+                out.push_str(",\"value\":");
+                write_str(&mut out, value);
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
+    }
+    out.push_str("]}");
+    out
 }
 
 impl MsyContext {
@@ -655,6 +755,7 @@ pub unsafe extern "C" fn msy_context_new_ex(
         error_data: table.data,
         scratch: UnsafeCell::new(String::new()),
         repl: UnsafeCell::new(mersey_interp::ReplSession::new()),
+        debug: Rc::new(RefCell::new(DebugState::default())),
     }))
 }
 
@@ -818,6 +919,136 @@ pub unsafe extern "C" fn msy_context_repl_complete(
     scratch.as_ptr() as *const c_char
 }
 
+/* ---- Debugger (see the header for the contract) --------------------------- */
+
+/// The paused callback. It BLOCKS: the engine sits mid-statement until it
+/// returns, which is how a host holds a pause (nested message loop).
+pub type MsyDebugPausedFn = extern "C" fn(*mut c_void, *const c_char, usize);
+
+/// Attach a debugger. Forces the tree-walker for sync code.
+///
+/// # Safety
+/// `ctx` from msy_context_new; not callable from inside the paused callback
+/// (installing a hook from within one would drop the running hook).
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_enable(
+    ctx: *mut MsyContext,
+    on_paused: Option<MsyDebugPausedFn>,
+    data: *mut c_void,
+) {
+    let Some(ctx) = ctx.as_ref() else { return };
+    // A NULL callback has no way to hold a pause, so it is a no-op rather
+    // than a hook that stops the world with nobody listening.
+    let Some(on_paused) = on_paused else { return };
+    ctx.interp().set_debug_hook(Box::new(CDebugHook {
+        state: ctx.debug.clone(),
+        on_paused,
+        data,
+    }));
+}
+
+/// Detach and restore the VM tier.
+///
+/// # Safety
+/// `ctx` valid; not callable from inside the paused callback.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_disable(ctx: *mut MsyContext) {
+    let Some(ctx) = ctx.as_ref() else { return };
+    ctx.interp().clear_debug_hook();
+    let mut st = ctx.debug.borrow_mut();
+    st.ctl.clear_breakpoints();
+    st.ctl.resume();
+}
+
+/// REPLACE the breakpoint set for one source.
+///
+/// # Safety
+/// `ctx` valid; `source` points at `source_len` readable bytes (may be NULL
+/// when `source_len` is 0); `lines` points at `count` readable `uint32_t`.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_set_breakpoints(
+    ctx: *mut MsyContext,
+    source: *const c_char,
+    source_len: usize,
+    lines: *const u32,
+    count: usize,
+) {
+    let Some(ctx) = ctx.as_ref() else { return };
+    let src = if source.is_null() || source_len == 0 {
+        String::new()
+    } else {
+        String::from_utf8_lossy(std::slice::from_raw_parts(source as *const u8, source_len))
+            .into_owned()
+    };
+    let lines = if lines.is_null() || count == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(lines, count)
+    };
+    ctx.debug.borrow_mut().ctl.set_breakpoints(&src, lines);
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_clear_breakpoints(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        ctx.debug.borrow_mut().ctl.clear_breakpoints();
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_pause(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        ctx.debug.borrow_mut().ctl.request_pause();
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_resume(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        ctx.debug.borrow_mut().ctl.resume();
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_step_over(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        let mut st = ctx.debug.borrow_mut();
+        let depth = st.depth;
+        st.ctl.step_over(depth);
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_step_in(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        ctx.debug.borrow_mut().ctl.step_in();
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_step_out(ctx: *mut MsyContext) {
+    if let Some(ctx) = ctx.as_ref() {
+        let mut st = ctx.debug.borrow_mut();
+        let depth = st.depth;
+        st.ctl.step_out(depth);
+    }
+}
+
+/// # Safety
+/// `ctx` valid.
+#[no_mangle]
 pub unsafe extern "C" fn msy_context_release_callback(ctx: *mut MsyContext, cb: u32) {
     if let Some(ctx) = ctx.as_ref() {
         ctx.interp().release_callback(cb);

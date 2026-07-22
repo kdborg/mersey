@@ -46,6 +46,28 @@ The net effect: sync code gets statement-grained callouts from the walker,
 async/generator code gets line-grained callouts from the VM, and one hook
 sees both.
 
+## The shared policy: `mersey_interp::debug`
+
+The engine reports; something must decide whether a given statement boundary
+is a *stop*. That decision is identical for every front-end, so it lives once
+in `DebugController` rather than four times in four forks' C++:
+
+- **breakpoints** are per-source line sets with replace semantics, matched to
+  executing modules by exact/suffix/basename comparison — an editor's
+  absolute path, a DevTools URL, and a graph-relative spec all find each
+  other; an empty source matches every module;
+- **stepping** is depth arithmetic on `frames.len()`: *over* = stop at the
+  same depth or shallower, *in* = stop anywhere, *out* = stop shallower;
+- **one stop per line**, so several statements sharing a breakpoint's line
+  stop once rather than once each;
+- `should_stop` is *consuming*: a stop clears the pending pause and the step
+  request, so the front-end re-arms before returning.
+
+`frame_infos` flattens a pause's stack top-first (no engine lifetimes), and
+`scope_name` gives the conventional `Locals`/`Closure N`/`Globals` labels —
+both DAP's `scopes` and CDP's `scopeChain` want exactly that. `mersey dap`
+and the C ABI both drive this one implementation.
+
 ## The standalone half: `mersey dap`
 
 `crates/mersey_cli/src/dap.rs` is a Debug Adapter Protocol server on
@@ -93,10 +115,55 @@ maps, resolves each frame to the nearest mapping at-or-before its column,
 and renders the engine-style Mersey stack plus a code frame with a caret
 under the erroring expression.
 
-A CDP `Debugger`-domain agent inside a fork (driving `DebugHook` directly,
-for the engine-native path) remains possible on the same surface, but the
-source-map route covers the browser debugging story for the default path
-without any fork-side protocol work.
+Source maps cover the *transpiled* path. The engine-native path — the four
+forks running the real engine — debugs through the C ABI instead.
+
+## The fork half: `msy_context_debug_*` (ABI v9)
+
+`crates/mersey_capi` exposes the controller across the C boundary, so a
+fork's DevTools agent is a wire-format translator and nothing more:
+
+```c
+msy_context_debug_enable(ctx, on_paused, data);   /* attach */
+msy_context_debug_set_breakpoints(ctx, src, len, lines, count);  /* replace */
+msy_context_debug_pause(ctx);                     /* stop at next statement */
+/* from inside on_paused: */
+msy_context_debug_resume|step_over|step_in|step_out(ctx);
+```
+
+Three decisions worth stating:
+
+- **Pausing is blocking, and that is the whole protocol.** `on_paused` does
+  not return until the host lets the engine go, so a fork pauses by running a
+  nested message loop inside the callback — exactly what V8 does for
+  `Debugger.paused`. There is no resume message to route, no state machine to
+  keep in sync.
+- **The snapshot is eager.** The callback receives one JSON document holding
+  every frame, top-first, with each frame's full scope chain and values. A
+  stop is human-paced, so materializing it once is cheap — and it means the
+  host never re-enters the engine mid-callout, which the hook's borrow
+  discipline forbids anyway.
+- **Step depths are the engine's business.** The context remembers the paused
+  frame count, so `step_over`/`step_out` take no depth argument and no host
+  computes one.
+
+The controller is shared (`Rc<RefCell<…>>`) between the context and the
+installed hook rather than owned by the hook, which is what lets the host
+reach it re-entrantly from inside the pause — where DevTools actually sets
+the next step. `msy_context_debug_disable` drops the hook *and* restores the
+VM tier, so closing DevTools gives the page its speed back.
+
+Pinned by `crates/mersey_capi/tests/abi.rs`: a breakpoint stops the engine,
+the snapshot carries the stack and the scopes live at that statement (the
+binding one line above is present, the one on the pausing line is not),
+stepping runs the assignment and the value appears, and the program still
+completes.
+
+**Not on the polyfill path.** The WASM build has no pause surface and will
+not get one: its engine runs on the page's main thread, where JS cannot spin
+a nested event loop, so a blocking hook would freeze the page rather than
+pause it. Polyfill pages debug through the source maps above — which is why
+that route exists.
 
 ## Limits, recorded
 

@@ -33,7 +33,11 @@
 #pragma once
 
 #include <AK/String.h>
+#include <AK/Vector.h>
 #include <LibJS/Forward.h>
+// WEB_API: LibWeb builds with hidden visibility, and the console entry points
+// below are called from the WebContent process — outside this dylib.
+#include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 
 // The C ABI the engine exposes (crates/mersey_capi/include/mersey.h), installed
@@ -52,5 +56,37 @@ namespace Web::Mersey {
 // stdout via the host `print` hook (what the headless bench harness reads); the
 // engine never unwinds across the ABI.
 void run_mersey_script(JS::Realm&, String const& source);
+
+// ---- the DevTools console, Mersey mode -------------------------------------
+//
+// The console's language dropdown evaluates here instead of in LibJS. The
+// session is one growing, always-typechecked module against THIS realm's
+// engine (msy_context_repl_turn) — the language has no `eval`, so a "turn" is
+// the ordinary compile pipeline applied to an appended fragment, not a
+// separate interpreter mode.
+//
+// Isolation is structural: the engine holds integer handles and reaches the
+// page only through the host table, so a Mersey binding cannot name a JS
+// binding or vice versa. Both languages see the same DOM for the same reason
+// two iframes do — through the host, never through each other's scopes.
+
+struct ReplResult {
+    // The echo of a trailing bare expression; empty when the turn declared
+    // something or evaluated to nothing.
+    String value;
+    // Set when the turn was REJECTED (diagnostics — it never ran) or THREW.
+    // The console renders these as an error rather than a result.
+    bool is_error { false };
+};
+
+// Run one console turn. Creates the realm's engine context if the page has no
+// Mersey script yet, so the console works on any page.
+WEB_API ReplResult repl_turn(JS::Realm&, String const& source);
+
+// The names the session can see — what the console offers for completion in
+// Mersey mode. This is Mersey's view, NOT the JS realm's: the session's own
+// top-level bindings plus the `std:console` prelude, and deliberately no
+// `window`/`document`.
+WEB_API Vector<String> repl_completions(JS::Realm&);
 
 }

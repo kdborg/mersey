@@ -16,6 +16,11 @@ mersey_front = { path = "../mersey_front" }
 mersey_interp = { path = "../mersey_interp" }
 mersey_jit = { path = "../mersey_jit", optional = true }
 
+[dev-dependencies]
+# tests/abi.rs parses the debugger's pause snapshots with the same JSON
+# reader the boundary writes them with.
+mersey_interp = { path = "../mersey_interp" }
+
 [features]
 # Tier 1 on by default: the standalone engine and the Chromium fork want it.
 # A host that turns it off — the Gecko development fork does — gets the
