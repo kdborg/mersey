@@ -133,7 +133,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Chromium / Blink fork — prebuilt staticlib refreshed into //third_party/mersey,
+# Chromium / Blink fork — prebuilt engine cdylib refreshed into //third_party/mersey,
 # then a plain mac/arm64 gn build. None of the Linux-arm64 toolchain overrides
 # apply here (chromium/README.md): only target_os/target_cpu differ.
 # ---------------------------------------------------------------------------
@@ -148,12 +148,22 @@ build_chromium() {
 
   # Refresh the engine into the fork. The fork's refresh.sh is Linux-only (it
   # cross-links a .so against the bullseye sysroot); on macOS the fork links the
-  # prebuilt *staticlib*, so drop it into lib/ where third_party/mersey/BUILD.gn's
-  # is_mac branch reads it, and refresh the header alongside.
+  # engine as a *cdylib* — a staticlib bundles a second copy of Rust's std and
+  # the link fails on `rust_eh_personality`. Drop the .dylib into lib/ where
+  # third_party/mersey/BUILD.gn's is_mac branch reads it, give it an @rpath
+  # install_name so the loader resolves it beside the binary, and refresh the
+  # header alongside.
+  local dylib="$REPO/target/release/libmersey_capi.dylib"
+  [ -f "$dylib" ] || { fail chromium "engine dylib missing ($dylib) — build 'staticlib' first"; return; }
   local tpm="$CHROMIUM_SRC/third_party/mersey"
   if [ -d "$tpm" ]; then
     mkdir -p "$tpm/lib" "$tpm/include"
-    cp "$STATICLIB" "$tpm/lib/libmersey_capi.a" && ok "copied libmersey_capi.a -> lib/"
+    if cp "$dylib" "$tpm/lib/libmersey_capi.dylib" \
+       && install_name_tool -id @rpath/libmersey_capi.dylib "$tpm/lib/libmersey_capi.dylib"; then
+      ok "copied libmersey_capi.dylib -> lib/ (@rpath install_name)"
+    else
+      warn "failed to refresh libmersey_capi.dylib"
+    fi
     cp "$REPO/crates/mersey_capi/include/mersey.h" "$tpm/include/mersey.h" \
       && ok "copied mersey.h"
   else
