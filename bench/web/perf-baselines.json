@@ -1,176 +1,178 @@
 {
-  "bchannel": {
-    "ms": 19.16,
-    "rss": 45416,
-    "heap": 14811136,
-    "checksum": 5890
-  },
-  "blob": {
-    "ms": 136.41,
-    "rss": 84252,
-    "heap": 10551296,
-    "checksum": 198890
-  },
-  "calls": {
-    "ms": 13673.2,
-    "rss": 65360,
-    "heap": 10551296,
-    "checksum": 452320592
-  },
-  "canvas": {
-    "ms": 55.75,
-    "rss": 65696,
-    "heap": 10551296,
-    "checksum": 20000
-  },
-  "compression": {
-    "ms": 111.18,
-    "rss": 81400,
-    "heap": 14811136,
-    "checksum": 8690
-  },
-  "compute": {
-    "ms": 20280.95,
-    "rss": 62260,
-    "heap": 10551296,
-    "checksum": 1765835917
-  },
-  "crypto": {
-    "ms": 106.86,
-    "rss": 77232,
-    "heap": 10551296,
-    "checksum": 320000
-  },
-  "cssom": {
-    "ms": 104.86,
-    "rss": 74492,
-    "heap": 10551296,
-    "checksum": 48000
-  },
-  "dom": {
-    "ms": 70.18,
-    "rss": 93728,
-    "heap": 10551296,
-    "checksum": 10000
-  },
-  "encoding": {
-    "ms": 73.81,
-    "rss": 81012,
-    "heap": 10551296,
-    "checksum": 437780
-  },
-  "events": {
-    "ms": 70.73,
-    "rss": 75352,
-    "heap": 14811136,
-    "checksum": 10000
-  },
-  "fcompute": {
-    "ms": 7458.57,
-    "rss": 62696,
-    "heap": 10551296,
-    "checksum": null
-  },
-  "fetch": {
-    "ms": 184.76,
-    "rss": 81652,
-    "heap": 14811136,
-    "checksum": 20990
-  },
-  "geometry": {
-    "ms": 576.05,
-    "rss": 71128,
-    "heap": 10551296,
-    "checksum": 95000
-  },
-  "idb": {
-    "ms": 22.51,
-    "rss": 48044,
-    "heap": 14811136,
-    "checksum": 4390
-  },
-  "json": {
-    "ms": 9.07,
-    "rss": 38448,
-    "heap": 10551296,
-    "checksum": 848890
-  },
-  "locks": {
-    "ms": 18.97,
-    "rss": 48312,
-    "heap": 14811136,
-    "checksum": 5500
-  },
-  "mathk": {
-    "ms": 4379.7,
-    "rss": 67368,
-    "heap": 10551296,
-    "checksum": null
-  },
-  "msgchannel": {
-    "ms": 18.22,
-    "rss": 47560,
-    "heap": 14811136,
-    "checksum": 5890
-  },
-  "query": {
-    "ms": 88.66,
-    "rss": 74144,
-    "heap": 11599872,
-    "checksum": 214900
-  },
-  "sse": {
-    "ms": 45.98,
-    "rss": 55008,
-    "heap": 14811136,
-    "checksum": 14890
-  },
-  "storage": {
-    "ms": 95.8,
-    "rss": 72360,
-    "heap": 10551296,
-    "checksum": 208890
-  },
-  "streams": {
-    "ms": 45.82,
-    "rss": 57480,
-    "heap": 14811136,
-    "checksum": 18890
-  },
-  "timers": {
-    "ms": 83.71,
-    "rss": 71848,
-    "heap": 10551296,
-    "checksum": 20000
-  },
-  "url": {
-    "ms": 137.96,
-    "rss": 84716,
-    "heap": 10551296,
-    "checksum": 537780
-  },
-  "urlpattern": {
-    "ms": 81.36,
-    "rss": 125216,
-    "heap": 10551296,
-    "checksum": 88890
-  },
-  "websocket": {
-    "ms": 33.65,
-    "rss": 45040,
-    "heap": 14811136,
-    "checksum": 1290
-  },
-  "worker": {
-    "ms": 28.97,
-    "rss": 50060,
-    "heap": 14811136,
-    "checksum": 7890
-  },
-  "xhr": {
-    "ms": 181.79,
-    "rss": 77132,
-    "heap": 14811136,
-    "checksum": 20990
+  "linux": {
+    "bchannel": {
+      "ms": 19.16,
+      "rss": 45416,
+      "heap": 14811136,
+      "checksum": 5890
+    },
+    "blob": {
+      "ms": 136.41,
+      "rss": 84252,
+      "heap": 10551296,
+      "checksum": 198890
+    },
+    "calls": {
+      "ms": 13673.2,
+      "rss": 65360,
+      "heap": 10551296,
+      "checksum": 452320592
+    },
+    "canvas": {
+      "ms": 55.75,
+      "rss": 65696,
+      "heap": 10551296,
+      "checksum": 20000
+    },
+    "compression": {
+      "ms": 111.18,
+      "rss": 81400,
+      "heap": 14811136,
+      "checksum": 8690
+    },
+    "compute": {
+      "ms": 20280.95,
+      "rss": 62260,
+      "heap": 10551296,
+      "checksum": 1765835917
+    },
+    "crypto": {
+      "ms": 106.86,
+      "rss": 77232,
+      "heap": 10551296,
+      "checksum": 320000
+    },
+    "cssom": {
+      "ms": 104.86,
+      "rss": 74492,
+      "heap": 10551296,
+      "checksum": 48000
+    },
+    "dom": {
+      "ms": 70.18,
+      "rss": 93728,
+      "heap": 10551296,
+      "checksum": 10000
+    },
+    "encoding": {
+      "ms": 73.81,
+      "rss": 81012,
+      "heap": 10551296,
+      "checksum": 437780
+    },
+    "events": {
+      "ms": 70.73,
+      "rss": 75352,
+      "heap": 14811136,
+      "checksum": 10000
+    },
+    "fcompute": {
+      "ms": 7458.57,
+      "rss": 62696,
+      "heap": 10551296,
+      "checksum": null
+    },
+    "fetch": {
+      "ms": 184.76,
+      "rss": 81652,
+      "heap": 14811136,
+      "checksum": 20990
+    },
+    "geometry": {
+      "ms": 576.05,
+      "rss": 71128,
+      "heap": 10551296,
+      "checksum": 95000
+    },
+    "idb": {
+      "ms": 22.51,
+      "rss": 48044,
+      "heap": 14811136,
+      "checksum": 4390
+    },
+    "json": {
+      "ms": 9.07,
+      "rss": 38448,
+      "heap": 10551296,
+      "checksum": 848890
+    },
+    "locks": {
+      "ms": 18.97,
+      "rss": 48312,
+      "heap": 14811136,
+      "checksum": 5500
+    },
+    "mathk": {
+      "ms": 4379.7,
+      "rss": 67368,
+      "heap": 10551296,
+      "checksum": null
+    },
+    "msgchannel": {
+      "ms": 18.22,
+      "rss": 47560,
+      "heap": 14811136,
+      "checksum": 5890
+    },
+    "query": {
+      "ms": 88.66,
+      "rss": 74144,
+      "heap": 11599872,
+      "checksum": 214900
+    },
+    "sse": {
+      "ms": 45.98,
+      "rss": 55008,
+      "heap": 14811136,
+      "checksum": 14890
+    },
+    "storage": {
+      "ms": 95.8,
+      "rss": 72360,
+      "heap": 10551296,
+      "checksum": 208890
+    },
+    "streams": {
+      "ms": 45.82,
+      "rss": 57480,
+      "heap": 14811136,
+      "checksum": 18890
+    },
+    "timers": {
+      "ms": 83.71,
+      "rss": 71848,
+      "heap": 10551296,
+      "checksum": 20000
+    },
+    "url": {
+      "ms": 137.96,
+      "rss": 84716,
+      "heap": 10551296,
+      "checksum": 537780
+    },
+    "urlpattern": {
+      "ms": 81.36,
+      "rss": 125216,
+      "heap": 10551296,
+      "checksum": 88890
+    },
+    "websocket": {
+      "ms": 33.65,
+      "rss": 45040,
+      "heap": 14811136,
+      "checksum": 1290
+    },
+    "worker": {
+      "ms": 28.97,
+      "rss": 50060,
+      "heap": 14811136,
+      "checksum": 7890
+    },
+    "xhr": {
+      "ms": 181.79,
+      "rss": 77132,
+      "heap": 14811136,
+      "checksum": 20990
+    }
   }
 }

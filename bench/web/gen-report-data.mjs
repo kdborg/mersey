@@ -7,6 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { forPlatform, platformsIn } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const load = async (f) => {
@@ -14,7 +15,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [
+const allRows = [
   ...(await load("results.stock.json")),
   ...(await load("results.tjs.json")),
   ...(await load("results.firefox-real.json")),
@@ -25,6 +26,19 @@ const rows = [
   ...(await load("results.native.ladybird.json")),
   ...(await load("results.native.chromium.json")),
 ];
+
+// report.html has ONE DATA block, so this emits one platform's numbers — mixing
+// them would collide on the same keys and let whichever row came last win.
+// Linux by default (the platform the committed report is built from); override
+// with BENCH_PLATFORM=macos.
+const platform = process.env.BENCH_PLATFORM || "linux";
+const present = platformsIn(allRows);
+if (!present.includes(platform)) {
+  console.error(`no rows for platform "${platform}" — results contain: ${present.join(", ") || "(none)"}`);
+  process.exit(1);
+}
+const rows = forPlatform(allRows, platform);
+console.log(`    // platform: ${platform}${present.length > 1 ? `  (also measured: ${present.filter((p) => p !== platform).join(", ")})` : ""}`);
 
 const KEY = {
   "chromium/js": "cjs", "chromium/poly": "cpoly", "chromium/tjs": "ctjs",

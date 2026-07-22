@@ -9,6 +9,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { forPlatform, platformsIn } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const load = async (f) => {
@@ -16,7 +17,7 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [
+const allRows = [
   ...(await load("results.stock.json")),
   ...(await load("results.tjs.json")),
   ...(await load("results.servo.json")),
@@ -26,6 +27,17 @@ const rows = [
   ...(await load("results.native.ladybird.json")),
   ...(await load("results.native.chromium.json")),
 ];
+
+// This page carries ONE data set, so it renders a single platform — mixing them
+// would collide on the same keys. Linux by default; BENCH_PLATFORM=macos to
+// build the macOS page instead.
+const platform = process.env.BENCH_PLATFORM || "linux";
+const present = platformsIn(allRows);
+if (!present.includes(platform)) {
+  console.error(`no rows for platform "${platform}" — results contain: ${present.join(", ") || "(none)"}`);
+  process.exit(1);
+}
+const rows = forPlatform(allRows, platform);
 
 const KEY = {
   "chromium/js": "cjs", "chromium/poly": "cpoly", "chromium/tjs": "ctjs",

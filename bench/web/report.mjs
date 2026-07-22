@@ -3,6 +3,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { forPlatform, platformsIn, rowMemMetric } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const load = async (f) => {
@@ -10,10 +11,12 @@ const load = async (f) => {
   catch { return []; }
 };
 
-const rows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.firefox-real.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json")), ...(await load("results.native.chromium.json")), ...(await load("results.engine.json"))];
-const workloads = [...new Set(rows.map((r) => r.wl))].sort();
-const key = (browser, impl) => `${browser}/${impl}`;
-const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
+const allRows = [...(await load("results.stock.json")), ...(await load("results.tjs.json")), ...(await load("results.firefox-real.json")), ...(await load("results.native.json")), ...(await load("results.servo.json")), ...(await load("results.native.servo.json")), ...(await load("results.ladybird.json")), ...(await load("results.native.ladybird.json")), ...(await load("results.native.chromium.json")), ...(await load("results.engine.json"))];
+
+// One section per host platform. Numbers are NEVER merged across platforms:
+// the machines differ, and the memory metric differs outright (Linux PSS vs
+// macOS footprint), so a single blended table would be meaningless.
+const platforms = platformsIn(allRows);
 
 // Columns, in reading order.
 const cols = [
@@ -61,31 +64,50 @@ md += "driver attached (`run-firefox-real.mjs`). Its memory deltas use a fresh b
 md += "sample (blank page → self-navigation to the workload in one process tree), so they run ";
 md += "slightly higher than the Playwright columns, which reuse a warm browser.\n\n";
 
-md += "## Time (ms)\n\n";
-md += "| workload | " + cols.map((c) => c[2]).join(" | ") + " |\n";
-md += "|" + "---|".repeat(cols.length + 1) + "\n";
-for (const wl of workloads) {
-  md += `| ${wl} | ` + cols.map(([b, i]) => fmtMs(get(wl, b, i))).join(" | ") + " |\n";
+if (platforms.length > 1) {
+  md += "> **Two host platforms below.** Each section is a separate machine and a ";
+  md += "separate memory metric; compare rows WITHIN a section, never across.\n\n";
 }
 
-md += "\n## Memory — PSS delta vs blank page (MiB)\n\n";
-md += "Proportional set size of the whole browser process tree, workload page minus a blank page ";
-md += "(PSS counts shared libraries once, so a new renderer process does not inflate the delta). ";
-md += "The polyfill delta includes the ~2.3 MB WASM module and the engine's heap; the native ";
-md += "engine is compiled into the browser binary, so its delta is workload allocation only.\n\n";
-md += "| workload | " + cols.map((c) => c[2]).join(" | ") + " |\n";
-md += "|" + "---|".repeat(cols.length + 1) + "\n";
-for (const wl of workloads) {
-  md += `| ${wl} | ` + cols.map(([b, i]) => fmtRss(get(wl, b, i))).join(" | ") + " |\n";
-}
+const MEM_LABEL = {
+  pss: ["PSS", "Proportional set size of the whole browser process tree, workload page minus a blank page (PSS counts shared libraries once, so a new renderer process does not inflate the delta)."],
+  footprint: ["footprint", "De-duplicated phys_footprint of the whole browser process tree (macOS `footprint`), workload page minus a blank page — shared objects counted once. This is NOT the same metric as Linux PSS and the two are not comparable."],
+};
 
-// Polyfill and native slowdown vs JS (Chromium JS as the baseline).
-md += "\n## Slowdown vs plain JS (Chromium JS = 1×)\n\n";
-md += "| workload | Chromium polyfill | Firefox polyfill | Firefox real polyfill | Servo polyfill | Ladybird polyfill | Firefox fork native | Servo fork native | Ladybird fork native | Engine wasm (Node) |\n|---|---|---|---|---|---|---|---|---|---|\n";
-for (const wl of workloads) {
-  const base = get(wl, "chromium", "js");
-  const ratio = (r) => (base && base.ms && r && r.ms != null ? `${(r.ms / base.ms).toFixed(1)}×` : "—");
-  md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "firefox-real", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "ladybird", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} | ${ratio(get(wl, "ladybird-fork", "native"))} | ${ratio(get(wl, "engine", "wasm"))} |\n`;
+for (const platform of platforms) {
+  const rows = forPlatform(allRows, platform);
+  const workloads = [...new Set(rows.map((r) => r.wl))].sort();
+  const get = (wl, browser, impl) => rows.find((r) => r.wl === wl && r.browser === browser && r.impl === impl);
+  const metric = rowMemMetric(rows.find((r) => r.rss != null) ?? {}) ?? "pss";
+  const [metricName, metricNote] = MEM_LABEL[metric] ?? [metric, ""];
+
+  if (platforms.length > 1) md += `\n# ${platform}\n\n`;
+
+  md += "## Time (ms)\n\n";
+  md += "| workload | " + cols.map((c) => c[2]).join(" | ") + " |\n";
+  md += "|" + "---|".repeat(cols.length + 1) + "\n";
+  for (const wl of workloads) {
+    md += `| ${wl} | ` + cols.map(([b, i]) => fmtMs(get(wl, b, i))).join(" | ") + " |\n";
+  }
+
+  md += `\n## Memory — ${metricName} delta vs blank page (MiB)\n\n`;
+  md += metricNote + " ";
+  md += "The polyfill delta includes the ~2.3 MB WASM module and the engine's heap; the native ";
+  md += "engine is compiled into the browser binary, so its delta is workload allocation only.\n\n";
+  md += "| workload | " + cols.map((c) => c[2]).join(" | ") + " |\n";
+  md += "|" + "---|".repeat(cols.length + 1) + "\n";
+  for (const wl of workloads) {
+    md += `| ${wl} | ` + cols.map(([b, i]) => fmtRss(get(wl, b, i))).join(" | ") + " |\n";
+  }
+
+  // Polyfill and native slowdown vs JS (Chromium JS as the baseline).
+  md += "\n## Slowdown vs plain JS (Chromium JS = 1×)\n\n";
+  md += "| workload | Chromium polyfill | Firefox polyfill | Firefox real polyfill | Servo polyfill | Ladybird polyfill | Firefox fork native | Servo fork native | Ladybird fork native | Engine wasm (Node) |\n|---|---|---|---|---|---|---|---|---|---|\n";
+  for (const wl of workloads) {
+    const base = get(wl, "chromium", "js");
+    const ratio = (r) => (base && base.ms && r && r.ms != null ? `${(r.ms / base.ms).toFixed(1)}×` : "—");
+    md += `| ${wl} | ${ratio(get(wl, "chromium", "poly"))} | ${ratio(get(wl, "firefox", "poly"))} | ${ratio(get(wl, "firefox-real", "poly"))} | ${ratio(get(wl, "servo", "poly"))} | ${ratio(get(wl, "ladybird", "poly"))} | ${ratio(get(wl, "firefox-fork", "native"))} | ${ratio(get(wl, "servo-fork", "native"))} | ${ratio(get(wl, "ladybird-fork", "native"))} | ${ratio(get(wl, "engine", "wasm"))} |\n`;
+  }
 }
 
 await writeFile(join(here, "REPORT.md"), md);

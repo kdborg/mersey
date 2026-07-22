@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { runChild, blankBaseline } from "./run-engine.mjs";
 import { startServer } from "./server.mjs";
+import { PLATFORM } from "./host-mem.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BASELINE_FILE = join(here, "perf-baselines.json");
@@ -29,14 +30,40 @@ const TIME_FLOOR_MS = 20; // below this, a diff is noise, not a regression
 const MEM_FLOOR_KB = 8192;
 const update = process.argv.includes("--update");
 
-let baselines = {};
+// Baselines are per host platform: {"linux": {wl: {...}}, "macos": {...}}.
+// Time and memory are machine-specific, so a run only ever gates against
+// numbers recorded on the same platform. A pre-platform (flat) file is read as
+// Linux, which is where every committed baseline was measured.
+let allBaselines = {};
 try {
-  baselines = JSON.parse(await readFile(BASELINE_FILE, "utf8"));
+  const parsed = JSON.parse(await readFile(BASELINE_FILE, "utf8"));
+  const nested = Object.values(parsed).every((v) => v && typeof v === "object" && !("ms" in v));
+  allBaselines = nested ? parsed : { linux: parsed };
 } catch {
   if (!update) {
     console.error("no perf-baselines.json — run `node perf-test.mjs --update` first");
     process.exit(2);
   }
+}
+const baselines = allBaselines[PLATFORM] ?? {};
+if (!update && Object.keys(baselines).length === 0) {
+  console.error(
+    `no perf baselines for platform "${PLATFORM}" (have: ${Object.keys(allBaselines).join(", ") || "none"}).\n` +
+    `Time and memory are machine-specific, so this host needs its own:\n` +
+    `  node perf-test.mjs --update\n` +
+    `Checksums are platform-independent and are still checked against any recorded platform.`);
+  process.exit(2);
+}
+
+// A checksum is the same on every platform — it is the correctness proof. So a
+// host with no timing baseline of its own still gets checksum gating, using
+// whatever platform recorded one.
+function baselineChecksum(wl) {
+  for (const p of Object.keys(allBaselines)) {
+    const c = allBaselines[p]?.[wl]?.checksum;
+    if (c != null) return c;
+  }
+  return null;
 }
 
 const WORKLOADS = process.env.PERF_WL
@@ -85,14 +112,19 @@ for (const wl of WORKLOADS) {
     checksum: Number.isNaN(checksum) ? null : checksum,
   };
 
-  const b = baselines[wl];
-  if (update || !b) continue;
+  if (update) continue;
 
-  const tag = `${wl}: ${ms.toFixed(1)}ms (baseline ${b.ms}ms), rss ${(rss / 1024).toFixed(1)}MB (baseline ${(b.rss / 1024).toFixed(1)}MB)`;
-  if (b.checksum != null && fresh[wl].checksum !== b.checksum) {
-    fail(`${wl}: CHECKSUM ${fresh[wl].checksum} != baseline ${b.checksum} — correctness, not perf`);
+  // Checksum first, and independently of the timing baseline: it is a
+  // correctness check that holds on every platform.
+  const expected = baselineChecksum(wl);
+  if (expected != null && fresh[wl].checksum !== expected) {
+    fail(`${wl}: CHECKSUM ${fresh[wl].checksum} != baseline ${expected} — correctness, not perf`);
     continue;
   }
+
+  const b = baselines[wl];
+  if (!b) continue;
+  const tag = `${wl}: ${ms.toFixed(1)}ms (baseline ${b.ms}ms), rss ${(rss / 1024).toFixed(1)}MB (baseline ${(b.rss / 1024).toFixed(1)}MB)`;
   const timeBad = ms > b.ms * TIME_TOL && ms - b.ms > TIME_FLOOR_MS;
   const rssBad = rss > b.rss * MEM_TOL && rss - b.rss > MEM_FLOOR_KB;
   const heapBad = b.heap != null && heap > b.heap * MEM_TOL;
@@ -105,10 +137,13 @@ for (const wl of WORKLOADS) {
 server.close();
 
 if (update) {
+  // Rewrite only THIS platform's section; other platforms are left untouched.
   const merged = { ...baselines, ...fresh };
   const ordered = Object.fromEntries(Object.keys(merged).sort().map((k) => [k, merged[k]]));
-  await writeFile(BASELINE_FILE, JSON.stringify(ordered, null, 2) + "\n");
-  console.log(`\nwrote baselines for ${Object.keys(fresh).length} workload(s) to bench/web/perf-baselines.json`);
+  const out = { ...allBaselines, [PLATFORM]: ordered };
+  const orderedPlatforms = Object.fromEntries(Object.keys(out).sort().map((k) => [k, out[k]]));
+  await writeFile(BASELINE_FILE, JSON.stringify(orderedPlatforms, null, 2) + "\n");
+  console.log(`\nwrote ${PLATFORM} baselines for ${Object.keys(fresh).length} workload(s) to bench/web/perf-baselines.json`);
   process.exit(0);
 }
 

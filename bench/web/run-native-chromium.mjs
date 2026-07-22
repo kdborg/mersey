@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "./server.mjs";
+import { treeMemoryByCmdline } from "./host-mem.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killForks(); process.exit(3); });
 process.on("exit", () => killForks());
@@ -50,20 +52,7 @@ await writeFile(join(pageDir, "blank.html"),
   `<!doctype html><meta charset="utf-8"><body><div id="out"></div></body>`);
 
 // Sum PSS (KiB) over the chrome process tree — shared pages counted once.
-async function forkPss(match) {
-  const pids = (await readdir("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const cmd = await readFile(`/proc/${pid}/cmdline`, "utf8");
-      if (!cmd.includes(match)) continue;
-      const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return total; // KiB
-}
+const forkPss = (match) => treeMemoryByCmdline(match);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -166,16 +155,7 @@ killForks();
 server.close();
 // A filtered run (WL=…) must not clobber rows it did not measure: merge into
 // the existing file, replacing only (impl, wl) pairs this run produced.
-async function mergeRows(file, fresh) {
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, file), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(fresh.map(key));
-  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
-}
 
-const merged = await mergeRows("results.native.chromium.json", rows);
+const merged = await mergeRows(here, "results.native.chromium.json", tagRows(rows));
 await writeFile(join(here, "results.native.chromium.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.chromium.json`);

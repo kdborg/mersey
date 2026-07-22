@@ -21,6 +21,8 @@ import { readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
+import { treeMemoryByCmdline } from "./host-mem.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
@@ -40,26 +42,7 @@ const PAGE_SIZE = 4096;
 // not expose the pid, so we identify the tree by its binary path). PSS, not
 // RSS: shared libraries mapped into every renderer are counted once, so a
 // delta that spans a new renderer process is not inflated by libxul/libchrome.
-async function browserRss(match) {
-  const { readFile: rf, readdir: rd } = await import("node:fs/promises");
-  let pids;
-  try {
-    pids = (await rd("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  } catch {
-    return 0;
-  }
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const cmd = await rf(`/proc/${pid}/cmdline`, "utf8");
-      if (!cmd.includes(match)) continue;
-      const rollup = await rf(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return total; // KiB
-}
+const browserRss = (match) => treeMemoryByCmdline(match);
 
 async function runOne(browser, impl, wl, origin, rssMatch) {
   const context = await browser.newContext();
@@ -144,16 +127,7 @@ all.push(...(await measure(firefox, "firefox", origin, "ms-playwright/firefox"))
 server.close();
 // A filtered run (WL=…) must not clobber rows it did not measure: merge into
 // the existing file, replacing only (impl, wl) pairs this run produced.
-async function mergeRows(file, fresh) {
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, file), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(fresh.map(key));
-  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
-}
 
-const merged = await mergeRows("results.stock.json", all);
+const merged = await mergeRows(here, "results.stock.json", tagRows(all));
 await writeFile(join(here, "results.stock.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${all.length} rows to bench/web/results.stock.json`);

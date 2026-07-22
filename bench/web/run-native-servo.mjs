@@ -22,6 +22,8 @@ import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
+import { treeMemoryByCmdline } from "./host-mem.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
@@ -58,20 +60,7 @@ ${src}
 await writeFile(join(pageDir, "blank.html"),
   `<!doctype html><meta charset="utf-8"><body><div id="out"></div></body>`);
 
-async function servoPss(match) {
-  const pids = (await readdir("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const cmd = await readFile(`/proc/${pid}/cmdline`, "utf8");
-      if (!cmd.includes(match)) continue;
-      const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return total; // KiB
-}
+const servoPss = (match) => treeMemoryByCmdline(match);
 
 function runPage(url, expectResult = true) {
   killServo();
@@ -136,16 +125,7 @@ server.close();
 killServo();
 // A filtered run (WL=…) must not clobber rows it did not measure: merge into
 // the existing file, replacing only (impl, wl) pairs this run produced.
-async function mergeRows(file, fresh) {
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, file), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(fresh.map(key));
-  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
-}
 
-const merged = await mergeRows("results.native.servo.json", rows);
+const merged = await mergeRows(here, "results.native.servo.json", tagRows(rows));
 await writeFile(join(here, "results.native.servo.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.servo.json`);

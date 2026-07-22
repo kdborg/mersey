@@ -19,6 +19,8 @@ import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
+import { tagRows } from "./rows.mjs";
+import { treeMemoryByCmdline } from "./host-mem.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
@@ -47,20 +49,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Sum PSS (KiB) over every process whose cmdline names the Servo binary — the
 // whole multiprocess tree, shared libraries counted once (see run-native.mjs).
-async function servoPss(match) {
-  const pids = (await readdir("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const cmd = await readFile(`/proc/${pid}/cmdline`, "utf8");
-      if (!cmd.includes(match)) continue;
-      const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return total; // KiB
-}
+const servoPss = (match) => treeMemoryByCmdline(match);
 
 // Launch headless Servo on one URL, capture the RESULT line and PSS, then kill
 // the tree. expectResult=false is the blank baseline (no RESULT, just settle).
@@ -132,5 +121,5 @@ for (const wl of WORKLOADS) {
 
 server.close();
 killServo();
-await writeFile(join(here, "results.servo.json"), JSON.stringify(rows, null, 2));
+await writeFile(join(here, "results.servo.json"), JSON.stringify(tagRows(rows), null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.servo.json`);

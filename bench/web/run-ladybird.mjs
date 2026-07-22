@@ -21,7 +21,7 @@
 // run-native-ladybird-mem.mjs (test-web tears processes down per test, so a
 // settle-point sample is impossible; the peak is the honest proxy).
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
-import { readFileSync, readdirSync, readlinkSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -33,7 +33,9 @@ const TEST_WEB = process.env.TEST_WEB || join(LADYBIRD_SRC, "Build", "release", 
 const BUILD_BIN = dirname(TEST_WEB);
 const PYTHON = process.env.PYTHON || "python3";
 const REPEATS = 3;
-const POLL_MS = 40;
+// Linux-only cadence: /proc reads are cheap. On macOS each sample costs a
+// ~100ms footprint call, so let the sampler choose a rate it can sustain.
+const POLL_MS = PLATFORM === "linux" ? 40 : undefined;
 // The WASM engine runs on LibWasm, an interpreter — give poly real room.
 const TIMEOUT_S = { js: 60, tjs: 300, poly: 900 };
 
@@ -104,6 +106,8 @@ const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
 // endpoint admits opaque origins via CORS — so the runner serves it and the
 // generated pages carry the absolute URL.
 import { startServer } from "./server.mjs";
+import { createPeakSampler, PLATFORM } from "./host-mem.mjs";
+import { tagRows, rowPlatform } from "./rows.mjs";
 const { server: echoServer, port: echoPort } = await startServer();
 const ECHO = `http://127.0.0.1:${echoPort}/bench/echo`;
 // The websocket workload derives its URL from location.host, which is empty
@@ -193,39 +197,21 @@ await writeFile(join(pageDir, "blank.html"), page("lb-stock blank", `<script>tes
 
 // ---- run --------------------------------------------------------------------
 
-function forkPssNow() {
-  let total = 0;
-  let pids;
-  try { pids = readdirSync("/proc"); } catch { return 0; }
-  for (const pid of pids) {
-    if (!/^\d+$/.test(pid)) continue;
-    let exe;
-    try { exe = readlinkSync(`/proc/${pid}/exe`); } catch { continue; }
-    if (!exe.startsWith(BUILD_BIN)) continue;
-    try {
-      const roll = readFileSync(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(roll);
-      if (m) total += Number(m[1]);
-    } catch { /* raced exit */ }
-  }
-  return total;
-}
 
-// Run one page once: peak PSS polled over the process tree, RESULT parsed from
-// the captured actual.txt after exit.
+// Run one page once: peak tree memory polled over the process tree (Linux PSS /
+// macOS de-duplicated footprint — see host-mem.mjs), RESULT parsed from the
+// captured actual.txt after exit.
 function runOnce(pageName, timeoutS) {
   return new Promise((resolve) => {
-    let peak = 0;
+    const sampler = createPeakSampler(BUILD_BIN, { intervalMs: POLL_MS });
     const child = spawn(TEST_WEB,
       ["--test-path", testRoot, "-f", `mersey-stock/${pageName}`, "-P", PYTHON,
         "-j1", "-t", String(timeoutS), "-R", resultsDir],
       { env: { ...process.env, LADYBIRD_SOURCE_DIR: LADYBIRD_SRC }, stdio: "ignore" });
-    const timer = setInterval(() => {
-      const p = forkPssNow();
-      if (p > peak) peak = p;
-    }, POLL_MS);
+    sampler.start();
     const finish = () => {
-      clearInterval(timer);
+      sampler.stop();
+      const peak = sampler.peakKiB;
       let result = null;
       try {
         const text = readFileSync(
@@ -279,11 +265,13 @@ for (const impl of IMPLS) {
 
 // Merge into any existing rows (a WL=/IMPL=-filtered run must not clobber the
 // rest of the file), newest row wins per impl/wl.
-let merged = rows;
+const tagged = tagRows(rows);
+let merged = tagged;
 try {
   const prior = JSON.parse(await readFile(join(here, "results.ladybird.json"), "utf8"));
-  const seen = new Set(rows.map((r) => `${r.impl}/${r.wl}`));
-  merged = [...prior.filter((r) => !seen.has(`${r.impl}/${r.wl}`)), ...rows];
+  const k = (r) => `${r.impl}/${r.wl}/${rowPlatform(r)}`;
+  const seen = new Set(tagged.map(k));
+  merged = [...prior.filter((r) => !seen.has(k(r))), ...tagged];
 } catch { /* first run */ }
 echoServer.close();
 await writeFile(join(here, "results.ladybird.json"), JSON.stringify(merged, null, 2));

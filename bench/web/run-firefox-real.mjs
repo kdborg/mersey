@@ -32,6 +32,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import { startServer } from "./server.mjs";
+import { treeMemoryByDescendantsOf } from "./host-mem.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
@@ -98,45 +100,12 @@ const poll = async () => {
 poll();
 </script>`;
 
-// PSS (KiB) of the process tree rooted at `rootPid`, descendants found by
-// walking /proc PPids.
+// Memory (KiB) of the process tree rooted at `rootPid`, plus the pid set the
+// caller kills. Descendants are walked rather than name-matched so a
+// concurrently running user Firefox is never counted (see the file header).
 async function treePss(rootPid) {
-  let pids = [];
-  try {
-    pids = (await readdir("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  } catch {
-    return { pss: 0, tree: new Set() };
-  }
-  const ppid = new Map();
-  await Promise.all(
-    pids.map(async (pid) => {
-      try {
-        const st = await readFile(`/proc/${pid}/status`, "utf8");
-        const m = /^PPid:\s+(\d+)/m.exec(st);
-        if (m) ppid.set(pid, Number(m[1]));
-      } catch {}
-    }),
-  );
-  const tree = new Set([rootPid]);
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const [pid, parent] of ppid) {
-      if (tree.has(parent) && !tree.has(pid)) {
-        tree.add(pid);
-        grew = true;
-      }
-    }
-  }
-  let total = 0;
-  for (const pid of tree) {
-    try {
-      const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return { pss: total, tree };
+  const { kib, tree } = await treeMemoryByDescendantsOf(rootPid);
+  return { pss: kib, tree };
 }
 
 async function killTree(ff, tree) {
@@ -265,16 +234,7 @@ for (const wl of WORKLOADS) {
 server.close();
 // A filtered run (WL=…) must not clobber rows it did not measure: merge into
 // the existing file, replacing only (impl, wl) pairs this run produced.
-async function mergeRows(file, fresh) {
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, file), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(fresh.map(key));
-  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
-}
 
-const merged = await mergeRows("results.firefox-real.json", rows);
+const merged = await mergeRows(here, "results.firefox-real.json", tagRows(rows));
 await writeFile(join(here, "results.firefox-real.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.firefox-real.json`);

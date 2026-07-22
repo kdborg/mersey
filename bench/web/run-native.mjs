@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "./server.mjs";
+import { treeMemoryByCmdline } from "./host-mem.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 // Reap the whole fork tree on any exit path so a crash or interrupt can't leave
 // orphans (killForks is a hoisted declaration, safe to reference here).
@@ -53,24 +55,12 @@ ${src}
 await writeFile(join(pageDir, "blank.html"),
   `<!doctype html><meta charset="utf-8"><body><div id="out"></div></body>`);
 
-// Sum PSS (KiB) over the whole fork process tree. PSS (proportional set size)
-// divides each shared page by the number of processes mapping it, so libxul
-// mapped into every content process is counted once, not N times — which RSS
-// does, and which made the naive sum wildly overcount.
-async function forkPss(match) {
-  const pids = (await readdir("/proc")).filter((n) => /^\d+$/.test(n)).map(Number);
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const cmd = await readFile(`/proc/${pid}/cmdline`, "utf8");
-      if (!cmd.includes(match)) continue;
-      const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
-      const m = /^Pss:\s+(\d+) kB/m.exec(rollup);
-      if (m) total += Number(m[1]);
-    } catch {}
-  }
-  return total; // KiB
-}
+// Memory (KiB) over the whole fork process tree, counting a page shared by
+// several processes once — libxul is mapped into every content process, and
+// summing RSS over the tree overcounts it wildly. host-mem.mjs picks the metric
+// the host can provide (Linux PSS / macOS de-duplicated footprint); the two are
+// not comparable, which is why every row records which one it used.
+const forkPss = (match) => treeMemoryByCmdline(match);
 
 // Launch the fork on one page, capture the RESULT line and RSS, then kill it.
 // For the blank baseline (expectResult=false) there is no RESULT, so just let
@@ -189,17 +179,8 @@ for (const wl of WORKLOADS) {
 killForks();
 server.close();
 // A filtered run (WL=…) must not clobber rows it did not measure: merge into
-// the existing file, replacing only (impl, wl) pairs this run produced.
-async function mergeRows(file, fresh) {
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, file), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(fresh.map(key));
-  return [...existing.filter((r) => !produced.has(key(r))), ...fresh];
-}
-
-const merged = await mergeRows("results.native.json", rows);
+// the existing file, replacing only (impl, wl, platform) triples this run
+// produced — so a macOS run leaves the Linux rows (and vice versa) intact.
+const merged = await mergeRows(here, "results.native.json", tagRows(rows));
 await writeFile(join(here, "results.native.json"), JSON.stringify(merged, null, 2));
 console.log(`\nwrote ${rows.length} rows to bench/web/results.native.json`);

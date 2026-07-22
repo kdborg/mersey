@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
+import { tagRows, mergeRows } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPEATS = Number(process.env.REPEATS ?? 3);
@@ -99,13 +100,8 @@ if (isMain) {
 
   // A filtered run (WL=…) must not clobber rows it did not measure: merge into
   // the existing file, replacing only (impl, wl) pairs this run produced.
-  let existing = [];
-  try {
-    existing = JSON.parse(await readFile(join(here, "results.engine.json"), "utf8"));
-  } catch {}
-  const key = (r) => `${r.browser}/${r.impl}/${r.wl}`;
-  const produced = new Set(rows.map(key));
-  const merged = [...existing.filter((r) => !produced.has(key(r))), ...rows];
+  // Platform is part of the key, so a macOS run leaves the Linux rows intact.
+  const merged = await mergeRows(here, "results.engine.json", tagRows(rows));
   await writeFile(join(here, "results.engine.json"), JSON.stringify(merged, null, 2));
   console.log(`\nwrote ${rows.length} rows to bench/web/results.engine.json`);
 }

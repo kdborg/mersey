@@ -17,6 +17,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { makeBridge } from "../../web/mersey-bridge.js";
+import { selfPeakMemoryKiB } from "./host-mem.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
@@ -414,8 +415,9 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-const vmhwm = Number(
-  /^VmHWM:\s+(\d+) kB/m.exec(await readFile("/proc/self/status", "utf8"))?.[1] ?? 0,
-);
+// Peak memory of this child, in KiB. Linux reads VmHWM; macOS reports
+// phys_footprint_peak (see host-mem.mjs). The field keeps its historical
+// vmhwm= name so the parent's parser is unchanged.
+const vmhwm = await selfPeakMemoryKiB();
 console.log(`MEMSTAT vmhwm=${vmhwm} wasmheap=${exports.memory.buffer.byteLength}`);
 process.exit(status === 0 ? 0 : 1);
