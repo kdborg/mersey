@@ -1275,7 +1275,9 @@ unsafe fn try_get_random_values(cx: &mut JSContext, target: i64, args: &[MsyArg1
         return false;
     };
     auto_root!(&in(cx) let guard = view);
-    if crypto.GetRandomValues(guard).is_err() {
+    // CryptoMethods::GetRandomValues takes a &NoGC first; JSContext derefs to
+    // NoGC, so pass cx straight through as the generated binding itself does.
+    if crypto.GetRandomValues(cx, guard).is_err() {
         return false;
     }
     reply_none(out);
@@ -1321,7 +1323,7 @@ unsafe fn try_decode(cx: &mut JSContext, target: i64, args: &[MsyArg16], out: *m
         return false;
     };
     let input = ArrayBufferViewOrArrayBuffer::ArrayBufferView(RootedTraceableBox::new(heap_view));
-    let Ok(text) = dec.Decode(Some(input), &TextDecodeOptions::empty()) else {
+    let Ok(text) = dec.Decode(cx, Some(input), &TextDecodeOptions::empty()) else {
         return false;
     };
     let r = runner_ptr();

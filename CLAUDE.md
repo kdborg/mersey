@@ -56,8 +56,9 @@ indices into its table, objects deduped via `handleFor`; mersey closures cross
 as `{"__cb__":id}` and re-enter through `__merseyInvoke`).
 
 Browser forks (checkouts live BESIDE this repo, not in it):
-- `~/Work/gecko` (dom/mersey), `~/Work/mersey/chromium` (blink core/script/mersey_script_runner,
-  branch `mersey`), `~/Work/servo-src` (components/script/mersey), `~/Work/ladybird`
+- `~/Work/mersey/firefox` (dom/mersey, branch `mersey`; `~/Work/mersey/gecko` is a
+  symlink to it), `~/Work/mersey/chromium` (blink core/script/mersey_script_runner,
+  branch `mersey`), `~/Work/mersey/servo` (components/script/mersey), `~/Work/ladybird`
   (Libraries/LibWeb/Mersey). The repo keeps each fork's glue under `servo/`,
   `ladybird/`, `chromium/` with an idempotent `apply.sh` that installs it into
   the checkout; `servo/refresh-bridge.sh` regenerates Servo's embedded copy of

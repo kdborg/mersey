@@ -10,12 +10,16 @@
 #
 # The fork checkouts are NOT in this repo — they live BESIDE it (siblings of
 # this repo dir, i.e. under ~/Work/mersey/ when the repo is ~/Work/mersey/mersey):
-#     ../gecko          (Firefox fork, branch dom/mersey)   [build only]
+#     ../firefox        (Firefox fork, branch mersey)        [build only]
 #     ../chromium/src   (Blink fork,   branch mersey)
-#     ../servo-src      (Servo fork)
-#     ../ladybird       (Ladybird fork)
+#     ../servo          (Servo fork)
+#     ../ladybird  or  ../../ladybird   (Ladybird fork)
+# Each default below takes the first candidate that actually exists, so both the
+# in-tree (~/Work/mersey/ladybird) and beside-tree (~/Work/ladybird) layouts work.
 # Override any of them with the same env vars the runners use:
 #     GECKO_SRC  CHROMIUM_SRC  SERVO_SRC  LADYBIRD_SRC
+# Other knobs:
+#     SERVO_MEDIA_STACK=dummy   build Servo without GStreamer (see build_servo)
 #
 # Usage:
 #     scripts/build-macos-arm64.sh [all|staticlib|gecko|chromium|servo|ladybird ...]
@@ -35,10 +39,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"                 # the mersey repo (…/mersey/mersey)
 WORK="$(cd "$REPO/.." && pwd)"                 # …/mersey  → the forks are siblings here
 
-GECKO_SRC="${GECKO_SRC:-$WORK/gecko}"
+OUTER="$(cd "$WORK/.." && pwd)"                # …/Work → ladybird may live up here
+
+# First candidate that exists wins; falls back to the first one for the error message.
+pick() { for c in "$@"; do [ -e "$c" ] && { printf '%s\n' "$c"; return; }; done; printf '%s\n' "$1"; }
+
+GECKO_SRC="${GECKO_SRC:-$(pick "$WORK/firefox" "$WORK/gecko")}"
 CHROMIUM_SRC="${CHROMIUM_SRC:-$WORK/chromium/src}"
-SERVO_SRC="${SERVO_SRC:-$WORK/servo-src}"
-LADYBIRD_SRC="${LADYBIRD_SRC:-$WORK/ladybird}"
+SERVO_SRC="${SERVO_SRC:-$(pick "$WORK/servo" "$WORK/servo-src")}"
+LADYBIRD_SRC="${LADYBIRD_SRC:-$(pick "$WORK/ladybird" "$OUTER/ladybird")}"
 
 STATICLIB="$REPO/target/release/libmersey_capi.a"
 CHROMIUM_OUT="${CHROMIUM_OUT:-out/mersey-arm64}"   # relative to CHROMIUM_SRC
@@ -209,8 +218,24 @@ build_servo() {
   else
     ok "git checkout (no vendor/ dir) — cargo resolves the engine crate from crates.io + the path dep"
   fi
+  # Media stack. On macOS Servo accepts ONLY the official GStreamer .pkg: it
+  # tests os.path.exists('/Library/Frameworks/GStreamer.framework/Versions/1.0')
+  # in python/servo/platform/macos.py and never consults pkg-config, so a
+  # Homebrew gstreamer cannot satisfy it. Set SERVO_MEDIA_STACK=dummy to skip
+  # the check and build without media — fine for bench/web, whose workloads use
+  # no video/audio/WebRTC. Leave unset for the default (auto) behaviour.
+  # NB: no bash arrays here — macOS ships bash 3.2, where "${arr[@]}" on an
+  # empty array is an "unbound variable" error under the set -u above.
+  servo_mach_build() {
+    if [ -n "${SERVO_MEDIA_STACK:-}" ]; then
+      ( cd "$SERVO_SRC" && ./mach build --release --media-stack "$SERVO_MEDIA_STACK" -j "$JOBS" )
+    else
+      ( cd "$SERVO_SRC" && ./mach build --release -j "$JOBS" )
+    fi
+  }
+  if [ -n "${SERVO_MEDIA_STACK:-}" ]; then ok "media stack: $SERVO_MEDIA_STACK"; fi
   say "servo: ./mach build --release (-j$JOBS)"
-  if ( cd "$SERVO_SRC" && ./mach build --release -j "$JOBS" ); then
+  if servo_mach_build; then
     [ -x "$SERVO_SRC/target/release/servoshell" ] \
       && done_ servo "servoshell -> $SERVO_SRC/target/release/servoshell" \
       || done_ servo "built (see target/release/servoshell)"
