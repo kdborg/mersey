@@ -23,6 +23,8 @@ use crate::diag::{Code, Diagnostic, Pos};
 
 pub struct BindOutput {
     pub diagnostics: Vec<Diagnostic>,
+    /// This module names a web type or imports `browser:` — see [`touches_web`].
+    pub uses_web: bool,
 }
 
 /// Names every module sees without importing: the built-in error classes
@@ -66,14 +68,10 @@ pub fn bind(module: &Module) -> BindOutput {
             },
         );
     }
-    // Ambient web-platform TYPE names (spec §5.4: types are ambient,
-    // values require an import).
-    for name in &crate::webapi::webapi().type_names {
-        prelude.types.entry(name.clone()).or_insert(TSym {
-            kind: TKind::Class,
-            pos: Pos { line: 0, col: 0 },
-        });
-    }
+    // Ambient web-platform TYPE names (spec §5.4: types are ambient, values
+    // require an import) are resolved *lazily* — see `bind_type`. Populating
+    // them here would force the whole ~700 KB WebIDL surface to parse on every
+    // run, even for a program that names no web type at all.
     let mut b = Binder {
         scopes: vec![prelude, Scope::default()],
         diags: Vec::new(),
@@ -85,13 +83,22 @@ pub fn bind(module: &Module) -> BindOutput {
         labels: Vec::new(),
         loop_depth: 0,
         switch_depth: 0,
+        uses_web: false,
     };
     b.bind_module(module);
+    let uses_web = b.uses_web;
     let mut diagnostics = b.diags;
     // The hoisting pass reports duplicates before the in-order walk runs;
     // present everything in source order.
     diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
-    BindOutput { diagnostics }
+    BindOutput { diagnostics, uses_web }
+}
+
+/// Does this module reach the ambient web surface? Reuses the binder's own
+/// (authoritative, complete) type walk, so it can't miss a type position a
+/// hand-rolled scan might. Used by the checker to gate the WebIDL collection.
+pub fn touches_web(module: &Module) -> bool {
+    bind(module).uses_web
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -154,6 +161,11 @@ struct Binder {
     labels: Vec<String>,
     loop_depth: u32,
     switch_depth: u32,
+    /// Set when this module reaches the ambient web surface — either by naming
+    /// a web type (resolved lazily in `bind_type`) or by importing `browser:`.
+    /// The checker reads it (via [`touches_web`]) to decide whether to collect
+    /// the WebIDL definitions at all.
+    uses_web: bool,
 }
 
 const PREDEFINED_TYPES: &[&str] = &[
@@ -323,6 +335,12 @@ impl Binder {
     }
 
     fn hoist_import(&mut self, im: &ImportDecl) {
+        // A `browser:` import brings live web globals whose members only
+        // typecheck against the WebIDL definitions, so the checker must collect
+        // them even when the program names no web type directly.
+        if im.from.starts_with("browser:") {
+            self.uses_web = true;
+        }
         match &im.clause {
             None => {}
             Some(ImportClause::Namespace(n)) => {
@@ -1137,8 +1155,16 @@ impl Binder {
                     return;
                 }
                 if !self.type_exists(name) {
-                    let msg = format!("cannot find type `{name}`");
-                    self.error(Code::UnknownTypeName, msg, *pos);
+                    // Not declared here or in the prelude — it may be an ambient
+                    // web type (resolvable without an import, spec §5.4). Consult
+                    // the WebIDL surface only now, so a program that names no web
+                    // type never pays to parse it.
+                    if crate::webapi::is_web_type(name) {
+                        self.uses_web = true;
+                    } else {
+                        let msg = format!("cannot find type `{name}`");
+                        self.error(Code::UnknownTypeName, msg, *pos);
+                    }
                 }
             }
             TypeExpr::Nullable(t) | TypeExpr::ArrayOf(t) => self.bind_type(t),

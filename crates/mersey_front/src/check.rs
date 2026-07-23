@@ -1027,9 +1027,16 @@ fn check_graph_indexed_with(
     c.want_marker = want_marker;
     // Ambient web platform (generated from WebIDL); its own collection
     // diagnostics are suppressed — the generator is validated separately.
-    let n = c.diags.len();
-    c.collect(crate::webapi::webapi().module);
-    c.diags.truncate(n);
+    // Collected only when some module in the graph actually reaches the web
+    // surface: otherwise the ~700 KB WebIDL would parse on every run for
+    // nothing. `touches_web` reuses the binder's own complete type walk. The
+    // marker/index path (LSP) always collects, so completion still offers web
+    // types before the file names one.
+    if want_marker || modules.iter().any(|(_, m)| crate::bind::touches_web(m)) {
+        let n = c.diags.len();
+        c.collect(crate::webapi::webapi().module);
+        c.diags.truncate(n);
+    }
 
     let base_types = c.type_defs.clone();
     let base_scope = c.scopes[0].clone();
