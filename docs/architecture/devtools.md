@@ -283,6 +283,37 @@ Three hard-won front-end lessons, recorded because each failed *silently*:
    the Page navigator** — files exist but never render. Use
    `NetworkProject.setTargetForProject` + `setInitialFrameAttribution`.
 
+## Firefox: the debugger
+
+Same engine surface, Gecko idioms (`firefox/test-devtools-debugger.mjs`
+verifies breakpoint → pause-with-locals → step → resume → disable against
+the built browser):
+
+- `MerseyScriptRunner` grows `DebugScriptsJson` (inline sources recorded at
+  `Run()`, engine lines — no offsets), `DebugSetBreakpoints` (installs the
+  hook itself), and `DebugAction`. **Pausing spins the event loop**
+  (`SpinEventLoopUntil`) — Gecko's own synchronous-wait idiom — which is
+  what keeps the DevTools server actors deliverable while the engine sits
+  blocked in its callout; pause/resume announce via observer notifications
+  (`mersey-debugger-paused`/`-resumed`, JSON with the inner window id), so
+  no JS callback is ever stored in C++.
+- `ChromeUtils.merseyDebugScripts/SetBreakpoints/Action` are the chrome-only
+  doors; a target-scoped `merseyDebugger` actor (spec + front registered the
+  standard way) translates RDP to them.
+- A **Mersey panel** in the toolbox (beside the JS Debugger) shows the
+  source with clickable gutter lines, the paused line, stack + scopes, and
+  the stepping controls. Its own panel because Firefox's Debugger panel is
+  built on SpiderMonkey's Debugger API, which never sees Mersey code.
+
+Traps recorded: `moz.build` `DevToolsModules`/`DIRS` lists are
+**sort-enforced at configure time** (an unsorted insert fails the whole
+build), and `nsCString` has no range-for.
+
+Limits: the panel UI is untested by automation (Firefox chrome UI is not
+scriptable from outside); Gecko dispatches engine event callbacks via posted
+runnables, so a console evaluation that clicks a button returns before the
+listener — and any pause — happens.
+
 ## The debugger half
 
 Already built engine-side and shared by every fork
