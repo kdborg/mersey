@@ -2747,15 +2747,21 @@ fn translate(
                     // for min, iff `!(arg1 < arg0)` for max. `fcmp LessThan` is
                     // false for a NaN operand, so NaN and ±0 come out identical
                     // to the interpreter (which compares with the same `<`).
+                    //
+                    // Both select on the *same* `a1 < a0` compare — max just
+                    // swaps the arms rather than negating it. Negating (`!lt`)
+                    // would force the FP-compare result out to a GPR and back
+                    // (cset/uxtb/subs), landing three integer ops and two
+                    // domain crossings on the loop-carried path; selecting on
+                    // `lt` directly lowers to a single `fcmp`+`fcsel`.
                     MathOp::Min | MathOp::Max => {
                         let (a0, a1) = (fargs[0], fargs[1]);
                         let lt = b.ins().fcmp(FloatCC::LessThan, a1, a0);
-                        let take_a1 = if op == MathOp::Min {
-                            lt
+                        if op == MathOp::Min {
+                            b.ins().select(lt, a1, a0) // (a1 < a0) ? a1 : a0
                         } else {
-                            b.ins().icmp_imm(IntCC::Equal, lt, 0) // !lt
-                        };
-                        b.ins().select(take_a1, a1, a0)
+                            b.ins().select(lt, a0, a1) // (a1 < a0) ? a0 : a1
+                        }
                     }
                 };
                 stack.push(SlotV::Val(r, Ty::F64));
