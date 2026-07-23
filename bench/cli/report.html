@@ -217,22 +217,22 @@
   };
   const DATA = {
     work: {
-      compute:  { node: 91.67, bun: 97.59, deno: 97.76, mersey: 89.44 },
-      calls:    { node: 123.31, bun: 31.30, deno: 28.91, mersey: 22.58 },
-      fcompute: { node: 104.62, bun: 103.93, deno: 104.57, mersey: 103.82 },
-      mathk:    { node: 13.59, bun: 14.21, deno: 13.22, mersey: 28.67 },
+      compute:  { node: 87.65, bun: 96.57, deno: 96.56, mersey: 87.40 },
+      calls:    { node: 121.70, bun: 31.15, deno: 27.83, mersey: 22.03 },
+      fcompute: { node: 102.90, bun: 102.77, deno: 104.26, mersey: 102.74 },
+      mathk:    { node: 13.44, bun: 14.32, deno: 13.10, mersey: 15.73 },
     },
     wall: {
-      compute:  { node: 130, bun: 110, deno: 110, mersey: 100 },
-      calls:    { node: 150, bun: 40, deno: 40, mersey: 20 },
+      compute:  { node: 120, bun: 110, deno: 110, mersey: 90 },
+      calls:    { node: 140, bun: 40, deno: 30, mersey: 20 },
       fcompute: { node: 130, bun: 110, deno: 110, mersey: 100 },
-      mathk:    { node: 40, bun: 20, deno: 20, mersey: 30 },
+      mathk:    { node: 40, bun: 20, deno: 20, mersey: 10 },
     },
     rss: {
-      compute:  { node: 38.8, bun: 29.1, deno: 34.8, mersey: 5.9 },
-      calls:    { node: 39.0, bun: 31.2, deno: 34.8, mersey: 5.8 },
-      fcompute: { node: 40.6, bun: 29.1, deno: 36.8, mersey: 5.5 },
-      mathk:    { node: 40.0, bun: 30.8, deno: 36.9, mersey: 5.5 },
+      compute:  { node: 38.7, bun: 29.1, deno: 34.8, mersey: 6.0 },
+      calls:    { node: 38.9, bun: 31.2, deno: 34.8, mersey: 5.9 },
+      fcompute: { node: 40.5, bun: 29.0, deno: 36.8, mersey: 5.5 },
+      mathk:    { node: 39.8, bun: 30.7, deno: 36.9, mersey: 5.6 },
     },
   };
   const METRICS = [
@@ -246,8 +246,8 @@
   const CARDS = [
     { cls: "hero", k: "Memory", v: "≈5.5 MiB", vc: "good", d: "flat across every workload — ~7× lighter than Node, ~5× under Bun/Deno. A native binary with no JS heap or GC, and no WebIDL surface loaded unless used." },
     { k: "Cold start", v: "fastest", vc: "good", d: "wall-clock wins calls (20 ms) and ties/beats on compute & fcompute — the WebIDL surface now parses lazily, so a non-web program skips ~25 ms of startup." },
-    { k: "Compute", v: "parity", vc: "", d: "ties Node on the int & float kernels — Cranelift Tier-1 reaches the same native throughput as V8/JSC; 22.6 ms on 20M calls is quickest of the four." },
-    { k: "Math intrinsics", v: "≈2× slower", vc: "warn", d: "mathk is 29 ms vs ~13 ms — V8/JSC's sqrt/max/abs beat std:math. The one steady-state loss and a real optimization target." },
+    { k: "Compute", v: "parity", vc: "", d: "ties Node on the int & float kernels — Cranelift Tier-1 reaches the same native throughput as V8/JSC; 22 ms on 20M calls is quickest of the four." },
+    { k: "Math intrinsics", v: "~parity", vc: "", d: "mathk 15.7 ms vs ~13 — was 2× behind until math.max stopped round-tripping its compare through a GPR, off the loop-carried path. sqrt/mod were already free." },
   ];
   document.getElementById("cards").innerHTML = CARDS.map((c) => `
     <div class="card ${c.cls || ""}">

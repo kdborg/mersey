@@ -6,25 +6,25 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 91.67 | 97.59 | 97.76 | 89.44 |
-| calls | 123.31 | 31.3 | 28.91 | 22.58 |
-| fcompute | 104.62 | 103.93 | 104.57 | 103.82 |
-| mathk | 13.59 | 14.21 | 13.22 | 28.67 |
+| compute | 87.65 | 96.57 | 96.56 | 87.4 |
+| calls | 121.7 | 31.15 | 27.83 | 22.03 |
+| fcompute | 102.9 | 102.77 | 104.26 | 102.74 |
+| mathk | 13.44 | 14.32 | 13.1 | 15.73 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 130 | 110 | 110 | 100 |
-| calls | 150 | 40 | 40 | 20 |
+| compute | 120 | 110 | 110 | 90 |
+| calls | 140 | 40 | 30 | 20 |
 | fcompute | 130 | 110 | 110 | 100 |
-| mathk | 40 | 20 | 20 | 30 |
+| mathk | 40 | 20 | 20 | 10 |
 
 ## Peak RSS (MiB)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.8 | 29.1 | 34.8 | 5.9 |
-| calls | 39 | 31.2 | 34.8 | 5.8 |
-| fcompute | 40.6 | 29.1 | 36.8 | 5.5 |
-| mathk | 40 | 30.8 | 36.9 | 5.5 |
+| compute | 38.7 | 29.1 | 34.8 | 6 |
+| calls | 38.9 | 31.2 | 34.8 | 5.9 |
+| fcompute | 40.5 | 29 | 36.8 | 5.5 |
+| mathk | 39.8 | 30.7 | 36.9 | 5.6 |
