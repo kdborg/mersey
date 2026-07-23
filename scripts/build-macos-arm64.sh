@@ -187,7 +187,7 @@ build_chromium() {
 target_os = "mac"
 target_cpu = "arm64"
 is_debug = false
-is_component_build = true
+is_component_build = false
 symbol_level = 0
 blink_symbol_level = 0
 enable_nacl = false

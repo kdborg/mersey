@@ -21,9 +21,15 @@ process.on("exit", () => killForks());
 process.on("SIGINT", () => { killForks(); process.exit(130); });
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FORK = process.env.CHROMIUM_SRC
-  ? `${process.env.CHROMIUM_SRC}/out/mersey-arm64/chrome`
-  : join(here, "../../../chromium/src/out/mersey-arm64/chrome");
+// macOS: the stub launcher resolves its framework relative to argv[0], so it
+// MUST be invoked through the .app bundle path — a bare `chrome` symlink makes
+// dlopen look in out/../Frameworks (nonexistent) and the stub aborts
+// (main -> FatalError). Linux keeps the plain `chrome`.
+const CHROMIUM_SRC = process.env.CHROMIUM_SRC || join(here, "../../../chromium/src");
+const FORK =
+  process.platform === "darwin"
+    ? `${CHROMIUM_SRC}/out/mersey-arm64/Chromium.app/Contents/MacOS/Chromium`
+    : `${CHROMIUM_SRC}/out/mersey-arm64/chrome`;
 const REPEATS = 3;
 
 const WORKLOADS = process.env.WL
