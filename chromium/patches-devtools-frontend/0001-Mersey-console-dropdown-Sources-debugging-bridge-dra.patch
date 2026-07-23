@@ -1,0 +1,1722 @@
+From 574f0c839b6d0c67cf91ebf199522ca456856bdf Mon Sep 17 00:00:00 2001
+From: Kirk Brown <kdborg@gmail.com>
+Date: Wed, 22 Jul 2026 16:37:32 -0400
+Subject: [PATCH] Mersey: console dropdown, Sources debugging bridge, drawer
+ panel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Console: JavaScript/Mersey language selector (persisted setting) in the
+  toolbar; Mersey turns go to the fork's Mersey CDP domain, never the JS
+  evaluator; completions in Mersey mode come from Mersey.completions via a
+  CodeMirror `override`, so no JS global can appear.
+- Sources bridge (panels/mersey/mersey-meta.ts, late-initialization
+  runnable — meta modules evaluate before MainImpl boots and boot replaces
+  app singletons): serves executed Mersey scripts as Sources files (real
+  URL for external .mersey modules, "<page>.mersey" for inline blocks),
+  translates gutter breakpoints to engine lines (sole writer — REPLACE
+  semantics tolerate no second writer), reveals the paused line, and
+  routes the STANDARD toggle-pause/step actions to the Mersey engine while
+  it is paused. window.__merseyDebug is the in-page ground-truth handle.
+- Drawer panel: stack/scopes/stepping, auto-opened on pause (a pause that
+  presents nothing reads as a hung page); consumes a pause that fired
+  before the panel opened.
+- Generated protocol refreshed from the fork's Mersey.pdl (concatenated
+  with v8's js_protocol.pdl — omitting it silently drops Runtime/Debugger).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ config/gni/devtools_grd_files.gni             |   2 +
+ .../core/protocol_client/InspectorBackend.ts  |  11 +
+ front_end/entrypoints/devtools_app/BUILD.gn   |   1 +
+ .../entrypoints/devtools_app/devtools_app.ts  |   1 +
+ .../generated/InspectorBackendCommands.ts     |  19 +
+ front_end/generated/protocol-mapping.d.ts     |  85 ++++
+ front_end/generated/protocol-proxy-api.d.ts   |  74 ++++
+ front_end/generated/protocol.ts               | 113 ++++++
+ front_end/panels/console/ConsolePrompt.ts     |  75 ++++
+ front_end/panels/console/ConsoleView.ts       |  14 +
+ front_end/panels/mersey/BUILD.gn              |  42 ++
+ .../panels/mersey/MerseyDebuggerPanel.ts      | 230 +++++++++++
+ front_end/panels/mersey/mersey-meta.ts        | 373 ++++++++++++++++++
+ front_end/panels/mersey/mersey.ts             |   7 +
+ front_end/panels/sources/SourcesPanel.ts      |  33 ++
+ .../devtools_protocol/browser_protocol.json   | 221 +++++++++++
+ .../devtools_protocol/browser_protocol.pdl    |   1 +
+ .../devtools_protocol/domains/Mersey.pdl      | 124 ++++++
+ 18 files changed, 1426 insertions(+)
+ create mode 100644 front_end/panels/mersey/BUILD.gn
+ create mode 100644 front_end/panels/mersey/MerseyDebuggerPanel.ts
+ create mode 100644 front_end/panels/mersey/mersey-meta.ts
+ create mode 100644 front_end/panels/mersey/mersey.ts
+ create mode 100644 third_party/blink/public/devtools_protocol/domains/Mersey.pdl
+
+diff --git a/config/gni/devtools_grd_files.gni b/config/gni/devtools_grd_files.gni
+index 7b9798e24c..d13ed80aba 100644
+--- a/config/gni/devtools_grd_files.gni
++++ b/config/gni/devtools_grd_files.gni
+@@ -766,6 +766,8 @@ grd_files_bundled_sources = [
+   "front_end/panels/issues/components/components.js",
+   "front_end/panels/issues/issues-meta.js",
+   "front_end/panels/issues/issues.js",
++  "front_end/panels/mersey/mersey-meta.js",
++  "front_end/panels/mersey/mersey.js",
+   "front_end/panels/js_timeline/js_timeline-meta.js",
+   "front_end/panels/js_timeline/js_timeline.js",
+   "front_end/panels/layer_viewer/layer_viewer-meta.js",
+diff --git a/front_end/core/protocol_client/InspectorBackend.ts b/front_end/core/protocol_client/InspectorBackend.ts
+index 3ce29344b2..2cac195241 100644
+--- a/front_end/core/protocol_client/InspectorBackend.ts
++++ b/front_end/core/protocol_client/InspectorBackend.ts
+@@ -459,6 +459,11 @@ export class TargetBase {
+     return this.getAgent('Profiler');
+   }
+ 
++  // Mersey fork: the console in Mersey mode (Mersey.evaluate / .completions).
++  merseyAgent(): ProtocolProxyApi.MerseyApi {
++    return this.getAgent('Mersey');
++  }
++
+   performanceAgent(): ProtocolProxyApi.PerformanceApi {
+     return this.getAgent('Performance');
+   }
+@@ -623,6 +628,12 @@ export class TargetBase {
+     this.registerDispatcher('Runtime', dispatcher);
+   }
+ 
++  // Mersey fork: Mersey.paused / Mersey.resumed. The engine is not V8, so its
++  // pauses cannot arrive on the Debugger domain.
++  registerMerseyDispatcher(dispatcher: ProtocolProxyApi.MerseyDispatcher): void {
++    this.registerDispatcher('Mersey', dispatcher);
++  }
++
+   registerSecurityDispatcher(dispatcher: ProtocolProxyApi.SecurityDispatcher): void {
+     this.registerDispatcher('Security', dispatcher);
+   }
+diff --git a/front_end/entrypoints/devtools_app/BUILD.gn b/front_end/entrypoints/devtools_app/BUILD.gn
+index 3cb5150acb..e2bc3ef3b1 100644
+--- a/front_end/entrypoints/devtools_app/BUILD.gn
++++ b/front_end/entrypoints/devtools_app/BUILD.gn
+@@ -19,6 +19,7 @@ devtools_entrypoint("entrypoint") {
+     "../../panels/elements:meta",
+     "../../panels/emulation:meta",
+     "../../panels/issues:meta",
++    "../../panels/mersey:meta",
+     "../../panels/layer_viewer:meta",
+     "../../panels/layers:meta",
+     "../../panels/lighthouse:meta",
+diff --git a/front_end/entrypoints/devtools_app/devtools_app.ts b/front_end/entrypoints/devtools_app/devtools_app.ts
+index 05020a9c68..59b4fac11b 100644
+--- a/front_end/entrypoints/devtools_app/devtools_app.ts
++++ b/front_end/entrypoints/devtools_app/devtools_app.ts
+@@ -16,6 +16,7 @@ import '../../panels/autofill/autofill-meta.js';
+ import '../inspector_main/inspector_main-meta.js';
+ import '../../panels/application/application-meta.js';
+ import '../../panels/issues/issues-meta.js';
++import '../../panels/mersey/mersey-meta.js';
+ import '../../panels/layers/layers-meta.js';
+ import '../../panels/lighthouse/lighthouse-meta.js';
+ import '../../panels/media/media-meta.js';
+diff --git a/front_end/generated/InspectorBackendCommands.ts b/front_end/generated/InspectorBackendCommands.ts
+index 55b14933e2..55ba321c98 100644
+--- a/front_end/generated/InspectorBackendCommands.ts
++++ b/front_end/generated/InspectorBackendCommands.ts
+@@ -357,6 +357,25 @@ inspectorBackend.registerType("Cast.Sink", [{"name": "name", "type": "string", "
+ inspectorBackend.registerCommand("CrashReportContext.getEntries", [], ["entries"], "Returns all entries in the CrashReportContext across all frames in the page.");
+ inspectorBackend.registerType("CrashReportContext.CrashReportContextEntry", [{"name": "key", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "value", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "frameId", "type": "string", "optional": false, "description": "The ID of the frame where the key-value pair was set.", "typeRef": "Page.FrameId"}]);
+ 
++// Mersey.
++inspectorBackend.registerEvent("Mersey.paused", ["reason", "callFrames"]);
++inspectorBackend.registerEvent("Mersey.resumed", []);
++inspectorBackend.registerCommand("Mersey.evaluate", [{"name": "expression", "type": "string", "optional": false, "description": "The Mersey source for this turn.", "typeRef": null}], ["result", "isError", "isCompileError"], "Evaluate one console turn in the page's Mersey engine.  The session is one growing, always-typechecked module: each turn appends a fragment and re-checks the whole program, then runs only the new items. The language has no `eval` — this is the ordinary compile pipeline, not a separate interpreter mode.");
++inspectorBackend.registerCommand("Mersey.completions", [], ["names"], "The names the Mersey session can see, for console completion. This is Mersey's view, not the JS realm's: the session's own top-level bindings plus the std:console prelude, and deliberately no window/document.");
++inspectorBackend.registerCommand("Mersey.getScripts", [], ["scripts"], "Every Mersey source this document has run, including the growing console session. A front-end needs these to display code and place breakpoints: the engine is not V8, so none of them appear in the Debugger domain.");
++inspectorBackend.registerCommand("Mersey.enableDebugger", [], [], "Attach the debugger. Forces the engine's tree-walker, so it costs speed — that is the deliberate trade, the same one V8 makes.");
++inspectorBackend.registerCommand("Mersey.disableDebugger", [], [], "Detach and restore the engine's VM tier.");
++inspectorBackend.registerCommand("Mersey.setBreakpoints", [{"name": "url", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "lines", "type": "array", "optional": false, "description": "", "typeRef": "integer"}], [], "REPLACES the breakpoint set for `url`. An empty url matches every module, which is how a front-end that does not track Mersey sources still breaks.");
++inspectorBackend.registerCommand("Mersey.pause", [], [], "Stop at the next statement.");
++inspectorBackend.registerCommand("Mersey.resume", [], [], "The resume family. Step depths are the engine's business — it knows the paused frame count, so no caller computes one.");
++inspectorBackend.registerCommand("Mersey.stepOver", [], [], "");
++inspectorBackend.registerCommand("Mersey.stepInto", [], [], "");
++inspectorBackend.registerCommand("Mersey.stepOut", [], [], "");
++inspectorBackend.registerType("Mersey.Script", [{"name": "url", "type": "string", "optional": false, "description": "The DOCUMENT the script came from (an inline script's page URL), or \\\"<repl>\\\" for the console session.", "typeRef": null}, {"name": "source", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "spec", "type": "string", "optional": false, "description": "The engine's own module name \u2014 what a paused frame's `url` reports: a graph module's spec, or \\\"<script>\\\" for an inline block.", "typeRef": null}, {"name": "startLine", "type": "number", "optional": false, "description": "0-based document line where the source's first line sits \u2014 the line of the <script> tag. Sources-panel gutter lines map to engine lines as: engineLine0 = documentLine0 - startLine.", "typeRef": null}]);
++inspectorBackend.registerType("Mersey.CallFrame", [{"name": "functionName", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "url", "type": "string", "optional": false, "description": "The module this frame is executing, as the engine names it.", "typeRef": null}, {"name": "lineNumber", "type": "number", "optional": false, "description": "", "typeRef": null}, {"name": "columnNumber", "type": "number", "optional": false, "description": "", "typeRef": null}, {"name": "scopeChain", "type": "array", "optional": false, "description": "", "typeRef": "Mersey.Scope"}]);
++inspectorBackend.registerType("Mersey.Scope", [{"name": "name", "type": "string", "optional": false, "description": "\\\"Locals\\\" | \\\"Closure N\\\" | \\\"Globals\\\"", "typeRef": null}, {"name": "variables", "type": "array", "optional": false, "description": "", "typeRef": "Mersey.Variable"}]);
++inspectorBackend.registerType("Mersey.Variable", [{"name": "name", "type": "string", "optional": false, "description": "", "typeRef": null}, {"name": "value", "type": "string", "optional": false, "description": "Display text. Mersey values are not JS values, so there is no RemoteObject and nothing to grip.", "typeRef": null}]);
++
+ // DOM.
+ inspectorBackend.registerEnum("DOM.PseudoType", {FirstLine: "first-line", FirstLetter: "first-letter", Checkmark: "checkmark", Before: "before", After: "after", ExpandIcon: "expand-icon", PickerIcon: "picker-icon", InterestButton: "interest-button", Marker: "marker", Backdrop: "backdrop", Column: "column", Selection: "selection", SearchText: "search-text", TargetText: "target-text", SpellingError: "spelling-error", GrammarError: "grammar-error", Highlight: "highlight", FirstLineInherited: "first-line-inherited", ScrollMarker: "scroll-marker", ScrollMarkerGroup: "scroll-marker-group", ScrollButton: "scroll-button", Scrollbar: "scrollbar", ScrollbarThumb: "scrollbar-thumb", ScrollbarButton: "scrollbar-button", ScrollbarTrack: "scrollbar-track", ScrollbarTrackPiece: "scrollbar-track-piece", ScrollbarCorner: "scrollbar-corner", Resizer: "resizer", InputListButton: "input-list-button", ViewTransition: "view-transition", ViewTransitionGroup: "view-transition-group", ViewTransitionImagePair: "view-transition-image-pair", ViewTransitionGroupChildren: "view-transition-group-children", ViewTransitionOld: "view-transition-old", ViewTransitionNew: "view-transition-new", Placeholder: "placeholder", FileSelectorButton: "file-selector-button", DetailsContent: "details-content", Picker: "picker", SelectListbox: "select-listbox", PermissionIcon: "permission-icon", OverscrollAreaParent: "overscroll-area-parent", OverscrollBackdrop: "overscroll-backdrop", Skeleton: "skeleton"});
+ inspectorBackend.registerEnum("DOM.ShadowRootType", {UserAgent: "user-agent", Open: "open", Closed: "closed"});
+diff --git a/front_end/generated/protocol-mapping.d.ts b/front_end/generated/protocol-mapping.d.ts
+index 96e251d3f8..036a5bef59 100644
+--- a/front_end/generated/protocol-mapping.d.ts
++++ b/front_end/generated/protocol-mapping.d.ts
+@@ -112,6 +112,11 @@ export namespace ProtocolMapping {
+      * |issueMessage| is empty if there is no issue.
+      */
+     'Cast.issueUpdated': [Protocol.Cast.IssueUpdatedEvent];
++    /**
++     * The engine stopped. The renderer is blocked until a resume-family command.
++     */
++    'Mersey.paused': [Protocol.Mersey.PausedEvent];
++    'Mersey.resumed': [];
+     /**
+      * Fired when `Element`'s attribute is modified.
+      */
+@@ -1907,6 +1912,86 @@ export namespace ProtocolMapping {
+       paramsType: [];
+       returnType: Protocol.CrashReportContext.GetEntriesResponse;
+     };
++    /**
++     * Evaluate one console turn in the page's Mersey engine.
++     *
++     * The session is one growing, always-typechecked module: each turn appends a
++     * fragment and re-checks the whole program, then runs only the new items.
++     * The language has no `eval` — this is the ordinary compile pipeline, not a
++     * separate interpreter mode.
++     */
++    'Mersey.evaluate': {
++      paramsType: [Protocol.Mersey.EvaluateRequest];
++      returnType: Protocol.Mersey.EvaluateResponse;
++    };
++    /**
++     * The names the Mersey session can see, for console completion. This is
++     * Mersey's view, not the JS realm's: the session's own top-level bindings
++     * plus the std:console prelude, and deliberately no window/document.
++     */
++    'Mersey.completions': {
++      paramsType: [];
++      returnType: Protocol.Mersey.CompletionsResponse;
++    };
++    /**
++     * Every Mersey source this document has run, including the growing console
++     * session. A front-end needs these to display code and place breakpoints:
++     * the engine is not V8, so none of them appear in the Debugger domain.
++     */
++    'Mersey.getScripts': {
++      paramsType: [];
++      returnType: Protocol.Mersey.GetScriptsResponse;
++    };
++    /**
++     * Attach the debugger. Forces the engine's tree-walker, so it costs speed —
++     * that is the deliberate trade, the same one V8 makes.
++     */
++    'Mersey.enableDebugger': {
++      paramsType: [];
++      returnType: void;
++    };
++    /**
++     * Detach and restore the engine's VM tier.
++     */
++    'Mersey.disableDebugger': {
++      paramsType: [];
++      returnType: void;
++    };
++    /**
++     * REPLACES the breakpoint set for `url`. An empty url matches every module,
++     * which is how a front-end that does not track Mersey sources still breaks.
++     */
++    'Mersey.setBreakpoints': {
++      paramsType: [Protocol.Mersey.SetBreakpointsRequest];
++      returnType: void;
++    };
++    /**
++     * Stop at the next statement.
++     */
++    'Mersey.pause': {
++      paramsType: [];
++      returnType: void;
++    };
++    /**
++     * The resume family. Step depths are the engine's business — it knows the
++     * paused frame count, so no caller computes one.
++     */
++    'Mersey.resume': {
++      paramsType: [];
++      returnType: void;
++    };
++    'Mersey.stepOver': {
++      paramsType: [];
++      returnType: void;
++    };
++    'Mersey.stepInto': {
++      paramsType: [];
++      returnType: void;
++    };
++    'Mersey.stepOut': {
++      paramsType: [];
++      returnType: void;
++    };
+     /**
+      * Collects class names for the node with given id and all of it's child nodes.
+      */
+diff --git a/front_end/generated/protocol-proxy-api.d.ts b/front_end/generated/protocol-proxy-api.d.ts
+index cbe20d7f31..1894c7ec13 100644
+--- a/front_end/generated/protocol-proxy-api.d.ts
++++ b/front_end/generated/protocol-proxy-api.d.ts
+@@ -42,6 +42,8 @@ declare namespace ProtocolProxyApi {
+ 
+     CrashReportContext: CrashReportContextApi;
+ 
++    Mersey: MerseyApi;
++
+     DOM: DOMApi;
+ 
+     DOMDebugger: DOMDebuggerApi;
+@@ -159,6 +161,8 @@ declare namespace ProtocolProxyApi {
+ 
+     CrashReportContext: CrashReportContextDispatcher;
+ 
++    Mersey: MerseyDispatcher;
++
+     DOM: DOMDispatcher;
+ 
+     DOMDebugger: DOMDebuggerDispatcher;
+@@ -1082,6 +1086,76 @@ declare namespace ProtocolProxyApi {
+   export interface CrashReportContextDispatcher {
+   }
+ 
++  export interface MerseyApi {
++    /**
++     * Evaluate one console turn in the page's Mersey engine.
++     *
++     * The session is one growing, always-typechecked module: each turn appends a
++     * fragment and re-checks the whole program, then runs only the new items.
++     * The language has no `eval` — this is the ordinary compile pipeline, not a
++     * separate interpreter mode.
++     */
++    invoke_evaluate(params: Protocol.Mersey.EvaluateRequest): Promise<Protocol.Mersey.EvaluateResponse>;
++
++    /**
++     * The names the Mersey session can see, for console completion. This is
++     * Mersey's view, not the JS realm's: the session's own top-level bindings
++     * plus the std:console prelude, and deliberately no window/document.
++     */
++    invoke_completions(): Promise<Protocol.Mersey.CompletionsResponse>;
++
++    /**
++     * Every Mersey source this document has run, including the growing console
++     * session. A front-end needs these to display code and place breakpoints:
++     * the engine is not V8, so none of them appear in the Debugger domain.
++     */
++    invoke_getScripts(): Promise<Protocol.Mersey.GetScriptsResponse>;
++
++    /**
++     * Attach the debugger. Forces the engine's tree-walker, so it costs speed —
++     * that is the deliberate trade, the same one V8 makes.
++     */
++    invoke_enableDebugger(): Promise<Protocol.ProtocolResponseWithError>;
++
++    /**
++     * Detach and restore the engine's VM tier.
++     */
++    invoke_disableDebugger(): Promise<Protocol.ProtocolResponseWithError>;
++
++    /**
++     * REPLACES the breakpoint set for `url`. An empty url matches every module,
++     * which is how a front-end that does not track Mersey sources still breaks.
++     */
++    invoke_setBreakpoints(params: Protocol.Mersey.SetBreakpointsRequest): Promise<Protocol.ProtocolResponseWithError>;
++
++    /**
++     * Stop at the next statement.
++     */
++    invoke_pause(): Promise<Protocol.ProtocolResponseWithError>;
++
++    /**
++     * The resume family. Step depths are the engine's business — it knows the
++     * paused frame count, so no caller computes one.
++     */
++    invoke_resume(): Promise<Protocol.ProtocolResponseWithError>;
++
++    invoke_stepOver(): Promise<Protocol.ProtocolResponseWithError>;
++
++    invoke_stepInto(): Promise<Protocol.ProtocolResponseWithError>;
++
++    invoke_stepOut(): Promise<Protocol.ProtocolResponseWithError>;
++
++  }
++  export interface MerseyDispatcher {
++    /**
++     * The engine stopped. The renderer is blocked until a resume-family command.
++     */
++    paused(params: Protocol.Mersey.PausedEvent): void;
++
++    resumed(): void;
++
++  }
++
+   export interface DOMApi {
+     /**
+      * Collects class names for the node with given id and all of it's child nodes.
+diff --git a/front_end/generated/protocol.ts b/front_end/generated/protocol.ts
+index facc6c7d34..241bc86c77 100644
+--- a/front_end/generated/protocol.ts
++++ b/front_end/generated/protocol.ts
+@@ -4752,6 +4752,119 @@ export namespace CrashReportContext {
+   }
+ }
+ 
++/**
++ * The Mersey engine hosted in this renderer. Mersey is a separate language with
++ * a separate engine and a separate heap: it holds integer handles to host
++ * objects and never a JS value, so NO binding is shared with the JS realm.
++ * That is why this is its own domain rather than a mode of Runtime — a Mersey
++ * turn cannot be expressed as an evaluation in a V8 context.
++ */
++export namespace Mersey {
++
++  /**
++   * A Mersey source this document has executed.
++   */
++  export interface Script {
++    /**
++     * The DOCUMENT the script came from (an inline script's page URL), or
++     * "<repl>" for the console session.
++     */
++    url: string;
++    source: string;
++    /**
++     * The engine's own module name — what a paused frame's `url` reports:
++     * a graph module's spec, or "<script>" for an inline block.
++     */
++    spec: string;
++    /**
++     * 0-based document line where the source's first line sits — the line
++     * of the <script> tag. Sources-panel gutter lines map to engine lines
++     * as: engineLine0 = documentLine0 - startLine.
++     */
++    startLine: integer;
++  }
++
++  /**
++   * One frame of a paused Mersey stack, outermost LAST (index 0 is innermost).
++   */
++  export interface CallFrame {
++    functionName: string;
++    /**
++     * The module this frame is executing, as the engine names it.
++     */
++    url: string;
++    lineNumber: integer;
++    columnNumber: integer;
++    scopeChain: Scope[];
++  }
++
++  export interface Scope {
++    /**
++     * "Locals" | "Closure N" | "Globals"
++     */
++    name: string;
++    variables: Variable[];
++  }
++
++  export interface Variable {
++    name: string;
++    /**
++     * Display text. Mersey values are not JS values, so there is no
++     * RemoteObject and nothing to grip.
++     */
++    value: string;
++  }
++
++  export interface EvaluateRequest {
++    /**
++     * The Mersey source for this turn.
++     */
++    expression: string;
++  }
++
++  export interface EvaluateResponse extends ProtocolResponseWithError {
++    /**
++     * Display text of a trailing bare expression; empty when the turn only
++     * declared something.
++     */
++    result: string;
++    /**
++     * True when the turn failed: either rejected by the checker (it never
++     * ran) or thrown at runtime. `result` then carries the diagnostics.
++     */
++    isError: boolean;
++    /**
++     * True when the turn was rejected before running, false when it threw.
++     * Only meaningful if isError.
++     */
++    isCompileError: boolean;
++  }
++
++  export interface CompletionsResponse extends ProtocolResponseWithError {
++    names: string[];
++  }
++
++  export interface GetScriptsResponse extends ProtocolResponseWithError {
++    scripts: Script[];
++  }
++
++  export interface SetBreakpointsRequest {
++    url: string;
++    lines: integer[];
++  }
++
++  /**
++   * The engine stopped. The renderer is blocked until a resume-family command.
++   */
++  export interface PausedEvent {
++    /**
++     * "breakpoint" | "step" | "pause"
++     */
++    reason: string;
++    callFrames: CallFrame[];
++  }
++}
++
+ /**
+  * This domain exposes DOM read/write operations. Each DOM Node is represented with its mirror object
+  * that has an `id`. This `id` can be used to get additional information on the Node, resolve it into
+diff --git a/front_end/panels/console/ConsolePrompt.ts b/front_end/panels/console/ConsolePrompt.ts
+index 3beec56bb7..6fe8a59cb6 100644
+--- a/front_end/panels/console/ConsolePrompt.ts
++++ b/front_end/panels/console/ConsolePrompt.ts
+@@ -7,6 +7,7 @@ import * as Common from '../../core/common/common.js';
+ import * as Host from '../../core/host/host.js';
+ import * as i18n from '../../core/i18n/i18n.js';
+ import * as Root from '../../core/root/root.js';
++import * as Protocol from '../../generated/protocol.js';
+ import * as SDK from '../../core/sdk/sdk.js';
+ import * as Badges from '../../models/badges/badges.js';
+ import * as Formatter from '../../models/formatter/formatter.js';
+@@ -70,11 +71,45 @@ export class ConsolePrompt extends Common.ObjectWrapper.eventMixin<EventTypes, t
+   private aiCodeCompletionConfig?: TextEditor.AiCodeCompletionProvider.AiCodeCompletionConfig;
+   private aiCodeCompletionProvider?: TextEditor.AiCodeCompletionProvider.AiCodeCompletionProvider;
+ 
++  // Mersey fork: the completion surface in Mersey mode is MERSEY's view — the
++  // session's own top-level bindings plus its prelude — and never the JS
++  // realm's. `Mersey.completions` is what the engine can actually see; it
++  // excludes window/document by construction.
++  async #merseyCompletion(context: CodeMirror.CompletionContext):
++      Promise<CodeMirror.CompletionResult|null> {
++    const word = context.matchBefore(/[A-Za-z_$][\w$]*/);
++    if (!word && !context.explicit) {
++      return null;
++    }
++    const executionContext = UI.Context.Context.instance().flavor(SDK.RuntimeModel.ExecutionContext);
++    if (!executionContext) {
++      return null;
++    }
++    const response = await executionContext.target().merseyAgent().invoke_completions({});
++    if (response.getError()) {
++      return null;
++    }
++    return {
++      from: word ? word.from : context.pos,
++      options: response.names.map(label => ({label, type: 'variable'})),
++    };
++  }
++
+   #getJavaScriptCompletionExtensions(): CodeMirror.Extension {
+     if (this.#selfXssWarningShown) {
+       // No (JavaScript) completions at all while showing the self-XSS warning.
+       return [];
+     }
++    // Mersey fork: `override` replaces EVERY completion source, so no JS
++    // global, function, or keyword can leak into the Mersey surface — which
++    // language data alone would not guarantee. The JS language stays on for
++    // syntax highlighting only; Mersey's syntax is close enough to read.
++    if (Common.Settings.Settings.instance().createSetting('console-language', 'javascript').get() === 'mersey') {
++      return [
++        CodeMirror.javascript.javascript(),
++        CodeMirror.autocompletion({override: [context => this.#merseyCompletion(context)]}),
++      ];
++    }
+     if (Root.Runtime.Runtime.queryParam('noJavaScriptCompletion') !== 'true') {
+       return [
+         CodeMirror.javascript.javascript(),
+@@ -99,6 +134,11 @@ export class ConsolePrompt extends Common.ObjectWrapper.eventMixin<EventTypes, t
+     });
+     this.registerRequiredCSS(consolePromptStyles);
+     this.addCompletionsFromHistory = true;
++    // Mersey fork: switching the console's language swaps the completion
++    // surface, so the compartment has to be rebuilt on change.
++    Common.Settings.Settings.instance()
++        .createSetting('console-language', 'javascript')
++        .addChangeListener(() => this.#updateJavaScriptCompletionCompartment());
+     this.#history = new TextEditor.AutocompleteHistory.AutocompleteHistory(
+         Common.Settings.Settings.instance().createLocalSetting('console-history', []));
+ 
+@@ -424,9 +464,44 @@ export class ConsolePrompt extends Common.ObjectWrapper.eventMixin<EventTypes, t
+     }
+   }
+ 
++  // Mersey fork: one turn in the page's Mersey engine, via the fork's own CDP
++  // domain. Nothing here touches Runtime: the engine holds integer handles and
++  // never a JS value, so no binding is shared with the JS realm.
++  private async evaluateMerseyInConsole(
++      executionContext: SDK.RuntimeModel.ExecutionContext, message: SDK.ConsoleModel.ConsoleMessage,
++      expression: string): Promise<void> {
++    const consoleModel = executionContext.target().model(SDK.ConsoleModel.ConsoleModel);
++    const agent = executionContext.target().merseyAgent();
++    const response = await agent.invoke_evaluate({expression});
++
++    const addResult = (text: string, level: Protocol.Log.LogEntryLevel): void => {
++      consoleModel?.addMessage(new SDK.ConsoleModel.ConsoleMessage(
++          executionContext.runtimeModel, Protocol.Log.LogEntrySource.Javascript, level, text,
++          {type: SDK.ConsoleModel.FrontendMessageType.Result}));
++    };
++
++    if (response.getError()) {
++      addResult(`Mersey: ${response.getError()}`, Protocol.Log.LogEntryLevel.Error);
++      return;
++    }
++    if (response.isError) {
++      addResult(response.result, Protocol.Log.LogEntryLevel.Error);
++      return;
++    }
++    // A turn that only declared something echoes nothing.
++    addResult(response.result === '' ? 'undefined' : response.result, Protocol.Log.LogEntryLevel.Info);
++  }
++
+   private async evaluateCommandInConsole(
+       executionContext: SDK.RuntimeModel.ExecutionContext, message: SDK.ConsoleModel.ConsoleMessage, expression: string,
+       useCommandLineAPI: boolean): Promise<void> {
++    // Mersey fork: the console's language dropdown. A Mersey turn never
++    // reaches the JS evaluator.
++    if (Common.Settings.Settings.instance().createSetting('console-language', 'javascript').get() === 'mersey') {
++      await this.evaluateMerseyInConsole(executionContext, message, expression);
++      return;
++    }
++
+     const callFrame = executionContext.debuggerModel.selectedCallFrame();
+     if (callFrame?.script.isJavaScript()) {
+       const nameMap = await SourceMapScopes.NamesResolver.allVariablesInCallFrame(callFrame);
+diff --git a/front_end/panels/console/ConsoleView.ts b/front_end/panels/console/ConsoleView.ts
+index 070ad89855..132ed4560d 100644
+--- a/front_end/panels/console/ConsoleView.ts
++++ b/front_end/panels/console/ConsoleView.ts
+@@ -452,6 +452,20 @@ export class ConsoleView extends UI.Widget.VBox implements
+     toolbar.appendToolbarItem(this.#collapseAllButton);
+     toolbar.appendSeparator();
+     toolbar.appendToolbarItem(this.consoleContextSelector.toolbarItem());
++    // Mersey fork: the console input's language. Mersey is a separate engine
++    // with a separate heap — it shares no bindings with the JS realm — so this
++    // selects which engine the prompt evaluates in, not a formatting option.
++    const languageSelector = new UI.Toolbar.ToolbarComboBox(
++        null, 'Console language', undefined, 'console-language');
++    languageSelector.addOption(languageSelector.createOption('JavaScript', 'javascript'));
++    languageSelector.addOption(languageSelector.createOption('Mersey', 'mersey'));
++    const languageSetting =
++        Common.Settings.Settings.instance().createSetting('console-language', 'javascript');
++    languageSelector.setSelectedIndex(languageSetting.get() === 'mersey' ? 1 : 0);
++    languageSelector.element.addEventListener('change', () => {
++      languageSetting.set(languageSelector.selectedOption()?.value ?? 'javascript');
++    });
++    toolbar.appendToolbarItem(languageSelector);
+     toolbar.appendSeparator();
+     const liveExpressionButton = UI.Toolbar.Toolbar.createActionButton('console.create-pin');
+     toolbar.appendToolbarItem(liveExpressionButton);
+diff --git a/front_end/panels/mersey/BUILD.gn b/front_end/panels/mersey/BUILD.gn
+new file mode 100644
+index 0000000000..c94b1fef90
+--- /dev/null
++++ b/front_end/panels/mersey/BUILD.gn
+@@ -0,0 +1,42 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++import("../../../scripts/build/ninja/devtools_entrypoint.gni")
++import("../../../scripts/build/ninja/devtools_module.gni")
++
++devtools_module("mersey") {
++  sources = [ "MerseyDebuggerPanel.ts" ]
++
++  deps = [
++    "../../core/common:bundle",
++    "../../core/sdk:bundle",
++    "../../ui/legacy:bundle",
++  ]
++}
++
++devtools_entrypoint("bundle") {
++  entrypoint = "mersey.ts"
++  deps = [ ":mersey" ]
++  visibility = [
++    "../../entrypoints/*",
++    ":*",
++  ]
++}
++
++devtools_entrypoint("meta") {
++  entrypoint = "mersey-meta.ts"
++  deps = [
++    ":bundle",
++    "../../core/common:bundle",
++    "../../core/platform:bundle",
++    "../../core/sdk:bundle",
++    "../../generated:protocol",
++    "../../models/bindings:bundle",
++    "../../models/breakpoints:bundle",
++    "../../models/text_utils:bundle",
++    "../../models/workspace:bundle",
++    "../../ui/legacy:bundle",
++  ]
++  visibility = [ "../../entrypoints/*" ]
++}
+diff --git a/front_end/panels/mersey/MerseyDebuggerPanel.ts b/front_end/panels/mersey/MerseyDebuggerPanel.ts
+new file mode 100644
+index 0000000000..e81d640f18
+--- /dev/null
++++ b/front_end/panels/mersey/MerseyDebuggerPanel.ts
+@@ -0,0 +1,230 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// The Mersey debugger, as a DevTools drawer panel.
++//
++// Why not the Sources panel: that panel is built on SDK.DebuggerModel, which
++// speaks the Debugger domain — and that domain is v8_inspector's. The Mersey
++// engine is not V8 and has no V8 contexts, so its scripts can never appear
++// there. This panel drives the fork's own Mersey domain directly.
++
++import * as Common from '../../core/common/common.js';
++import * as SDK from '../../core/sdk/sdk.js';
++import * as UI from '../../ui/legacy/legacy.js';
++
++interface MerseyScript {
++  url: string;
++  source: string;
++}
++
++interface MerseyVariable {
++  name: string;
++  value: string;
++}
++
++interface MerseyScope {
++  name: string;
++  variables: MerseyVariable[];
++}
++
++interface MerseyCallFrame {
++  functionName: string;
++  url: string;
++  lineNumber: number;
++  columnNumber: number;
++  scopeChain: MerseyScope[];
++}
++
++export class MerseyDebuggerPanel extends UI.Widget.VBox {
++  #toolbar: HTMLElement;
++  #status: HTMLElement;
++  #sourceView: HTMLElement;
++  #stackView: HTMLElement;
++  #scripts: MerseyScript[] = [];
++  #selected = 0;
++  // Sources is the sole breakpoint writer (the bridge in mersey-meta): a
++  // second writer with REPLACE semantics was observed clobbering breakpoints
++  // on reload. This panel shows state and steps; it does not own breakpoints.
++  #pausedFrames: MerseyCallFrame[]|null = null;
++  #attached = false;
++
++  constructor() {
++    super(true);
++    this.element.style.overflow = 'auto';
++
++    this.#toolbar = this.contentElement.createChild('div');
++    this.#toolbar.style.cssText =
++        'display:flex;gap:6px;align-items:center;padding:4px 8px;border-bottom:1px solid var(--sys-color-divider);flex-wrap:wrap';
++
++    const button = (label: string, onClick: () => void): HTMLButtonElement => {
++      const b = document.createElement('button');
++      b.textContent = label;
++      b.style.cssText = 'padding:2px 8px;cursor:pointer';
++      b.addEventListener('click', onClick);
++      this.#toolbar.appendChild(b);
++      return b;
++    };
++
++    button('Attach', () => { void this.#attach(); });
++    button('Detach', () => { void this.#send('disableDebugger'); this.#attached = false; this.#render(); });
++    button('Refresh', () => { void this.#loadScripts(); });
++    button('Pause', () => { void this.#send('pause'); });
++    button('Resume', () => { void this.#resumeWith('resume'); });
++    button('Step over', () => { void this.#resumeWith('stepOver'); });
++    button('Step into', () => { void this.#resumeWith('stepInto'); });
++    button('Step out', () => { void this.#resumeWith('stepOut'); });
++
++    this.#status = this.contentElement.createChild('div');
++    this.#status.style.cssText = 'padding:4px 8px;font-family:monospace;white-space:pre-wrap';
++
++    const split = this.contentElement.createChild('div');
++    split.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
++    this.#sourceView = split.createChild('div');
++    this.#sourceView.style.cssText =
++        'flex:2;font-family:monospace;font-size:11px;white-space:pre;overflow:auto;padding:4px 8px';
++    this.#stackView = split.createChild('div');
++    this.#stackView.style.cssText =
++        'flex:1;font-family:monospace;font-size:11px;white-space:pre-wrap;padding:4px 8px;border-left:1px solid var(--sys-color-divider)';
++
++    this.#render();
++    // Attach as soon as the panel is opened. Requiring an explicit Attach
++    // click first meant a breakpoint set beforehand silently never fired.
++    void this.#attach();
++  }
++
++  override wasShown(): void {
++    super.wasShown();
++    // The bridge may have already received the pause this panel is being
++    // opened FOR — a lazy view cannot rely on hearing the event itself.
++    const pending = (window as unknown as {
++                      __merseyDebug?: {lastPause: {reason: string, callFrames: MerseyCallFrame[]}|null},
++                    }).__merseyDebug?.lastPause;
++    if (pending) {
++      this.#pausedFrames = pending.callFrames;
++      this.#status.textContent = `paused (${pending.reason})`;
++      this.#render();
++    }
++    if (!this.#attached) {
++      void this.#attach();
++    } else {
++      void this.#loadScripts();
++    }
++  }
++
++  #target(): SDK.Target.Target|null {
++    return SDK.TargetManager.TargetManager.instance().primaryPageTarget();
++  }
++
++  async #send(method: string, params: object = {}): Promise<any> {
++    const target = this.#target();
++    if (!target) {
++      return null;
++    }
++    // The generated agent has typed wrappers; going through the router keeps
++    // this panel to one code path for every command.
++    return await (target.merseyAgent() as any)['invoke_' + method](params);
++  }
++
++  // Any failure lands in the status line. A debugger that fails silently is
++  // indistinguishable from a debugger that is broken.
++  #fail(where: string, e: unknown): void {
++    this.#status.textContent = `ERROR in ${where}: ${e instanceof Error ? e.message : String(e)}`;
++  }
++
++  async #attach(): Promise<void> {
++    const target = this.#target();
++    if (!target) {
++      this.#status.textContent = "ERROR: no page target";
++      return;
++    }
++    // Mersey.paused arrives while the renderer is blocked inside the engine's
++    // pause callout; the nested message loop is what keeps it deliverable.
++    target.registerMerseyDispatcher({
++      paused: (params: {reason: string, callFrames: MerseyCallFrame[]}) => {
++        this.#pausedFrames = params.callFrames;
++        this.#status.textContent = `paused (${params.reason})`;
++        this.#render();
++      },
++      resumed: () => {
++        this.#pausedFrames = null;
++        this.#status.textContent = 'running';
++        this.#render();
++      },
++    });
++    try {
++      const r = await this.#send('enableDebugger');
++      const err = r?.getError?.();
++      if (err) {
++        this.#fail('enableDebugger', err);
++        return;
++      }
++    } catch (e) {
++      this.#fail('enableDebugger', e);
++      return;
++    }
++    this.#attached = true;
++    await this.#loadScripts();
++    this.#render();
++  }
++
++  async #loadScripts(): Promise<void> {
++    const response = await this.#send('getScripts');
++    this.#scripts = response?.scripts ?? [];
++    this.#render();
++  }
++
++  async #resumeWith(method: string): Promise<void> {
++    this.#pausedFrames = null;
++    this.#status.textContent = 'running';
++    this.#render();
++    await this.#send(method);
++  }
++
++  #render(): void {
++    // Recompute unless paused (the pause handler owns the text then) — a
++    // compute-once status went stale, showing "not attached" after a
++    // successful attach.
++    if (!this.#pausedFrames) {
++      this.#status.textContent = this.#attached ? 'running' : 'not attached';
++    }
++
++    this.#sourceView.removeChildren();
++    const script = this.#scripts[this.#selected];
++    if (!script) {
++      this.#sourceView.createChild('div').textContent =
++          'No Mersey sources yet — run a <script type="text/mersey"> and press Refresh.';
++      return;
++    }
++
++    const pausedLine = this.#pausedFrames?.[0] ? this.#pausedFrames[0].lineNumber + 1 : -1;
++    script.source.split('\n').forEach((text, i) => {
++      const line = i + 1;
++      const row = this.#sourceView.createChild('div');
++      row.style.cssText = 'padding:0 4px';
++      if (line === pausedLine) {
++        row.style.background = 'var(--sys-color-yellow-container, #fdd)';
++      }
++      row.textContent = `${String(line).padStart(3)}  ${text}`;
++    });
++
++    this.#stackView.removeChildren();
++    if (!this.#pausedFrames) {
++      this.#stackView.createChild('div').textContent = 'Not paused.';
++      return;
++    }
++    this.#pausedFrames.forEach((frame, i) => {
++      const head = this.#stackView.createChild('div');
++      head.textContent = `#${i} ${frame.functionName} (${frame.url}:${frame.lineNumber + 1})`;
++      head.style.fontWeight = 'bold';
++      for (const scope of frame.scopeChain) {
++        const s = this.#stackView.createChild('div');
++        s.textContent = `  ${scope.name}`;
++        for (const v of scope.variables) {
++          const row = this.#stackView.createChild('div');
++          row.textContent = `    ${v.name} = ${v.value}`;
++        }
++      }
++    });
++  }
++}
+diff --git a/front_end/panels/mersey/mersey-meta.ts b/front_end/panels/mersey/mersey-meta.ts
+new file mode 100644
+index 0000000000..676c30f5ef
+--- /dev/null
++++ b/front_end/panels/mersey/mersey-meta.ts
+@@ -0,0 +1,373 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++import * as Common from '../../core/common/common.js';
++import * as Platform from '../../core/platform/platform.js';
++import * as SDK from '../../core/sdk/sdk.js';
++import type * as Protocol from '../../generated/protocol.js';
++import * as Bindings from '../../models/bindings/bindings.js';
++import * as Breakpoints from '../../models/breakpoints/breakpoints.js';
++import * as TextUtils from '../../models/text_utils/text_utils.js';
++import * as Workspace from '../../models/workspace/workspace.js';
++import * as UI from '../../ui/legacy/legacy.js';
++
++// Loaded lazily: the panel is only built when the drawer tab is opened.
++let loaded: (typeof import('./mersey.js'))|undefined;
++async function loadMerseyModule(): Promise<typeof import('./mersey.js')> {
++  if (!loaded) {
++    loaded = await import('./mersey.js');
++  }
++  return loaded;
++}
++
++UI.ViewManager.registerViewExtension({
++  // Drawer, not the main strip: Sources is the debugging surface now, and
++  // the drawer auto-opens on pause to provide stack/scopes/stepping.
++  location: UI.ViewManager.ViewLocationValues.DRAWER_VIEW,
++  id: 'mersey-debugger',
++  title: () => 'Mersey' as Common.UIString.LocalizedString,
++  commandPrompt: () => 'Show Mersey debugger' as Common.UIString.LocalizedString,
++  // Right after Sources (30). Order is also overflow priority: the rightmost
++  // tab is the first to vanish behind the chevron in a narrow window, and at
++  // 110 the panel was registered yet INVISIBLE — which reads as broken.
++  order: 35,
++  // PERMANENT, not CLOSEABLE: a closeable drawer view is hidden until the
++  // user finds it in the Command Menu, which made the panel look absent and
++  // the debugger look broken.
++  persistence: UI.ViewManager.ViewPersistence.PERMANENT,
++  async loadView() {
++    const Mersey = await loadMerseyModule();
++    return new Mersey.MerseyDebuggerPanel.MerseyDebuggerPanel();
++  },
++});
++
++
++// ---- Sources-panel integration ---------------------------------------------
++//
++// Mersey debugging THROUGH the Sources panel, the way JS debugs: the page's
++// HTML file is already a Sources resource, and an inline Mersey script lives
++// at known document lines (Mersey.Script.startLine). So:
++//   - a gutter breakpoint in the HTML file, on a line inside a Mersey script,
++//     is translated to an engine line and pushed to Mersey.setBreakpoints;
++//   - when the engine pauses, the document line is revealed in Sources.
++// The Sources pause chrome (call-frame sidebar, F8) stays JS-only — it is
++// built on V8 RemoteObjects — so stack/scopes/stepping live in the Mersey
++// panel. Breakpoints persist with Sources' own storage, so they survive
++// reloads and re-push automatically.
++
++class MerseySourcesBridge implements SDK.TargetManager.Observer {
++  #target: SDK.Target.Target|null = null;
++  // The virtual Sources project. The page's own resource content is often
++  // unavailable ("Resource was not cached"), so the bridge serves each Mersey
++  // script as its own .mersey file — content straight from the engine, and
++  // editor lines mapping 1:1 to engine lines.
++  #project: Bindings.ContentProviderBasedProject.ContentProviderBasedProject|null = null;
++  #virtualUrls = new Map<string, string>();
++  #wired = false;
++  #scripts: Protocol.Mersey.Script[] = [];
++  readonly debug = {
++    lastPause: null as Protocol.Mersey.PausedEvent|null,
++    trace: [] as string[],
++    error: '',
++    scripts: 0,
++    pushes: 0,
++    lastLines: [] as number[],
++    pauses: 0,
++    reveals: 0,
++    resume: () => this.#target?.merseyAgent().invoke_resume({}),
++    stepOver: () => this.#target?.merseyAgent().invoke_stepOver({}),
++    stepInto: () => this.#target?.merseyAgent().invoke_stepInto({}),
++    stepOut: () => this.#target?.merseyAgent().invoke_stepOut({}),
++    // What THIS module's TargetManager can see — settles whether the meta
++    // bundle shares the app's SDK instance or owns a private copy.
++    probe: () => JSON.stringify({
++      targets: SDK.TargetManager.TargetManager.instance().targets().map(t => t.type()),
++      frameEnum: SDK.Target.Type.FRAME,
++    }),
++    setBreakpoint: (docLine0: number) => {
++      const script = this.#scripts[0];
++      if (!script) {
++        return Promise.resolve('no scripts');
++      }
++      const uiSourceCode = Workspace.Workspace.WorkspaceImpl.instance().uiSourceCodeForURL(
++          script.url as Platform.DevToolsPath.UrlString);
++      if (!uiSourceCode) {
++        return Promise.resolve('no uiSourceCode');
++      }
++      return Breakpoints.BreakpointManager.BreakpointManager.instance()
++          .setBreakpoint(
++              uiSourceCode, docLine0, 0, '' as Breakpoints.BreakpointManager.UserCondition, true,
++              false, Breakpoints.BreakpointManager.BreakpointOrigin.OTHER)
++          .then(bp => bp ? 'set' : 'failed');
++    },
++  };
++
++  constructor() {
++    // A truthful in-page diagnostic (release DevTools inlines modules, so app
++    // singletons are unreachable from outside; this is how a probe or a bug
++    // report sees what the bridge actually did).
++    const w = window as unknown as {__merseyDebug: unknown, __merseyBridgeCount?: number};
++    w.__merseyBridgeCount = (w.__merseyBridgeCount ?? 0) + 1;
++    w.__merseyDebug = this.debug;
++    // NOTHING else at module-load time. Meta modules evaluate before the app
++    // constructs its managers; a throw here kills the whole DevTools boot —
++    // observed as an empty window. All wiring waits for the first target.
++    try {
++      SDK.TargetManager.TargetManager.instance().observeTargets(this);
++    } catch (e) {
++      this.debug.error = String(e);
++    }
++  }
++
++  // Runs once, on the first targetAdded — the app is fully wired by then.
++  #wire(): void {
++    if (this.#wired) {
++      return;
++    }
++    this.#wired = true;
++    const breakpointManager = Breakpoints.BreakpointManager.BreakpointManager.instance();
++    breakpointManager.addEventListener(
++        Breakpoints.BreakpointManager.Events.BreakpointAdded, () => this.#pushBreakpoints());
++    breakpointManager.addEventListener(
++        Breakpoints.BreakpointManager.Events.BreakpointRemoved, () => this.#pushBreakpoints());
++    SDK.TargetManager.TargetManager.instance().addModelListener(
++        SDK.ResourceTreeModel.ResourceTreeModel, SDK.ResourceTreeModel.Events.Load, () => {
++          // A reload rebuilds the document, engine, and runner: refresh the
++          // script table and re-arm the persisted breakpoints.
++          void this.#refresh();
++          this.#scheduleRefreshRetries();
++        });
++  }
++
++  targetAdded(target: SDK.Target.Target): void {
++    this.debug.trace.push('targetAdded:' + target.type());
++    try {
++      if (target.type() !== SDK.Target.Type.FRAME) {
++        return;
++      }
++      this.#wire();
++      this.#target = target;
++      this.debug.trace.push('target-set');
++      target.registerMerseyDispatcher({
++        paused: params => this.#revealPause(params),
++        resumed: () => {
++          this.debug.lastPause = null;
++          this.#setSteppingActionsEnabled(false);
++        },
++      });
++      this.debug.trace.push('dispatcher-registered');
++      void this.#refresh().catch(e => {
++        this.debug.error = 'refresh: ' + String(e);
++      });
++      this.#scheduleRefreshRetries();
++    } catch (e) {
++      this.debug.error = 'targetAdded: ' + String(e);
++    }
++  }
++
++  targetRemoved(target: SDK.Target.Target): void {
++    if (target === this.#target) {
++      this.#target = null;
++      this.#scripts = [];
++    }
++  }
++
++  #scheduleRefreshRetries(): void {
++    // An external module graph finishes fetching after the page loads; one
++    // early and one late retry catch it without any notification protocol.
++    for (const delay of [1500, 4000]) {
++      window.setTimeout(() => {
++        void this.#refresh();
++      }, delay);
++    }
++  }
++
++  async #refresh(): Promise<void> {
++    this.debug.trace.push('refresh:start');
++    if (!this.#target) {
++      return;
++    }
++    const response = await this.#target.merseyAgent().invoke_getScripts();
++    this.debug.trace.push('refresh:reply:' + (response.getError() || 'ok') + ':' + (response.scripts?.length ?? -1));
++    this.#scripts = response.getError() ? [] : response.scripts;
++    this.debug.scripts = this.#scripts.length;
++    this.#publishVirtualFiles();
++    await this.#pushBreakpoints();
++  }
++
++  #setSteppingActionsEnabled(enabled: boolean): void {
++    // The Sources toolbar buttons mirror action enabled-state; without this
++    // they stay greyed out when only Mersey (not V8) is paused.
++    for (const id of ['debugger.step-over', 'debugger.step-into', 'debugger.step', 'debugger.step-out']) {
++      try {
++        UI.ActionRegistry.ActionRegistry.instance().getAction(id).setEnabled(enabled);
++      } catch {
++      }
++    }
++  }
++
++  #virtualUrlFor(script: Protocol.Mersey.Script): string {
++    // Stable across reloads (url + tag line), so gutter breakpoints persist.
++    // "page.mersey" for the page's (usually only) script — the ".25" tag-line
++    // suffix read as a mystery file; keep it only to disambiguate a SECOND
++    // inline script on the same page.
++    if (script.url === '<repl>') {
++      return 'mersey://repl.mersey';
++    }
++    const clean = script.url.replace(/[#?].*$/, '');
++    // An external module IS a .mersey resource already: publish it under its
++    // real URL, so the Sources tree shows it where it lives and editor lines
++    // are engine lines with no offset at all.
++    if (clean.endsWith('.mersey')) {
++      return clean;
++    }
++    const base = clean.replace(/\.html?$/, '');
++    const first = this.#scripts.find(other => other.url === script.url);
++    const suffix = first && first.startLine !== script.startLine ? `.${script.startLine}` : '';
++    return `${base}${suffix}.mersey`;
++  }
++
++  #publishVirtualFiles(): void {
++    if (!this.#project) {
++      this.#project = new Bindings.ContentProviderBasedProject.ContentProviderBasedProject(
++          Workspace.Workspace.WorkspaceImpl.instance(), 'mersey-sources',
++          Workspace.Workspace.projectTypes.Network, 'Mersey', false /* isServiceProject */);
++      // Without target/frame attribution the Page navigator filters the
++      // project out entirely — files existed but never appeared in the tree.
++      if (this.#target) {
++        Bindings.NetworkProject.NetworkProject.setTargetForProject(this.#project, this.#target);
++      }
++    }
++    const frameId = this.#target?.model(SDK.ResourceTreeModel.ResourceTreeModel)?.mainFrame?.id;
++    for (const script of this.#scripts) {
++      const url = this.#virtualUrlFor(script);
++      if (this.#virtualUrls.has(url)) {
++        continue;
++      }
++      this.#virtualUrls.set(url, script.url);
++      const provider = new TextUtils.StaticContentProvider.StaticContentProvider(
++          url as Platform.DevToolsPath.UrlString, Common.ResourceType.resourceTypes.Script,
++          () => Promise.resolve(new TextUtils.ContentData.ContentData(
++              script.source, false /* isBase64 */, 'text/javascript')));
++      const uiSourceCode =
++          this.#project.addContentProvider(url as Platform.DevToolsPath.UrlString, provider, 'text/javascript');
++      if (frameId) {
++        Bindings.NetworkProject.NetworkProject.setInitialFrameAttribution(uiSourceCode, frameId);
++      }
++    }
++  }
++
++  // The union of enabled Sources-gutter breakpoints that fall inside any
++  // recorded Mersey script, as engine lines. REPLACE semantics server-side.
++  async #pushBreakpoints(): Promise<void> {
++    if (!this.#target || !this.#scripts.length) {
++      return;
++    }
++    const breakpointManager = Breakpoints.BreakpointManager.BreakpointManager.instance();
++    const workspace = Workspace.Workspace.WorkspaceImpl.instance();
++    const lines = new Set<number>();
++    for (const script of this.#scripts) {
++      const lineCount = script.source.split('\n').length;
++      // The page's own file: document line -> engine line via startLine.
++      const documentCode = workspace.uiSourceCodeForURL(script.url as Platform.DevToolsPath.UrlString);
++      if (documentCode) {
++        for (const location of breakpointManager.breakpointLocationsForUISourceCode(documentCode)) {
++          if (!location.breakpoint.enabled()) {
++            continue;
++          }
++          const engineLine = location.uiLocation.lineNumber - script.startLine;
++          if (engineLine >= 0 && engineLine < lineCount) {
++            lines.add(engineLine);
++          }
++        }
++      }
++      // The virtual .mersey file: editor lines ARE engine lines.
++      const virtualCode = workspace.uiSourceCodeForURL(
++          this.#virtualUrlFor(script) as Platform.DevToolsPath.UrlString);
++      if (virtualCode) {
++        for (const location of breakpointManager.breakpointLocationsForUISourceCode(virtualCode)) {
++          if (!location.breakpoint.enabled()) {
++            continue;
++          }
++          if (location.uiLocation.lineNumber < lineCount) {
++            lines.add(location.uiLocation.lineNumber);
++          }
++        }
++      }
++    }
++    this.debug.pushes++;
++    this.debug.lastLines = [...lines];
++    await this.#target.merseyAgent().invoke_setBreakpoints({url: '', lines: [...lines]});
++  }
++
++  // Jump Sources to the paused document line, exactly as a JS pause would.
++  // The engine names the paused frame's module (a graph spec, "<script>" for
++  // inline); match it to a recorded script, falling back to suffix/basename
++  // the way the engine's own breakpoint matching does.
++  #scriptForFrame(frameUrl: string): Protocol.Mersey.Script|undefined {
++    const basename = (path: string): string => path.split(/[\/\\]/).pop() ?? path;
++    return this.#scripts.find(script => script.spec === frameUrl) ??
++        this.#scripts.find(
++            script => script.url.endsWith(frameUrl) || frameUrl.endsWith(script.url) ||
++                basename(script.url) === basename(frameUrl)) ??
++        this.#scripts[0];
++  }
++
++  #revealPause(params: Protocol.Mersey.PausedEvent): void {
++    this.debug.pauses++;
++    // The panel is lazy: if it opens AFTER this event fired, it must still
++    // find the pause. resumed() clears it.
++    this.debug.lastPause = params;
++    // A pause with no visible response reads as a hung page. Surface the
++    // stack/scopes/stepping panel alongside the Sources reveal.
++    void UI.ViewManager.ViewManager.instance().showView('mersey-debugger');
++    // Light up the STANDARD stepping actions — same buttons, same shortcuts
++    // as JS. SourcesPanel's delegates route them to Mersey while
++    // __merseyDebug.lastPause is set.
++    this.#setSteppingActionsEnabled(true);
++    const frame = params.callFrames[0];
++    const script = frame ? this.#scriptForFrame(frame.url) : undefined;
++    if (!frame || !script) {
++      return;
++    }
++    // Reveal where the user is actually working: the page's own HTML file if
++    // their breakpoints live there (its content is servable after a reload
++    // with DevTools open), else the virtual .mersey file, which always has
++    // content.
++    const workspace = Workspace.Workspace.WorkspaceImpl.instance();
++    const documentCode = workspace.uiSourceCodeForURL(script.url as Platform.DevToolsPath.UrlString);
++    const documentHasBreakpoints = documentCode !== null &&
++        Breakpoints.BreakpointManager.BreakpointManager.instance()
++            .breakpointLocationsForUISourceCode(documentCode)
++            .length > 0;
++    if (documentCode && documentHasBreakpoints) {
++      this.debug.reveals++;
++      void Common.Revealer.reveal(documentCode.uiLocation(script.startLine + frame.lineNumber, 0));
++      return;
++    }
++    const uiSourceCode = workspace.uiSourceCodeForURL(
++        this.#virtualUrlFor(script) as Platform.DevToolsPath.UrlString);
++    if (!uiSourceCode) {
++      return;
++    }
++    this.debug.reveals++;
++    void Common.Revealer.reveal(uiSourceCode.uiLocation(frame.lineNumber, 0));
++  }
++}
++
++// Meta modules evaluate before MainImpl boots, and boot REPLACES app
++// singletons — a bridge constructed at module load observes an orphan
++// TargetManager and never hears about any target (observed: construction saw
++// 0 targets, the probe later saw 2, targetAdded never fired). Late
++// initialization is the blessed hook for "run after the app is wired".
++Common.Runnable.registerLateInitializationRunnable({
++  id: 'mersey-sources-bridge',
++  async loadRunnable() {
++    return {
++      async run() {
++        new MerseySourcesBridge();
++      },
++    };
++  },
++});
+diff --git a/front_end/panels/mersey/mersey.ts b/front_end/panels/mersey/mersey.ts
+new file mode 100644
+index 0000000000..926554199c
+--- /dev/null
++++ b/front_end/panels/mersey/mersey.ts
+@@ -0,0 +1,7 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++import * as MerseyDebuggerPanel from './MerseyDebuggerPanel.js';
++
++export {MerseyDebuggerPanel};
+diff --git a/front_end/panels/sources/SourcesPanel.ts b/front_end/panels/sources/SourcesPanel.ts
+index 4786509566..b5a8b81217 100644
+--- a/front_end/panels/sources/SourcesPanel.ts
++++ b/front_end/panels/sources/SourcesPanel.ts
+@@ -1342,6 +1342,13 @@ export class RevealingActionDelegate implements UI.ActionRegistration.ActionDele
+     if (!panel.ensureSourcesViewVisible()) {
+       return false;
+     }
++    // Mersey fork: resume a paused Mersey engine from the same button / F8.
++    const merseyPaused =
++        (window as unknown as {__merseyDebug?: MerseyDebugHandle}).__merseyDebug;
++    if (merseyPaused?.lastPause && actionId === 'debugger.toggle-pause') {
++      merseyPaused.resume();
++      return true;
++    }
+     switch (actionId) {
+       case 'debugger.toggle-pause': {
+         // This action can be triggered both on the DevTools front-end itself,
+@@ -1378,8 +1385,34 @@ export class RevealingActionDelegate implements UI.ActionRegistration.ActionDele
+   }
+ }
+ 
++interface MerseyDebugHandle {
++  lastPause: unknown;
++  resume: () => unknown;
++  stepOver: () => unknown;
++  stepInto: () => unknown;
++  stepOut: () => unknown;
++}
++
+ export class ActionDelegate implements UI.ActionRegistration.ActionDelegate {
+   handleAction(context: UI.Context.Context, actionId: string): boolean {
++    // Mersey fork: while the MERSEY engine is paused, the standard stepping
++    // buttons and shortcuts drive it — the V8 debugger is not paused then, so
++    // nothing is taken away from JS debugging.
++    const mersey = (window as unknown as {__merseyDebug?: MerseyDebugHandle}).__merseyDebug;
++    if (mersey?.lastPause) {
++      switch (actionId) {
++        case 'debugger.step-over':
++          mersey.stepOver();
++          return true;
++        case 'debugger.step-into':
++        case 'debugger.step':
++          mersey.stepInto();
++          return true;
++        case 'debugger.step-out':
++          mersey.stepOut();
++          return true;
++      }
++    }
+     const panel = SourcesPanel.instance();
+     switch (actionId) {
+       case 'debugger.step-over': {
+diff --git a/third_party/blink/public/devtools_protocol/browser_protocol.json b/third_party/blink/public/devtools_protocol/browser_protocol.json
+index 0a2bea1e0f..cf055d78f0 100644
+--- a/third_party/blink/public/devtools_protocol/browser_protocol.json
++++ b/third_party/blink/public/devtools_protocol/browser_protocol.json
+@@ -7237,6 +7237,227 @@
+                 }
+             ]
+         },
++        {
++            "domain": "Mersey",
++            "description": "The Mersey engine hosted in this renderer. Mersey is a separate language with\na separate engine and a separate heap: it holds integer handles to host\nobjects and never a JS value, so NO binding is shared with the JS realm.\nThat is why this is its own domain rather than a mode of Runtime \u2014 a Mersey\nturn cannot be expressed as an evaluation in a V8 context.",
++            "experimental": true,
++            "dependencies": [
++                "Page"
++            ],
++            "commands": [
++                {
++                    "name": "evaluate",
++                    "description": "Evaluate one console turn in the page's Mersey engine.\n\nThe session is one growing, always-typechecked module: each turn appends a\nfragment and re-checks the whole program, then runs only the new items.\nThe language has no `eval` \u2014 this is the ordinary compile pipeline, not a\nseparate interpreter mode.",
++                    "parameters": [
++                        {
++                            "name": "expression",
++                            "description": "The Mersey source for this turn.",
++                            "type": "string"
++                        }
++                    ],
++                    "returns": [
++                        {
++                            "name": "result",
++                            "description": "Display text of a trailing bare expression; empty when the turn only\ndeclared something.",
++                            "type": "string"
++                        },
++                        {
++                            "name": "isError",
++                            "description": "True when the turn failed: either rejected by the checker (it never\nran) or thrown at runtime. `result` then carries the diagnostics.",
++                            "type": "boolean"
++                        },
++                        {
++                            "name": "isCompileError",
++                            "description": "True when the turn was rejected before running, false when it threw.\nOnly meaningful if isError.",
++                            "type": "boolean"
++                        }
++                    ]
++                },
++                {
++                    "name": "completions",
++                    "description": "The names the Mersey session can see, for console completion. This is\nMersey's view, not the JS realm's: the session's own top-level bindings\nplus the std:console prelude, and deliberately no window/document.",
++                    "returns": [
++                        {
++                            "name": "names",
++                            "type": "array",
++                            "items": {
++                                "type": "string"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "name": "getScripts",
++                    "description": "Every Mersey source this document has run, including the growing console\nsession. A front-end needs these to display code and place breakpoints:\nthe engine is not V8, so none of them appear in the Debugger domain.",
++                    "returns": [
++                        {
++                            "name": "scripts",
++                            "type": "array",
++                            "items": {
++                                "$ref": "Script"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "name": "enableDebugger",
++                    "description": "Attach the debugger. Forces the engine's tree-walker, so it costs speed \u2014\nthat is the deliberate trade, the same one V8 makes."
++                },
++                {
++                    "name": "disableDebugger",
++                    "description": "Detach and restore the engine's VM tier."
++                },
++                {
++                    "name": "setBreakpoints",
++                    "description": "REPLACES the breakpoint set for `url`. An empty url matches every module,\nwhich is how a front-end that does not track Mersey sources still breaks.",
++                    "parameters": [
++                        {
++                            "name": "url",
++                            "type": "string"
++                        },
++                        {
++                            "name": "lines",
++                            "type": "array",
++                            "items": {
++                                "type": "integer"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "name": "pause",
++                    "description": "Stop at the next statement."
++                },
++                {
++                    "name": "resume",
++                    "description": "The resume family. Step depths are the engine's business \u2014 it knows the\npaused frame count, so no caller computes one."
++                },
++                {
++                    "name": "stepOver"
++                },
++                {
++                    "name": "stepInto"
++                },
++                {
++                    "name": "stepOut"
++                }
++            ],
++            "types": [
++                {
++                    "id": "Script",
++                    "description": "A Mersey source this document has executed.",
++                    "type": "object",
++                    "properties": [
++                        {
++                            "name": "url",
++                            "description": "The DOCUMENT the script came from (an inline script's page URL), or\n\"<repl>\" for the console session.",
++                            "type": "string"
++                        },
++                        {
++                            "name": "source",
++                            "type": "string"
++                        },
++                        {
++                            "name": "spec",
++                            "description": "The engine's own module name \u2014 what a paused frame's `url` reports:\na graph module's spec, or \"<script>\" for an inline block.",
++                            "type": "string"
++                        },
++                        {
++                            "name": "startLine",
++                            "description": "0-based document line where the source's first line sits \u2014 the line\nof the <script> tag. Sources-panel gutter lines map to engine lines\nas: engineLine0 = documentLine0 - startLine.",
++                            "type": "integer"
++                        }
++                    ]
++                },
++                {
++                    "id": "CallFrame",
++                    "description": "One frame of a paused Mersey stack, outermost LAST (index 0 is innermost).",
++                    "type": "object",
++                    "properties": [
++                        {
++                            "name": "functionName",
++                            "type": "string"
++                        },
++                        {
++                            "name": "url",
++                            "description": "The module this frame is executing, as the engine names it.",
++                            "type": "string"
++                        },
++                        {
++                            "name": "lineNumber",
++                            "type": "integer"
++                        },
++                        {
++                            "name": "columnNumber",
++                            "type": "integer"
++                        },
++                        {
++                            "name": "scopeChain",
++                            "type": "array",
++                            "items": {
++                                "$ref": "Scope"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "id": "Scope",
++                    "type": "object",
++                    "properties": [
++                        {
++                            "name": "name",
++                            "description": "\"Locals\" | \"Closure N\" | \"Globals\"",
++                            "type": "string"
++                        },
++                        {
++                            "name": "variables",
++                            "type": "array",
++                            "items": {
++                                "$ref": "Variable"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "id": "Variable",
++                    "type": "object",
++                    "properties": [
++                        {
++                            "name": "name",
++                            "type": "string"
++                        },
++                        {
++                            "name": "value",
++                            "description": "Display text. Mersey values are not JS values, so there is no\nRemoteObject and nothing to grip.",
++                            "type": "string"
++                        }
++                    ]
++                }
++            ],
++            "events": [
++                {
++                    "name": "paused",
++                    "description": "The engine stopped. The renderer is blocked until a resume-family command.",
++                    "parameters": [
++                        {
++                            "name": "reason",
++                            "description": "\"breakpoint\" | \"step\" | \"pause\"",
++                            "type": "string"
++                        },
++                        {
++                            "name": "callFrames",
++                            "type": "array",
++                            "items": {
++                                "$ref": "CallFrame"
++                            }
++                        }
++                    ]
++                },
++                {
++                    "name": "resumed"
++                }
++            ]
++        },
+         {
+             "domain": "DOM",
+             "description": "This domain exposes DOM read/write operations. Each DOM Node is represented with its mirror object\nthat has an `id`. This `id` can be used to get additional information on the Node, resolve it into\nthe JavaScript object wrapper, etc. It is important that client receives DOM events only for the\nnodes that are known to the client. Backend keeps track of the nodes that were sent to the client\nand never sends the same node twice. It is client's responsibility to collect information about\nthe nodes that were sent to the client. Note that `iframe` owner elements will return\ncorresponding document elements as their child nodes.",
+diff --git a/third_party/blink/public/devtools_protocol/browser_protocol.pdl b/third_party/blink/public/devtools_protocol/browser_protocol.pdl
+index 18484072a7..676db3a536 100644
+--- a/third_party/blink/public/devtools_protocol/browser_protocol.pdl
++++ b/third_party/blink/public/devtools_protocol/browser_protocol.pdl
+@@ -20,6 +20,7 @@ include domains/CSS.pdl
+ include domains/CacheStorage.pdl
+ include domains/Cast.pdl
+ include domains/CrashReportContext.pdl
++include domains/Mersey.pdl
+ include domains/DOM.pdl
+ include domains/DOMDebugger.pdl
+ include domains/DOMSnapshot.pdl
+diff --git a/third_party/blink/public/devtools_protocol/domains/Mersey.pdl b/third_party/blink/public/devtools_protocol/domains/Mersey.pdl
+new file mode 100644
+index 0000000000..1acf4347af
+--- /dev/null
++++ b/third_party/blink/public/devtools_protocol/domains/Mersey.pdl
+@@ -0,0 +1,124 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# The Mersey engine hosted in this renderer. Mersey is a separate language with
++# a separate engine and a separate heap: it holds integer handles to host
++# objects and never a JS value, so NO binding is shared with the JS realm.
++# That is why this is its own domain rather than a mode of Runtime — a Mersey
++# turn cannot be expressed as an evaluation in a V8 context.
++experimental domain Mersey
++  depends on Page
++
++  # Evaluate one console turn in the page's Mersey engine.
++  #
++  # The session is one growing, always-typechecked module: each turn appends a
++  # fragment and re-checks the whole program, then runs only the new items.
++  # The language has no `eval` — this is the ordinary compile pipeline, not a
++  # separate interpreter mode.
++  command evaluate
++    parameters
++      # The Mersey source for this turn.
++      string expression
++    returns
++      # Display text of a trailing bare expression; empty when the turn only
++      # declared something.
++      string result
++      # True when the turn failed: either rejected by the checker (it never
++      # ran) or thrown at runtime. `result` then carries the diagnostics.
++      boolean isError
++      # True when the turn was rejected before running, false when it threw.
++      # Only meaningful if isError.
++      boolean isCompileError
++
++  # The names the Mersey session can see, for console completion. This is
++  # Mersey's view, not the JS realm's: the session's own top-level bindings
++  # plus the std:console prelude, and deliberately no window/document.
++  command completions
++    returns
++      array of string names
++
++  # A Mersey source this document has executed.
++  type Script extends object
++    properties
++      # The DOCUMENT the script came from (an inline script's page URL), or
++      # "<repl>" for the console session.
++      string url
++      string source
++      # The engine's own module name — what a paused frame's `url` reports:
++      # a graph module's spec, or "<script>" for an inline block.
++      string spec
++      # 0-based document line where the source's first line sits — the line
++      # of the <script> tag. Sources-panel gutter lines map to engine lines
++      # as: engineLine0 = documentLine0 - startLine.
++      integer startLine
++
++  # Every Mersey source this document has run, including the growing console
++  # session. A front-end needs these to display code and place breakpoints:
++  # the engine is not V8, so none of them appear in the Debugger domain.
++  command getScripts
++    returns
++      array of Script scripts
++
++  # ---- debugger -------------------------------------------------------------
++  #
++  # Pausing IS blocking: when the engine stops, the renderer sits inside the
++  # pause callback running a nested message loop (the same one V8 uses), so
++  # DevTools keeps being serviced. Nothing resumes on its own — one of the
++  # resume-family commands below must arrive.
++
++  # One frame of a paused Mersey stack, outermost LAST (index 0 is innermost).
++  type CallFrame extends object
++    properties
++      string functionName
++      # The module this frame is executing, as the engine names it.
++      string url
++      integer lineNumber
++      integer columnNumber
++      array of Scope scopeChain
++
++  type Scope extends object
++    properties
++      # "Locals" | "Closure N" | "Globals"
++      string name
++      array of Variable variables
++
++  type Variable extends object
++    properties
++      string name
++      # Display text. Mersey values are not JS values, so there is no
++      # RemoteObject and nothing to grip.
++      string value
++
++  # Attach the debugger. Forces the engine's tree-walker, so it costs speed —
++  # that is the deliberate trade, the same one V8 makes.
++  command enableDebugger
++
++  # Detach and restore the engine's VM tier.
++  command disableDebugger
++
++  # REPLACES the breakpoint set for `url`. An empty url matches every module,
++  # which is how a front-end that does not track Mersey sources still breaks.
++  command setBreakpoints
++    parameters
++      string url
++      array of integer lines
++
++  # Stop at the next statement.
++  command pause
++
++  # The resume family. Step depths are the engine's business — it knows the
++  # paused frame count, so no caller computes one.
++  command resume
++  command stepOver
++  command stepInto
++  command stepOut
++
++  # The engine stopped. The renderer is blocked until a resume-family command.
++  event paused
++    parameters
++      # "breakpoint" | "step" | "pause"
++      string reason
++      array of CallFrame callFrames
++
++  event resumed
+-- 
+2.50.1 (Apple Git-155)
+
