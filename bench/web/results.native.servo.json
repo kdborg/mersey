@@ -190,5 +190,245 @@
     "ms": 90.490375,
     "rss": 18852,
     "checksum": 1765835917
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "bchannel",
+    "ms": 10.668082999999996,
+    "rss": 15328,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "blob",
+    "ms": 36.287457999999994,
+    "rss": 27632,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 1.4764590000000055,
+    "rss": 35104,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "compression",
+    "ms": 30.253,
+    "rss": 86512,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 28.084207999999997,
+    "rss": 14928,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "cssom",
+    "ms": 22.042666,
+    "rss": 14416,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 14.242999999999999,
+    "rss": 82512,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": 16.549250000000004,
+    "rss": 17264,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": 20.463874999999998,
+    "rss": 19808,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "fetch",
+    "ms": 25.731042,
+    "rss": 17520,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "geometry",
+    "ms": 36.69325,
+    "rss": 21728,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 1.3733749999999993,
+    "rss": 14256,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "msgchannel",
+    "ms": 8.418416999999998,
+    "rss": 15552,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "query",
+    "ms": 9.460584,
+    "rss": 33392,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "sse",
+    "ms": 10.789040999999994,
+    "rss": 18624,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 505.238792,
+    "rss": 15040,
+    "checksum": 208890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "streams",
+    "ms": 25.960125,
+    "rss": 20448,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "timers",
+    "ms": 26.375500000000002,
+    "rss": 16112,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 20.407583999999996,
+    "rss": 22944,
+    "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "urlpattern",
+    "ms": 39.265333,
+    "rss": 30673,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "websocket",
+    "ms": 22.153374999999993,
+    "rss": 15392,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "worker",
+    "ms": 19.613792,
+    "rss": 18752,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "xhr",
+    "ms": 23.239167,
+    "rss": 16848,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 89.17862499999998,
+    "rss": 14240,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

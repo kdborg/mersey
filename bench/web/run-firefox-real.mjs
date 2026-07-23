@@ -38,7 +38,11 @@ import { tagRows, mergeRows } from "./rows.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
 
-const FIREFOX = process.env.FIREFOX_BIN || "/usr/bin/firefox";
+const FIREFOX =
+  process.env.FIREFOX_BIN ||
+  (process.platform === "darwin"
+    ? "/Applications/Firefox.app/Contents/MacOS/firefox"
+    : "/usr/bin/firefox");
 const REPEATS = 3;
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 120000);
 

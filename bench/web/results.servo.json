@@ -3,612 +3,762 @@
     "browser": "servo",
     "impl": "js",
     "wl": "bchannel",
-    "ms": 5.099999999999998,
-    "rss": 5584,
-    "checksum": 5890
+    "ms": 4.09,
+    "rss": 2944,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "bchannel",
-    "ms": 21.150000000000006,
-    "rss": 61444,
-    "checksum": 5890
+    "ms": 16.260000000000005,
+    "rss": 69488,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "bchannel",
-    "ms": 6.819999999999993,
-    "rss": 60192,
-    "checksum": 5890
+    "ms": 5.780000000000001,
+    "rss": 61552,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "blob",
-    "ms": 10.04,
-    "rss": 16984,
-    "checksum": 198890
+    "ms": 6.96,
+    "rss": 14160,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "blob",
-    "ms": 103.45999999999998,
-    "rss": 74596,
-    "checksum": 198890
+    "ms": 94.10999999999999,
+    "rss": 81088,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "blob",
-    "ms": 11.940000000000026,
-    "rss": 72728,
-    "checksum": 198890
+    "ms": 8.780000000000001,
+    "rss": 78384,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "canvas",
-    "ms": 3.09,
-    "rss": 21736,
-    "checksum": 20000
+    "ms": 1.9100000000000001,
+    "rss": 24576,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "canvas",
-    "ms": 72.36000000000001,
-    "rss": 71340,
-    "checksum": 20000
+    "ms": 69.36,
+    "rss": 88368,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "canvas",
-    "ms": 4.410000000000011,
-    "rss": 71544,
-    "checksum": 20000
+    "ms": 3.8799999999999955,
+    "rss": 90128,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "compression",
-    "ms": 33.93000000000001,
-    "rss": 116044,
-    "checksum": 8690
+    "ms": 23.81,
+    "rss": 151233,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "compression",
-    "ms": 68.87,
-    "rss": 115792,
-    "checksum": 8690
+    "ms": 60.90999999999998,
+    "rss": 139905,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "compression",
-    "ms": 36.609999999999985,
-    "rss": 115420,
-    "checksum": 8690
+    "ms": 25.590000000000003,
+    "rss": 138337,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "compute",
-    "ms": 109.50999999999999,
-    "rss": 3372,
-    "checksum": 1765835917
+    "ms": 99.75999999999999,
+    "rss": 1264,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "compute",
-    "ms": 19734.27,
-    "rss": 78592,
-    "checksum": 1765835917
+    "ms": 19619.39,
+    "rss": 109872,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "compute",
-    "ms": 137.55999999999997,
-    "rss": 59596,
-    "checksum": 1765835917
+    "ms": 122.44,
+    "rss": 70352,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "crypto",
-    "ms": 2.5500000000000007,
-    "rss": 3536,
-    "checksum": 320000
+    "ms": 18.840000000000003,
+    "rss": 1424,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "crypto",
-    "ms": 82.98000000000002,
-    "rss": 62588,
-    "checksum": 320000
+    "ms": 99.08000000000001,
+    "rss": 68880,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "crypto",
-    "ms": 4.450000000000003,
-    "rss": 59260,
-    "checksum": 320000
+    "ms": 20.810000000000002,
+    "rss": 68656,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "cssom",
-    "ms": 11.639999999999999,
-    "rss": 5284,
-    "checksum": 48000
+    "ms": 12.25,
+    "rss": 2128,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "cssom",
-    "ms": 141.91,
-    "rss": 61592,
-    "checksum": 48000
+    "ms": 133.39,
+    "rss": 68944,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "cssom",
-    "ms": 20.03,
-    "rss": 60648,
-    "checksum": 48000
+    "ms": 17.78,
+    "rss": 64512,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "dom",
-    "ms": 12.55,
-    "rss": 21880,
-    "checksum": 10000
+    "ms": 11.310000000000002,
+    "rss": 60544,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "dom",
-    "ms": 88.19,
-    "rss": 78928,
-    "checksum": 10000
+    "ms": 80.64999999999999,
+    "rss": 135232,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "dom",
-    "ms": 17.159999999999997,
-    "rss": 77244,
-    "checksum": 10000
+    "ms": 16.17,
+    "rss": 136288,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "encoding",
-    "ms": 4.469999999999999,
-    "rss": 4180,
-    "checksum": 437780
+    "ms": 4.130000000000001,
+    "rss": 2096,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "encoding",
-    "ms": 83.16999999999999,
-    "rss": 67476,
-    "checksum": 437780
+    "ms": 73.21000000000001,
+    "rss": 74641,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "encoding",
-    "ms": 6.6299999999999955,
-    "rss": 59608,
-    "checksum": 437780
+    "ms": 6.550000000000011,
+    "rss": 66496,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "events",
-    "ms": 8.52,
-    "rss": 7996,
-    "checksum": 10000
+    "ms": 7.12,
+    "rss": 5648,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "events",
-    "ms": 93.08000000000001,
-    "rss": 63708,
-    "checksum": 10000
+    "ms": 88.22,
+    "rss": 73520,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "events",
-    "ms": 9.83999999999999,
-    "rss": 63220,
-    "checksum": 10000
+    "ms": 8.590000000000003,
+    "rss": 67184,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "fetch",
-    "ms": 31.979999999999997,
-    "rss": 7984,
-    "checksum": 20990
+    "ms": 18.42,
+    "rss": 5904,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "fetch",
-    "ms": 42.66000000000001,
-    "rss": 60744,
-    "checksum": 20990
+    "ms": 29.929999999999993,
+    "rss": 65600,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "fetch",
-    "ms": 33.66,
-    "rss": 60688,
-    "checksum": 20990
+    "ms": 21.039999999999992,
+    "rss": 65328,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "geometry",
-    "ms": 5.580000000000002,
-    "rss": 10388,
-    "checksum": 95000
+    "ms": 4.209999999999999,
+    "rss": 7904,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "geometry",
-    "ms": 118.37000000000003,
-    "rss": 67512,
-    "checksum": 95000
+    "ms": 107.83999999999999,
+    "rss": 72384,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "geometry",
-    "ms": 8.249999999999986,
-    "rss": 66544,
-    "checksum": 95000
+    "ms": 7.340000000000003,
+    "rss": 67856,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "idb",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "idb",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "idb",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "json",
-    "ms": 3.629999999999999,
-    "rss": 3452,
-    "checksum": 848890
+    "ms": 2.6400000000000006,
+    "rss": 1824,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "json",
-    "ms": 8.969999999999999,
-    "rss": 59580,
-    "checksum": 848890
+    "ms": 8.629999999999995,
+    "rss": 63104,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "json",
-    "ms": 4.360000000000014,
-    "rss": 58708,
-    "checksum": 848890
+    "ms": 3.6299999999999955,
+    "rss": 66240,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "locks",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "locks",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "locks",
-    "ms": null
+    "ms": null,
+    "platform": "macos"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "msgchannel",
-    "ms": 2.8100000000000023,
-    "rss": 5168,
-    "checksum": 5890
+    "ms": 2.92,
+    "rss": 2688,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "msgchannel",
-    "ms": 16.019999999999982,
-    "rss": 59932,
-    "checksum": 5890
+    "ms": 13.810000000000002,
+    "rss": 68832,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "msgchannel",
-    "ms": 4.440000000000012,
-    "rss": 61428,
-    "checksum": 5890
+    "ms": 4.049999999999997,
+    "rss": 63552,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "query",
-    "ms": 9.410000000000004,
-    "rss": 22188,
-    "checksum": 214900
+    "ms": 7.210000000000001,
+    "rss": 23904,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "query",
-    "ms": 25.430000000000007,
-    "rss": 76364,
-    "checksum": 214900
+    "ms": 21.819999999999993,
+    "rss": 89216,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "query",
-    "ms": 11.050000000000011,
-    "rss": 75236,
-    "checksum": 214900
+    "ms": 9.030000000000001,
+    "rss": 87600,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "sse",
-    "ms": 9.999999999999996,
-    "rss": 10884,
-    "checksum": 14890
+    "ms": 5.949999999999999,
+    "rss": 5520,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "sse",
-    "ms": 22.61,
-    "rss": 67872,
-    "checksum": 14890
+    "ms": 14.849999999999994,
+    "rss": 72544,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "sse",
-    "ms": 12.120000000000005,
-    "rss": 65640,
-    "checksum": 14890
+    "ms": 6.200000000000003,
+    "rss": 68080,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "storage",
-    "ms": 1876.73,
-    "rss": 5216,
-    "checksum": 208890
+    "ms": 500.9,
+    "rss": 3568,
+    "checksum": 208890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "storage",
-    "ms": 2272.54,
-    "rss": 58764,
-    "checksum": 208890
+    "ms": 637.7,
+    "rss": 72192,
+    "checksum": 208890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "storage",
-    "ms": 3319.84,
-    "rss": 59168,
-    "checksum": 208890
+    "ms": 637.97,
+    "rss": 68544,
+    "checksum": 208890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "streams",
-    "ms": 8.510000000000002,
-    "rss": 5212,
-    "checksum": 18890
+    "ms": 8.02,
+    "rss": 2688,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "streams",
-    "ms": 114.82000000000001,
-    "rss": 65096,
-    "checksum": 18890
+    "ms": 130.55,
+    "rss": 73121,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "streams",
-    "ms": 12.190000000000012,
-    "rss": 60176,
-    "checksum": 18890
+    "ms": 11.090000000000003,
+    "rss": 68624,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "timers",
-    "ms": 10.459999999999997,
-    "rss": 7600,
-    "checksum": 20000
+    "ms": 7.819999999999999,
+    "rss": 5344,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "timers",
-    "ms": 107.67000000000002,
-    "rss": 62564,
-    "checksum": 20000
+    "ms": 100.78000000000002,
+    "rss": 70016,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "timers",
-    "ms": 9.400000000000006,
-    "rss": 63636,
-    "checksum": 20000
+    "ms": 7.640000000000001,
+    "rss": 67808,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "url",
-    "ms": 10.959999999999999,
-    "rss": 8344,
-    "checksum": 537780
+    "ms": 9.63,
+    "rss": 7344,
+    "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "url",
-    "ms": 136.54000000000002,
-    "rss": 64524,
-    "checksum": 537780
+    "ms": 128.69,
+    "rss": 73120,
+    "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "url",
-    "ms": 11.72999999999999,
-    "rss": 64628,
-    "checksum": 537780
+    "ms": 10.199999999999989,
+    "rss": 67648,
+    "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "urlpattern",
-    "ms": 19.64,
-    "rss": 5412,
-    "checksum": 88890
+    "ms": 19.27,
+    "rss": 2832,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "urlpattern",
-    "ms": 71.97999999999999,
-    "rss": 77128,
-    "checksum": 88890
+    "ms": 62.239999999999995,
+    "rss": 81409,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "urlpattern",
-    "ms": 25.379999999999995,
-    "rss": 60272,
-    "checksum": 88890
+    "ms": 25.760000000000005,
+    "rss": 64016,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "websocket",
-    "ms": 26.309999999999995,
-    "rss": 3808,
-    "checksum": 1290
+    "ms": 14.059999999999995,
+    "rss": 2128,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "websocket",
-    "ms": 30.090000000000003,
-    "rss": 59880,
-    "checksum": 1290
+    "ms": 23.47,
+    "rss": 68240,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "websocket",
-    "ms": 29.030000000000015,
-    "rss": 60896,
-    "checksum": 1290
+    "ms": 21.179999999999993,
+    "rss": 62544,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "worker",
-    "ms": 50.11,
-    "rss": 9804,
-    "checksum": 7890
+    "ms": 14.670000000000002,
+    "rss": 8528,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "worker",
-    "ms": 70.15,
-    "rss": 64452,
-    "checksum": 7890
+    "ms": 27,
+    "rss": 72817,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "worker",
-    "ms": 52.03,
-    "rss": 62724,
-    "checksum": 7890
+    "ms": 15.47999999999999,
+    "rss": 68225,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "js",
     "wl": "xhr",
-    "ms": 31.5,
-    "rss": 5320,
-    "checksum": 20990
+    "ms": 15.650000000000002,
+    "rss": 5152,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "poly",
     "wl": "xhr",
-    "ms": 39,
-    "rss": 60744,
-    "checksum": 20990
+    "ms": 22.86,
+    "rss": 69536,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "servo",
     "impl": "tjs",
     "wl": "xhr",
-    "ms": 31.97999999999999,
-    "rss": 59848,
-    "checksum": 20990
+    "ms": 19.040000000000006,
+    "rss": 67488,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

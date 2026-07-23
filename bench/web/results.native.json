@@ -230,5 +230,295 @@
     "ms": 359.965167,
     "rss": 20560,
     "checksum": 20990
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "bchannel",
+    "ms": 40.24770833333331,
+    "rss": 14112,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "blob",
+    "ms": 53.12995833333335,
+    "rss": 27792,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "calls",
+    "ms": 24.001541666666697,
+    "rss": 22816,
+    "checksum": 452320592,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 4.490583333333376,
+    "rss": 14864,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "compression",
+    "ms": 43.98166666666668,
+    "rss": 79376,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 93.16895833333334,
+    "rss": 17552,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 6.26445833333338,
+    "rss": 10560,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "cssom",
+    "ms": 20.20616666666666,
+    "rss": 17760,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 6.66991666666668,
+    "rss": 31904,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": 20.585208333333355,
+    "rss": 15456,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": 27.461208333333275,
+    "rss": 24736,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "fcompute",
+    "ms": 108.248875,
+    "rss": 13264,
+    "checksum": null,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "fetch",
+    "ms": 390.2316666666666,
+    "rss": 15744,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "geometry",
+    "ms": 38.34495833333335,
+    "rss": 18960,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "idb",
+    "ms": 65.45899999999997,
+    "rss": 18544,
+    "checksum": 4390,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": 2.805000000000007,
+    "rss": 10080,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "locks",
+    "ms": 32.12662500000002,
+    "rss": 16400,
+    "checksum": 5500,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "mathk",
+    "ms": 31.697208333333307,
+    "rss": 2368,
+    "checksum": null,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "msgchannel",
+    "ms": 12.886416666666662,
+    "rss": 5328,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "query",
+    "ms": 5.564083333333329,
+    "rss": 14432,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "sse",
+    "ms": 55.783583333333326,
+    "rss": 6512,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": 41.25104166666668,
+    "rss": 14640,
+    "checksum": 208890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "streams",
+    "ms": 23.227124999999972,
+    "rss": 12528,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "timers",
+    "ms": 34.04533333333333,
+    "rss": 20224,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": 28.757208333333296,
+    "rss": 16720,
+    "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "urlpattern",
+    "ms": 66.42491666666669,
+    "rss": 17888,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "websocket",
+    "ms": 325.8116666666666,
+    "rss": 6864,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "worker",
+    "ms": 107.67958333333334,
+    "rss": 7712,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "xhr",
+    "ms": 385.68399999999997,
+    "rss": 2640,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

@@ -25,7 +25,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FORK_DIR = process.env.GECKO_SRC
   ? `${process.env.GECKO_SRC}/obj-mersey`
   : join(here, "../../../gecko/obj-mersey");
-const FORK = `${FORK_DIR}/dist/bin/firefox`;
+// macOS: dist/bin/firefox is a raw binary that cannot resolve XPCOM/libxul
+// ("Couldn't load XPCOM"); the engine lives in the .app bundle. Linux keeps
+// the plain dist/bin path.
+const FORK =
+  process.platform === "darwin"
+    ? `${FORK_DIR}/dist/Nightly.app/Contents/MacOS/firefox`
+    : `${FORK_DIR}/dist/bin/firefox`;
 const PAGE_SIZE = 4096;
 const REPEATS = 3;
 

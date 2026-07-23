@@ -113,6 +113,26 @@ async function runPage(pageUrl, profileDir, expectResult = true) {
   });
 }
 
+// The Chromium fork aborts at startup at a low but nonzero rate on macOS
+// (a component-build ANGLE duplicate-class hazard — main -> FatalError ->
+// SIGABRT). A crashed launch yields no RESULT, so retry with a fresh profile
+// rather than let one abort null out a whole workload column.
+async function runPageWithRetry(pageUrl, profileBase, tag, expectResult = true) {
+  const MAX = 5;
+  for (let attempt = 0; attempt < MAX; attempt++) {
+    const prof = join(profileBase, `${tag}-a${attempt}`);
+    await mkdir(prof, { recursive: true });
+    const r = await runPage(pageUrl, prof, expectResult);
+    if (!expectResult || r.result) {
+      return r;
+    }
+    if (attempt < MAX - 1) {
+      console.log(`  chromium-native ${tag} — no result (attempt ${attempt + 1}/${MAX}), retrying`);
+    }
+  }
+  return { result: null, rss: 0 };
+}
+
 const rows = [];
 const profileBase = await mkdtemp(join(tmpdir(), "mersey-cr-"));
 
@@ -123,9 +143,7 @@ const base = `http://localhost:${port}/bench/web/pages/native`;
 
 let baseRss = 0;
 {
-  const prof = join(profileBase, "blank");
-  await mkdir(prof, { recursive: true });
-  const { rss } = await runPage(`${base}/blank.html`, prof, false);
+  const { rss } = await runPageWithRetry(`${base}/blank.html`, profileBase, "blank", false);
   baseRss = rss ?? 0;
   console.log(`chromium-native  baseline blank rss ${baseRss} KiB\n`);
 }
@@ -133,9 +151,7 @@ let baseRss = 0;
 for (const wl of WORKLOADS) {
   const samples = [];
   for (let r = 0; r < REPEATS; r++) {
-    const prof = join(profileBase, `${wl}-${r}`);
-    await mkdir(prof, { recursive: true });
-    const { result, rss } = await runPage(`${base}/${wl}.html`, prof);
+    const { result, rss } = await runPageWithRetry(`${base}/${wl}.html`, profileBase, `${wl}-${r}`);
     if (result) samples.push({ ...result, rss: (rss ?? 0) - baseRss });
   }
   if (samples.length === 0) {

@@ -206,5 +206,208 @@
     "impl": "native",
     "wl": "xhr",
     "ms": null
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "bchannel",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "blob",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "calls",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "compression",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "cssom",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "fcompute",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "fetch",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "geometry",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "idb",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "json",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "locks",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "mathk",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "msgchannel",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "query",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "sse",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "storage",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "streams",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "timers",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "url",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "urlpattern",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "websocket",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "worker",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "xhr",
+    "ms": null,
+    "platform": "macos"
   }
 ]
