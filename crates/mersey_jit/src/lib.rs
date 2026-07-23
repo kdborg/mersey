@@ -3065,6 +3065,26 @@ fn translate(
                 let (l, _) = scalar(stack.pop()?)?;
                 // Integer division can fault (spec §3.6).
                 if t.is_int() && matches!(binop, BinOp::Div | BinOp::Rem) {
+                    // Constant divisor with |d| ≥ 2: strength-reduce to a
+                    // multiply, and skip the guards (a nonzero, non-(−1)
+                    // constant can neither fault on zero nor overflow at INT_MIN).
+                    //
+                    // x86_64 only: its integer divide is 20–40 cycles, so the
+                    // magic-multiply sequence is a large win. Apple Silicon (and
+                    // ARM64 generally) has a ~2-cycle divider, where the longer
+                    // sequence measures *slower* — so leave the hardware divide.
+                    if cfg!(target_arch = "x86_64") {
+                    if let Some(d) = const_int(b, r) {
+                        // 2 ≤ |d| < 2^(w−1): excludes 0, ±1 (handled by the
+                        // guarded path) and INT_MIN (outside the magic's domain).
+                        let w = if t == Ty::I64 { 64 } else { 32 };
+                        if d.abs() >= 2 && (d.unsigned_abs() as u128) < (1u128 << (w - 1)) {
+                            let v = emit_const_divrem(b, l, d, t, binop == BinOp::Rem);
+                            stack.push(SlotV::Val(v, t));
+                            continue;
+                        }
+                    }
+                    }
                     let zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
                     guard(b, ctx, zero, R_DIV0, pc, None);
                     let int_min = if t == Ty::I64 {
@@ -3657,6 +3677,87 @@ fn convert(b: &mut FunctionBuilder, v: ClValue, from: Ty, to: Ty) -> ClValue {
     }
 }
 
+/// If `v` is the result of an `iconst`, its value; else `None`. Used to spot a
+/// compile-time-constant divisor so `/` and `%` avoid a hardware divide.
+fn const_int(b: &FunctionBuilder, v: ClValue) -> Option<i64> {
+    use cranelift_codegen::ir::{InstructionData, Opcode, ValueDef};
+    if let ValueDef::Result(inst, _) = b.func.dfg.value_def(v) {
+        if let InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } = b.func.dfg.insts[inst] {
+            return Some(imm.bits());
+        }
+    }
+    None
+}
+
+/// Granlund–Montgomery magic (Hacker's Delight §10-4) for signed division by a
+/// constant `d` in a `w`-bit domain (`w` ∈ {32, 64}). Precondition: |d| ≥ 2.
+/// Returns `(M, s)` such that the sequence in [`emit_const_divrem`] reproduces
+/// `n / d` bit-for-bit — the interpreter's exact result, no fast-math.
+fn signed_magic(d: i64, w: u32) -> (i64, u32) {
+    let msb: u128 = 1u128 << (w - 1); // 2^(w-1)
+    let dw: u128 = (d as i128 as u128) & ((1u128 << w) - 1); // d's low w bits
+    let ad: u128 = if d < 0 { d.unsigned_abs() as u128 } else { d as u128 }; // |d|
+    let t: u128 = msb + (dw >> (w - 1)); // 2^(w-1) + sign bit of d
+    let anc: u128 = t - 1 - (t % ad); // |nc|
+    let (mut p, mut q1, mut r1, mut q2, mut r2) =
+        (w - 1, msb / anc, msb - (msb / anc) * anc, msb / ad, msb - (msb / ad) * ad);
+    loop {
+        p += 1;
+        q1 <<= 1;
+        r1 <<= 1;
+        if r1 >= anc {
+            q1 += 1;
+            r1 -= anc;
+        }
+        q2 <<= 1;
+        r2 <<= 1;
+        if r2 >= ad {
+            q2 += 1;
+            r2 -= ad;
+        }
+        let delta = ad - r2;
+        if q1 >= delta && !(q1 == delta && r1 == 0) {
+            break;
+        }
+    }
+    // M = q2 + 1, sign-extended from w bits, negated when d < 0.
+    let mag = if w == 32 {
+        let mi = (q2 + 1) as u32 as i32;
+        (if d < 0 { mi.wrapping_neg() } else { mi }) as i64
+    } else {
+        let mi = (q2 + 1) as u64 as i64;
+        if d < 0 { mi.wrapping_neg() } else { mi }
+    };
+    (mag, p - w)
+}
+
+/// Emit `n / d` (rem=false) or `n % d` (rem=true) for a constant `d`, |d| ≥ 2,
+/// without a hardware divide. No zero/`INT_MIN` guard is needed: a nonzero
+/// constant that is not −1 can neither divide by zero nor overflow.
+fn emit_const_divrem(b: &mut FunctionBuilder, n: ClValue, d: i64, t: Ty, rem: bool) -> ClValue {
+    let clt = t.cl();
+    let w = if t == Ty::I64 { 64 } else { 32 };
+    let (m, s) = signed_magic(d, w);
+    let mc = b.ins().iconst(clt, m);
+    let hi = b.ins().smulhi(mc, n); // high w bits of signed M*n
+    let adj = if d > 0 && m < 0 {
+        b.ins().iadd(hi, n)
+    } else if d < 0 && m > 0 {
+        b.ins().isub(hi, n)
+    } else {
+        hi
+    };
+    let sh = if s > 0 { b.ins().sshr_imm(adj, s as i64) } else { adj };
+    let sign = b.ins().ushr_imm(sh, (w - 1) as i64); // 1 iff quotient is negative
+    let q = b.ins().iadd(sh, sign); // n / d
+    if !rem {
+        return q;
+    }
+    let dd = b.ins().iconst(clt, d);
+    let qd = b.ins().imul(q, dd);
+    b.ins().isub(n, qd) // n - (n/d)*d
+}
+
 /// The operator, and the type of what comes out: a comparison yields a `bool`,
 /// everything else yields what went in.
 fn lower_bin(b: &mut FunctionBuilder, op: BinOp, l: ClValue, r: ClValue, t: Ty) -> (ClValue, Ty) {
@@ -3793,3 +3894,71 @@ pub const KNOWN_GAPS: &[(&str, &str)] = &[(
     "forward-edge CFI (CET/endbr64)",
     "Cranelift exposes no CET setting (checked 0.116, 0.123); x86-64 only",
 )];
+
+#[cfg(test)]
+mod divmagic_tests {
+    use super::signed_magic;
+
+    // Mirror emit_const_divrem's exact instruction sequence in plain Rust, so
+    // the magic (M, s) is checked against real division independent of Cranelift.
+    fn reduce32(n: i32, d: i32) -> (i32, i32) {
+        let (m64, s) = signed_magic(d as i64, 32);
+        let m = m64 as i32;
+        let hi = (((m as i64) * (n as i64)) >> 32) as i32; // smulhi
+        let adj = if d > 0 && m < 0 {
+            hi.wrapping_add(n)
+        } else if d < 0 && m > 0 {
+            hi.wrapping_sub(n)
+        } else {
+            hi
+        };
+        let q = adj >> s;
+        let q = q.wrapping_add(((q as u32) >> 31) as i32); // + sign bit
+        (q, n.wrapping_sub(q.wrapping_mul(d)))
+    }
+
+    fn reduce64(n: i64, d: i64) -> (i64, i64) {
+        let (m, s) = signed_magic(d, 64);
+        let hi = (((m as i128) * (n as i128)) >> 64) as i64; // smulhi
+        let adj = if d > 0 && m < 0 {
+            hi.wrapping_add(n)
+        } else if d < 0 && m > 0 {
+            hi.wrapping_sub(n)
+        } else {
+            hi
+        };
+        let q = adj >> s;
+        let q = q.wrapping_add(((q as u64) >> 63) as i64);
+        (q, n.wrapping_sub(q.wrapping_mul(d)))
+    }
+
+    #[test]
+    fn magic_matches_hardware_i32() {
+        let ds = [2, 3, 4, 7, 8, 10, 100, 1000, 65536, -3, -7, -100, i32::MAX];
+        for &d in &ds {
+            let mut x: i32 = 0x1234_5678;
+            for _ in 0..5000 {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                assert_eq!(reduce32(x, d), (x.wrapping_div(d), x.wrapping_rem(d)), "n={x} d={d}");
+            }
+            for n in [i32::MIN + 1, -1000, -1, 0, 1, 1000, i32::MAX] {
+                assert_eq!(reduce32(n, d), (n.wrapping_div(d), n.wrapping_rem(d)), "n={n} d={d}");
+            }
+        }
+    }
+
+    #[test]
+    fn magic_matches_hardware_i64() {
+        let ds = [2i64, 3, 100, 1_000_000, -3, -1000, i32::MAX as i64 + 1];
+        for &d in &ds {
+            let mut x: i64 = 0x1234_5678_9abc_def0u64 as i64;
+            for _ in 0..5000 {
+                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                assert_eq!(reduce64(x, d), (x.wrapping_div(d), x.wrapping_rem(d)), "n={x} d={d}");
+            }
+            for n in [i64::MIN + 1, -1, 0, 1, i64::MAX] {
+                assert_eq!(reduce64(n, d), (n.wrapping_div(d), n.wrapping_rem(d)), "n={n} d={d}");
+            }
+        }
+    }
+}
