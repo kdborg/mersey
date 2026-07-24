@@ -418,6 +418,20 @@ MerseyScriptRunner::MerseyScriptRunner(Document* aDocument)
   MOZ_RELEASE_ASSERT(msy_abi_version() == MSY_ABI_VERSION,
                      "Mersey engine/header ABI mismatch");
 
+  // Announce, once per process, that this is an experimental build. "Mersey
+  // Gecko" is a Mersey-engine fork of Firefox -- not for production use, and
+  // not affiliated with Mozilla or the Firefox project.
+  static bool sBannerEmitted = false;
+  if (!sBannerEmitted) {
+    sBannerEmitted = true;
+    fputs(
+        "\n  Mersey Gecko (Experimental)\n"
+        "  A Mersey-engine fork of Firefox. Experimental software -- NOT for\n"
+        "  production use. Not affiliated with Mozilla or the Firefox project.\n\n",
+        stderr);
+    fflush(stderr);
+  }
+
   msy_host_table table = {};
   table.data = this;
   table.print = HostPrintShim;
@@ -718,6 +732,10 @@ bool MerseyScriptRunner::EnsureBridge() {
     JS_ClearPendingException(cx);
     return false;
   }
+  // Warn in the page console, once per document, that this is an experimental build.
+  nsContentUtils::ReportToConsoleNonLocalized(
+      u"[mersey] Mersey Gecko is an EXPERIMENTAL build -- not for production use, and not affiliated with Mozilla or the Firefox project."_ns,
+      nsIScriptError::warningFlag, "Mersey"_ns, mDocument);
   mBridgeReady = true;
   return true;
 }

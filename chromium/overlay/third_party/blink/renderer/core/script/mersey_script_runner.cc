@@ -58,6 +58,26 @@ MerseyScriptRunner* Runner(void* data) {
   return static_cast<MerseyScriptRunner*>(data);
 }
 
+// Print an experimental-build banner to stderr once per process, the first time
+// the Mersey engine is initialized. This is "Mersey Blink" — an experimental
+// Chromium fork that runs <script type="text/mersey"> in the Mersey engine. It
+// is not affiliated with Google or the Chromium project and is not intended for
+// production use.
+void EmitExperimentalBannerOnce() {
+  static bool emitted = false;
+  if (emitted) {
+    return;
+  }
+  emitted = true;
+  fputs(
+      "\n"
+      "  Mersey Blink (Experimental)\n"
+      "  A Mersey-engine fork of Chromium. Experimental software — NOT for\n"
+      "  production use. Not affiliated with Google or the Chromium project.\n\n",
+      stderr);
+  fflush(stderr);
+}
+
 void HostPrintShim(void* data, const char* utf8, size_t len) {
   Runner(data)->HostPrint(std::string_view(utf8, len), /*is_error=*/false);
 }
@@ -510,6 +530,7 @@ MerseyScriptRunner& MerseyScriptRunner::From(Document& document) {
 
 MerseyScriptRunner::MerseyScriptRunner(Document& document)
     : Supplement<Document>(document) {
+  EmitExperimentalBannerOnce();
   msy_host_table table = {};
   table.data = this;
   table.print = HostPrintShim;
@@ -557,6 +578,12 @@ void MerseyScriptRunner::AnnounceNative() {
           mojom::blink::ConsoleMessageLevel::kInfo,
           "[mersey] running natively — the engine is hosted in Blink "
           "(no WASM polyfill)."));
+      // This is an experimental build; say so where a web developer will see it.
+      document->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+          mojom::blink::ConsoleMessageSource::kOther,
+          mojom::blink::ConsoleMessageLevel::kWarning,
+          "[mersey] Mersey Blink is an EXPERIMENTAL build — not for production "
+          "use, and not affiliated with Google or the Chromium project."));
     }
     if (window && document && document->documentElement()) {
       // The REPL's native half listens for the shim's synchronous event.

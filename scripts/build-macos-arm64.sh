@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
 # Build the Mersey browser forks on macOS arm64 (Apple silicon).
 #
 # One driver for all four Stage-B hosts plus the C-ABI staticlib they share.
@@ -136,7 +138,7 @@ EOF
     if [ -x "$GECKO_SRC/obj-mersey/dist/bin/firefox" ]; then
       done_ gecko "firefox -> $GECKO_SRC/obj-mersey/dist/bin/firefox"
     else
-      done_ gecko "built (binary under obj-mersey/dist/bin, or Nightly.app on mac)"
+      done_ gecko "built (binary under obj-mersey/dist/bin, or 'Mersey Gecko (Experimental).app' on mac)"
     fi
   else
     fail gecko "./mach build failed (a fresh tree usually needs ./mach bootstrap first)"

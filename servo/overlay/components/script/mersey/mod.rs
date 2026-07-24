@@ -1606,6 +1606,18 @@ unsafe fn ensure_runner(global_obj: *mut JSObject) -> *mut Runner {
     let mut table = host_table();
     table.data = runner as *mut c_void;
     (*runner).ctx = msy_context_new(&table);
+
+    // Announce, once per process, that this is an experimental build. "Mersey
+    // Servo" is a Mersey-engine fork of Servo — not for production use, and not
+    // affiliated with the Servo project.
+    static BANNER: std::sync::Once = std::sync::Once::new();
+    BANNER.call_once(|| {
+        eprintln!(
+            "\n  Mersey Servo (Experimental)\n  \
+             A Mersey-engine fork of Servo. Experimental software — NOT for\n  \
+             production use. Not affiliated with the Servo project.\n"
+        );
+    });
     runner
 }
 
@@ -1629,6 +1641,17 @@ pub(crate) fn run_mersey_script(global: &GlobalScope, cx: &mut JSContext, source
                 cx,
                 Cow::Borrowed(BRIDGE_JS),
                 "mersey-bridge.js",
+                None,
+                None,
+            );
+            // Warn in the page's console, once, that this is an experimental build.
+            let _ = global.evaluate_js_on_global(
+                cx,
+                Cow::Borrowed(
+                    "console.warn('[mersey] Mersey Servo is an EXPERIMENTAL build \\u2014 \
+                     not for production use, and not affiliated with the Servo project.')",
+                ),
+                "mersey-experimental-notice.js",
                 None,
                 None,
             );

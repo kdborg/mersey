@@ -7,3 +7,6 @@ mersey.lock
 # `mersey doc` output: generated, never edited by hand.
 site/
 test-dumps/
+
+# Local build logs (fork rebuilds); never committed
+.build-logs/
