@@ -288,7 +288,11 @@ struct Group<'a> {
 
 impl Group<'_> {
     fn class_idx(&mut self, c: &Rc<ClassDef>) -> u32 {
-        if let Some(i) = self.classes.iter().position(|k| k.class_id() == c.class_id()) {
+        if let Some(i) = self
+            .classes
+            .iter()
+            .position(|k| k.class_id() == c.class_id())
+        {
             return i as u32;
         }
         self.classes.push(c.clone());
@@ -676,11 +680,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     // What the checker said each slot holds. A slot it said nothing about — a
     // compiler temp, an object — has to be given a type by the code that stores
     // into it, or by the declaration it came from.
-    let mut slots: Vec<Option<Ty>> = chunk
-        .slot_types
-        .iter()
-        .map(|t| t.and_then(ty_of))
-        .collect();
+    let mut slots: Vec<Option<Ty>> = chunk.slot_types.iter().map(|t| t.and_then(ty_of)).collect();
     slots.resize(n_slots, None);
     let mut entry_live = vec![false; n_slots];
     for (i, t) in sig.params.iter().enumerate() {
@@ -811,10 +811,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 // Overwriting `s` releases its old object. Any borrow *of that
                 // slot* still in flight would be a use of whatever is left.
-                if stack
-                    .iter()
-                    .any(|v| prov(*v) == Prov::FromSlot(s))
-                {
+                if stack.iter().any(|v| prov(*v) == Prov::FromSlot(s)) {
                     return None;
                 }
             }
@@ -827,9 +824,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     math_ns_names.insert(ni);
                     stack.push(TSlot::MathNs); // an intrinsic receiver, not a value
                 } else if g.env.is_web_global(name) {
-                    web_globals.entry(ni).or_insert_with(|| {
-                        Box::leak(name.to_string().into_boxed_str())
-                    });
+                    web_globals
+                        .entry(ni)
+                        .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
                     stack.push(TSlot::Web(ni)); // a host-object receiver
                 } else {
                     let f = g.env.function(name)?;
@@ -1539,7 +1536,6 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         return None;
     }
 
-
     let osr_entries = loop_headers(&plans[0]);
     let root_slots: Vec<Ty> = plans[0].slots.clone();
     let root_sig = g.sigs[0].clone();
@@ -1562,7 +1558,10 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
     builder.symbol("msy_web_get_num", heap::web_get_num as *const u8);
     builder.symbol("msy_web_get_str_v", heap::web_get_str_v as *const u8);
-    builder.symbol("msy_web_get_str_len_v", heap::web_get_str_len_v as *const u8);
+    builder.symbol(
+        "msy_web_get_str_len_v",
+        heap::web_get_str_len_v as *const u8,
+    );
     builder.symbol("msy_web_new_v", heap::web_new_v as *const u8);
     builder.symbol("msy_web_call_v", heap::web_call_v as *const u8);
     builder.symbol("msy_web_call_str_v", heap::web_call_str_v as *const u8);
@@ -1585,7 +1584,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         sig.params.push(AbiParam::new(types::I64)); // entry_pc
         sig.params.push(AbiParam::new(ptr_ty)); // shared status/depth
         sig.params.push(AbiParam::new(ptr_ty)); // the arena
-        // An object comes back as its three registers, ownership included.
+                                                // An object comes back as its three registers, ownership included.
         for part in p.ret.parts() {
             sig.returns.push(AbiParam::new(part));
         }
@@ -1631,7 +1630,15 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         ptr_ty,
         false,
     )?;
-    let osr_id = wrapper(&mut module, &mut ctx, ids[0], &plans[0], &shims, ptr_ty, true)?;
+    let osr_id = wrapper(
+        &mut module,
+        &mut ctx,
+        ids[0],
+        &plans[0],
+        &shims,
+        ptr_ty,
+        true,
+    )?;
 
     module.finalize_definitions().ok()?; // W^X flip happens here
     let call_ptr = module.get_finalized_function(call_id);
@@ -1728,7 +1735,10 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
             Ty::F64 => JitKind::F64,
             _ => JitKind::I32,
         },
-        slot_kinds: root_slots.iter().map(|t| boundary(*t, &g.classes)).collect(),
+        slot_kinds: root_slots
+            .iter()
+            .map(|t| boundary(*t, &g.classes))
+            .collect(),
         this_slot,
         call: Box::new(move |args: &[JitArg], arena: &mut Arena| {
             // The arguments, then the receiver — which goes to the slot the
@@ -1737,10 +1747,12 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
             if args.len() != expect {
                 return JitResult::Bail;
             }
-            let buf = marshal(args, &|i| if i < n_params {
-                i
-            } else {
-                this_slot.unwrap_or(i)
+            let buf = marshal(args, &|i| {
+                if i < n_params {
+                    i
+                } else {
+                    this_slot.unwrap_or(i)
+                }
             });
             let mut out = [0u8; 16];
             let mut detail = [0i64; 5];
@@ -1920,7 +1932,9 @@ fn wrapper(
                     // The handle: nonzero only from an OSR, whose interpreter
                     // locals were cloned into the arena so the compiled releases
                     // have something real to let go of.
-                    let h = b.ins().load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
+                    let h = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
                     args.push(p);
                     args.push(base);
                     args.push(h);
@@ -1940,18 +1954,19 @@ fn wrapper(
                 // carry the arena handle from the second cell.
                 Ty::Str => {
                     let p = b.ins().load(ptr_ty, MemFlags::trusted(), slots_ptr, at);
-                    let scratch = b.create_sized_stack_slot(
-                        cranelift_codegen::ir::StackSlotData::new(
+                    let scratch =
+                        b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                             cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
                             16,
                             3,
-                        ),
-                    );
+                        ));
                     let sp = b.ins().stack_addr(ptr_ty, scratch, 0);
                     b.ins().call(str_vec_parts, &[p, sp]);
                     let data = b.ins().load(ptr_ty, MemFlags::trusted(), sp, 0);
                     let len = b.ins().load(types::I64, MemFlags::trusted(), sp, 8);
-                    let h = b.ins().load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
+                    let h = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
                     args.push(data);
                     args.push(len);
                     args.push(h);
@@ -2425,7 +2440,9 @@ fn translate(
                 };
                 let (nptr, nlen) = str_const(b, name);
                 let id_v = b.ins().iconst(types::I64, id as i64);
-                let call = b.ins().call(shim.web_get_num, &[arena_ptr, handle, id_v, nptr, nlen]);
+                let call = b
+                    .ins()
+                    .call(shim.web_get_num, &[arena_ptr, handle, id_v, nptr, nlen]);
                 let v = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
                 guard(b, ctx, threw, R_HOST, pc, None);
@@ -2442,9 +2459,10 @@ fn translate(
                 };
                 let (nptr, nlen) = str_const(b, name);
                 let id_v = b.ins().iconst(types::I64, id as i64);
-                let call = b
-                    .ins()
-                    .call(shim.web_get_str_len_v, &[arena_ptr, handle, id_v, nptr, nlen]);
+                let call = b.ins().call(
+                    shim.web_get_str_len_v,
+                    &[arena_ptr, handle, id_v, nptr, nlen],
+                );
                 let v = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
                 guard(b, ctx, threw, R_HOST, pc, None);
@@ -2467,9 +2485,10 @@ fn translate(
                 let out_ptr = b.ins().stack_addr(types::I64, out, 0);
                 let (nptr, nlen) = str_const(b, name);
                 let id_v = b.ins().iconst(types::I64, id as i64);
-                let call = b
-                    .ins()
-                    .call(shim.web_get_str_v, &[arena_ptr, handle, id_v, nptr, nlen, out_ptr]);
+                let call = b.ins().call(
+                    shim.web_get_str_v,
+                    &[arena_ptr, handle, id_v, nptr, nlen, out_ptr],
+                );
                 let failed = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
                 guard(b, ctx, threw, R_HOST, pc, None);
@@ -2672,13 +2691,11 @@ fn translate(
                 let SlotV::Web(handle) = stack.pop()? else {
                     return None;
                 };
-                let slot = b.create_sized_stack_slot(
-                    cranelift_codegen::ir::StackSlotData::new(
-                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
-                        (argc as u32).max(1) * 8,
-                        3,
-                    ),
-                );
+                let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (argc as u32).max(1) * 8,
+                    3,
+                ));
                 let args_ptr = b.ins().stack_addr(types::I64, slot, 0);
                 for (k, a) in fargs.iter().enumerate() {
                     b.ins()
@@ -2715,10 +2732,9 @@ fn translate(
                 let SlotV::TimeNs = stack.pop()? else {
                     return None;
                 };
-                let epoch = b.ins().iconst(
-                    types::I64,
-                    if *p.time_at.get(&pc)? { 1 } else { 0 },
-                );
+                let epoch = b
+                    .ins()
+                    .iconst(types::I64, if *p.time_at.get(&pc)? { 1 } else { 0 });
                 let call = b.ins().call(shim.host_time, &[arena_ptr, epoch]);
                 let ms = b.inst_results(call)[0];
                 stack.push(SlotV::Val(ms, Ty::F64));
@@ -2727,7 +2743,11 @@ fn translate(
             // receiver is the math-namespace marker (no registers).
             Op::CallMethod(_, _) if p.math_at.contains_key(&pc) => {
                 let op = *p.math_at.get(&pc)?;
-                let argc = if matches!(op, MathOp::Min | MathOp::Max) { 2 } else { 1 };
+                let argc = if matches!(op, MathOp::Min | MathOp::Max) {
+                    2
+                } else {
+                    1
+                };
                 let mut fargs: Vec<ClValue> = Vec::with_capacity(argc);
                 for _ in 0..argc {
                     let (v, t) = scalar(stack.pop()?)?;
@@ -2928,10 +2948,9 @@ fn translate(
                 // The class, baked in. `JitCode::classes` keeps it alive for as
                 // long as this code exists; a class binding cannot be reassigned
                 // (E0304), and a class *added* later discards the code.
-                let cls_ptr = b.ins().iconst(
-                    types::I64,
-                    Rc::as_ptr(&class_rcs[ci as usize]) as i64,
-                );
+                let cls_ptr = b
+                    .ins()
+                    .iconst(types::I64, Rc::as_ptr(&class_rcs[ci as usize]) as i64);
                 let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
                 b.ins().call(shim.alloc, &[cls_ptr, arena_ptr, out]);
                 let ptr = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
@@ -2986,9 +3005,9 @@ fn translate(
                             release_if_owned(b, shim.release, arena_ptr, h);
                         }
                     }
-                    let status = b
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), state_ptr, ST_STATUS);
+                    let status =
+                        b.ins()
+                            .load(types::I64, MemFlags::trusted(), state_ptr, ST_STATUS);
                     let failed = b.ins().icmp_imm(IntCC::NotEqual, status, ST_OK);
                     let cont = b.create_block();
                     b.ins().brif(failed, bail, &[], cont, &[]);
@@ -3080,16 +3099,16 @@ fn translate(
                     // ARM64 generally) has a ~2-cycle divider, where the longer
                     // sequence measures *slower* — so leave the hardware divide.
                     if cfg!(target_arch = "x86_64") {
-                    if let Some(d) = const_int(b, r) {
-                        // 2 ≤ |d| < 2^(w−1): excludes 0, ±1 (handled by the
-                        // guarded path) and INT_MIN (outside the magic's domain).
-                        let w = if t == Ty::I64 { 64 } else { 32 };
-                        if d.abs() >= 2 && (d.unsigned_abs() as u128) < (1u128 << (w - 1)) {
-                            let v = emit_const_divrem(b, l, d, t, binop == BinOp::Rem);
-                            stack.push(SlotV::Val(v, t));
-                            continue;
+                        if let Some(d) = const_int(b, r) {
+                            // 2 ≤ |d| < 2^(w−1): excludes 0, ±1 (handled by the
+                            // guarded path) and INT_MIN (outside the magic's domain).
+                            let w = if t == Ty::I64 { 64 } else { 32 };
+                            if d.abs() >= 2 && (d.unsigned_abs() as u128) < (1u128 << (w - 1)) {
+                                let v = emit_const_divrem(b, l, d, t, binop == BinOp::Rem);
+                                stack.push(SlotV::Val(v, t));
+                                continue;
+                            }
                         }
-                    }
                     }
                     let zero = b.ins().icmp_imm(IntCC::Equal, r, 0);
                     guard(b, ctx, zero, R_DIV0, pc, None);
@@ -3289,13 +3308,7 @@ struct ShimRefs {
 
 /// Stop here, and say why. `a`/`b` carry the index and the length, for the one
 /// message that needs them.
-fn trap(
-    b: &mut FunctionBuilder,
-    ctx: Ctx,
-    why: i64,
-    pc: usize,
-    ab: Option<(ClValue, ClValue)>,
-) {
+fn trap(b: &mut FunctionBuilder, ctx: Ctx, why: i64, pc: usize, ab: Option<(ClValue, ClValue)>) {
     let st = b.ins().iconst(types::I64, ST_TRAP);
     b.ins().store(MemFlags::trusted(), st, ctx.state, ST_STATUS);
     let r = b.ins().iconst(types::I64, why);
@@ -3446,9 +3459,7 @@ fn store_cell(
 ) {
     let tag = b.ins().load(types::I8, MemFlags::trusted(), base, at);
     let is_t = b.ins().icmp_imm(IntCC::Equal, tag, t.tag() as i64);
-    let is_null = b
-        .ins()
-        .icmp_imm(IntCC::Equal, tag, repr::TAG_NULL as i64);
+    let is_null = b.ins().icmp_imm(IntCC::Equal, tag, repr::TAG_NULL as i64);
     let ok = b.ins().bor(is_t, is_null);
     let bad = b.ins().icmp_imm(IntCC::Equal, ok, 0);
     guard(b, ctx, bad, R_TAG, pc, None);
@@ -3467,7 +3478,6 @@ fn store_cell(
         }
     }
 }
-
 
 /// A value as a condition: an `i32` that is 0 or not. Mersey's conditions accept
 /// any number, testing `!= 0` — the C convention (§3.4).
@@ -3599,7 +3609,11 @@ fn inlinable(plans: &[Plan], f: usize, depth: usize) -> bool {
         Op::BinNum(bop, _) => !matches!(bop, BinOp::Div | BinOp::Rem),
         _ => false,
     });
-    ops_ok && plans[f].callee.values().all(|&c| inlinable(plans, c, depth + 1))
+    ops_ok
+        && plans[f]
+            .callee
+            .values()
+            .all(|&c| inlinable(plans, c, depth + 1))
 }
 
 /// Expand an inlinable callee at a call site: mini-evaluate its straight-line
@@ -3608,7 +3622,13 @@ fn inlinable(plans: &[Plan], f: usize, depth: usize) -> bool {
 /// an inlined call is bit-identical to a real one — just without the call, the
 /// frame, or the depth guard. Returns `None` on anything the pre-check would not
 /// have accepted (so a `true` from `inlinable` means this succeeds).
-fn inline_body(b: &mut FunctionBuilder, plans: &[Plan], f: usize, args: &[SlotV], depth: usize) -> Option<SlotV> {
+fn inline_body(
+    b: &mut FunctionBuilder,
+    plans: &[Plan],
+    f: usize,
+    args: &[SlotV],
+    depth: usize,
+) -> Option<SlotV> {
     if depth > INLINE_DEPTH {
         return None;
     }
@@ -3688,7 +3708,11 @@ fn convert(b: &mut FunctionBuilder, v: ClValue, from: Ty, to: Ty) -> ClValue {
 fn const_int(b: &FunctionBuilder, v: ClValue) -> Option<i64> {
     use cranelift_codegen::ir::{InstructionData, Opcode, ValueDef};
     if let ValueDef::Result(inst, _) = b.func.dfg.value_def(v) {
-        if let InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } = b.func.dfg.insts[inst] {
+        if let InstructionData::UnaryImm {
+            opcode: Opcode::Iconst,
+            imm,
+        } = b.func.dfg.insts[inst]
+        {
             return Some(imm.bits());
         }
     }
@@ -3702,11 +3726,20 @@ fn const_int(b: &FunctionBuilder, v: ClValue) -> Option<i64> {
 fn signed_magic(d: i64, w: u32) -> (i64, u32) {
     let msb: u128 = 1u128 << (w - 1); // 2^(w-1)
     let dw: u128 = (d as i128 as u128) & ((1u128 << w) - 1); // d's low w bits
-    let ad: u128 = if d < 0 { d.unsigned_abs() as u128 } else { d as u128 }; // |d|
+    let ad: u128 = if d < 0 {
+        d.unsigned_abs() as u128
+    } else {
+        d as u128
+    }; // |d|
     let t: u128 = msb + (dw >> (w - 1)); // 2^(w-1) + sign bit of d
     let anc: u128 = t - 1 - (t % ad); // |nc|
-    let (mut p, mut q1, mut r1, mut q2, mut r2) =
-        (w - 1, msb / anc, msb - (msb / anc) * anc, msb / ad, msb - (msb / ad) * ad);
+    let (mut p, mut q1, mut r1, mut q2, mut r2) = (
+        w - 1,
+        msb / anc,
+        msb - (msb / anc) * anc,
+        msb / ad,
+        msb - (msb / ad) * ad,
+    );
     loop {
         p += 1;
         q1 <<= 1;
@@ -3732,7 +3765,11 @@ fn signed_magic(d: i64, w: u32) -> (i64, u32) {
         (if d < 0 { mi.wrapping_neg() } else { mi }) as i64
     } else {
         let mi = (q2 + 1) as u64 as i64;
-        if d < 0 { mi.wrapping_neg() } else { mi }
+        if d < 0 {
+            mi.wrapping_neg()
+        } else {
+            mi
+        }
     };
     (mag, p - w)
 }
@@ -3753,7 +3790,11 @@ fn emit_const_divrem(b: &mut FunctionBuilder, n: ClValue, d: i64, t: Ty, rem: bo
     } else {
         hi
     };
-    let sh = if s > 0 { b.ins().sshr_imm(adj, s as i64) } else { adj };
+    let sh = if s > 0 {
+        b.ins().sshr_imm(adj, s as i64)
+    } else {
+        adj
+    };
     let sign = b.ins().ushr_imm(sh, (w - 1) as i64); // 1 iff quotient is negative
     let q = b.ins().iadd(sh, sign); // n / d
     if !rem {
@@ -3868,7 +3909,10 @@ pub fn hardening() -> Vec<(&'static str, bool)> {
         ("stack probes (guard pages)", flags.enable_probestack()),
         // The heap is only reached through a layout this compiler has *proved*
         // against a real value, not one it assumed from a comment.
-        ("value layout verified before heap access", heap::layout_holds()),
+        (
+            "value layout verified before heap access",
+            heap::layout_holds(),
+        ),
     ];
     // The ISA-specific ones are reported by name in the ISA's flag list.
     let isa_flags: Vec<String> = isa.isa_flags().iter().map(|f| f.to_string()).collect();
@@ -3945,10 +3989,18 @@ mod divmagic_tests {
             let mut x: i32 = 0x1234_5678;
             for _ in 0..5000 {
                 x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                assert_eq!(reduce32(x, d), (x.wrapping_div(d), x.wrapping_rem(d)), "n={x} d={d}");
+                assert_eq!(
+                    reduce32(x, d),
+                    (x.wrapping_div(d), x.wrapping_rem(d)),
+                    "n={x} d={d}"
+                );
             }
             for n in [i32::MIN + 1, -1000, -1, 0, 1, 1000, i32::MAX] {
-                assert_eq!(reduce32(n, d), (n.wrapping_div(d), n.wrapping_rem(d)), "n={n} d={d}");
+                assert_eq!(
+                    reduce32(n, d),
+                    (n.wrapping_div(d), n.wrapping_rem(d)),
+                    "n={n} d={d}"
+                );
             }
         }
     }
@@ -3960,10 +4012,18 @@ mod divmagic_tests {
             let mut x: i64 = 0x1234_5678_9abc_def0u64 as i64;
             for _ in 0..5000 {
                 x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                assert_eq!(reduce64(x, d), (x.wrapping_div(d), x.wrapping_rem(d)), "n={x} d={d}");
+                assert_eq!(
+                    reduce64(x, d),
+                    (x.wrapping_div(d), x.wrapping_rem(d)),
+                    "n={x} d={d}"
+                );
             }
             for n in [i64::MIN + 1, -1, 0, 1, i64::MAX] {
-                assert_eq!(reduce64(n, d), (n.wrapping_div(d), n.wrapping_rem(d)), "n={n} d={d}");
+                assert_eq!(
+                    reduce64(n, d),
+                    (n.wrapping_div(d), n.wrapping_rem(d)),
+                    "n={n} d={d}"
+                );
             }
         }
     }

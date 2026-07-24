@@ -189,6 +189,7 @@ macro_rules! keywords {
         }
 
         impl Keyword {
+            #[allow(clippy::should_implement_trait)]
             pub fn from_str(s: &str) -> Option<Keyword> {
                 match s {
                     $( $text => Some(Keyword::$variant), )+

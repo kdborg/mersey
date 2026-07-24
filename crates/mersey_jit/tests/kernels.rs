@@ -182,7 +182,6 @@ fn jit_matches_vm_and_tree() {
     assert!(!jit_out.is_empty());
 }
 
-
 /// Which top-level functions Tier 1 actually accepts — asked of the engine, by the
 /// path the engine uses. A test that assembled the compiler's input itself would
 /// be testing its own assembly.
@@ -294,7 +293,11 @@ console.log(sumTo64(1000l), mix64(9l, 3l), big(3000000000l));
 fn int64_kernels_compile_and_agree() {
     // In the accepted subset (not silently falling back to the interpreter).
     let compiled = compiled_fns(I64_KERNELS);
-    assert_eq!(compiled.len(), 3, "expected three int64 kernels: {compiled:?}");
+    assert_eq!(
+        compiled.len(),
+        3,
+        "expected three int64 kernels: {compiled:?}"
+    );
 
     // And Tier 1 must agree with Tier 0 and the tree-walker, exactly.
     let jit = run(I64_KERNELS, true, true);
@@ -308,6 +311,7 @@ fn int64_kernels_compile_and_agree() {
 }
 
 /// The declared return type of a function, as the JIT wants it.
+#[allow(dead_code)]
 fn ret_num_of(f: &mersey_front::ast::FnDecl) -> Option<mersey_front::check::Num> {
     use mersey_front::check::{IntKind, Num};
     let mersey_front::ast::TypeExpr::Named { name, .. } = f.ret.as_ref()? else {

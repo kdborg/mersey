@@ -91,7 +91,10 @@ pub fn bind(module: &Module) -> BindOutput {
     // The hoisting pass reports duplicates before the in-order walk runs;
     // present everything in source order.
     diagnostics.sort_by_key(|d| (d.pos.line, d.pos.col));
-    BindOutput { diagnostics, uses_web }
+    BindOutput {
+        diagnostics,
+        uses_web,
+    }
 }
 
 /// Does this module reach the ambient web surface? Reuses the binder's own

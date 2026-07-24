@@ -69,7 +69,10 @@ impl Host for UrlHost {
         // Parse `scheme://host/pathname?search` just enough for the two
         // components the benchmark reads.
         let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-        let path_and_query = after_scheme.find('/').map(|i| &after_scheme[i..]).unwrap_or("/");
+        let path_and_query = after_scheme
+            .find('/')
+            .map(|i| &after_scheme[i..])
+            .unwrap_or("/");
         let (pathname, search) = match path_and_query.split_once('?') {
             Some((p, q)) => (p.to_string(), format!("?{q}")),
             None => (path_and_query.to_string(), String::new()),
@@ -86,10 +89,18 @@ fn try_run(src_text: &str, use_vm: bool, jit: bool) -> Result<String, String> {
     let src = source::decode("<test>", src_text.as_bytes()).expect("decode");
     let parsed = parser::parse(&src);
     let module: &'static _ = Box::leak(Box::new(parsed.module));
-    assert!(parsed.diagnostics.is_empty(), "parse: {:?}", parsed.diagnostics.first());
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics.first()
+    );
     assert!(bind::bind(module).diagnostics.is_empty(), "bind errors");
     let diags = check::check(module).diagnostics;
-    assert!(diags.is_empty(), "check: {:?}", diags.first().map(|d| &d.message));
+    assert!(
+        diags.is_empty(),
+        "check: {:?}",
+        diags.first().map(|d| &d.message)
+    );
 
     let out = Rc::new(RefCell::new(String::new()));
     let host = Box::new(UrlHost {
@@ -214,7 +225,9 @@ impl Host for DomHost {
         }
     }
     fn web_set(&mut self, target: i64, prop: &str, value_json: &str) -> String {
-        self.log.borrow_mut().push(format!("set #{target}.{prop}={value_json}"));
+        self.log
+            .borrow_mut()
+            .push(format!("set #{target}.{prop}={value_json}"));
         "{\"ok\":null}".into()
     }
     fn web_call(&mut self, target: i64, method: &str, args_json: &str) -> String {
@@ -223,11 +236,15 @@ impl Host for DomHost {
                 let mut n = self.next.borrow_mut();
                 let h = *n;
                 *n += 1;
-                self.log.borrow_mut().push(format!("create({args_json})->#{h}"));
+                self.log
+                    .borrow_mut()
+                    .push(format!("create({args_json})->#{h}"));
                 format!("{{\"ok\":{{\"__ref__\":{h}}}}}")
             }
             "appendChild" => {
-                self.log.borrow_mut().push(format!("append #{target} {args_json}"));
+                self.log
+                    .borrow_mut()
+                    .push(format!("append #{target} {args_json}"));
                 "{\"ok\":null}".into()
             }
             _ => "{\"err\":\"unknown method\"}".into(),
@@ -240,10 +257,18 @@ fn dom_run(src: &str, use_vm: bool, jit: bool) -> (String, Vec<String>) {
     let s = source::decode("<test>", src.as_bytes()).expect("decode");
     let parsed = parser::parse(&s);
     let module: &'static _ = Box::leak(Box::new(parsed.module));
-    assert!(parsed.diagnostics.is_empty(), "parse: {:?}", parsed.diagnostics.first());
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics.first()
+    );
     assert!(bind::bind(module).diagnostics.is_empty(), "bind");
     let diags = check::check(module).diagnostics;
-    assert!(diags.is_empty(), "check: {:?}", diags.first().map(|d| &d.message));
+    assert!(
+        diags.is_empty(),
+        "check: {:?}",
+        diags.first().map(|d| &d.message)
+    );
 
     let out = Rc::new(RefCell::new(String::new()));
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -257,7 +282,8 @@ fn dom_run(src: &str, use_vm: bool, jit: bool) -> (String, Vec<String>) {
     if jit {
         i.jit = Some(mersey_jit::hook);
     }
-    i.run_module(module).unwrap_or_else(|t| panic!("runtime: {}", describe(&mut i, &t)));
+    i.run_module(module)
+        .unwrap_or_else(|t| panic!("runtime: {}", describe(&mut i, &t)));
     let o = out.borrow().clone();
     let l = log.borrow().clone();
     (o, l)
@@ -302,4 +328,3 @@ fn dom_create_set_append_agree_across_tiers() {
     assert_eq!(jit_log[1], "set #2.textContent=\"item 0\"");
     assert_eq!(jit_log[2], "append #1 [{\"__ref__\":2}]");
 }
-

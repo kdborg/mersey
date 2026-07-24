@@ -336,10 +336,7 @@ function work(cs: Cell[], n: int32, k: int32): int32 {
             )),
             2 => s.push_str(&format!("        f = f + c.scale({}.5);\n", rng.below(4))),
             3 => s.push_str("        c.flag = !c.flag;\n"),
-            4 => s.push_str(&format!(
-                "        c.a = (c.a {} k) | 0;\n",
-                gen_binop(rng)
-            )),
+            4 => s.push_str(&format!("        c.a = (c.a {} k) | 0;\n", gen_binop(rng))),
             5 => s.push_str(
                 "        if (c.next != null) { acc = acc + 1; } else { acc = acc ^ 3; }\n",
             ),

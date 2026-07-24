@@ -153,8 +153,8 @@ impl BigInt {
     fn sub_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
         let mut out = Vec::with_capacity(a.len());
         let mut borrow: i64 = 0;
-        for i in 0..a.len() {
-            let mut v = a[i] as i64 - *b.get(i).unwrap_or(&0) as i64 - borrow;
+        for (i, &ai) in a.iter().enumerate() {
+            let mut v = ai as i64 - *b.get(i).unwrap_or(&0) as i64 - borrow;
             if v < 0 {
                 v += 1 << 32;
                 borrow = 1;
@@ -295,6 +295,7 @@ impl BigInt {
         Some((quot, rem))
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn cmp(&self, other: &BigInt) -> Ordering {
         match (self.neg, other.neg) {
             (false, true) => Ordering::Greater,
@@ -517,6 +518,7 @@ impl BigDec {
         })
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn cmp(&self, other: &BigDec) -> Ordering {
         let (a, b, _) = Self::align(self, other);
         a.cmp(&b)
@@ -524,12 +526,11 @@ impl BigDec {
 
     pub fn to_decimal(&self) -> String {
         let digits = {
-            let d = BigInt {
+            BigInt {
                 neg: false,
                 mag: self.coef.mag.clone(),
             }
-            .to_decimal();
-            d
+            .to_decimal()
         };
         let neg = if self.coef.neg { "-" } else { "" };
         if self.scale == 0 {

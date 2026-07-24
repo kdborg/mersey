@@ -97,7 +97,11 @@ fn breakpoint_step_inspect_continue() {
         let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
     });
 
-    let mut dap = Dap { child, reader, seq: 0 };
+    let mut dap = Dap {
+        child,
+        reader,
+        seq: 0,
+    };
 
     dap.send("initialize", "{}");
     dap.read_until("\"event\":\"initialized\"");
@@ -105,7 +109,10 @@ fn breakpoint_step_inspect_continue() {
     dap.read_until("\"command\":\"launch\"");
     dap.send("setBreakpoints", "{\"breakpoints\":[{\"line\":4}]}");
     let bp = dap.read_until("\"command\":\"setBreakpoints\"");
-    assert!(bp.contains("\"verified\":true"), "breakpoint verified: {bp}");
+    assert!(
+        bp.contains("\"verified\":true"),
+        "breakpoint verified: {bp}"
+    );
     dap.send("configurationDone", "{}");
     dap.read_until("\"command\":\"configurationDone\"");
 
@@ -135,10 +142,16 @@ fn breakpoint_step_inspect_continue() {
     // `add` itself is bound there.
     dap.send("scopes", "{\"frameId\":1}");
     let outer_scopes = dap.read_until("\"command\":\"scopes\"");
-    assert!(outer_scopes.contains("\"name\":\"Locals\""), "{outer_scopes}");
+    assert!(
+        outer_scopes.contains("\"name\":\"Locals\""),
+        "{outer_scopes}"
+    );
     dap.send("variables", "{\"variablesReference\":65}");
     let outer_vars = dap.read_until("\"command\":\"variables\"");
-    assert!(outer_vars.contains("\"name\":\"add\""), "module scope shows add: {outer_vars}");
+    assert!(
+        outer_vars.contains("\"name\":\"add\""),
+        "module scope shows add: {outer_vars}"
+    );
 
     // Step over: to `return r` on line 5, with r now bound.
     dap.send("next", "{\"threadId\":1}");

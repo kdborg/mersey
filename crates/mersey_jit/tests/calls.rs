@@ -374,6 +374,7 @@ console.log(total);
 }
 
 /// The declared return type of a function, as the JIT wants it.
+#[allow(dead_code)]
 fn ret_num_of(f: &mersey_front::ast::FnDecl) -> Option<mersey_front::check::Num> {
     use mersey_front::check::{IntKind, Num};
     let mersey_front::ast::TypeExpr::Named { name, .. } = f.ret.as_ref()? else {

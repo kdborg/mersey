@@ -210,6 +210,7 @@ pub(crate) unsafe extern "C" fn str_join(
 ///
 /// # Safety
 /// As `cell_arr`.
+#[allow(dead_code)]
 pub(crate) unsafe extern "C" fn cell_str(cell: *const Value, out: *mut u64) {
     let (ptr, len) = match unsafe { &*cell } {
         Value::Str(rc) => {
@@ -324,16 +325,6 @@ pub(crate) fn layout_holds() -> bool {
         &(-7i32).to_ne_bytes(),
     ) && ok(Value::Bool(true), repr::TAG_BOOL, repr::OFF_BOOL, &[1u8])
         && ok(Value::Null, repr::TAG_NULL, 0, &[])
-}
-
-#[cfg(test)]
-mod tests {
-    /// The compiler emits `object + slot * 16 + offset` and reads the bytes it
-    /// finds. If this is ever false, that arithmetic is reading something else.
-    #[test]
-    fn value_layout_is_what_compiled_code_assumes() {
-        assert!(super::layout_holds());
-    }
 }
 
 /// The host-call shims all reach the interpreter through the pointer it set on
@@ -715,5 +706,15 @@ pub(crate) unsafe extern "C" fn web_bind_call(
             Some(ip) => (*ip).jit_web_bind(target, bind_id, name, args),
             None => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The compiler emits `object + slot * 16 + offset` and reads the bytes it
+    /// finds. If this is ever false, that arithmetic is reading something else.
+    #[test]
+    fn value_layout_is_what_compiled_code_assumes() {
+        assert!(super::layout_holds());
     }
 }

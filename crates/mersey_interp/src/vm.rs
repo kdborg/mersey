@@ -275,6 +275,7 @@ pub enum Flow {
 // ---- public entry points ------------------------------------------------------
 
 /// Compile a function body; `None` = unsupported construct, use the AST.
+#[allow(dead_code)]
 pub(crate) fn compile_fn(body: &FnBody) -> Option<Rc<Chunk>> {
     compile_fn_in(body, "", &[])
 }
@@ -343,7 +344,7 @@ pub fn convert_num(v: &Value, to: Num) -> Value {
         Value::U32(n) => (*n as i128, *n as f64, false),
         Value::U64(n) => (*n as i128, *n as f64, false),
         Value::F32(x) => (*x as i128, *x as f64, true),
-        Value::F64(x) => (*x as i128, *x as f64, true),
+        Value::F64(x) => (*x as i128, (*x), true),
         // Not a number: `Convert` is only emitted where the checker proved one.
         _ => return v.clone(),
     };
@@ -537,7 +538,7 @@ pub(crate) fn arg_frame(chunk: &Chunk, args: Vec<Value>, this: Option<&Value>) -
 /// a slot.
 fn module_captured(module: &Module) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
-    let mut ident = |e: &Expr, out: &mut std::collections::HashSet<String>| {
+    let ident = |e: &Expr, out: &mut std::collections::HashSet<String>| {
         if let Expr::Ident(n) = e {
             out.insert(n.text.clone());
         }
@@ -1160,6 +1161,7 @@ impl C {
         slot
     }
 
+    #[allow(dead_code)]
     fn fresh_temp(&mut self, tag: &str) -> String {
         self.temp += 1;
         format!("#{tag}{}", self.temp)
@@ -1797,9 +1799,7 @@ impl C {
                     for p in parts {
                         match p {
                             TplPart::Text(t) => {
-                                let v = Value::Str(Rc::new(
-                                    crate::utf16(&(crate::unescape(t))),
-                                ));
+                                let v = Value::Str(Rc::new(crate::utf16(&(crate::unescape(t)))));
                                 let i = self.konst(v);
                                 self.emit(Op::Const(i));
                             }
@@ -1812,9 +1812,7 @@ impl C {
                     for p in parts {
                         match p {
                             TplPart::Text(t) => {
-                                let v = Value::Str(Rc::new(
-                                    crate::utf16(&(crate::unescape(t))),
-                                ));
+                                let v = Value::Str(Rc::new(crate::utf16(&(crate::unescape(t)))));
                                 let i = self.konst(v);
                                 self.emit(Op::Const(i));
                             }
@@ -2495,17 +2493,17 @@ pub(crate) fn expr_pos(e: &Expr) -> Option<Pos> {
         }
         Expr::Call { callee, .. } => expr_pos(callee),
         Expr::Member { obj, .. } | Expr::Index { obj, .. } => expr_pos(obj),
-        Expr::New { ty, .. } => match ty {
-            TypeExpr::Named { pos, .. } => Some(*pos),
-            _ => None,
-        },
+        Expr::New {
+            ty: TypeExpr::Named { pos, .. },
+            ..
+        } => Some(*pos),
         _ => None,
     }
 }
 
-/// Conservative: does this statement list contain `return`/`break`/
-/// `continue` (not crossing into nested arrows, which are separate
-/// functions)? Used to route try+finally with abrupt exits to the AST tier.
+// Conservative: does this statement list contain `return`/`break`/
+// `continue` (not crossing into nested arrows, which are separate
+// functions)? Used to route try+finally with abrupt exits to the AST tier.
 
 // ---- runtime ----------------------------------------------------------------------
 
@@ -2656,7 +2654,7 @@ fn exec(
             scopes.last().expect("scope")
         };
     }
-    /// Give an inlined callee's frame back and become the caller again.
+    // Give an inlined callee's frame back and become the caller again.
     // Back-edge counting for on-stack replacement, per frame: an inlined callee
     // gets its own count, because it is its own loop.
     let mut back_edges: u32 = 0;

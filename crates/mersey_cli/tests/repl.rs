@@ -50,7 +50,13 @@ console.log(`hi ${x}`)
     // The ill-typed turn was rejected by the checker…
     assert!(stderr.contains("E0401"), "type error surfaced: {stderr}");
     // …and the out-of-bounds index surfaced as a runtime error.
-    assert!(stderr.contains("runtime error:"), "runtime error surfaced: {stderr}");
+    assert!(
+        stderr.contains("runtime error:"),
+        "runtime error surfaced: {stderr}"
+    );
     // The rejected binding never entered the session.
-    assert!(!stdout.contains("no"), "discarded input left no trace: {stdout}");
+    assert!(
+        !stdout.contains("no"),
+        "discarded input left no trace: {stdout}"
+    );
 }

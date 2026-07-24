@@ -29,10 +29,7 @@ fn run(name: &str, jit: bool) -> String {
 fn check(name: &str) {
     let jit = run(name, true);
     let interp = run(name, false);
-    assert_eq!(
-        jit, interp,
-        "Tier 1 and the interpreter disagree on {name}"
-    );
+    assert_eq!(jit, interp, "Tier 1 and the interpreter disagree on {name}");
 
     let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/jit")
@@ -42,8 +39,8 @@ fn check(name: &str) {
         std::fs::write(&golden, &jit).expect("bless");
         return;
     }
-    let want = std::fs::read_to_string(&golden)
-        .unwrap_or_else(|e| panic!("{}: {e}", golden.display()));
+    let want =
+        std::fs::read_to_string(&golden).unwrap_or_else(|e| panic!("{}: {e}", golden.display()));
     assert_eq!(jit, want, "{name} against its golden");
 }
 

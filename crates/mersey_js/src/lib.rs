@@ -36,12 +36,24 @@ fn b64(bytes: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -221,7 +233,12 @@ pub fn transpile(source: &str, name: &str, include_runtime: bool) -> Output {
 /// An inline `sourceMappingURL` for the emitted module: DevTools (and any
 /// stack mapper) resolves generated lines back to the `.mersey` source —
 /// which the map carries in `sourcesContent`, so no server round-trip.
-fn map_url(name: &str, source: &str, gen_line_offset: u32, maps: &[(u32, u32, u32, u32)]) -> String {
+fn map_url(
+    name: &str,
+    source: &str,
+    gen_line_offset: u32,
+    maps: &[(u32, u32, u32, u32)],
+) -> String {
     use mersey_front::sourcemap::{encode, Mapping};
     let mappings: Vec<Mapping> = maps
         .iter()
@@ -313,8 +330,7 @@ impl Emit {
                 if im.from == "std:math" {
                     if let Some(ImportClause::Named(list)) = &im.clause {
                         for na in list {
-                            math_names
-                                .insert(na.alias.as_ref().unwrap_or(&na.name).text.clone());
+                            math_names.insert(na.alias.as_ref().unwrap_or(&na.name).text.clone());
                         }
                     }
                 }
@@ -369,9 +385,8 @@ impl Emit {
                     }
                     if let Some(ImportClause::Named(list)) = &im.clause {
                         for spec in list {
-                            self.user_classes.insert(
-                                spec.alias.as_ref().unwrap_or(&spec.name).text.clone(),
-                            );
+                            self.user_classes
+                                .insert(spec.alias.as_ref().unwrap_or(&spec.name).text.clone());
                         }
                     }
                 }
@@ -411,7 +426,9 @@ impl Emit {
             Item::Decl(decl) => self.decl(decl),
             Item::Export(e) => match &e.kind {
                 ExportKind::Decl(d) => {
-                    if self.mode == Mode::Module && !matches!(d, Decl::Interface(_) | Decl::TypeAlias(_)) {
+                    if self.mode == Mode::Module
+                        && !matches!(d, Decl::Interface(_) | Decl::TypeAlias(_))
+                    {
                         self.w("export ");
                     }
                     self.decl(d);
@@ -484,17 +501,13 @@ impl Emit {
                 if name == "*" {
                     self.w(&format!("const {bound} = $rt.std[\"{std_name}\"];"));
                 } else {
-                    self.w(&format!(
-                        "const {bound} = $rt.std[\"{std_name}\"].{name};"
-                    ));
+                    self.w(&format!("const {bound} = $rt.std[\"{std_name}\"].{name};"));
                 }
                 self.nl();
             }
         } else if spec == "browser:dom" {
             for (name, bound) in &names {
-                self.w(&format!(
-                    "const {bound} = $rt.web(\"{name}\");"
-                ));
+                self.w(&format!("const {bound} = $rt.web(\"{name}\");"));
                 self.nl();
             }
         } else if self.mode == Mode::Module {
@@ -697,7 +710,9 @@ impl Emit {
                     self.params(params);
                     self.block(body);
                 }
-                ClassMember::Getter { mods, name, body, .. } => {
+                ClassMember::Getter {
+                    mods, name, body, ..
+                } => {
                     self.nl();
                     if mods.is_static {
                         self.w("static ");
@@ -708,7 +723,11 @@ impl Emit {
                     self.block(body);
                 }
                 ClassMember::Setter {
-                    mods, name, param, body, ..
+                    mods,
+                    name,
+                    param,
+                    body,
+                    ..
                 } => {
                     self.nl();
                     if mods.is_static {
@@ -1630,7 +1649,9 @@ impl Emit {
 }
 
 fn strip_int_suffix(t: &str) -> &str {
-    for s in ["u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u"] {
+    for s in [
+        "u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u",
+    ] {
         if let Some(d) = t.strip_suffix(s) {
             return d;
         }
@@ -1668,15 +1689,18 @@ fn pattern_has_default(p: &Pattern) -> bool {
     match p {
         Pattern::Name(_) => false,
         Pattern::Array { elems, rest } => {
-            elems.iter().any(|e| e.default.is_some() || pattern_has_default(&e.target))
+            elems
+                .iter()
+                .any(|e| e.default.is_some() || pattern_has_default(&e.target))
                 || rest.as_deref().is_some_and(pattern_has_default)
         }
-        Pattern::Record(fields) => fields.iter().any(|f| {
-            f.default.is_some() || f.target.as_ref().is_some_and(pattern_has_default)
-        }),
+        Pattern::Record(fields) => fields
+            .iter()
+            .any(|f| f.default.is_some() || f.target.as_ref().is_some_and(pattern_has_default)),
     }
 }
 
+#[allow(dead_code)]
 fn ends_in_jump(body: &[Stmt]) -> bool {
     matches!(
         body.last(),

@@ -68,7 +68,7 @@ fn as_scalars(args: &[Value]) -> Option<Vec<OwnedScalar>> {
     Some(out)
 }
 
-fn scalar_ref(s: &OwnedScalar) -> WebScalar {
+fn scalar_ref(s: &OwnedScalar) -> WebScalar<'_> {
     match s {
         OwnedScalar::Num(n) => WebScalar::Num(*n),
         OwnedScalar::Str(s) => WebScalar::Str(s),
@@ -211,7 +211,7 @@ fn webarg_to_value(a: &WebArg) -> Value {
 }
 
 /// Borrow a scalar `Value` as a `WebArg` — the string case is zero-copy.
-fn value_as_webarg(v: &Value) -> WebArg {
+fn value_as_webarg(v: &Value) -> WebArg<'_> {
     match v {
         Value::Str(s) => WebArg::Str(s),
         Value::I32(n) => WebArg::Num(*n as f64),
@@ -582,13 +582,16 @@ pub enum PromiseStatus {
     Rejected,
 }
 
+/// A `then`/`catch` reaction: (on_fulfilled, on_rejected, downstream promise).
+type Reaction = (Option<Value>, Option<Value>, Rc<GcCell<PromiseState>>);
+
 pub struct PromiseState {
     pub status: PromiseStatus,
     pub value: Value,
     /// Coroutines awaiting this promise.
     waiters: Vec<Coro>,
-    /// `then`/`catch` reactions: (on_fulfilled, on_rejected, downstream).
-    reactions: Vec<(Option<Value>, Option<Value>, Rc<GcCell<PromiseState>>)>,
+    /// `then`/`catch` reactions.
+    reactions: Vec<Reaction>,
 }
 
 impl PromiseState {
@@ -861,7 +864,7 @@ pub struct Coro {
     pub chunk: Rc<vm::Chunk>,
     pub pc: usize,
     pub stack: Vec<Value>,
-    pub scopes: Vec<Env>,
+    pub(crate) scopes: Vec<Env>,
     /// The frame's slot-resolved locals. A suspended coroutine owns them, so
     /// they must be saved with the rest of its state — and rooted with it, or
     /// the collector would sweep values that only a paused generator holds.
@@ -1254,6 +1257,7 @@ pub struct Interp {
     /// two classes is two different compilations, because what its own calls
     /// resolve to need not be the same.
     jit_cache: HashMap<(usize, u64), Option<Rc<Compiled>>>,
+    #[allow(dead_code)]
     call_counts: HashMap<usize, u32>,
 }
 
@@ -1286,7 +1290,7 @@ pub enum JitArg {
 /// engine keeps the actual `Rc` here and hands back the address plus a *handle*
 /// naming this slot. Releasing the handle drops the reference (that is what keeps
 /// a hot allocating loop from growing forever); anything never released is
-/// dropped when the call ends, on **every** exit — a return, a bail, a trap — 
+/// dropped when the call ends, on **every** exit — a return, a bail, a trap —
 /// because the interpreter clears the arena, not the compiled code. Nothing
 /// compiled ever frees; it only lets go.
 #[derive(Default)]
@@ -1538,7 +1542,6 @@ pub trait JitEnv {
     /// `None` for a name never yet interned (then the shim interns lazily).
     fn interned_web(&self, name: &str) -> Option<u32>;
 }
-
 
 /// Native code for one root function *and everything it calls*.
 ///
@@ -1794,7 +1797,12 @@ fn fold_field_inits(
                 dynamic.push((slot, *e));
             }
             // No initializer: the field starts at its type's zero, not at null.
-            None => match tyexprs.get(slot).copied().flatten().and_then(check::default_for_ty) {
+            None => match tyexprs
+                .get(slot)
+                .copied()
+                .flatten()
+                .and_then(check::default_for_ty)
+            {
                 Some(d) if default_is_shareable(d) => slots.push(default_value(d)),
                 Some(d) => {
                     slots.push(Value::Null);
@@ -1843,7 +1851,7 @@ fn jit_arg(v: &Value, slot: &JitSlot) -> Option<JitArg> {
         (Value::Bool(t), JitSlot::I32) => Some(JitArg::I32(*t as i32)),
         (Value::Instance(i), JitSlot::Obj(cls)) => {
             let ok = i.try_borrow()?.class.descends_from(cls);
-            ok.then(|| JitArg::Ptr(Rc::as_ptr(i) as *const u8))
+            ok.then_some(JitArg::Ptr(Rc::as_ptr(i) as *const u8))
         }
         (Value::Array(a), JitSlot::Arr(_)) => Some(JitArg::Ptr(Rc::as_ptr(a) as *const u8)),
         // A string crosses as the address of its `Rc<Vec<u16>>` contents; the
@@ -1985,8 +1993,6 @@ impl ClassDef {
         self.fields.len()
     }
 
-
-
     /// Is `other` this class, or one of its ancestors? Which is the same question
     /// as "are this class's field offsets valid on an instance of `other`" — and
     /// they are, because a subclass's layout begins with its base's.
@@ -2118,8 +2124,7 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
         .enumerate()
         .map(|(i, (n, _))| (n.clone(), i as u32))
         .collect();
-    let (initial_slots, dynamic_inits, container_inits) =
-        fold_field_inits(&fields, &[None, None]);
+    let (initial_slots, dynamic_inits, container_inits) = fold_field_inits(&fields, &[None, None]);
     ClassDef {
         id: fresh_class_id(),
         name: name.to_string(),
@@ -3152,18 +3157,30 @@ impl Interp {
         if let Some(f) = self.frames.last_mut() {
             f.pos = pos;
         }
-        let Some(mut hook) = self.debug_hook.take() else { return };
+        let Some(mut hook) = self.debug_hook.take() else {
+            return;
+        };
         let envs = &self.debug_envs;
-        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut |from_top| {
-            if from_top == 0 {
-                snapshot_scopes(env)
-            } else {
-                match envs.len().checked_sub(from_top + 1).and_then(|i| envs.get(i)) {
-                    Some(e) => snapshot_scopes(e),
-                    None => Vec::new(),
+        hook.on_stmt(
+            &DebugPause {
+                pos,
+                frames: &self.frames,
+            },
+            &mut |from_top| {
+                if from_top == 0 {
+                    snapshot_scopes(env)
+                } else {
+                    match envs
+                        .len()
+                        .checked_sub(from_top + 1)
+                        .and_then(|i| envs.get(i))
+                    {
+                        Some(e) => snapshot_scopes(e),
+                        None => Vec::new(),
+                    }
                 }
-            }
-        });
+            },
+        );
         self.debug_hook = Some(hook);
     }
 
@@ -3185,30 +3202,42 @@ impl Interp {
         if let Some(f) = self.frames.last_mut() {
             f.pos = pos;
         }
-        let Some(mut hook) = self.debug_hook.take() else { return };
+        let Some(mut hook) = self.debug_hook.take() else {
+            return;
+        };
         let envs = &self.debug_envs;
-        hook.on_stmt(&DebugPause { pos, frames: &self.frames }, &mut |from_top| {
-            if from_top == 0 {
-                // Slot-resolved locals are the innermost scope (registers the
-                // scope chain never sees), then the chain itself.
-                let mut out = Vec::new();
-                if !slots.is_empty() {
-                    let mut vars: Vec<(String, String)> = slots
-                        .iter()
-                        .map(|(k, v)| (k.clone(), to_display(v)))
-                        .collect();
-                    vars.sort();
-                    out.push(vars);
+        hook.on_stmt(
+            &DebugPause {
+                pos,
+                frames: &self.frames,
+            },
+            &mut |from_top| {
+                if from_top == 0 {
+                    // Slot-resolved locals are the innermost scope (registers the
+                    // scope chain never sees), then the chain itself.
+                    let mut out = Vec::new();
+                    if !slots.is_empty() {
+                        let mut vars: Vec<(String, String)> = slots
+                            .iter()
+                            .map(|(k, v)| (k.clone(), to_display(v)))
+                            .collect();
+                        vars.sort();
+                        out.push(vars);
+                    }
+                    out.extend(snapshot_scopes(env));
+                    out
+                } else {
+                    match envs
+                        .len()
+                        .checked_sub(from_top + 1)
+                        .and_then(|i| envs.get(i))
+                    {
+                        Some(e) => snapshot_scopes(e),
+                        None => Vec::new(),
+                    }
                 }
-                out.extend(snapshot_scopes(env));
-                out
-            } else {
-                match envs.len().checked_sub(from_top + 1).and_then(|i| envs.get(i)) {
-                    Some(e) => snapshot_scopes(e),
-                    None => Vec::new(),
-                }
-            }
-        });
+            },
+        );
         self.debug_hook = Some(hook);
     }
 
@@ -3512,7 +3541,9 @@ impl Interp {
             Pattern::Array { elems, rest } => {
                 let items: Vec<Value> = match &value {
                     Value::Array(a) => a.borrow().clone(),
-                    Value::Str(s) => char::decode_utf16(s.iter().copied()).map(|r| Value::Char(r.unwrap_or('\u{FFFD}'))).collect(),
+                    Value::Str(s) => char::decode_utf16(s.iter().copied())
+                        .map(|r| Value::Char(r.unwrap_or('\u{FFFD}')))
+                        .collect(),
                     _ => return self.type_error("cannot destructure a non-array"),
                 };
                 for (i, e) in elems.iter().enumerate() {
@@ -3854,8 +3885,6 @@ impl Interp {
         )
     }
 
-
-
     /// `time.now()` / `time.monotonic()` from compiled code.
     pub fn jit_time_ms(&mut self, epoch: bool) -> f64 {
         self.host.time_ms(epoch)
@@ -3940,7 +3969,11 @@ impl Interp {
         name: &str,
         args: &[WebArg],
     ) -> Option<Value> {
-        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        let id = if id != u32::MAX {
+            Some(id)
+        } else {
+            self.intern(name)
+        };
         if let Some(id) = id {
             if let Some(reply) = self.host.web_call_u16(target, id, args) {
                 return match reply {
@@ -4005,7 +4038,11 @@ impl Interp {
     /// A web property set from compiled code (`el.textContent = str`). With a
     /// pre-interned id it crosses the wide-set path directly. Same 0/1 protocol.
     pub fn jit_web_set(&mut self, target: i64, id: u32, name: &str, value: &WebArg) -> i64 {
-        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        let id = if id != u32::MAX {
+            Some(id)
+        } else {
+            self.intern(name)
+        };
         if let Some(id) = id {
             if let Some(reply) = self.host.web_set_u16(target, id, value) {
                 return match reply {
@@ -4032,7 +4069,11 @@ impl Interp {
     /// `web_new` path the interpreter's `new_named` reaches for any non-class
     /// name, and returns the resulting handle value. `None` on a throw (stashed).
     pub fn jit_web_new_value(&mut self, id: u32, name: &str, args: &[WebArg]) -> Option<Value> {
-        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        let id = if id != u32::MAX {
+            Some(id)
+        } else {
+            self.intern(name)
+        };
         if let Some(id) = id {
             if let Some(reply) = self.host.web_new_u16(id, args) {
                 return match reply {
@@ -4136,7 +4177,10 @@ impl Interp {
             // `.length` off a non-string (a null property) is the same throw the
             // two-op interpreter path would raise on the `GetMember(length)`.
             other => {
-                let t = self.throw("TypeError", format!("cannot read `length` of {}", kind_of(&other)));
+                let t = self.throw(
+                    "TypeError",
+                    format!("cannot read `length` of {}", kind_of(&other)),
+                );
                 self.jit_host_error = Some(t);
                 i64::MIN
             }
@@ -4148,7 +4192,11 @@ impl Interp {
     /// (`getRandomValues(buf)`, `appendChild(el)`). Same 0/1 protocol as
     /// `jit_web_call_num`.
     pub fn jit_web_call_args(&mut self, target: i64, id: u32, name: &str, args: &[WebArg]) -> i64 {
-        let id = if id != u32::MAX { Some(id) } else { self.intern(name) };
+        let id = if id != u32::MAX {
+            Some(id)
+        } else {
+            self.intern(name)
+        };
         if let Some(id) = id {
             if let Some(reply) = self.host.web_call_u16(target, id, args) {
                 return match reply {
@@ -4369,6 +4417,7 @@ impl Interp {
     /// execution — the remaining iterations *and* everything after the loop —
     /// to native code. Without this, a `main` that loops a hundred million
     /// times is compiled only after it finishes, which is never.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_osr(
         &mut self,
         chunk: &Rc<vm::Chunk>,
@@ -5059,7 +5108,7 @@ impl Interp {
             "regex.compile" => {
                 let pattern = self.want_string(args.first())?;
                 let flags = match args.get(1) {
-                    Some(Value::Str(s)) => utf16_to_string(&s),
+                    Some(Value::Str(s)) => utf16_to_string(s),
                     _ => String::new(),
                 };
                 match regex::Regex::new(&pattern, &flags) {
@@ -5976,7 +6025,7 @@ impl Interp {
                     }
                     "join" => {
                         let sep = match args.first() {
-                            Some(Value::Str(s)) => utf16_to_string(&s),
+                            Some(Value::Str(s)) => utf16_to_string(s),
                             _ => String::new(),
                         };
                         let items = a.borrow().clone();
@@ -6397,8 +6446,8 @@ impl Interp {
                             None => -1,
                         }))
                     }
-                    "trimStart" => Ok(Value::Str(Rc::new(utf16(&(text.trim_start()))))),
-                    "trimEnd" => Ok(Value::Str(Rc::new(utf16(&(text.trim_end()))))),
+                    "trimStart" => Ok(Value::Str(Rc::new(utf16(text.trim_start())))),
+                    "trimEnd" => Ok(Value::Str(Rc::new(utf16(text.trim_end())))),
                     "substring" => {
                         let len = s.len() as i64;
                         let norm = |v: i64| v.clamp(0, len) as usize;
@@ -6449,7 +6498,7 @@ impl Interp {
                     "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
                     "toUpperCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_uppercase()))))),
                     "toLowerCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_lowercase()))))),
-                    "trim" => Ok(Value::Str(Rc::new(utf16(&(text.trim()))))),
+                    "trim" => Ok(Value::Str(Rc::new(utf16(text.trim())))),
                     "slice" => {
                         let len = s.len() as i64;
                         let norm = |v: i64| v.clamp(0, len) as usize;
@@ -6482,9 +6531,7 @@ impl Interp {
                             .and_then(as_i64)
                             .unwrap_or(0)
                             .clamp(0, 1_000_000);
-                        Ok(Value::Str(Rc::new(
-                            utf16(&(text.repeat(n as usize))),
-                        )))
+                        Ok(Value::Str(Rc::new(utf16(&(text.repeat(n as usize))))))
                     }
                     "padStart" | "padEnd" => {
                         let width = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
@@ -6512,7 +6559,7 @@ impl Interp {
                             s.iter().map(|u| Value::Str(Rc::new(vec![*u]))).collect()
                         } else {
                             text.split(&sep as &str)
-                                .map(|p| Value::Str(Rc::new(utf16(&(p)))))
+                                .map(|p| Value::Str(Rc::new(utf16(p))))
                                 .collect()
                         };
                         Ok(new_array(parts))
@@ -6647,7 +6694,9 @@ impl Interp {
                         format!("index {ix} out of bounds (length {})", s.len()),
                     ))
                 } else {
-                    Ok(Value::Char(code_point_at(s, ix as usize).unwrap_or('\u{FFFD}')))
+                    Ok(Value::Char(
+                        code_point_at(s, ix as usize).unwrap_or('\u{FFFD}'),
+                    ))
                 }
             }
             _ => self.type_error("only arrays and strings are indexable"),
@@ -7142,6 +7191,7 @@ impl Interp {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_web(&mut self, v: &Value) -> Json {
         match v {
             Value::Null => Json::Null,
@@ -7186,7 +7236,10 @@ impl Interp {
             }
             // One-shot promise plumbing: a fresh slot per crossing (each
             // carries per-instance settle state; never re-crosses).
-            Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
+            Value::Resolve(..)
+            | Value::Reject(..)
+            | Value::AllSlot(..)
+            | Value::PromiseExec(..) => {
                 let id = self.alloc_callback(v.clone());
                 Json::Obj(vec![("__cb__".into(), Json::Num(id as f64))])
             }
@@ -7204,6 +7257,7 @@ impl Interp {
     }
 
     /// Tagged JSON → Mersey value.
+    #[allow(clippy::wrong_self_convention)]
     fn from_web(&self, j: &Json) -> Value {
         match j {
             Json::Null => Value::Null,
@@ -7215,7 +7269,7 @@ impl Interp {
                     Value::F64(*n)
                 }
             }
-            Json::Str(s) => Value::Str(Rc::new(utf16(&(s)))),
+            Json::Str(s) => Value::Str(Rc::new(utf16(s))),
             Json::Arr(items) => new_array(items.iter().map(|i| self.from_web(i)).collect()),
             Json::Obj(fields) => {
                 if let Some(Json::Num(h)) = j.get("__ref__") {
@@ -8623,6 +8677,7 @@ pub(crate) fn pattern_names_of(p: &Pattern, out: &mut Vec<String>) {
     }
 }
 
+#[allow(dead_code)]
 fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
     find_in_chain(class, |c| {
         c.fields.iter().any(|(n, _)| n == name).then_some(())
@@ -9106,15 +9161,21 @@ mod json_bench {
         {
             let m = mersey.clone();
             let mut i = 0i32;
-            phase("record build", Box::new(move || {
-                let rec = new_record(vec![
-                    ("lang".to_string(), Value::Str(m.clone())),
-                    ("version".to_string(), Value::I32(i)),
-                    ("ok".to_string(), Value::Bool(true)),
-                ]);
-                i = i.wrapping_add(1);
-                match &rec { Value::Record(r) => r.borrow().len(), _ => 0 }
-            }));
+            phase(
+                "record build",
+                Box::new(move || {
+                    let rec = new_record(vec![
+                        ("lang".to_string(), Value::Str(m.clone())),
+                        ("version".to_string(), Value::I32(i)),
+                        ("ok".to_string(), Value::Bool(true)),
+                    ]);
+                    i = i.wrapping_add(1);
+                    match &rec {
+                        Value::Record(r) => r.borrow().len(),
+                        _ => 0,
+                    }
+                }),
+            );
         }
         // (b) serialize a pre-built record to a String.
         {
@@ -9123,32 +9184,41 @@ mod json_bench {
                 ("version".to_string(), Value::I32(12345)),
                 ("ok".to_string(), Value::Bool(true)),
             ]);
-            phase("serialize (prebuilt)", Box::new(move || {
-                let mut out = String::new();
-                Interp::pure_json(&rec, &mut out);
-                out.len()
-            }));
+            phase(
+                "serialize (prebuilt)",
+                Box::new(move || {
+                    let mut out = String::new();
+                    Interp::pure_json(&rec, &mut out);
+                    out.len()
+                }),
+            );
         }
         // (c) utf8 -> utf16 conversion of the output.
         {
             let out = String::from("{\"lang\":\"mersey\",\"version\":12345,\"ok\":true}");
-            phase("utf16 convert", Box::new(move || Rc::new(utf16(&out)).len()));
+            phase(
+                "utf16 convert",
+                Box::new(move || Rc::new(utf16(&out)).len()),
+            );
         }
         // (d) the whole loop, as the workload runs it.
         {
             let m = mersey.clone();
             let mut i = 0i32;
-            phase("full (build+ser+u16)", Box::new(move || {
-                let rec = new_record(vec![
-                    ("lang".to_string(), Value::Str(m.clone())),
-                    ("version".to_string(), Value::I32(i)),
-                    ("ok".to_string(), Value::Bool(true)),
-                ]);
-                i = i.wrapping_add(1);
-                let mut out = String::new();
-                Interp::pure_json(&rec, &mut out);
-                Rc::new(utf16(&out)).len()
-            }));
+            phase(
+                "full (build+ser+u16)",
+                Box::new(move || {
+                    let rec = new_record(vec![
+                        ("lang".to_string(), Value::Str(m.clone())),
+                        ("version".to_string(), Value::I32(i)),
+                        ("ok".to_string(), Value::Bool(true)),
+                    ]);
+                    i = i.wrapping_add(1);
+                    let mut out = String::new();
+                    Interp::pure_json(&rec, &mut out);
+                    Rc::new(utf16(&out)).len()
+                }),
+            );
         }
         let _ = mersey;
     }
@@ -9228,16 +9298,22 @@ impl ReplSession {
                         out.push(n.text.clone());
                     }
                 }
-                Item::Decl(d) | Item::Export(ExportDecl { kind: ExportKind::Decl(d), .. }) => {
-                    match d {
-                        Decl::Function(f) => out.push(f.name.text.clone()),
-                        Decl::Class(c) => out.push(c.name.text.clone()),
-                        Decl::Interface(i) => out.push(i.name.text.clone()),
-                        Decl::Enum(e) => out.push(e.name.text.clone()),
-                        Decl::TypeAlias(t) => out.push(t.name.text.clone()),
-                    }
-                }
-                Item::Stmt(Stmt::Var(v)) | Item::Export(ExportDecl { kind: ExportKind::Var(v), .. }) => {
+                Item::Decl(d)
+                | Item::Export(ExportDecl {
+                    kind: ExportKind::Decl(d),
+                    ..
+                }) => match d {
+                    Decl::Function(f) => out.push(f.name.text.clone()),
+                    Decl::Class(c) => out.push(c.name.text.clone()),
+                    Decl::Interface(i) => out.push(i.name.text.clone()),
+                    Decl::Enum(e) => out.push(e.name.text.clone()),
+                    Decl::TypeAlias(t) => out.push(t.name.text.clone()),
+                },
+                Item::Stmt(Stmt::Var(v))
+                | Item::Export(ExportDecl {
+                    kind: ExportKind::Var(v),
+                    ..
+                }) => {
                     for b in &v.bindings {
                         pattern_names(&b.target, &mut out);
                     }
@@ -9275,20 +9351,35 @@ impl ReplSession {
         let parsed = mersey_front::parser::parse(&src);
         if !parsed.diagnostics.is_empty() {
             return ReplOutcome::Rejected(
-                parsed.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+                parsed
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
         let module: &'static Module = Box::leak(Box::new(parsed.module));
         let bound = mersey_front::bind::bind(module);
         if !bound.diagnostics.is_empty() {
             return ReplOutcome::Rejected(
-                bound.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+                bound
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
         let checked = check::check(module);
         if !checked.diagnostics.is_empty() {
             return ReplOutcome::Rejected(
-                checked.diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+                checked
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
         let out = interp.run_repl_turn(module, self.executed_items);

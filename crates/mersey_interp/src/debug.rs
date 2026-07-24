@@ -16,7 +16,9 @@ use std::collections::HashSet;
 
 /// What the front-end last asked for. Depths are `DebugPause::frames.len()`
 /// at the statement the request was issued from.
+#[derive(Default)]
 enum Step {
+    #[default]
     Run,
     In,
     Over(usize),
@@ -69,12 +71,6 @@ pub struct DebugController {
     prev_line: u32,
 }
 
-impl Default for Step {
-    fn default() -> Self {
-        Step::Run
-    }
-}
-
 /// Trailing path component, for the source-matching rule below.
 fn basename(p: &str) -> &str {
     p.rsplit(['/', '\\']).next().unwrap_or(p)
@@ -89,7 +85,8 @@ impl DebugController {
     /// per-breakpoint add/remove is expressed by resending the source's set).
     pub fn set_breakpoints(&mut self, source: &str, lines: &[u32]) {
         self.bps.retain(|(p, _)| p != source);
-        self.bps.push((source.to_string(), lines.iter().copied().collect()));
+        self.bps
+            .push((source.to_string(), lines.iter().copied().collect()));
     }
 
     pub fn clear_breakpoints(&mut self) {
@@ -144,7 +141,11 @@ impl DebugController {
     pub fn should_stop(&mut self, pause: &DebugPause) -> Option<StopReason> {
         let line = pause.pos.line;
         let depth = pause.frames.len();
-        let module = pause.frames.last().map(|f| f.module.to_string()).unwrap_or_default();
+        let module = pause
+            .frames
+            .last()
+            .map(|f| f.module.to_string())
+            .unwrap_or_default();
 
         let hit_bp = self.bp_hit(&module, line) && self.prev_line != line;
         let hit_step = match self.step {
