@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! What the bytecode compiler refuses to compile falls back to the AST
 //! tree-walker: correct, but the slow tier, and silently so. These tests pin
 //! the constructs that must *not* fall back.

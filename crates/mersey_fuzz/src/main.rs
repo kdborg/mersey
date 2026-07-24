@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Phase 7 fuzzing harness. Two modes, both panic-catching:
 //!
 //! 1. **Mutation** (`mutate`): random byte/char edits of the conformance

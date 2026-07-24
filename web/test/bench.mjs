@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // A/B benchmark: generated bindings vs reflective dispatch, in a real browser.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";

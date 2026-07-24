@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // A runtime error in the browser must point at the Mersey line that failed.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";

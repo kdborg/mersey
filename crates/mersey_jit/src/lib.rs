@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Tier 1: Cranelift JIT (ROADMAP Phase 4).
 //!
 //! **Every value has a type, the bytecode says what it is, and the heap has a

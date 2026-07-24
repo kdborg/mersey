@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Module graph: specifier scanning, topological ordering, and whole-graph
 //! type checking (spec §4.5 — the module graph is closed before execution).
 

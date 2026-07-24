@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 use std::fs;
 fn load(p: &str) -> String {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo");

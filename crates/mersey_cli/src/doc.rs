@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! `mersey doc` — the documentation site.
 //!
 //! The API reference is **generated from the checker**, not written alongside

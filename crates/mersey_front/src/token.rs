@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Token definitions, spec §6.2.
 
 use crate::diag::Pos;

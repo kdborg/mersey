@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Mersey Bytecode (MBC) Tier 0: a stack bytecode compiler + dispatch loop.
 //!
 //! Design (ROADMAP Phase 2, at MVP-engine scale): function bodies compile

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Tier 1 with host constructors and string web properties.
 //!
 //! `new URL(s)` (a bridge `new`) and `url.pathname` / `url.search` (string-valued

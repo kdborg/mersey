@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Recursive-descent parser, grammar §6.3–§6.8, disambiguations §6.9.
 //!
 //! Error style: `Err(())` means a diagnostic was already pushed. Recovery

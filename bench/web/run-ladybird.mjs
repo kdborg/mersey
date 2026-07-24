@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Stock-Ladybird leg of the web-platform benchmark: js / transpiled-JS /
 // WASM-polyfill in (effectively) unmodified Ladybird — the mersey LibWeb module
 // in the fork build is dormant for these pages, which run plain JS and WASM.

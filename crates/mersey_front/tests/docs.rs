@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The documentation is generated from the checker, so it cannot describe a
 //! member that does not exist. These tests guard the other direction: a member
 //! that exists but is *not* enumerated would be undocumented and unsuggestable

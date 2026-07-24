@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Best-effort memory capture for the native-Ladybird leg.
 //
 // The time numbers come from run-native-ladybird.mjs, which drives `test-web`

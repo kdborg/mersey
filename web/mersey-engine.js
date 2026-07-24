@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Shared engine bootstrap: instantiates the Mersey WASM engine against a JS
  * realm and wires the universal bridge. Used by the page loader
  * (realm = window) and by the worker bootstrap (realm = the worker's self),

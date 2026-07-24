@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // REAL BROWSER: the console REPL (`globalThis.mersey`) on a polyfill page —
 // one growing typechecked module against the page's live engine.
 import { createServer } from "node:http";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // The test framework, written in Mersey.
 //
 // A test is a function that throws on failure — nothing more. `test` runs it,

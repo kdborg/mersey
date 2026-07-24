@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Proof that Mersey reaches EVERY web technology at runtime, not just in
 // the type system: the universal bridge is pointed at a real JS global
 // object (Node's, augmented with DOM/storage/canvas stubs), and a Mersey

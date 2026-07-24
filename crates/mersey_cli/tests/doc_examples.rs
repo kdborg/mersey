@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The library reference's examples are *programs*, and this runs them.
 //!
 //! A documentation example that is not executed is a claim nobody checks: it

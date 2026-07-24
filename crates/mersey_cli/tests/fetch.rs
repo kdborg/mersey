@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Remote dependencies: fetched by an explicit step, pinned by hash, and never
 //! reached for at run time.
 //!

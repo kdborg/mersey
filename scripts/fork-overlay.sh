@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # One overlay model for the git-based browser forks (servo, ladybird, firefox),
 # mirroring chromium/ but shared. Each fork keeps its Mersey delta in this repo
 # as <fork>/overlay/ (snapshots) + <fork>/BASELINE (upstream url/rev and the

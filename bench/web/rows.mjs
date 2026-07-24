@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Result-row schema and the merge that writes results.*.json.
 //
 // Every row carries the platform it was measured on and the memory metric that

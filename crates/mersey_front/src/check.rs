@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! TypeExpr checker v1: enforces §3 (strict typing, numeric-only implicit
 //! conversion, defined casts) and §4 (access control, readonly, override,
 //! abstract, implements) on a bound module.

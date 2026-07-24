@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! §5.2: hostile input must not be able to crash the engine.
 //!
 //! Each case here aborted the process before it was fixed — a stack overflow is

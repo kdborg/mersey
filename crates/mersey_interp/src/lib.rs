@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! MVP tree-walking interpreter. Executes a bound module directly from the
 //! AST. This is the Phase-"MVP" execution engine; the typed-bytecode VM and
 //! JIT (ROADMAP Phases 2/4) replace it without changing observable behavior

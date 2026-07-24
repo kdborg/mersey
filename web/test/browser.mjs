@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // REAL BROWSER test: launches Chrome, serves web/ over HTTP, loads the
 // actual pages, and drives them with real user input. Nothing is stubbed —
 // this is Mersey compiled to WASM, executing in a browser, manipulating a

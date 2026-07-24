@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The language server, driven the way an editor drives it: JSON-RPC over the
 //! real binary's stdin/stdout.
 

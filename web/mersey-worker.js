@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Web Worker bootstrap: runs a .mersey program on a worker thread.
  *
  * The engine is instantiated inside the worker with the bridge pointed at

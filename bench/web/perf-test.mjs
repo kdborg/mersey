@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Performance regression tests over the engine-only leg (engine-child.mjs):
 // each technology runs on the wasm engine over the deterministic stub realm,
 // and time / peak-RSS / wasm-heap are compared against the committed

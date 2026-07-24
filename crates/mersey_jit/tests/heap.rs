@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Tier 1 and the heap: fields, array elements, and direct method calls.
 //!
 //! Two things are checked, and both are needed. That the compiled code gives the

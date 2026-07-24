@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Mersey Stage A loader polyfill (docs/architecture/browser-integration.md).
  *
  * Executes <script type="text/mersey"> tags via the Mersey engine compiled

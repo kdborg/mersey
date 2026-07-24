@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // One benchmark run in a fresh process: the wasm engine over a deterministic
 // stub realm, no browser. Spawned by run-engine.mjs and perf-test.mjs so each
 // workload gets a cold engine and its own peak-RSS (VmHWM) reading.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Universal web bridge (shared by the browser loader and the test harness).
  *
  * This is what makes *every* web technology reachable from Mersey: instead

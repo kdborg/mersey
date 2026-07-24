@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Engine-only leg of the web-platform benchmark: the wasm engine over a
 // deterministic stub realm in Node (engine-child.mjs) — no browser process,
 // no renderer noise. This is the leg the perf regression tests gate on

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # Manage the four browser-fork checkouts' GitHub forks: create them, keep the
 # `mersey` branch rebased onto the latest upstream release, and push.
 #

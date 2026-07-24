@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The heap, as compiled code reaches it.
 //!
 //! This is the only place in the engine that turns a raw address back into an

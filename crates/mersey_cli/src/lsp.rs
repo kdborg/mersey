@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Language server (LSP over JSON-RPC on stdin/stdout).
 //!
 //! Diagnostics on open/change (full decode → lex → parse → bind → typecheck,

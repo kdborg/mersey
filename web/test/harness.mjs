@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Stage A end-to-end tests without a browser (ROADMAP Phase 5):
 //  1. counter demo: load → run → DOM render → click callbacks → re-render
 //  2. TODO demo: element creation, tree ops, input value, removal

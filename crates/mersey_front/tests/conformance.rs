@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Golden-file conformance runner (see tests/conformance/README.md at the
 //! repository root). Set MERSEY_BLESS=1 to (re)generate `.expect` files.
 
