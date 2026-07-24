@@ -22,7 +22,7 @@ description = "The Mersey engine, as a crate of gkrust"
 # added via `./mach vendor rust`. Web-API-bound code is unaffected (the JIT
 # refuses functions that allocate or call the host, which every bridge call
 # does); the JIT is the win for arithmetic/loops.
-mersey_capi = { path = "../../../../mersey/crates/mersey_capi" }
+mersey_capi = { path = "../../../../../mersey/crates/mersey_capi" }
 
 [lib]
 path = "src/lib.rs"
