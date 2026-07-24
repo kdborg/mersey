@@ -676,7 +676,11 @@ fn serve_loop(interp: &mut interp::Interp, port: u16, cb_id: u32) -> ExitCode {
         };
         let _ = sock.set_reuse_address(true);
         // SO_REUSEPORT: the kernel load-balances accepts across worker processes
-        // bound to the same port (Linux 3.9+; present on macOS/BSD too).
+        // bound to the same port (Linux 3.9+; present on macOS/BSD too). Windows
+        // has no SO_REUSEPORT (and socket2 gates the method off unix), so the
+        // worker-pool `serve -jN` path is Unix-only; set_reuse_address above is
+        // all Windows offers.
+        #[cfg(unix)]
         let _ = sock.set_reuse_port(true);
         if let Err(e) = sock.bind(&addr.into()) {
             eprintln!("mersey: cannot bind :{port}: {e}");
@@ -696,20 +700,22 @@ fn serve_loop(interp: &mut interp::Interp, port: u16, cb_id: u32) -> ExitCode {
         };
         let _ = stream.set_nodelay(true);
         match read_http_request(&mut stream) {
-            Some((method, path, body)) => match interp.http_dispatch(cb_id, &method, &path, &body) {
-                Ok(resp) => {
-                    use std::io::Write;
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
-                }
-                Err(t) => {
-                    use std::io::Write;
-                    eprintln!("mersey: handler error: {}", interp.describe_thrown(&t));
-                    let _ = stream.write_all(
+            Some((method, path, body)) => {
+                match interp.http_dispatch(cb_id, &method, &path, &body) {
+                    Ok(resp) => {
+                        use std::io::Write;
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(t) => {
+                        use std::io::Write;
+                        eprintln!("mersey: handler error: {}", interp.describe_thrown(&t));
+                        let _ = stream.write_all(
                         b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     );
+                    }
                 }
-            },
+            }
             None => {} // malformed / closed early: drop the connection
         }
     }
@@ -768,9 +774,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> Option<(String, String
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn fmt_cmd(path: &str, write: bool) -> ExitCode {
