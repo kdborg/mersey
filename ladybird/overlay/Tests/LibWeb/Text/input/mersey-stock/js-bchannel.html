@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js bchannel</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/bchannel.mersey — identical workload.
+// Sender + receiver channel pair, N sequential postMessage roundtrips
+// chained through the receiver's message event.
+const name = "bchannel";
+const N = 1000;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    const tx = new BroadcastChannel("mersey-bench");
+    const rx = new BroadcastChannel("mersey-bench");
+    rx.addEventListener("message", (ev) => {
+      const data = ev.data;
+      sum = sum + data.length;
+      i += 1;
+      if (i >= n) {
+        resolve(sum);
+        tx.close();
+        rx.close();
+        return;
+      }
+      tx.postMessage(`bc-${i}`);
+    });
+    tx.postMessage(`bc-${i}`);
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

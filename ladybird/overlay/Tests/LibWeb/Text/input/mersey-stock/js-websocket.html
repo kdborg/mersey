@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js websocket</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/websocket.mersey — identical workload.
+// One connection, N sequential echo roundtrips via the message event; the
+// connection handshake is inside work(), so both twins time it.
+const name = "websocket";
+const N = 200;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:51894/bench/ws`);
+    ws.addEventListener("message", (ev) => {
+      const data = ev.data;
+      sum = sum + data.length;
+      i += 1;
+      if (i >= n) {
+        resolve(sum);
+        ws.close();
+        return;
+      }
+      ws.send(`msg-${i}`);
+    });
+    ws.addEventListener("open", () => {
+      ws.send(`msg-${i}`);
+    });
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

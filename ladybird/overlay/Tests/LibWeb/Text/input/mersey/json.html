@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native-ladybird-mem json</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: structured-data serialization across the bridge.
+// Each iteration builds an object and hands it to the platform's JSON.
+import { console } from "std:console";
+import { time } from "std:time";
+import { JSON } from "browser:dom";
+
+const N: int32 = 20000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        const s = JSON.stringify({ lang: "mersey", version: i, ok: true });
+        sum = sum + s.length;
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000); // warm up (trigger the native tier)
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT json ${t1 - t0} ${c}`);
+
+</script>
+<script src="../include.js"></script>
+<script>test(() => {});</script>
+</body>

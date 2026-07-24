@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js canvas</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/canvas.mersey — identical workload.
+const name = "canvas";
+const N = 20000;
+let ctx = null;
+function setup() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 200;
+  canvas.height = 200;
+  ctx = canvas.getContext("2d");
+}
+function work(n) {
+  for (let i = 0; i < n; i++) {
+    ctx.fillRect(i % 100, 0, 10, 10);
+  }
+  return n;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

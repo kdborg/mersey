@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js msgchannel</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/msgchannel.mersey — identical workload.
+// One MessageChannel, N postMessage roundtrips port1 → port2, chained
+// through port2's message event (started explicitly).
+const name = "msgchannel";
+const N = 1000;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    const mc = new MessageChannel();
+    mc.port2.addEventListener("message", (ev) => {
+      const data = ev.data;
+      sum = sum + data.length;
+      i += 1;
+      if (i >= n) {
+        resolve(sum);
+        mc.port1.close();
+        return;
+      }
+      mc.port1.postMessage(`mc-${i}`);
+    });
+    mc.port2.start();
+    mc.port1.postMessage(`mc-${i}`);
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

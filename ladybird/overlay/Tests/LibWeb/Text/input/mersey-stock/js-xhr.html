@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js xhr</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/xhr.mersey — identical workload.
+// One XMLHttpRequest per iteration, chained through the load event.
+const name = "xhr";
+const N = 100;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    function step() {
+      if (i >= n) {
+        resolve(sum);
+        return;
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", `http://127.0.0.1:51894/bench/echo?i=${i}`);
+      xhr.addEventListener("load", () => {
+        sum = sum + xhr.status + xhr.responseText.length;
+        i += 1;
+        step();
+      });
+      xhr.send();
+    }
+    step();
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

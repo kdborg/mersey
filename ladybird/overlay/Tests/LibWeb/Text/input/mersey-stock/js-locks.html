@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js locks</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/locks.mersey — identical workload.
+// N sequential exclusive acquisitions of one lock, chained through the
+// request promise; the granted callback reads the lock's name.
+const name = "locks";
+const N = 500;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    function step() {
+      if (i >= n) {
+        resolve(sum);
+        return;
+      }
+      navigator.locks.request("mersey-lock", (l) => {
+        sum = sum + l.name.length;
+      }).then((v) => {
+        i += 1;
+        step();
+      });
+    }
+    step();
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

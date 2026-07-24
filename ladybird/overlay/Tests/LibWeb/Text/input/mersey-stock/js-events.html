@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js events</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/events.mersey — identical workload.
+const name = "events";
+const N = 10000;
+let el = null;
+let count = 0;
+function setup() {
+  el = document.createElement("div");
+  document.body.appendChild(el);
+  el.addEventListener("bench", () => {
+    count += 1;
+  });
+}
+function work(n) {
+  count = 0;
+  for (let i = 0; i < n; i++) {
+    el.dispatchEvent(new Event("bench"));
+  }
+  return count;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>
