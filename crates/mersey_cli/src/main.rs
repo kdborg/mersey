@@ -912,14 +912,22 @@ fn lock_cmd(entry: &str, verify: bool) -> ExitCode {
     };
     let mut lines = vec![format!("# mersey.lock — entry: {entry}")];
     for (spec, _) in &modules {
-        let from = if graph::is_remote(spec) {
-            cache_path(spec)
+        // A `std:` module written in Mersey (std:http, std:url, …) has no path:
+        // its source is embedded in the toolchain, so hash that. Remote modules
+        // come from the cache; everything else is a file on disk.
+        let bytes: Vec<u8> = if let Some(text) = mersey_front::stdlib::source(spec) {
+            text.as_bytes().to_vec()
         } else {
-            spec.into()
-        };
-        let Ok(bytes) = std::fs::read(&from) else {
-            eprintln!("mersey: cannot read {spec}");
-            return ExitCode::FAILURE;
+            let from = if graph::is_remote(spec) {
+                cache_path(spec)
+            } else {
+                spec.into()
+            };
+            let Ok(bytes) = std::fs::read(&from) else {
+                eprintln!("mersey: cannot read {spec}");
+                return ExitCode::FAILURE;
+            };
+            bytes
         };
         lines.push(format!("{}  sha256-{}", spec, sha256_base64(&bytes)));
     }
