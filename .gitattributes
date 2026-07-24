@@ -1,0 +1,13 @@
+# The engine prints LF, and many tests compare program output against files in
+# the checkout (doc-example .expect files, conformance goldens, …). Keep every
+# text file LF on every platform so a Windows checkout doesn't hand back CRLF
+# and make those comparisons diverge.
+* text=auto eol=lf
+
+# Binaries git must not touch.
+*.wasm binary
+*.a binary
+*.dylib binary
+*.so binary
+*.png binary
+*.gz binary

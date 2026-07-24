@@ -293,16 +293,15 @@ impl interp::Host for CliHost {
     }
 
     /// The OS CSPRNG, and only with the capability. `getrandom(2)` on Linux,
-    /// via /dev/urandom — no userspace PRNG, no seeding, nothing to get wrong.
+    /// `getentropy` on macOS/BSD, `BCryptGenRandom` on Windows — the OS entropy
+    /// syscall on each platform, no userspace PRNG, no seeding, nothing to get
+    /// wrong. (The `getrandom` crate is a thin wrapper over exactly those.)
     fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
         if !self.caps.iter().any(|c| c == "random") {
             return Err("no `random` capability (run with --allow-random)".into());
         }
-        use std::io::Read;
-        let mut f = std::fs::File::open("/dev/urandom")
-            .map_err(|e| format!("cannot open the system CSPRNG: {e}"))?;
         let mut buf = vec![0u8; n];
-        f.read_exact(&mut buf)
+        getrandom::getrandom(&mut buf)
             .map_err(|e| format!("cannot read the system CSPRNG: {e}"))?;
         Ok(buf)
     }
