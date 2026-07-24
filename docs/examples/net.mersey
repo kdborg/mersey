@@ -1,0 +1,26 @@
+// Serving HTTP — the low-level primitive, behind a capability.
+//
+// `net.serve(port, handler)` is the kernel the ergonomic `std:http` builds on:
+// the handler is called with each request's raw `(method, path, body)` and
+// returns the raw HTTP response string. It is denied by default (§5.3) — this
+// example runs *without* `--allow-net`, so you see what refusal looks like.
+//
+// To actually serve, launch with the capability and an accept loop:
+//   mersey run --allow-net app.mersey      # one process
+//   mersey serve -j8 app.mersey            # 8 workers sharing the port
+//
+// Most programs use `std:http` (Request/Response objects) rather than this.
+import { console } from "std:console";
+import { net } from "std:net";
+import { caps } from "std:caps";
+
+console.log("granted:", caps.has("net"));
+
+try {
+    net.serve(8080, (method: string, path: string, body: string): string => {
+        return `HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi`;
+    });
+    console.log("serving on :8080");
+} catch (e: Error) {
+    console.log("refused:", e.message);
+}

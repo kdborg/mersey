@@ -20,8 +20,10 @@ usage: mersey <command> [args]
 
 commands:
   run [caps] <file>       check, then execute (bytecode VM; AST fallback)
-                          caps: --allow-read --allow-env --allow-random
+                          caps: --allow-read --allow-env --allow-random --allow-net
                           (deny by default, §5.3)
+  serve [-jN] [caps] <file>  run an HTTP program (net.serve); -jN worker
+                          processes share the port (SO_REUSEPORT). Implies net.
   audit <file.mersey>     report the module's import/capability surface
   lock <file.mersey>      write mersey.lock: content hashes for the graph
   verify <file.mersey>    check the graph against mersey.lock
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
                     "--allow-read" => caps.push("read".to_string()),
                     "--allow-env" => caps.push("env".to_string()),
                     "--allow-random" => caps.push("random".to_string()),
+                    "--allow-net" => caps.push("net".to_string()),
                     other if !other.starts_with("--") && file.is_none() => {
                         file = Some(other.to_string())
                     }
@@ -101,6 +104,45 @@ fn main() -> ExitCode {
             }
             match file {
                 Some(f) => run(&f, caps),
+                None => {
+                    eprint!("{USAGE}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        // `serve [-jN] [caps] <file>` — run a program that calls `net.serve`,
+        // then drive its accept loop. `net` is implied (the command *is* the
+        // grant). With -jN>1 it launches N worker processes that share the
+        // listening port via SO_REUSEPORT (the Rc-based engine is per-process
+        // single-threaded; parallelism is processes, not threads).
+        ("serve", rest) if !rest.is_empty() => {
+            let mut caps = vec!["net".to_string()];
+            let mut file = None;
+            let mut jobs: usize = 1;
+            for a in rest {
+                match a.as_str() {
+                    "--allow-read" => caps.push("read".to_string()),
+                    "--allow-env" => caps.push("env".to_string()),
+                    "--allow-random" => caps.push("random".to_string()),
+                    "--allow-net" => {} // implied
+                    j if j.starts_with("-j") => match j[2..].parse::<usize>() {
+                        Ok(n) if n >= 1 => jobs = n,
+                        _ => {
+                            eprintln!("mersey: -j needs a positive integer, got `{j}`");
+                            return ExitCode::from(2);
+                        }
+                    },
+                    other if !other.starts_with('-') && file.is_none() => {
+                        file = Some(other.to_string())
+                    }
+                    other => {
+                        eprintln!("mersey: unknown flag `{other}`");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            match file {
+                Some(f) => serve_cmd(&f, caps, jobs),
                 None => {
                     eprint!("{USAGE}");
                     ExitCode::from(2)
@@ -261,6 +303,9 @@ fn decode_utf16(rest: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Result<String, S
 struct CliHost {
     dom: std::collections::HashMap<String, String>,
     caps: Vec<String>,
+    /// (port, callback id) recorded by a `net.serve` call, consumed by the
+    /// driver's accept loop after top-level completes.
+    pending_server: Option<(u16, u32)>,
 }
 
 impl interp::Host for CliHost {
@@ -317,6 +362,17 @@ impl interp::Host for CliHost {
     }
     fn drop_cap(&mut self, cap: &str) {
         self.caps.retain(|c| c != cap);
+    }
+    fn request_serve(&mut self, port: u16, cb_id: u32) -> Result<(), String> {
+        if !self.caps.iter().any(|c| c == "net") {
+            return Err("no `net` capability (run with --allow-net, or use `mersey serve`)".into());
+        }
+        // Last writer wins; a program is expected to call serve once.
+        self.pending_server = Some((port, cb_id));
+        Ok(())
+    }
+    fn take_pending_server(&mut self) -> Option<(u16, u32)> {
+        self.pending_server.take()
     }
     fn time_ms(&mut self, epoch: bool) -> f64 {
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -522,6 +578,7 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     let host = CliHost {
         dom: std::collections::HashMap::new(),
         caps,
+        pending_server: None,
     };
     let mut interp = interp::new_interp(Box::new(host));
     // Tier 1: register the Cranelift backend unless disabled (benchmarks
@@ -536,23 +593,184 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
         interp.register_lazy(spec, module);
     }
     match interp.run_graph(eager) {
-        Ok(()) if interp.graph_is_waiting() => {
-            // A module's top-level `await` never settled. In a browser the page
-            // would simply carry on waiting for the network; here there is no
-            // event loop left to settle anything, so saying nothing would just
-            // look like the program silently did half its work.
-            eprintln!(
-                "mersey: a module is still waiting on a top-level `await`, and nothing \
-                 in this host can settle it"
-            );
-            ExitCode::FAILURE
+        // Top-level called `net.serve`: hand off to the accept loop, which
+        // blocks re-entering the engine per request until killed.
+        Ok(()) => {
+            if let Some((port, cb_id)) = interp.take_pending_server() {
+                return serve_loop(&mut interp, port, cb_id);
+            }
+            if interp.graph_is_waiting() {
+                eprintln!(
+                    "mersey: a module is still waiting on a top-level `await`, and nothing \
+                     in this host can settle it"
+                );
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
         }
-        Ok(()) => ExitCode::SUCCESS,
         Err(t) => {
             eprintln!("runtime error: {}", interp.describe_thrown(&t));
             ExitCode::FAILURE
         }
     }
+}
+
+/// `serve [-jN]`: with one job, run the program inline (its top-level
+/// `net.serve` is driven by `run`'s accept loop). With N>1, launch N copies of
+/// ourselves as `mersey run` workers that share the listening port via
+/// SO_REUSEPORT — process-level parallelism, since the engine is single-thread.
+fn serve_cmd(path: &str, caps: Vec<String>, jobs: usize) -> ExitCode {
+    if jobs <= 1 {
+        return run(path, caps);
+    }
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("mersey: cannot find own executable to spawn workers: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Reconstruct a single-worker `run` invocation with the same caps + file.
+    let mut argv: Vec<String> = vec!["run".into()];
+    for c in &caps {
+        argv.push(format!("--allow-{c}"));
+    }
+    argv.push(path.to_string());
+
+    let mut children = Vec::new();
+    for i in 0..jobs {
+        match std::process::Command::new(&exe).args(&argv).spawn() {
+            Ok(child) => children.push(child),
+            Err(e) => {
+                eprintln!("mersey: failed to spawn worker {i}: {e}");
+                for mut c in children {
+                    let _ = c.kill();
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    eprintln!("mersey: serving with {jobs} worker processes (SO_REUSEPORT)");
+    // Block until a worker exits (they normally serve forever); then tear down.
+    for mut c in children {
+        let _ = c.wait();
+    }
+    ExitCode::SUCCESS
+}
+
+/// The blocking HTTP/1.1 accept loop for one process. Binds the port with
+/// SO_REUSEPORT so sibling workers can share it, then serves one request per
+/// connection (Connection: close), re-entering the engine via `http_dispatch`.
+fn serve_loop(interp: &mut interp::Interp, port: u16, cb_id: u32) -> ExitCode {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{SocketAddr, TcpListener};
+
+    let addr: SocketAddr = ([0, 0, 0, 0], port).into();
+    let listener: TcpListener = {
+        let sock = match Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("mersey: socket: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let _ = sock.set_reuse_address(true);
+        // SO_REUSEPORT: the kernel load-balances accepts across worker processes
+        // bound to the same port (Linux 3.9+; present on macOS/BSD too).
+        let _ = sock.set_reuse_port(true);
+        if let Err(e) = sock.bind(&addr.into()) {
+            eprintln!("mersey: cannot bind :{port}: {e}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = sock.listen(1024) {
+            eprintln!("mersey: listen: {e}");
+            return ExitCode::FAILURE;
+        }
+        sock.into()
+    };
+
+    for conn in listener.incoming() {
+        let mut stream = match conn {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let _ = stream.set_nodelay(true);
+        match read_http_request(&mut stream) {
+            Some((method, path, body)) => match interp.http_dispatch(cb_id, &method, &path, &body) {
+                Ok(resp) => {
+                    use std::io::Write;
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+                Err(t) => {
+                    use std::io::Write;
+                    eprintln!("mersey: handler error: {}", interp.describe_thrown(&t));
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            },
+            None => {} // malformed / closed early: drop the connection
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Minimal HTTP/1.1 request read: the request line (method, path) and the body
+/// (per Content-Length). Enough for the benchmark endpoints; the ergonomic
+/// header/routing layer is Mersey's `std:http`. Returns None on a malformed or
+/// prematurely closed request.
+fn read_http_request(stream: &mut std::net::TcpStream) -> Option<(String, String, String)> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(2048);
+    let mut chunk = [0u8; 2048];
+    // Read until the header terminator \r\n\r\n appears.
+    let header_end = loop {
+        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            break pos;
+        }
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 1 << 20 {
+            return None; // 1 MiB header cap
+        }
+    };
+    let head = std::str::from_utf8(&buf[..header_end]).ok()?;
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next()?;
+    let mut parts = request_line.split(' ');
+    let method = parts.next()?.to_string();
+    let path = parts.next()?.to_string();
+    // Content-Length body, if any.
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some(v) = line
+            .split_once(':')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        {
+            content_length = v.1.trim().parse().unwrap_or(0);
+        }
+    }
+    let body_start = header_end + 4;
+    let mut body = buf[body_start..].to_vec();
+    while body.len() < content_length {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(content_length);
+    Some((method, path, String::from_utf8_lossy(&body).into_owned()))
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
 }
 
 fn fmt_cmd(path: &str, write: bool) -> ExitCode {

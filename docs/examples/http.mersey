@@ -1,0 +1,17 @@
+// std:http — Request/Response objects over the `net` primitive.
+//
+// A handler is `(Request) => Response`. You build and inspect these as plain
+// objects — no server needed — which is what makes them testable. `serve(port,
+// handler)` (not called here: it blocks on the accept loop) wires a handler to
+// a socket; launch it with `mersey serve app.mersey`.
+import { console } from "std:console";
+import { Request, Response } from "std:http";
+
+// A request, as the handler receives it.
+const req = new Request("GET", "/hello", "");
+console.log(req.method, req.path);
+
+// A JSON response, and what it serializes to on the wire.
+const res = Response.json(`{"ok":true}`);
+console.log(res.status, res.contentType);
+console.log(res.toWire().split("\r\n")[0]);
