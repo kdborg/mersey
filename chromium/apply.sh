@@ -63,6 +63,10 @@ else
   echo "warn: $DF missing — run gclient sync so DEPS pulls devtools-frontend, then re-run"
 fi
 
+# 3b. Keep DEPS-managed submodule pointers (dawn, …) honest so a sync/build bump
+#     never masquerades as fork work.
+bash "$HERE/reset-drift.sh" "$SRC" || true
+
 # 4. The engine staticlib is a build artifact, never stored here. Build it from
 #    the workspace and drop it in (third_party/mersey/refresh.sh does the copy).
 echo "engine: build mersey_capi and refresh the prebuilt lib:"
@@ -74,7 +78,9 @@ echo "        $SRC/third_party/mersey/refresh.sh   # copies libmersey_capi.* int
 #    means the overlay missed a file — capture it and re-run.
 if [ "$VERIFY" = 1 ]; then
   echo "--- verify: tree vs fork mersey ref (empty = overlay complete) ---"
-  git -C "$SRC" diff --stat mersey -- . \
+  # Ignore submodules: gclient-managed pointers (dawn, …) drift independently of
+  # the overlay, which never touches a submodule.
+  git -C "$SRC" diff --stat --ignore-submodules=all mersey -- . \
     ':(exclude)third_party/mersey/lib' \
     ':(exclude)third_party/devtools-frontend' || true
 fi

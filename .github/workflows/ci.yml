@@ -56,6 +56,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo run --release -p mersey_fuzz -- all 20000 $GITHUB_RUN_NUMBER
 
+  # The Chromium fork is not in this repo — only a ~40-file overlay that
+  # reconstructs it on pinned upstream. This guards the overlay against rot (a
+  # binary sneaking in, a corrupt patch, a malformed BASELINE) without needing a
+  # 29 GB checkout. The full reconstruct proof (apply --verify) runs where a
+  # synced checkout exists, not in CI.
+  chromium-overlay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: chromium/verify.sh
+
   browser:
     runs-on: ubuntu-latest
     steps:
