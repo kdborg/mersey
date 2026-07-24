@@ -13,7 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Write};
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -39,10 +39,7 @@ fn get_doc(uri: &str) -> Option<String> {
 pub fn serve() -> std::process::ExitCode {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
-    loop {
-        let Some(msg) = read_message(&mut reader) else {
-            break;
-        };
+    while let Some(msg) = read_message(&mut reader) {
         if let Some(response) = handle(&msg) {
             write_message(&response);
         }

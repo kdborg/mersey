@@ -119,7 +119,7 @@ pub fn build(outdir: &str) -> ExitCode {
             Err(_) => (String::new(), String::new()),
         };
         if !about.is_empty() {
-            let _ = write!(body, "<div class=\"about\">{}</div>\n", paragraphs(&about));
+            let _ = writeln!(body, "<div class=\"about\">{}</div>", paragraphs(&about));
         }
         if !g.import.is_empty() {
             // What you write to get this group. Usually the title *is* the name
@@ -132,9 +132,9 @@ pub fn build(outdir: &str) -> ExitCode {
             } else {
                 esc(&g.title)
             };
-            let _ = write!(
+            let _ = writeln!(
                 body,
-                "<pre class=\"import\"><code>import {{ {} }} from \"{}\";</code></pre>\n",
+                "<pre class=\"import\"><code>import {{ {} }} from \"{}\";</code></pre>",
                 names,
                 esc(&g.import)
             );
@@ -160,9 +160,9 @@ pub fn build(outdir: &str) -> ExitCode {
             body.push_str("<div class=\"table-wrap\"><table class=\"api\">\n<thead><tr><th>Member</th><th>Type</th></tr></thead>\n<tbody>\n");
             for m in &g.members {
                 let kind = if m.is_fn { "fn" } else { "value" };
-                let _ = write!(
+                let _ = writeln!(
                     body,
-                    "<tr><td><code class=\"name {kind}\">{}</code></td><td><code>{}</code></td></tr>\n",
+                    "<tr><td><code class=\"name {kind}\">{}</code></td><td><code>{}</code></td></tr>",
                     esc(&m.name),
                     esc(&m.signature)
                 );
@@ -223,24 +223,24 @@ pub fn build(outdir: &str) -> ExitCode {
     );
     idx.push_str("<h2>The language</h2>\n<ul class=\"cards\">\n");
     for (file, title) in &spec_pages {
-        let _ = write!(idx, "<li><a href=\"{file}\">{}</a></li>\n", esc(title));
+        let _ = writeln!(idx, "<li><a href=\"{file}\">{}</a></li>", esc(title));
     }
     idx.push_str("</ul>\n<h2>The library</h2>\n<ul class=\"cards\">\n");
-    let _ = write!(
+    let _ = writeln!(
         idx,
         "<li><a href=\"library.html\">Standard library</a> <span class=\"note\">({} modules and \
-         types, generated from the type checker</span></li>\n",
+         types, generated from the type checker</span></li>",
         api.len()
     );
-    let _ = write!(
+    let _ = writeln!(
         idx,
         "<li><a href=\"examples.html\">Examples</a> <span class=\"note\">({} programs, each one \
-         executed and checked by the test suite)</span></li>\n",
+         executed and checked by the test suite)</span></li>",
         examples.len()
     );
     idx.push_str("</ul>\n<h2>The engine</h2>\n<ul class=\"cards\">\n");
     for (file, title) in &arch_pages {
-        let _ = write!(idx, "<li><a href=\"{file}\">{}</a></li>\n", esc(title));
+        let _ = writeln!(idx, "<li><a href=\"{file}\">{}</a></li>", esc(title));
     }
     idx.push_str("</ul>\n");
     write_page(out, "index.html", "Mersey", &idx, &pages_nav());
@@ -407,7 +407,7 @@ fn markdown(md: &str) -> String {
 
     fn flush_para(out: &mut String, para: &mut Vec<String>) {
         if !para.is_empty() {
-            let _ = write!(out, "<p>{}</p>\n", inline(&para.join(" ")));
+            let _ = writeln!(out, "<p>{}</p>", inline(&para.join(" ")));
             para.clear();
         }
     }
@@ -415,7 +415,7 @@ fn markdown(md: &str) -> String {
         if !list.is_empty() {
             out.push_str("<ul>\n");
             for item in list.iter() {
-                let _ = write!(out, "<li>{}</li>\n", inline(item));
+                let _ = writeln!(out, "<li>{}</li>", inline(item));
             }
             out.push_str("</ul>\n");
             list.clear();
@@ -457,17 +457,17 @@ fn markdown(md: &str) -> String {
             continue;
         }
         if in_code {
-            let _ = write!(out, "{}\n", esc(line));
+            let _ = writeln!(out, "{}", esc(line));
             continue;
         }
         // An indented block is code too — the spec uses both.
         if line.starts_with("    ") && para.is_empty() && list.is_empty() && table.is_empty() {
             out.push_str("<pre><code>");
-            let _ = write!(out, "{}\n", esc(&line[4..]));
+            let _ = writeln!(out, "{}", esc(&line[4..]));
             while let Some(next) = lines.peek() {
                 if next.starts_with("    ") || next.trim().is_empty() {
                     let l = lines.next().unwrap();
-                    let _ = write!(out, "{}\n", esc(l.strip_prefix("    ").unwrap_or("")));
+                    let _ = writeln!(out, "{}", esc(l.strip_prefix("    ").unwrap_or("")));
                 } else {
                     break;
                 }
@@ -486,15 +486,15 @@ fn markdown(md: &str) -> String {
         if let Some(rest) = t.strip_prefix("### ") {
             flush_para(&mut out, &mut para);
             flush_list(&mut out, &mut list);
-            let _ = write!(out, "<h3 id=\"{}\">{}</h3>\n", slug(rest), inline(rest));
+            let _ = writeln!(out, "<h3 id=\"{}\">{}</h3>", slug(rest), inline(rest));
         } else if let Some(rest) = t.strip_prefix("## ") {
             flush_para(&mut out, &mut para);
             flush_list(&mut out, &mut list);
-            let _ = write!(out, "<h2 id=\"{}\">{}</h2>\n", slug(rest), inline(rest));
+            let _ = writeln!(out, "<h2 id=\"{}\">{}</h2>", slug(rest), inline(rest));
         } else if let Some(rest) = t.strip_prefix("# ") {
             flush_para(&mut out, &mut para);
             flush_list(&mut out, &mut list);
-            let _ = write!(out, "<h1>{}</h1>\n", inline(rest));
+            let _ = writeln!(out, "<h1>{}</h1>", inline(rest));
         } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
             flush_para(&mut out, &mut para);
             list.push(rest.to_string());

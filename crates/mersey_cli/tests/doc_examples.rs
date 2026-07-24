@@ -85,13 +85,18 @@ fn every_library_example_runs_and_prints_what_the_docs_say() {
 
         let mut text = String::from_utf8_lossy(&out.stdout).to_string();
         text.push_str(&String::from_utf8_lossy(&out.stderr));
+        // The engine prints LF; compare independent of the checkout's line
+        // endings (git may hand back CRLF for the .expect files on Windows).
+        let text = text.replace("\r\n", "\n");
 
         let expect_path = path.with_extension("expect");
         if bless {
             std::fs::write(&expect_path, &text).unwrap();
             continue;
         }
-        let expected = std::fs::read_to_string(&expect_path).unwrap_or_default();
+        let expected = std::fs::read_to_string(&expect_path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         if text != expected {
             failures.push(format!(
                 "== {}\n--- expected\n{expected}\n--- actual\n{text}",

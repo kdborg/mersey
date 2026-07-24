@@ -334,6 +334,7 @@ dependencies = [
 name = "mersey_cli"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "mersey_front",
  "mersey_interp",
  "mersey_jit",

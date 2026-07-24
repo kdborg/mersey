@@ -29,6 +29,7 @@ impl Host for TestHost {
 }
 
 /// Record every callout; at `break_line`, capture the stack and locals.
+#[allow(clippy::type_complexity)]
 struct Recorder {
     lines: Rc<RefCell<Vec<u32>>>,
     break_line: u32,
@@ -49,18 +50,32 @@ impl DebugHook for Recorder {
     }
 }
 
-fn run_with_hook(src_text: &str, break_line: u32) -> (String, Vec<u32>, Vec<(Vec<String>, Vec<Vec<(String, String)>>)>) {
+#[allow(clippy::type_complexity)]
+fn run_with_hook(
+    src_text: &str,
+    break_line: u32,
+) -> (
+    String,
+    Vec<u32>,
+    Vec<(Vec<String>, Vec<Vec<(String, String)>>)>,
+) {
     let src = source::decode("debug.mersey", src_text.as_bytes()).expect("decodes");
     let parsed = parser::parse(&src);
     let module: &'static _ = Box::leak(Box::new(parsed.module));
-    assert!(parsed.diagnostics.is_empty(), "parse: {:?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
     let b = bind::bind(module);
     assert!(b.diagnostics.is_empty(), "bind: {:?}", b.diagnostics);
     let c = check::check(module);
     assert!(c.diagnostics.is_empty(), "check: {:?}", c.diagnostics);
 
     let buffer = Rc::new(RefCell::new(String::new()));
-    let mut interp = new_interp(Box::new(TestHost { out: buffer.clone() }));
+    let mut interp = new_interp(Box::new(TestHost {
+        out: buffer.clone(),
+    }));
     let lines = Rc::new(RefCell::new(Vec::new()));
     let hit = Rc::new(RefCell::new(Vec::new()));
     interp.set_debug_hook(Box::new(Recorder {
@@ -118,13 +133,8 @@ fn breakpoint_sees_stack_and_locals() {
     assert_eq!(stack.last().map(|s| s.as_str()), Some("double"));
     assert!(stack.len() >= 2, "module frame below the call: {stack:?}");
     // Innermost scope: the function body's `twice`; a parent holds `x`.
-    let flat: Vec<(String, String)> =
-        scopes.iter().flatten().cloned().collect();
-    let get = |name: &str| {
-        flat.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.clone())
-    };
+    let flat: Vec<(String, String)> = scopes.iter().flatten().cloned().collect();
+    let get = |name: &str| flat.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
     assert_eq!(get("twice").as_deref(), Some("0"), "locals at first hit");
     assert_eq!(get("x").as_deref(), Some("0"));
 }
@@ -146,7 +156,9 @@ fn passive_hook_changes_nothing() {
     let _ = bind::bind(module);
     let _ = check::check(module);
     let buffer = Rc::new(RefCell::new(String::new()));
-    let mut interp = new_interp(Box::new(TestHost { out: buffer.clone() }));
+    let mut interp = new_interp(Box::new(TestHost {
+        out: buffer.clone(),
+    }));
     interp.set_debug_hook(Box::new(Passive));
     assert!(interp.run_module(module).is_ok(), "program runs");
     assert_eq!(buffer.borrow().as_str(), "total 6\n");
@@ -171,7 +183,10 @@ console.log(\"done\");
 ";
     let (out, lines, hits) = run_with_hook(ASYNC_PROGRAM, 5);
     assert_eq!(out, "done\n");
-    assert!(lines.contains(&4) && lines.contains(&5), "async body lines reported: {lines:?}");
+    assert!(
+        lines.contains(&4) && lines.contains(&5),
+        "async body lines reported: {lines:?}"
+    );
     // Slot-resolved locals surface as the innermost scope of a VM frame.
     let flat: Vec<(String, String)> = hits[0].1.iter().flatten().cloned().collect();
     assert!(

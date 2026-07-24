@@ -3,8 +3,8 @@
 //! Implemented so far (Phase 1): `lex`, `check` (lexical checks only),
 //! `convert`. `run`, `fmt`, `compile`, `audit` arrive in later phases.
 
-mod doc;
 mod dap;
+mod doc;
 mod lsp;
 mod repl;
 
@@ -80,7 +80,7 @@ fn main() -> ExitCode {
             if with_map {
                 print!("{}", out.map);
             }
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
         ("run", rest) if !rest.is_empty() => {
             let mut caps = Vec::new();
@@ -233,7 +233,7 @@ fn transcode(bytes: &[u8]) -> Result<String, String> {
 }
 
 fn decode_utf32(rest: &[u8], from_bytes: fn([u8; 4]) -> u32) -> Result<String, String> {
-    if rest.len() % 4 != 0 {
+    if !rest.len().is_multiple_of(4) {
         return Err("truncated UTF-32 data".into());
     }
     rest.chunks_exact(4)
@@ -245,7 +245,7 @@ fn decode_utf32(rest: &[u8], from_bytes: fn([u8; 4]) -> u32) -> Result<String, S
 }
 
 fn decode_utf16(rest: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Result<String, String> {
-    if rest.len() % 2 != 0 {
+    if !rest.len().is_multiple_of(2) {
         return Err("truncated UTF-16 data".into());
     }
     let units: Vec<u16> = rest
@@ -293,16 +293,15 @@ impl interp::Host for CliHost {
     }
 
     /// The OS CSPRNG, and only with the capability. `getrandom(2)` on Linux,
-    /// via /dev/urandom — no userspace PRNG, no seeding, nothing to get wrong.
+    /// `getentropy` on macOS/BSD, `BCryptGenRandom` on Windows — the OS entropy
+    /// syscall on each platform, no userspace PRNG, no seeding, nothing to get
+    /// wrong. (The `getrandom` crate is a thin wrapper over exactly those.)
     fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
         if !self.caps.iter().any(|c| c == "random") {
             return Err("no `random` capability (run with --allow-random)".into());
         }
-        use std::io::Read;
-        let mut f = std::fs::File::open("/dev/urandom")
-            .map_err(|e| format!("cannot open the system CSPRNG: {e}"))?;
         let mut buf = vec![0u8; n];
-        f.read_exact(&mut buf)
+        getrandom::getrandom(&mut buf)
             .map_err(|e| format!("cannot read the system CSPRNG: {e}"))?;
         Ok(buf)
     }
@@ -341,6 +340,11 @@ impl interp::Host for CliHost {
 /// execution). Returns modules in dependency-first order.
 fn load_graph(entry: &str) -> Result<Graph, ExitCode> {
     use std::collections::HashMap;
+    // Module specifiers are '/'-separated (that is what `graph::resolve` splits
+    // on to resolve a relative import against its referrer). A filesystem entry
+    // path on Windows uses '\', which would make that split land on the wrong
+    // separator; normalize it here (std::fs accepts '/' on Windows).
+    let entry = &entry.replace('\\', "/");
     let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
     let mut dyn_deps: HashMap<String, Vec<String>> = HashMap::new();

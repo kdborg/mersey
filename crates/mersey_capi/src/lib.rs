@@ -68,8 +68,7 @@ pub struct MsyHostTable {
 
     // console + diagnostics
     pub print: Option<extern "C" fn(*mut c_void, *const c_char, usize)>,
-    pub print_level:
-        Option<extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize)>,
+    pub print_level: Option<extern "C" fn(*mut c_void, *const c_char, usize, *const c_char, usize)>,
     pub error: Option<extern "C" fn(*mut c_void, *const c_char, usize)>,
 
     // capabilities
@@ -105,20 +104,12 @@ pub struct MsyHostTable {
     pub web_set_str: Option<
         extern "C" fn(*mut c_void, i64, u32, *const c_char, usize, *mut usize) -> *const c_char,
     >,
-    pub web_set_num:
-        Option<extern "C" fn(*mut c_void, i64, u32, f64, *mut usize) -> *const c_char>,
+    pub web_set_num: Option<extern "C" fn(*mut c_void, i64, u32, f64, *mut usize) -> *const c_char>,
     pub web_call_str: Option<
         extern "C" fn(*mut c_void, i64, u32, *const c_char, usize, *mut usize) -> *const c_char,
     >,
     pub web_call_scalars: Option<
-        extern "C" fn(
-            *mut c_void,
-            i64,
-            u32,
-            *const MsyScalar,
-            usize,
-            *mut usize,
-        ) -> *const c_char,
+        extern "C" fn(*mut c_void, i64, u32, *const MsyScalar, usize, *mut usize) -> *const c_char,
     >,
     pub web_new_scalars: Option<
         extern "C" fn(*mut c_void, u32, *const MsyScalar, usize, *mut usize) -> *const c_char,
@@ -129,12 +120,10 @@ pub struct MsyHostTable {
     pub web_set_u16: Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg16, *mut MsyReply)>,
     pub web_call_u16:
         Option<extern "C" fn(*mut c_void, i64, u32, *const MsyArg16, usize, *mut MsyReply)>,
-    pub web_new_u16:
-        Option<extern "C" fn(*mut c_void, u32, *const MsyArg16, usize, *mut MsyReply)>,
+    pub web_new_u16: Option<extern "C" fn(*mut c_void, u32, *const MsyArg16, usize, *mut MsyReply)>,
     // typed-binding fast path (ABI v7): a compiled numeric web method as a
     // compile-time id + raw f64 args, no name and no MsyArg16 marshalling.
-    pub web_bind:
-        Option<extern "C" fn(*mut c_void, i64, u32, *const f64, usize, *mut MsyReply)>,
+    pub web_bind: Option<extern "C" fn(*mut c_void, i64, u32, *const f64, usize, *mut MsyReply)>,
 }
 
 /// A UTF-16 argument, field for field with `msy_arg16` in include/mersey.h.
@@ -151,7 +140,12 @@ pub struct MsyArg16 {
 impl Default for MsyArg16 {
     fn default() -> Self {
         // `null` (kind 4): the fill value for the unused tail of a stack buffer.
-        MsyArg16 { kind: 4, num: 0.0, str16: std::ptr::null(), str16_len: 0 }
+        MsyArg16 {
+            kind: 4,
+            num: 0.0,
+            str16: std::ptr::null(),
+            str16_len: 0,
+        }
     }
 }
 
@@ -167,13 +161,23 @@ pub struct MsyReply {
 
 impl Default for MsyReply {
     fn default() -> Self {
-        MsyReply { tag: 0, num: 0.0, str16: std::ptr::null(), str16_len: 0 }
+        MsyReply {
+            tag: 0,
+            num: 0.0,
+            str16: std::ptr::null(),
+            str16_len: 0,
+        }
     }
 }
 
 fn to_msy_arg16(a: &mersey_interp::WebArg) -> MsyArg16 {
     use mersey_interp::WebArg;
-    let num = |kind: i32, n: f64| MsyArg16 { kind, num: n, str16: std::ptr::null(), str16_len: 0 };
+    let num = |kind: i32, n: f64| MsyArg16 {
+        kind,
+        num: n,
+        str16: std::ptr::null(),
+        str16_len: 0,
+    };
     match a {
         WebArg::Num(n) => num(1, *n),
         // The engine's string is already UTF-16: the code units cross with no
@@ -229,10 +233,18 @@ pub struct MsyScalar {
 
 fn to_msy_scalar(s: &WebScalar) -> MsyScalar {
     match s {
-        WebScalar::Num(n) => MsyScalar { is_num: 1, num: *n, str_ptr: std::ptr::null(), str_len: 0 },
-        WebScalar::Str(s) => {
-            MsyScalar { is_num: 0, num: 0.0, str_ptr: s.as_ptr() as *const c_char, str_len: s.len() }
-        }
+        WebScalar::Num(n) => MsyScalar {
+            is_num: 1,
+            num: *n,
+            str_ptr: std::ptr::null(),
+            str_len: 0,
+        },
+        WebScalar::Str(s) => MsyScalar {
+            is_num: 0,
+            num: 0.0,
+            str_ptr: s.as_ptr() as *const c_char,
+            str_len: s.len(),
+        },
     }
 }
 
@@ -442,7 +454,14 @@ impl Host for CHost {
         };
         let cargs: Vec<MsyScalar> = args.iter().map(to_msy_scalar).collect();
         let mut len = 0usize;
-        let r = f(self.table.data, target, name_id, cargs.as_ptr(), cargs.len(), &mut len);
+        let r = f(
+            self.table.data,
+            target,
+            name_id,
+            cargs.as_ptr(),
+            cargs.len(),
+            &mut len,
+        );
         read_reply(r, len)
     }
     fn web_new_scalars(&mut self, ctor_id: u32, args: &[WebScalar]) -> String {
@@ -451,7 +470,13 @@ impl Host for CHost {
         };
         let cargs: Vec<MsyScalar> = args.iter().map(to_msy_scalar).collect();
         let mut len = 0usize;
-        let r = f(self.table.data, ctor_id, cargs.as_ptr(), cargs.len(), &mut len);
+        let r = f(
+            self.table.data,
+            ctor_id,
+            cargs.as_ptr(),
+            cargs.len(),
+            &mut len,
+        );
         read_reply(r, len)
     }
 
@@ -489,10 +514,24 @@ impl Host for CHost {
             for (k, a) in args.iter().enumerate() {
                 cargs[k] = to_msy_arg16(a);
             }
-            f(self.table.data, target, name_id, cargs.as_ptr(), args.len(), &mut reply);
+            f(
+                self.table.data,
+                target,
+                name_id,
+                cargs.as_ptr(),
+                args.len(),
+                &mut reply,
+            );
         } else {
             let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
-            f(self.table.data, target, name_id, cargs.as_ptr(), cargs.len(), &mut reply);
+            f(
+                self.table.data,
+                target,
+                name_id,
+                cargs.as_ptr(),
+                cargs.len(),
+                &mut reply,
+            );
         }
         Some(read_msy_reply(&reply))
     }
@@ -504,18 +543,34 @@ impl Host for CHost {
         let f = self.table.web_new_u16?;
         let cargs: Vec<MsyArg16> = args.iter().map(to_msy_arg16).collect();
         let mut reply = MsyReply::default();
-        f(self.table.data, ctor_id, cargs.as_ptr(), cargs.len(), &mut reply);
+        f(
+            self.table.data,
+            ctor_id,
+            cargs.as_ptr(),
+            cargs.len(),
+            &mut reply,
+        );
         Some(read_msy_reply(&reply))
     }
-    fn web_bind(&mut self, target: i64, bind_id: u32, args: &[f64]) -> Option<mersey_interp::WebReply> {
+    fn web_bind(
+        &mut self,
+        target: i64,
+        bind_id: u32,
+        args: &[f64],
+    ) -> Option<mersey_interp::WebReply> {
         let f = self.table.web_bind?;
         let mut reply = MsyReply::default();
-        f(self.table.data, target, bind_id, args.as_ptr(), args.len(), &mut reply);
+        f(
+            self.table.data,
+            target,
+            bind_id,
+            args.as_ptr(),
+            args.len(),
+            &mut reply,
+        );
         Some(read_msy_reply(&reply))
     }
-    fn web_bind_raw(
-        &self,
-    ) -> Option<(mersey_interp::WebBindFn, *mut std::ffi::c_void)> {
+    fn web_bind_raw(&self) -> Option<(mersey_interp::WebBindFn, *mut std::ffi::c_void)> {
         let f = self.table.web_bind?;
         // `MsyReply` and `mersey_interp::WebReplyRaw` are the same `#[repr(C)]`
         // layout (asserted below), so the two function pointers differ only in
@@ -683,7 +738,10 @@ fn pause_json(
                 out.push(',');
             }
             out.push_str("{\"name\":");
-            write_str(&mut out, &mersey_interp::debug::scope_name(si, scopes.len()));
+            write_str(
+                &mut out,
+                &mersey_interp::debug::scope_name(si, scopes.len()),
+            );
             out.push_str(",\"variables\":[");
             for (vi, (name, value)) in scope.iter().enumerate() {
                 if vi > 0 {
@@ -867,7 +925,6 @@ pub unsafe extern "C" fn msy_context_invoke_args(
 ///
 /// # Safety
 /// `ctx` from msy_context_new; `src` points at `len` readable bytes.
-#[no_mangle]
 pub unsafe extern "C" fn msy_context_repl_turn(
     ctx: *mut MsyContext,
     src: *const c_char,

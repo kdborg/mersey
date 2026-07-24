@@ -121,38 +121,6 @@ pub fn resolve(referrer: &str, spec: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relative_referrer_stays_relative() {
-        assert_eq!(resolve("app.mersey", "./lib.mersey"), "lib.mersey");
-        assert_eq!(resolve("src/app.mersey", "./lib.mersey"), "src/lib.mersey");
-        assert_eq!(resolve("src/app.mersey", "../lib.mersey"), "lib.mersey");
-    }
-
-    #[test]
-    fn absolute_referrer_stays_absolute() {
-        assert_eq!(
-            resolve("/home/me/app.mersey", "./lib.mersey"),
-            "/home/me/lib.mersey"
-        );
-        assert_eq!(
-            resolve("/home/me/src/app.mersey", "../lib.mersey"),
-            "/home/me/lib.mersey"
-        );
-    }
-
-    #[test]
-    fn a_package_brings_its_own_files() {
-        assert_eq!(
-            resolve_module("https://h/pkg/index.mersey", "./util.mersey"),
-            "https://h/pkg/util.mersey"
-        );
-    }
-}
-
 /// Dependency-first ordering. `deps(spec) -> its relative imports`.
 /// Returns `Err` on an import cycle (spec §4.5: the graph is static).
 pub fn topo_order(
@@ -192,4 +160,36 @@ fn visit(
     done.insert(spec.to_string());
     out.push(spec.to_string());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_referrer_stays_relative() {
+        assert_eq!(resolve("app.mersey", "./lib.mersey"), "lib.mersey");
+        assert_eq!(resolve("src/app.mersey", "./lib.mersey"), "src/lib.mersey");
+        assert_eq!(resolve("src/app.mersey", "../lib.mersey"), "lib.mersey");
+    }
+
+    #[test]
+    fn absolute_referrer_stays_absolute() {
+        assert_eq!(
+            resolve("/home/me/app.mersey", "./lib.mersey"),
+            "/home/me/lib.mersey"
+        );
+        assert_eq!(
+            resolve("/home/me/src/app.mersey", "../lib.mersey"),
+            "/home/me/lib.mersey"
+        );
+    }
+
+    #[test]
+    fn a_package_brings_its_own_files() {
+        assert_eq!(
+            resolve_module("https://h/pkg/index.mersey", "./util.mersey"),
+            "https://h/pkg/util.mersey"
+        );
+    }
 }

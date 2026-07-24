@@ -77,8 +77,7 @@ pub fn format(source: &SourceFile) -> Result<String, Vec<Diagnostic>> {
         } else if gap == 1 {
             buf.push('\n');
             push_indent(&mut buf, depth);
-        } else {
-            let (pk, p_unary) = prev.expect("checked");
+        } else if let Some((pk, p_unary)) = prev {
             let space = match kind {
                 Kind::Comment => true,
                 Kind::Tok(t) => need_space(pk, p_unary, *t, had_ws),

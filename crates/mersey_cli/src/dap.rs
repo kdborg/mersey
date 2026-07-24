@@ -54,7 +54,12 @@ fn get_num(j: &Json, key: &str) -> Option<f64> {
 }
 
 fn obj(fields: Vec<(&str, Json)>) -> Json {
-    Json::Obj(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Json::Obj(
+        fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    )
 }
 
 fn s(v: &str) -> Json {
@@ -133,10 +138,7 @@ fn apply_breakpoints(req: &Json, ctl: &mut DebugController) {
             for item in items {
                 if let Some(line) = get_num(item, "line") {
                     lines.push(line as u32);
-                    verified.push(obj(vec![
-                        ("verified", Json::Bool(true)),
-                        ("line", n(line)),
-                    ]));
+                    verified.push(obj(vec![("verified", Json::Bool(true)), ("line", n(line))]));
                 }
             }
         }
@@ -192,7 +194,10 @@ impl DapDebugger {
                 respond(req, None);
                 std::process::exit(0);
             }
-            _ => respond_err(req, "only setBreakpoints/threads/pause/disconnect while running"),
+            _ => respond_err(
+                req,
+                "only setBreakpoints/threads/pause/disconnect while running",
+            ),
         }
     }
 }
@@ -426,10 +431,7 @@ pub fn serve() -> ExitCode {
         Ok(g) => g,
         Err(_) => {
             output_event(&format!("mersey dap: cannot load `{program}`"));
-            event(
-                "exited",
-                Some(obj(vec![("exitCode", n(1.0))])),
-            );
+            event("exited", Some(obj(vec![("exitCode", n(1.0))])));
             event("terminated", None);
             return ExitCode::FAILURE;
         }
@@ -455,10 +457,7 @@ pub fn serve() -> ExitCode {
     let code = match interp.run_graph(eager) {
         Ok(()) => 0.0,
         Err(t) => {
-            output_event(&format!(
-                "runtime error: {}",
-                interp.describe_thrown(&t)
-            ));
+            output_event(&format!("runtime error: {}", interp.describe_thrown(&t)));
             1.0
         }
     };
@@ -472,7 +471,7 @@ pub fn serve() -> ExitCode {
                 respond(&req, None);
                 break;
             }
-            other if other.is_empty() => {}
+            "" => {}
             _ => respond_err(&req, "program has exited"),
         }
     }

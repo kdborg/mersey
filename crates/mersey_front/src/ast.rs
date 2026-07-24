@@ -818,11 +818,7 @@ pub fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
             walk_expr(obj, f);
             walk_expr(index, f);
         }
-        Expr::Yield { value, .. } => {
-            if let Some(v) = value {
-                walk_expr(v, f);
-            }
-        }
+        Expr::Yield { value: Some(v), .. } => walk_expr(v, f),
         _ => {}
     }
 }

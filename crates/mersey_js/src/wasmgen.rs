@@ -82,7 +82,7 @@ pub fn compile(fns: &[&FnDecl]) -> Option<WasmTier> {
 /// like `math.sqrt(x)` lower to the f64 opcode instead of disqualifying.
 pub fn compile_with(
     fns: &[&FnDecl],
-    math_names: &std::collections::HashSet<String>,
+    #[allow(dead_code)] math_names: &std::collections::HashSet<String>,
 ) -> Option<WasmTier> {
     let mut cands: Vec<Fq> = Vec::new();
     for f in fns {
@@ -144,7 +144,7 @@ pub fn compile_with(
 fn body_qualifies(
     f: &Fq,
     names: &[String],
-    math_names: &std::collections::HashSet<String>,
+    #[allow(dead_code)] math_names: &std::collections::HashSet<String>,
 ) -> bool {
     let mut locals: Vec<(String, Num)> = f.params.clone();
     let mut ok = true;
@@ -171,7 +171,7 @@ fn math_op(name: &str) -> Option<(u8, u8)> {
 fn qual_stmt(
     s: &Stmt,
     names: &[String],
-    math_names: &std::collections::HashSet<String>,
+    #[allow(dead_code)] math_names: &std::collections::HashSet<String>,
     locals: &mut Vec<(String, Num)>,
     ok: &mut bool,
 ) {
@@ -181,7 +181,8 @@ fn qual_stmt(
     match s {
         Stmt::Block(b) => {
             let mark = locals.len();
-            b.iter().for_each(|s| qual_stmt(s, names, math_names, locals, ok));
+            b.iter()
+                .for_each(|s| qual_stmt(s, names, math_names, locals, ok));
             locals.truncate(mark);
         }
         Stmt::Var(v) => {
@@ -190,12 +191,11 @@ fn qual_stmt(
                     *ok = false;
                     return;
                 };
-                let k = b
-                    .ty
-                    .as_ref()
-                    .and_then(kind_of_type)
-                    .or_else(|| check::local_type_for(n))
-                    .or_else(|| b.init.as_ref().and_then(|e| infer(e, locals, names)));
+                let k =
+                    b.ty.as_ref()
+                        .and_then(kind_of_type)
+                        .or_else(|| check::local_type_for(n))
+                        .or_else(|| b.init.as_ref().and_then(|e| infer(e, locals, names)));
                 let Some(k) = k else {
                     *ok = false;
                     return;
@@ -226,14 +226,19 @@ fn qual_stmt(
             body,
         } => {
             match init {
-                Some(ForInit::Var(v)) => qual_stmt(&Stmt::Var(clone_var(v)), names, math_names, locals, ok),
-                Some(ForInit::Exprs(es)) => es.iter().for_each(|e| qual_expr(e, names, math_names, locals, ok)),
+                Some(ForInit::Var(v)) => {
+                    qual_stmt(&Stmt::Var(clone_var(v)), names, math_names, locals, ok)
+                }
+                Some(ForInit::Exprs(es)) => es
+                    .iter()
+                    .for_each(|e| qual_expr(e, names, math_names, locals, ok)),
                 None => {}
             }
             if let Some(c) = cond {
                 qual_expr(c, names, math_names, locals, ok);
             }
-            step.iter().for_each(|e| qual_expr(e, names, math_names, locals, ok));
+            step.iter()
+                .for_each(|e| qual_expr(e, names, math_names, locals, ok));
             qual_stmt(body, names, math_names, locals, ok);
         }
         Stmt::Return { value, .. } => {
@@ -291,7 +296,7 @@ fn clone_type(t: &TypeExpr) -> TypeExpr {
 fn qual_expr(
     e: &Expr,
     names: &[String],
-    math_names: &std::collections::HashSet<String>,
+    #[allow(dead_code)] math_names: &std::collections::HashSet<String>,
     locals: &Vec<(String, Num)>,
     ok: &mut bool,
 ) {
@@ -321,7 +326,9 @@ fn qual_expr(
             }
             qual_expr(expr, names, math_names, locals, ok);
         }
-        Expr::Update { prefix: _, expr, .. } => {
+        Expr::Update {
+            prefix: _, expr, ..
+        } => {
             if !matches!(infer(expr, locals, names), Some(Num::Int(_))) {
                 *ok = false;
                 return;
@@ -336,7 +343,11 @@ fn qual_expr(
             qual_expr(l, names, math_names, locals, ok);
             qual_expr(r, names, math_names, locals, ok);
         }
-        Expr::Assign { op: _, target, value } => {
+        Expr::Assign {
+            op: _,
+            target,
+            value,
+        } => {
             let Expr::Ident(_) = target.as_ref() else {
                 *ok = false;
                 return;
@@ -368,7 +379,12 @@ fn qual_expr(
                 *ok = false;
             }
         }
-        Expr::Call { callee, args, type_args, optional } => {
+        Expr::Call {
+            callee,
+            args,
+            type_args,
+            optional,
+        } => {
             if *optional || !type_args.is_empty() {
                 *ok = false;
                 return;
@@ -376,11 +392,14 @@ fn qual_expr(
             match callee.as_ref() {
                 Expr::Ident(n) if names.contains(&n.text) => {}
                 // math.sqrt(x) etc: a std:math intrinsic with a wasm opcode.
-                Expr::Member { obj, name, optional: false }
-                    if matches!(obj.as_ref(), Expr::Ident(m)
+                Expr::Member {
+                    obj,
+                    name,
+                    optional: false,
+                } if matches!(obj.as_ref(), Expr::Ident(m)
                         if math_names.contains(&m.text)
                             && locals.iter().all(|(l, _)| l != &m.text))
-                        && math_op(name).is_some() => {}
+                    && math_op(name).is_some() => {}
                 _ => {
                     *ok = false;
                     return;
@@ -399,7 +418,6 @@ fn qual_expr(
 }
 
 fn widens(from: Num, to: Num) -> bool {
-    use IntKind::*;
     match (from, to) {
         (a, b) if a == b => true,
         (Num::Int(a), Num::Int(b)) => rank(a) <= rank(b) && signed(a) == signed(b),
@@ -423,26 +441,37 @@ fn signed(k: IntKind) -> bool {
 
 /// The numeric kind of an expression, from the checker's tables plus local
 /// context. The *coerced* kind when the checker recorded a conversion.
+#[allow(clippy::only_used_in_recursion)]
 fn infer(e: &Expr, locals: &Vec<(String, Num)>, names: &[String]) -> Option<Num> {
     if let Some(k) = check::coercion_for(e) {
         return Some(k);
     }
     let raw = match e {
-        Expr::Ident(n) => locals.iter().rev().find(|(s, _)| s == &n.text).map(|(_, k)| *k),
+        Expr::Ident(n) => locals
+            .iter()
+            .rev()
+            .find(|(s, _)| s == &n.text)
+            .map(|(_, k)| *k),
         Expr::Lit { kind, text, .. } => match kind {
             LitKind::Int => {
                 let t = text.replace('_', "");
-                Some(if t.ends_with("i64") || t.ends_with('l') && !t.ends_with("ul") {
-                    Num::Int(IntKind::I64)
-                } else if t.ends_with("u64") || t.ends_with("ul") {
-                    Num::Int(IntKind::U64)
-                } else if t.ends_with("u32") || t.ends_with('u') {
-                    Num::Int(IntKind::U32)
-                } else {
-                    Num::Int(IntKind::I32)
-                })
+                Some(
+                    if t.ends_with("i64") || t.ends_with('l') && !t.ends_with("ul") {
+                        Num::Int(IntKind::I64)
+                    } else if t.ends_with("u64") || t.ends_with("ul") {
+                        Num::Int(IntKind::U64)
+                    } else if t.ends_with("u32") || t.ends_with('u') {
+                        Num::Int(IntKind::U32)
+                    } else {
+                        Num::Int(IntKind::I32)
+                    },
+                )
             }
-            LitKind::Float => Some(if text.ends_with('f') { Num::F32 } else { Num::F64 }),
+            LitKind::Float => Some(if text.ends_with('f') {
+                Num::F32
+            } else {
+                Num::F64
+            }),
             _ => None,
         },
         Expr::Paren(x) => infer(x, locals, names),
@@ -661,6 +690,7 @@ struct Gen<'a> {
     extra: Vec<u8>,
     names: &'a [String],
     table: &'a [FnInfo<'a>],
+    #[allow(dead_code)]
     math_names: &'a std::collections::HashSet<String>,
     ret: Option<Num>,
     /// Current structured-control nesting depth (labels open right now).
@@ -671,6 +701,7 @@ struct Gen<'a> {
 }
 
 struct FnInfo<'a> {
+    #[allow(dead_code)]
     name: String,
     params: Vec<(String, Num)>,
     ret: Option<Num>,
@@ -697,7 +728,9 @@ struct LoopCtx {
 const I32_MIN: i64 = i32::MIN as i64;
 
 fn strip_suffix(t: &str) -> &str {
-    for s in ["u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u"] {
+    for s in [
+        "u64", "u32", "u16", "ul", "u8", "i64", "i32", "i16", "i8", "l", "u",
+    ] {
         if let Some(d) = t.strip_suffix(s) {
             return d;
         }
@@ -860,14 +893,15 @@ impl<'a> Gen<'a> {
             Stmt::Block(b) => self.scoped(|g| b.iter().for_each(|s| g.stmt(s))),
             Stmt::Var(v) => {
                 for b in &v.bindings {
-                    let Pattern::Name(n) = &b.target else { unreachable!() };
-                    let k = b
-                        .ty
-                        .as_ref()
-                        .and_then(kind_of_type)
-                        .or_else(|| check::local_type_for(n))
-                        .or_else(|| b.init.as_ref().and_then(|e| self.infer_here(e)))
-                        .expect("qualified local kind");
+                    let Pattern::Name(n) = &b.target else {
+                        unreachable!()
+                    };
+                    let k =
+                        b.ty.as_ref()
+                            .and_then(kind_of_type)
+                            .or_else(|| check::local_type_for(n))
+                            .or_else(|| b.init.as_ref().and_then(|e| self.infer_here(e)))
+                            .expect("qualified local kind");
                     match &b.init {
                         Some(init) => {
                             let ik = self.expr(init);
@@ -988,7 +1022,9 @@ impl<'a> Gen<'a> {
                     match fi {
                         ForInit::Var(v) => {
                             for b in &v.bindings {
-                                let Pattern::Name(n) = &b.target else { unreachable!() };
+                                let Pattern::Name(n) = &b.target else {
+                                    unreachable!()
+                                };
                                 let k = b
                                     .ty
                                     .as_ref()
@@ -1055,7 +1091,9 @@ impl<'a> Gen<'a> {
     fn stmt_expr(&mut self, e: &Expr) {
         match e {
             Expr::Assign { op, target, value } => {
-                let Expr::Ident(n) = target.as_ref() else { unreachable!() };
+                let Expr::Ident(n) = target.as_ref() else {
+                    unreachable!()
+                };
                 let k = self.local_kind(&n.text).expect("qualified");
                 let idx = self.local_idx(&n.text);
                 if *op == "=" {
@@ -1070,7 +1108,9 @@ impl<'a> Gen<'a> {
                 self.set(idx);
             }
             Expr::Update { inc, expr, .. } => {
-                let Expr::Ident(n) = expr.as_ref() else { unreachable!() };
+                let Expr::Ident(n) = expr.as_ref() else {
+                    unreachable!()
+                };
                 let k = self.local_kind(&n.text).expect("qualified");
                 let idx = self.local_idx(&n.text);
                 self.get(idx);
@@ -1110,8 +1150,14 @@ impl<'a> Gen<'a> {
                 self.op(opcode);
                 return Some(Num::F64);
             }
-            let Expr::Ident(n) = callee.as_ref() else { unreachable!() };
-            let fi = self.names.iter().position(|x| x == &n.text).expect("qualified call");
+            let Expr::Ident(n) = callee.as_ref() else {
+                unreachable!()
+            };
+            let fi = self
+                .names
+                .iter()
+                .position(|x| x == &n.text)
+                .expect("qualified call");
             let info = &self.table[fi];
             // Inline a leaf callee: bind the arguments to fresh slots under
             // the parameter names (scoped, so shadowing is exact), then emit
@@ -1169,8 +1215,11 @@ impl<'a> Gen<'a> {
                 return Some(Num::F64); // qualified math intrinsic
             }
         }
-        let flat: Vec<(String, Num)> =
-            self.locals.iter().map(|(n, _, k)| (n.clone(), *k)).collect();
+        let flat: Vec<(String, Num)> = self
+            .locals
+            .iter()
+            .map(|(n, _, k)| (n.clone(), *k))
+            .collect();
         infer(e, &flat, self.names).or_else(|| {
             if let Expr::Call { callee, .. } = e {
                 if let Expr::Ident(n) = callee.as_ref() {
@@ -1237,7 +1286,9 @@ impl<'a> Gen<'a> {
                 UnaryOp::Await => unreachable!(),
             },
             Expr::Update { prefix, inc, expr } => {
-                let Expr::Ident(n) = expr.as_ref() else { unreachable!() };
+                let Expr::Ident(n) = expr.as_ref() else {
+                    unreachable!()
+                };
                 let k = self.local_kind(&n.text).expect("qualified");
                 let idx = self.local_idx(&n.text);
                 if !*prefix {
@@ -1263,8 +1314,12 @@ impl<'a> Gen<'a> {
             Expr::Assign { .. } => {
                 // Value position: perform, then read the target back.
                 self.stmt_expr(e);
-                let Expr::Assign { target, .. } = e else { unreachable!() };
-                let Expr::Ident(n) = target.as_ref() else { unreachable!() };
+                let Expr::Assign { target, .. } = e else {
+                    unreachable!()
+                };
+                let Expr::Ident(n) = target.as_ref() else {
+                    unreachable!()
+                };
                 let k = self.local_kind(&n.text).expect("q");
                 let idx = self.local_idx(&n.text);
                 self.get(idx);
@@ -1383,16 +1438,64 @@ impl<'a> Gen<'a> {
                 let byte = match (vt(k), op) {
                     (0x7f, Eq) => 0x46,
                     (0x7f, Ne) => 0x47,
-                    (0x7f, Lt) => if u { 0x49 } else { 0x48 },
-                    (0x7f, Gt) => if u { 0x4b } else { 0x4a },
-                    (0x7f, Le) => if u { 0x4d } else { 0x4c },
-                    (0x7f, Ge) => if u { 0x4f } else { 0x4e },
+                    (0x7f, Lt) => {
+                        if u {
+                            0x49
+                        } else {
+                            0x48
+                        }
+                    }
+                    (0x7f, Gt) => {
+                        if u {
+                            0x4b
+                        } else {
+                            0x4a
+                        }
+                    }
+                    (0x7f, Le) => {
+                        if u {
+                            0x4d
+                        } else {
+                            0x4c
+                        }
+                    }
+                    (0x7f, Ge) => {
+                        if u {
+                            0x4f
+                        } else {
+                            0x4e
+                        }
+                    }
                     (0x7e, Eq) => 0x51,
                     (0x7e, Ne) => 0x52,
-                    (0x7e, Lt) => if u { 0x54 } else { 0x53 },
-                    (0x7e, Gt) => if u { 0x56 } else { 0x55 },
-                    (0x7e, Le) => if u { 0x58 } else { 0x57 },
-                    (0x7e, Ge) => if u { 0x5a } else { 0x59 },
+                    (0x7e, Lt) => {
+                        if u {
+                            0x54
+                        } else {
+                            0x53
+                        }
+                    }
+                    (0x7e, Gt) => {
+                        if u {
+                            0x56
+                        } else {
+                            0x55
+                        }
+                    }
+                    (0x7e, Le) => {
+                        if u {
+                            0x58
+                        } else {
+                            0x57
+                        }
+                    }
+                    (0x7e, Ge) => {
+                        if u {
+                            0x5a
+                        } else {
+                            0x59
+                        }
+                    }
                     (0x7d, Eq) => 0x5b,
                     (0x7d, Ne) => 0x5c,
                     (0x7d, Lt) => 0x5d,
@@ -1440,23 +1543,59 @@ impl<'a> Gen<'a> {
             (0x7f, "+") => 0x6a,
             (0x7f, "-") => 0x6b,
             (0x7f, "*") => 0x6c,
-            (0x7f, "/") => if u { 0x6e } else { 0x6d },
-            (0x7f, "%") => if u { 0x70 } else { 0x6f },
+            (0x7f, "/") => {
+                if u {
+                    0x6e
+                } else {
+                    0x6d
+                }
+            }
+            (0x7f, "%") => {
+                if u {
+                    0x70
+                } else {
+                    0x6f
+                }
+            }
             (0x7f, "&") => 0x71,
             (0x7f, "|") => 0x72,
             (0x7f, "^") => 0x73,
             (0x7f, "<<") => 0x74,
-            (0x7f, ">>") => if u { 0x76 } else { 0x75 },
+            (0x7f, ">>") => {
+                if u {
+                    0x76
+                } else {
+                    0x75
+                }
+            }
             (0x7e, "+") => 0x7c,
             (0x7e, "-") => 0x7d,
             (0x7e, "*") => 0x7e,
-            (0x7e, "/") => if u { 0x80 } else { 0x7f },
-            (0x7e, "%") => if u { 0x82 } else { 0x81 },
+            (0x7e, "/") => {
+                if u {
+                    0x80
+                } else {
+                    0x7f
+                }
+            }
+            (0x7e, "%") => {
+                if u {
+                    0x82
+                } else {
+                    0x81
+                }
+            }
             (0x7e, "&") => 0x83,
             (0x7e, "|") => 0x84,
             (0x7e, "^") => 0x85,
             (0x7e, "<<") => 0x86,
-            (0x7e, ">>") => if u { 0x88 } else { 0x87 },
+            (0x7e, ">>") => {
+                if u {
+                    0x88
+                } else {
+                    0x87
+                }
+            }
             (0x7d, "+") => 0x92,
             (0x7d, "-") => 0x93,
             (0x7d, "*") => 0x94,

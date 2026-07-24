@@ -157,11 +157,7 @@ extern "C" fn h_web_call(
         // element.addEventListener("click", cb)
         (t, "addEventListener") if t >= 2 => {
             // args: ["click",{"__cb__":N}]
-            let ev = args
-                .split('"')
-                .nth(1)
-                .unwrap_or("")
-                .to_string();
+            let ev = args.split('"').nth(1).unwrap_or("").to_string();
             let cb: u32 = args
                 .split("__cb__\":")
                 .nth(1)
@@ -305,7 +301,10 @@ console.log("tag:", el.tagName, "text:", el.textContent);
         page(|p| p.printed.clone()),
         vec!["tag: DIV text: made from mersey".to_string()]
     );
-    assert_eq!(page(|p| p.nodes.clone()), vec![("DIV".to_string(), "made from mersey".to_string())]);
+    assert_eq!(
+        page(|p| p.nodes.clone()),
+        vec![("DIV".to_string(), "made from mersey".to_string())]
+    );
     unsafe { msy_context_free(ctx) };
 }
 
@@ -332,12 +331,10 @@ el.addEventListener("click", (e: unknown) => {
     assert_eq!(ev, "click");
     // The browser fires the event from its task runner:
     let args = "[{\"type\":\"click\"}]";
-    let rc = unsafe { msy_context_invoke_args(ctx, cb, args.as_ptr() as *const c_char, args.len()) };
+    let rc =
+        unsafe { msy_context_invoke_args(ctx, cb, args.as_ptr() as *const c_char, args.len()) };
     assert_eq!(rc, 0, "errors: {:?}", page(|p| p.errors.clone()));
-    assert_eq!(
-        page(|p| p.printed.clone()),
-        vec!["clicked".to_string()]
-    );
+    assert_eq!(page(|p| p.printed.clone()), vec!["clicked".to_string()]);
     unsafe { msy_context_free(ctx) };
 }
 
@@ -366,7 +363,8 @@ console.log("script done");
     assert_eq!(page(|p| p.printed.clone()), vec!["script done".to_string()]);
     let cb = page(|p| p.then_cb).expect("the .then callback crossed");
     let args = "[42]";
-    let rc = unsafe { msy_context_invoke_args(ctx, cb, args.as_ptr() as *const c_char, args.len()) };
+    let rc =
+        unsafe { msy_context_invoke_args(ctx, cb, args.as_ptr() as *const c_char, args.len()) };
     assert_eq!(rc, 0, "errors: {:?}", page(|p| p.errors.clone()));
     assert_eq!(
         page(|p| p.printed.clone()),
@@ -391,7 +389,12 @@ console.log("doubled:", double(21));
     // Step 1: the host asks what main imports.
     let mut len = 0usize;
     let ptr = unsafe {
-        msy_context_scan_imports(ctx, main_src.as_ptr() as *const c_char, main_src.len(), &mut len)
+        msy_context_scan_imports(
+            ctx,
+            main_src.as_ptr() as *const c_char,
+            main_src.len(),
+            &mut len,
+        )
     };
     let scan = s(ptr, len);
     assert!(scan.contains("./math.mersey"), "{scan}");
@@ -403,9 +406,8 @@ console.log("doubled:", double(21));
         math_src.replace('"', "\\\""),
         main_src.replace('"', "\\\"").replace('\n', "\\n"),
     );
-    let code = unsafe {
-        msy_context_run_graph(ctx, payload.as_ptr() as *const c_char, payload.len())
-    };
+    let code =
+        unsafe { msy_context_run_graph(ctx, payload.as_ptr() as *const c_char, payload.len()) };
     assert_eq!(code, 0, "errors: {:?}", page(|p| p.errors.clone()));
     assert_eq!(page(|p| p.printed.clone()), vec!["doubled: 42".to_string()]);
     unsafe { msy_context_free(ctx) };
@@ -487,10 +489,10 @@ fn diagnostics_cross_as_errors() {
 
 // ---- the debugger ----------------------------------------------------------
 
-/// What the mock DevTools front-end recorded, and what it does next. The
-/// pause callback BLOCKS the engine by contract; here it returns promptly
-/// after choosing a resume mode, which is the same protocol a nested message
-/// loop follows — just without the loop.
+// What the mock DevTools front-end recorded, and what it does next. The
+// pause callback BLOCKS the engine by contract; here it returns promptly
+// after choosing a resume mode, which is the same protocol a nested message
+// loop follows — just without the loop.
 thread_local! {
     static PAUSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
@@ -584,7 +586,11 @@ fn a_breakpoint_pauses_steps_and_resumes() {
     assert_eq!(page(|p| p.printed.clone()), vec!["r: 23".to_string()]);
 
     let pauses = PAUSES.with(|p| p.borrow().clone());
-    assert_eq!(pauses.len(), 2, "one breakpoint stop, one step stop: {pauses:?}");
+    assert_eq!(
+        pauses.len(),
+        2,
+        "one breakpoint stop, one step stop: {pauses:?}"
+    );
 
     let first = webjson::parse(&pauses[0]).expect("pause snapshot is JSON");
     assert_eq!(jstr(&first, "reason"), "breakpoint");
@@ -642,9 +648,15 @@ fn disabling_the_debugger_stops_the_callouts() {
         mersey_capi::msy_context_debug_pause(ctx); // stop at the very next statement
         mersey_capi::msy_context_debug_disable(ctx);
     }
-    let code = run(ctx, "import { console } from \"std:console\";\nconsole.log(\"quiet\");\n");
+    let code = run(
+        ctx,
+        "import { console } from \"std:console\";\nconsole.log(\"quiet\");\n",
+    );
     assert_eq!(code, 0, "errors: {:?}", page(|p| p.errors.clone()));
     assert_eq!(page(|p| p.printed.clone()), vec!["quiet".to_string()]);
-    assert!(PAUSES.with(|p| p.borrow().is_empty()), "detached: no pauses");
+    assert!(
+        PAUSES.with(|p| p.borrow().is_empty()),
+        "detached: no pauses"
+    );
     unsafe { msy_context_free(ctx) };
 }

@@ -209,7 +209,10 @@ fn publish(
     RESULT_COERCIONS.with(|m| m.borrow_mut().extend(results.iter().map(|(k, v)| (*k, *v))));
     OP_TYPES.with(|m| m.borrow_mut().extend(ops.iter().map(|(k, v)| (*k, *v))));
     LOCAL_TYPES.with(|m| m.borrow_mut().extend(locals.iter().map(|(k, v)| (*k, *v))));
-    DEFAULTS.with(|m| m.borrow_mut().extend(defaults.iter().map(|(k, v)| (*k, *v))));
+    DEFAULTS.with(|m| {
+        m.borrow_mut()
+            .extend(defaults.iter().map(|(k, v)| (*k, *v)))
+    });
 }
 
 /// The numeric kind of a type, if it has one. `bigint`/`bigdec` are absent on
@@ -262,6 +265,7 @@ const KIND_VARIABLE: u32 = 6;
 
 /// A checked module, kept alive so an editor can ask questions of it.
 pub struct Analysis {
+    #[allow(dead_code)] // kept alive so an editor can query the module later
     checker: Checker,
     index: IndexData,
     pub diagnostics: Vec<Diagnostic>,
@@ -296,8 +300,7 @@ impl Analysis {
         self.index
             .types
             .iter()
-            .filter(|(p, _)| p.line == pos.line && p.col == pos.col)
-            .next_back()
+            .rfind(|(p, _)| p.line == pos.line && p.col == pos.col)
             .map(|(_, t)| t.clone())
     }
 
@@ -6187,7 +6190,7 @@ impl Checker {
             // because they are asking the checker rather than keeping a list.
             other => {
                 let n = self.diags.len();
-                let ty = self.member_access(&other, name, false, Pos { line: 0, col: 0 });
+                let ty = self.member_access(other, name, false, Pos { line: 0, col: 0 });
                 let failed = self.diags.len() > n;
                 self.diags.truncate(n);
                 if failed || matches!(ty, Type::Err) {
@@ -7861,10 +7864,11 @@ pub(crate) fn pos_of(e: &Expr) -> Pos {
             .unwrap_or(Pos { line: 0, col: 0 }),
         Expr::Record(fs) => fs
             .iter()
-            .find_map(|f| match f {
-                RecordField::Named { name, .. } => Some(name.pos),
-                RecordField::Spread(e) => Some(pos_of(e)),
+            .map(|f| match f {
+                RecordField::Named { name, .. } => name.pos,
+                RecordField::Spread(e) => pos_of(e),
             })
+            .next()
             .unwrap_or(Pos { line: 0, col: 0 }),
         Expr::Arrow { params, .. } => params
             .first()

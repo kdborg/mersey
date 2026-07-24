@@ -20,8 +20,9 @@
 //! reply are intentionally leaked — bounded by script size and DOM reads,
 //! acceptable for Stage A; a proper arena arrives with the real engine.
 
-use std::cell::UnsafeCell;
+#![allow(clippy::missing_safety_doc)] // every export derefs a host-provided (ptr,len); the contract is uniform
 
+use std::cell::UnsafeCell;
 
 use mersey_interp::{new_interp, Host, Interp};
 
@@ -262,7 +263,7 @@ fn ensure_interp() {
 
 /// Allocate `len` bytes the host can write into (deliberately leaked).
 #[no_mangle]
-pub extern "C" fn msy_alloc(len: usize) -> *mut u8 {
+pub unsafe extern "C" fn msy_alloc(len: usize) -> *mut u8 {
     let mut buf = vec![0u8; len.max(1)];
     let ptr = buf.as_mut_ptr();
     std::mem::forget(buf);
@@ -272,7 +273,7 @@ pub extern "C" fn msy_alloc(len: usize) -> *mut u8 {
 /// Report a module's import specifiers as a JSON array, so the host can
 /// fetch the graph before running it (the engine never does I/O).
 #[no_mangle]
-pub extern "C" fn msy_scan_imports(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn msy_scan_imports(ptr: *const u8, len: usize) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     pack(&mersey_interp::embed::scan_imports_json(bytes))
 }
@@ -291,7 +292,7 @@ fn pack(s: &str) -> u64 {
 /// `{"entry":"a.mersey","modules":[["a.mersey","source"],…]}` in
 /// dependency-first order.
 #[no_mangle]
-pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
+pub unsafe extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
     std::panic::set_hook(Box::new(|info| {
         send(host_error, &format!("engine panic: {info}"));
     }));
@@ -306,13 +307,11 @@ pub extern "C" fn msy_run_graph(ptr: *const u8, len: usize) -> u32 {
     .unwrap_or(2)
 }
 
-#[no_mangle]
-/// Transpile one module to JavaScript. Returns (ptr<<32|len) of the UTF-8 JS
-/// text in engine memory (read then discard), or of a text starting with
-/// "!" — the checker's diagnostics — when the program does not check. The
-/// JS-backend polyfill calls this once per script, then the browser's own
-/// JIT runs the output; the interpreter below stays as the test vehicle.
-#[no_mangle]
+// Transpile one module to JavaScript. Returns (ptr<<32|len) of the UTF-8 JS
+// text in engine memory (read then discard), or of a text starting with
+// "!" — the checker's diagnostics — when the program does not check. The
+// JS-backend polyfill calls this once per script, then the browser's own
+// JIT runs the output; the interpreter below stays as the test vehicle.
 thread_local! {
     /// The console REPL session (msy_repl_turn / msy_repl_complete).
     static REPL_SESSION: std::cell::RefCell<mersey_interp::ReplSession> =
@@ -345,7 +344,7 @@ pub extern "C" fn msy_repl_complete() -> u64 {
 /// error:" when the turn threw), or "!"-prefixed diagnostics for a rejected
 /// turn (the loader throws those).
 #[no_mangle]
-pub extern "C" fn msy_repl_turn(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn msy_repl_turn(ptr: *const u8, len: usize) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let fragment = String::from_utf8_lossy(bytes);
     // The transpiled default path never interprets, so the engine's
@@ -370,20 +369,26 @@ pub extern "C" fn msy_repl_turn(ptr: *const u8, len: usize) -> u64 {
     ((pptr as u64) << 32) | plen as u64
 }
 
-pub extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn msy_transpile(ptr: *const u8, len: usize) -> u64 {
     msy_transpile_named(ptr, len, std::ptr::null(), 0)
 }
 
 /// Like `msy_transpile`, with the module's display name (its URL/path) — the
 /// name lands in the source map, so DevTools shows the real `.mersey` file.
 #[no_mangle]
-pub extern "C" fn msy_transpile_named(ptr: *const u8, len: usize, name_ptr: *const u8, name_len: usize) -> u64 {
+pub unsafe extern "C" fn msy_transpile_named(
+    ptr: *const u8,
+    len: usize,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let src = String::from_utf8_lossy(bytes);
     let name = if name_ptr.is_null() || name_len == 0 {
         "<script>".to_string()
     } else {
-        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(name_ptr, name_len) }).to_string()
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(name_ptr, name_len) })
+            .to_string()
     };
     let out = mersey_js::transpile(&src, &name, true);
     let text = if out.diagnostics.is_empty() {
@@ -403,7 +408,7 @@ pub extern "C" fn msy_transpile_named(ptr: *const u8, len: usize, name_ptr: *con
 /// Modules arrive dependency-first (the loader's own order) and are checked
 /// as one program, so cross-module types resolve exactly as the engine's.
 #[no_mangle]
-pub extern "C" fn msy_transpile_graph(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn msy_transpile_graph(ptr: *const u8, len: usize) -> u64 {
     use mersey_interp::webjson::{self, Json};
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let payload = String::from_utf8_lossy(bytes);
@@ -453,7 +458,7 @@ pub extern "C" fn msy_rt_js() -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
+pub unsafe extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
     std::panic::set_hook(Box::new(|info| {
         send(host_error, &format!("engine panic: {info}"));
     }));
@@ -467,10 +472,9 @@ pub extern "C" fn msy_run(ptr: *const u8, len: usize) -> u32 {
     .unwrap_or(2)
 }
 
-
 /// Fire a callback with JSON arguments (event objects, promise values).
 #[no_mangle]
-pub extern "C" fn msy_invoke_args(cb: u32, ptr: *const u8, len: usize) -> u32 {
+pub unsafe extern "C" fn msy_invoke_args(cb: u32, ptr: *const u8, len: usize) -> u32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let args = String::from_utf8_lossy(bytes).into_owned();
     with_interp(|interp| match interp.invoke_callback_json(cb, &args) {
