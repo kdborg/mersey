@@ -36,10 +36,10 @@ callback re-enters the engine with no JS trampoline). Ladybird's LibJS is
 conversion; arguments are a `GC::RootVector`.
 
 The Ladybird tree is not *in* this repo (a checkout is large). It lives beside
-it, the way `~/Work/chromium`, `~/Work/gecko` and `~/Work/servo-src` do:
+it, the way `browsers/chromium`, `browsers/firefox` and `browsers/servo` do:
 
 ```
-~/Work/ladybird
+browsers/ladybird
   Libraries/LibWeb/Mersey/            the engine module (native C++ bridge)
   Libraries/LibWeb/CMakeLists.txt     compile the module, link libmersey_capi.a
   Libraries/LibWeb/HTML/HTMLScriptElement.cpp   the text/mersey hook

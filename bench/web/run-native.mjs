@@ -24,7 +24,7 @@ process.on("SIGINT", () => { killForks(); process.exit(130); });
 const here = dirname(fileURLToPath(import.meta.url));
 const FORK_DIR = process.env.GECKO_SRC
   ? `${process.env.GECKO_SRC}/obj-mersey`
-  : join(here, "../../../browsers/gecko/obj-mersey");
+  : join(here, "../../../browsers/firefox/obj-mersey");
 // macOS: dist/bin/firefox is a raw binary that cannot resolve XPCOM/libxul
 // ("Couldn't load XPCOM"); the engine lives in the .app bundle. Linux keeps
 // the plain dist/bin path.
