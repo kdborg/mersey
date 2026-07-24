@@ -8,6 +8,7 @@ mod doc;
 mod lsp;
 mod repl;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use mersey_front::{
@@ -40,10 +41,29 @@ commands:
   fetch <file.mersey>     download remote imports into .mersey/cache, pin hashes
   lex <file.mersey>       dump the token stream (debugging / conformance)
   convert <file>          transcode UTF-16/UTF-32 source to UTF-8 on stdout
+
+global options:
+  --hide-experimental-message   suppress the experimental notice (until 1.0.0)
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Until 1.0.0, an interactive run prints a one-line experimental notice to
+    // stderr (never stdout, so piped/redirected output stays clean). It is
+    // gated on an interactive stderr so captured runs — tests, CI, scripts that
+    // read the output — never see it, and is force-hidden by
+    // --hide-experimental-message, which is accepted anywhere on the command
+    // line and stripped here so the per-command parsers never see it. This
+    // whole block goes away when 1.0.0 ships.
+    let hide_experimental = args.iter().any(|a| a == "--hide-experimental-message");
+    args.retain(|a| a != "--hide-experimental-message");
+    if !hide_experimental && std::io::stderr().is_terminal() {
+        eprintln!(
+            "mersey {} — EXPERIMENTAL: not for production use; behaviour may change \
+             before 1.0.0. Hide this with --hide-experimental-message.",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
     let (cmd, rest) = match args.split_first() {
         Some((cmd, rest)) => (cmd.as_str(), rest),
         None => {
