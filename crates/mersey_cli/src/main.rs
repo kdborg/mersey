@@ -340,6 +340,11 @@ impl interp::Host for CliHost {
 /// execution). Returns modules in dependency-first order.
 fn load_graph(entry: &str) -> Result<Graph, ExitCode> {
     use std::collections::HashMap;
+    // Module specifiers are '/'-separated (that is what `graph::resolve` splits
+    // on to resolve a relative import against its referrer). A filesystem entry
+    // path on Windows uses '\', which would make that split land on the wrong
+    // separator; normalize it here (std::fs accepts '/' on Windows).
+    let entry = &entry.replace('\\', "/");
     let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
     let mut dyn_deps: HashMap<String, Vec<String>> = HashMap::new();
