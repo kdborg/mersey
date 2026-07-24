@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Stage B proof: a native host driving the Mersey engine through the C ABI
  * (crates/mersey_capi) — the same boundary Chromium's //components/mersey
  * wraps. No V8, no WASM: this is the engine running beside a host, the way

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Mersey language frontend.
 //!
 //! Pipeline (spec §1.4): decode → lex → parse → bind → typecheck.

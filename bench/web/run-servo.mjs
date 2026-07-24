@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Stock-Servo leg of the web-platform benchmark: the same workloads run in a
 // headless Servo (SpiderMonkey JS engine, Servo's own web platform), driven the
 // same way as the Chromium/Firefox stock runs in run.mjs — but Servo is not a

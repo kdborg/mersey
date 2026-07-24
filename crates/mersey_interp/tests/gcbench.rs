@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Pause-time benchmark (run with --nocapture): does a large *retained* heap
 //! make each collection more expensive?
 

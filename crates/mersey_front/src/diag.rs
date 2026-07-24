@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Diagnostics. Positions are 1-based; columns count code points, not bytes
 //! (spec §2.1), so they match what an editor shows.
 

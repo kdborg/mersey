@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Minimal JSON codec for the universal web bridge (no dependencies).
 //! Requests/replies are small and flat; this handles full JSON anyway so
 //! event payloads and dictionary arguments survive round trips.

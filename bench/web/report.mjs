@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Merge the stock (js/poly × chromium/firefox) and native (firefox-fork)
 // results into one comparison, printed as a table and written as Markdown.
 import { readFile, writeFile } from "node:fs/promises";

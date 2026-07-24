@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The C embedding ABI (include/mersey.h) — the boundary the Chromium fork's
 //! `//components/mersey` wraps, proven here by a plain-C host
 //! (native/host_demo.c) and a Rust integration test (tests/abi.rs), with no

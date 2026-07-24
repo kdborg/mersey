@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Debug Adapter Protocol server (`mersey dap`): breakpoints, stepping,
 //! stack, and locals over stdin/stdout — the standalone half of the ROADMAP
 //! Phase 6 debugger ("set a breakpoint in a `.mersey` file", in any DAP

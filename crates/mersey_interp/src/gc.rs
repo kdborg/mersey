@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Cycle collector: generational mark–sweep.
 //!
 //! The heap is reference-counted (`Rc`), which frees acyclic garbage

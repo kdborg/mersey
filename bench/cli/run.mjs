@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Cross-runtime CLI benchmark: node vs bun vs deno vs the Mersey CLI.
 //
 // The comparable, browser-free subset of the bench/web suite — the four

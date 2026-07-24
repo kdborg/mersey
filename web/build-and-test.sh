@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # Build the Stage A engine, place it next to the demo page, and run the
 # headless end-to-end test. To try it in a real browser afterwards:
 #   cd web && python3 -m http.server 8000   # then open http://localhost:8000

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Stage A engine (docs/architecture/browser-integration.md): the frontend
 //! and MVP interpreter compiled to `wasm32-unknown-unknown`, exposed through
 //! a minimal hand-rolled ABI so the loader needs no bindgen tooling.

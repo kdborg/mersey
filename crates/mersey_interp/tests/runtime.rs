@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Runtime conformance: golden stdout of executing each program (see
 //! tests/conformance/README.md). MERSEY_BLESS=1 regenerates goldens.
 //! These goldens are the behavioral contract the Phase 2 bytecode VM (and

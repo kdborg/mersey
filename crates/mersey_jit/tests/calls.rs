@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Tier 1 with calls, and on-stack replacement.
 //!
 //! The two things a call-count-only, call-free JIT could never do: compile a

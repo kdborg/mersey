@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! AST dump for `mersey parse` and the parser conformance goldens.
 //! Tree nodes print lisp-style, one child per line, closing parens on the
 //! last child; expressions and types render on a single line.

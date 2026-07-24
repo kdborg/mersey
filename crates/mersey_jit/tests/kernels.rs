@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Tier 1 correctness: JIT-compiled kernels must match the bytecode VM and
 //! the AST tree-walker exactly (three-way differential).
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The engine-side debugger foundation (`DebugHook`): statement callouts
 //! carry positions, the call stack, and on-demand locals — the layer a DAP
 //! adapter (standalone) or CDP agent (browser) drives. These tests are the

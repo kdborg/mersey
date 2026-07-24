@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Native leg of the web-platform benchmark, Chromium edition: the same Mersey
 // workloads run by the engine hosted INSIDE the Chromium fork (Blink's
 // mersey_script_runner), reaching web APIs through the universal bridge in C++.

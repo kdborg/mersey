@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Regular expressions: a compact backtracking engine.
 //!
 //! Supported: literals, `.`, character classes `[a-z]` / `[^…]`, escapes

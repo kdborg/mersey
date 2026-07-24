@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Arbitrary-precision integers and decimals (spec §3.7).
 //!
 //! `BigInt`: sign + little-endian u32 limbs. Schoolbook multiplication and

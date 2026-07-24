@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 use mersey_front::{ast::*, check, parser, source::SourceFile};
 #[test]
 fn compute_qualifies() {

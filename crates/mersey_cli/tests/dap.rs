@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! End-to-end DAP session against the real `mersey dap` binary: configure,
 //! break, inspect the stack (including the caller's call-site line), read
 //! locals, step, re-hit the breakpoint, run to completion, disconnect. This

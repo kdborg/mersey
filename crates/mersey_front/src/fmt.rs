@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! `mersey fmt`: token-stream reprinter.
 //!
 //! Canonicalizes indentation (brace depth), token spacing, blank runs

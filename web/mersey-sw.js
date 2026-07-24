@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 /* Service Worker bootstrap: runs a .mersey program as a service worker.
  *
  * Registration (from Mersey on the page):

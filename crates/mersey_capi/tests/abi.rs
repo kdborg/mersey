@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The C ABI, driven the way Blink will drive it.
 //!
 //! Every call in this file goes through the `extern "C"` functions and the

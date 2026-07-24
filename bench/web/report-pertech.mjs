@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Generate report-pertech.html: a standalone page with ONLY the
 // per-technology panels — time (log) and memory (PSS delta) side by side,
 // the four ways of running the same program (plain JS, transpiled JS, WASM

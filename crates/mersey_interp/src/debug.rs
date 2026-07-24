@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Breakpoint and step *policy*, factored out of any one protocol.
 //!
 //! The engine reports (`DebugHook::on_stmt`); something has to decide whether

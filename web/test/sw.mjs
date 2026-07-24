@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Service Worker written in Mersey, running in a real browser: it intercepts
 // a fetch and serves the response itself.
 import { createServer } from "node:http";

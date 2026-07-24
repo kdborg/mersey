@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Native-Ladybird leg of the web-platform benchmark: the same Mersey workloads
 // run by the engine hosted INSIDE the Ladybird fork (Libraries/LibWeb/Mersey),
 // reaching web APIs through the reflective bridge in C++→LibJS. The Ladybird

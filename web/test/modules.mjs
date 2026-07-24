@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Multi-module program in a real browser: the loader fetches the import
 // graph, links it, and runs it.
 import { createServer } from "node:http";

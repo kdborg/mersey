@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Abstract syntax tree, grammar §6.3–§6.8. Literals keep their lexeme text;
 //! value parsing (and range checking, E0110) happens in the checker, which
 //! knows the context (`-2147483648` is a unary minus around a literal).

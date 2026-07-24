@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Native-Servo leg of the web-platform benchmark: the same Mersey workloads run
 // by the engine hosted INSIDE the Servo fork (components/script/mersey), reaching
 // web APIs through the reflective bridge in Rust→SpiderMonkey. The Servo

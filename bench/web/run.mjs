@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Web-platform benchmark harness.
 //
 // For each workload (storage, json, url, crypto, canvas, dom), in each browser

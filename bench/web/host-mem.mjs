@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Process-tree memory sampling, per host platform.
 //
 // The benchmark legs report one memory number per workload: the memory used by

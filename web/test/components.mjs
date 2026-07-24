@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Custom elements written as ordinary Mersey classes (subclass + override),
 // upgraded and driven by the real browser.
 import { createServer } from "node:http";

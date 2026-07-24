@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # Long-running fuzzing, for the criterion the roadmap states in wall-clock terms.
 #
 # The harness is deterministic: every run prints the seed it used, so a failure

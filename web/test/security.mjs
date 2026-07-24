@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // CSP + SRI enforcement in the polyfill (spec §5.4).
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";

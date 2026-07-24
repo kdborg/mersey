@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Source Map v3 emission.
 //!
 //! Stage A executes Mersey inside a WASM engine, so a browser's debugger has

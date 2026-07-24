@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Dynamic import, top-level await and `for await` in a real browser: the loader
 // fetches the whole graph (including the dynamic-import target), and the engine
 // evaluates the lazy module only when it is imported.

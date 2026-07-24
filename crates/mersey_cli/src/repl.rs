@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The REPL (`mersey repl`) — a host feature over a language with no `eval`:
 //! the session is one growing module. Each turn appends the input to the
 //! accumulated source, re-parses and re-checks the WHOLE program (so the

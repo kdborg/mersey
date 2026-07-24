@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Web-platform benchmark harness — REAL Firefox (no driver, no debugger).
 //
 // The Playwright legs measured by run.mjs / run-tjs.mjs drive Firefox with

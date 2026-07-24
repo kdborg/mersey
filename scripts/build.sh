@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # Cross-platform build entry point for the Mersey project.
 #
 # Detects the host OS + arch and builds the requested targets. The engine, CLI,

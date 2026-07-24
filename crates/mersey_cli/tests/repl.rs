@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The REPL contract, against the real binary: echo, multi-line definitions,
 //! ill-typed input rejected without harming the session, runtime errors
 //! survived, state persistent across turns.

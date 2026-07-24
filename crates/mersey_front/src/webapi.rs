@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Ambient web-platform declarations, generated from the standardized
 //! WebIDL corpus (tools/webidl-gen). The checker collects these before the
 //! user's module, so every standardized interface/dictionary/typedef is a

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Mersey → JavaScript.
 //!
 //! The polyfill's second execution mode: instead of interpreting Mersey inside

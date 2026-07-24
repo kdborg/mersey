@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The Mersey → WASM compiler: the compute tier of the browser polyfill.
 //!
 //! The JS backend runs everything, but integer kernels pay JS's price for

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kirk D. Brown
+
 # Conformance gate for the JS backend: every runtime golden, transpiled and
 # run under node, must match the engine's expected output byte for byte.
 # Usage: tools/jsconf.sh [case-name]   (no arg = all cases)

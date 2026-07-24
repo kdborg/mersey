@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // WebIDL → Mersey ambient declarations (browser-integration.md step 4,
 // brought forward to Stage A). Consumes @webref/idl (the machine-readable
 // standardized web platform) and emits:

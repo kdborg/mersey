@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! The embedding boundary, shared by every host ABI.
 //!
 //! Two hosts embed the engine today — the browser loader through WASM

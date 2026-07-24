@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // REAL BROWSER: the loader's Stage B contract. A Mersey-native browser sets
 // `globalThis.merseyNative` before any script runs; the polyfill loader must
 // then stand down entirely — no engine fetch, no execution (the native

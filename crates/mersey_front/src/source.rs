@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Source decoding, spec §2.1: `.mersey` files are UTF-8 only. A UTF-8 BOM
 //! is accepted and ignored. UTF-16/UTF-32 files are rejected with a
 //! diagnostic naming the detected encoding. Invalid UTF-8 is a hard error,

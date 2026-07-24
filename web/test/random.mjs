@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Randomness is a capability: the page grants it per script, and the *same*
 // program is refused when it does not.
 import { createServer } from "node:http";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Minimal static server rooted at the repo root, so a page can reach both
 // /web (loader, wasm, bridge) and /bench (workloads).
 import { createServer } from "node:http";

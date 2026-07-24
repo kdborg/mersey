@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Lexer, grammar §6.2. Hand-written scanner over the decoded code-point
 //! stream. Error recovery: every diagnostic is recorded and scanning
 //! continues, so one bad token doesn't hide the rest of the file.

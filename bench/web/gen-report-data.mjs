@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Regenerate report.html's hand-baked DATA rows from the results JSONs.
 // Prints one JS object literal per workload; paste into report.html's DATA.
 // Key scheme (report.html): cjs/cpoly/ctjs (Chromium), fjs/fpoly/ftjs (Firefox),

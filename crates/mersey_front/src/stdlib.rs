@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Standard-library modules written **in Mersey**.
 //!
 //! Phase 3 shipped `std:` as native kernels only. These modules are ordinary

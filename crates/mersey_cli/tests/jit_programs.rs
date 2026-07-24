@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 //! Whole programs, run by the real binary, with Tier 1 on and with it off.
 //!
 //! These two cases need things the in-process JIT tests cannot easily reach: a
