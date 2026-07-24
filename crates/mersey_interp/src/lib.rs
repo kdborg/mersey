@@ -266,6 +266,20 @@ pub trait Host {
         Err("no `random` capability (run with --allow-random)".into())
     }
 
+    /// Register an HTTP request handler for `port` (the engine holds the handler
+    /// as callback `cb_id`; the host records the (port, id) pair and the CLI's
+    /// accept loop drives it via `Interp::http_dispatch`). Denied by default,
+    /// like every capability (§5.3); the CLI grants it with `--allow-net`. Only
+    /// the CLI host serves — every other embedder keeps the refusing default.
+    fn request_serve(&mut self, _port: u16, _cb_id: u32) -> Result<(), String> {
+        Err("no `net` capability (run with --allow-net), or this host cannot serve".into())
+    }
+    /// Consumed once by the driver after top-level completes: the (port, cb_id)
+    /// a `net.serve` call recorded, if any.
+    fn take_pending_server(&mut self) -> Option<(u16, u32)> {
+        None
+    }
+
     /// `console.warn`/`error`/`info`/`debug`. The default sends everything to
     /// `print`, so a host that does not care about levels needs to do nothing.
     fn print_level(&mut self, _level: &str, s: &str) {
@@ -2773,10 +2787,11 @@ impl Interp {
                 Ok(())
             }
             "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" | "std:json"
-            | "std:random" => {
+            | "std:random" | "std:net" => {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
                         "std:json" => ("json", &["stringify", "parse"], &[]),
+                        "std:net" => ("net", &["serve"], &[]),
                         "std:random" => ("random", &["float", "int", "bytes"], &[]),
                         "std:math" => (
                             "math",
@@ -3113,6 +3128,42 @@ impl Interp {
         // roots really are the roots and it is safe to collect.
         self.maybe_collect();
         Ok(())
+    }
+
+    /// The (port, callback id) a top-level `net.serve` recorded, if any — the
+    /// CLI driver takes this after `run_graph` and enters its accept loop.
+    pub fn take_pending_server(&mut self) -> Option<(u16, u32)> {
+        self.host.take_pending_server()
+    }
+
+    /// Driver entry point for one HTTP request (the CLI `serve` accept loop).
+    /// Calls the registered handler with the request `(method, path, body)` —
+    /// all strings — and returns the raw HTTP response string it produced. The
+    /// ergonomic Request/Response object layer lives in `std/http.mersey`; this
+    /// boundary moves only strings, so no host-side Value construction is needed.
+    pub fn http_dispatch(
+        &mut self,
+        cb_id: u32,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> Result<String, Thrown> {
+        let cb = match self.callbacks.get(cb_id as usize) {
+            Some(v) => v.clone(),
+            None => return Err(self.throw("TypeError", format!("unknown callback #{cb_id}"))),
+        };
+        let args = vec![
+            Value::Str(Rc::new(utf16(method))),
+            Value::Str(Rc::new(utf16(path))),
+            Value::Str(Rc::new(utf16(body))),
+        ];
+        let ret = self.call_value(&cb, args)?;
+        self.drain_microtasks()?;
+        self.maybe_collect();
+        match &ret {
+            Value::Str(s) => Ok(utf16_to_string(s)),
+            _ => Err(self.throw("TypeError", "http handler must return a string")),
+        }
     }
 
     // ---- statements -----------------------------------------------------------
@@ -5035,6 +5086,24 @@ impl Interp {
                     Some(v) => Value::Str(Rc::new(utf16(&(v)))),
                     None => Value::Null,
                 })
+            }
+            // Register an HTTP request handler and hand the (port, callback id) to
+            // the host. The host does not serve here — it records the request; the
+            // accept loop runs in the CLI driver after top-level completes, so it
+            // can re-enter the engine per request (`http_dispatch`) without a
+            // borrow conflict. Refused unless the `net` capability was granted.
+            "net.serve" => {
+                let port = args.first().and_then(as_i64).unwrap_or(0);
+                if !(1..=65535).contains(&port) {
+                    return Err(self.throw("RangeError", format!("net.serve: port {port} is outside 1..=65535")));
+                }
+                let cb = args.get(1).cloned().unwrap_or(Value::Null);
+                let cb_id = self.callbacks.len() as u32;
+                self.callbacks.push(cb);
+                match self.host.request_serve(port as u16, cb_id) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(msg) => Err(self.throw("Error", msg)),
+                }
             }
             "caps.has" => {
                 let cap = self.want_string(args.first())?;

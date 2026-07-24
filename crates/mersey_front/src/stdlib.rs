@@ -13,6 +13,7 @@ pub fn source(spec: &str) -> Option<&'static str> {
         "std:url" => include_str!("../../../std/url.mersey"),
         "std:date" => include_str!("../../../std/date.mersey"),
         "std:abort" => include_str!("../../../std/abort.mersey"),
+        "std:http" => include_str!("../../../std/http.mersey"),
         _ => return None,
     })
 }
@@ -26,5 +27,5 @@ pub fn is_source_module(spec: &str) -> bool {
 /// same way it enumerates the native ones: by checking them and listing what they
 /// export, so the reference cannot describe an export that does not exist.
 pub fn source_modules() -> &'static [&'static str] {
-    &["std:result", "std:url", "std:date", "std:abort", "std:test"]
+    &["std:result", "std:url", "std:date", "std:abort", "std:test", "std:http"]
 }

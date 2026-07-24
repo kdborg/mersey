@@ -16,6 +16,7 @@ mersey_interp = { path = "../mersey_interp" }
 mersey_jit = { path = "../mersey_jit" }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 getrandom = "0.2"
+socket2 = { version = "0.5", features = ["all"] }
 
 [lints]
 workspace = true

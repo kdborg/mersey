@@ -1,0 +1,87 @@
+// HTTP server — the ergonomic layer over `std:net`.
+//
+// `std:net` is the capability-gated primitive (§5.3, `--allow-net`): it hands a
+// handler the raw `(method, path, body)` of each request and writes back the raw
+// HTTP response string the handler returns. This module wraps that in
+// `Request`/`Response` objects so a program never touches wire text.
+//
+// It is pure Mersey and works in any host that grants `net` and drives the
+// accept loop — today that is the standalone CLI (`mersey serve app.mersey`, or
+// `mersey run --allow-net app.mersey` for a single process).
+//
+// NOTE: `Content-Length` is the body's UTF-16 code-unit count, which equals the
+// byte count for ASCII/Latin bodies. A future revision will encode UTF-8 and
+// count bytes; until then, non-ASCII bodies need an explicit length.
+
+import { net } from "std:net";
+
+/// One inbound HTTP request. Headers are not parsed in this first cut — the
+/// benchmark endpoints route on method and path.
+export class Request {
+    public readonly method: string = "";
+    public readonly path: string = "";
+    public readonly body: string = "";
+
+    public constructor(method: string, path: string, body: string) {
+        this.method = method;
+        this.path = path;
+        this.body = body;
+    }
+}
+
+/// A response the handler builds and returns. `serve` serializes it to the wire.
+export class Response {
+    public status: int32 = 200;
+    public contentType: string = "text/plain; charset=utf-8";
+    public body: string = "";
+
+    public constructor(status: int32, contentType: string, body: string) {
+        this.status = status;
+        this.contentType = contentType;
+        this.body = body;
+    }
+
+    /// Convenience: a `200 OK` plain-text response.
+    public static text(body: string): Response {
+        return new Response(200, "text/plain; charset=utf-8", body);
+    }
+
+    /// Convenience: a `200 OK` JSON response (caller serializes).
+    public static json(body: string): Response {
+        return new Response(200, "application/json; charset=utf-8", body);
+    }
+
+    /// Serialize to a complete HTTP/1.1 response, `Connection: close`.
+    public toWire(): string {
+        const reason = reasonFor(this.status);
+        return `HTTP/1.1 ${this.status} ${reason}\r\n`
+        + `Content-Type: ${this.contentType}\r\n`
+        + `Content-Length: ${this.body.length}\r\n`
+        + `Connection: close\r\n`
+        + `\r\n`
+        + this.body;
+    }
+}
+
+/// Start serving on `port`. `handler` is called once per request and returns the
+/// `Response` to send. Under `mersey serve`/`mersey run --allow-net` this blocks
+/// (the host owns the accept loop); it never returns normally.
+export function serve(port: int32, handler: (req: Request) => Response): void {
+    net.serve(port, (method: string, path: string, body: string): string => {
+        const res = handler(new Request(method, path, body));
+        return res.toWire();
+    });
+}
+
+/// The reason phrase for the common status codes; "OK" for anything unlisted
+/// (the phrase is advisory — clients key off the numeric status).
+function reasonFor(status: int32): string {
+    if (status == 200) { return "OK"; }
+    if (status == 201) { return "Created"; }
+    if (status == 204) { return "No Content"; }
+    if (status == 400) { return "Bad Request"; }
+    if (status == 404) { return "Not Found"; }
+    if (status == 405) { return "Method Not Allowed"; }
+    if (status == 500) { return "Internal Server Error"; }
+    return "OK";
+}

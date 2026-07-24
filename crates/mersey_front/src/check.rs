@@ -537,6 +537,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
         Ns::Fs,
         Ns::Env,
         Ns::Caps,
+        Ns::Net,
         Ns::Gc,
     ];
     for ns in namespaces {
@@ -824,6 +825,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         ],
         Ns::Format => &["pad", "fixed"],
         Ns::Fs => &["readText"],
+        Ns::Net => &["serve"],
         Ns::Env => &["get"],
         Ns::Caps => &["has", "list", "drop"],
         Ns::Json => &["stringify", "parse"],
@@ -853,6 +855,7 @@ pub fn namespace_module(ns: Ns) -> &'static str {
         Ns::Math => "std:math",
         Ns::Format => "std:format",
         Ns::Fs => "std:fs",
+        Ns::Net => "std:net",
         Ns::Env => "std:env",
         Ns::Caps => "std:caps",
         Ns::Json => "std:json",
@@ -1358,6 +1361,7 @@ pub enum Ns {
     Caps,
     Json,
     Random,
+    Net,
     /// The `Promise` value from `std:async` (`resolve`/`reject`/`all`), as
     /// distinct from the `Promise<T>` *type*.
     PromiseNs,
@@ -2736,6 +2740,7 @@ impl Checker {
                         ("std:math", _) => Type::Namespace(Ns::Math),
                         ("std:format", _) => Type::Namespace(Ns::Format),
                         ("std:fs", _) => Type::Namespace(Ns::Fs),
+                        ("std:net", _) => Type::Namespace(Ns::Net),
                         ("std:env", _) => Type::Namespace(Ns::Env),
                         ("std:caps", _) => Type::Namespace(Ns::Caps),
                         ("std:json", _) => Type::Namespace(Ns::Json),
@@ -6905,6 +6910,42 @@ impl Checker {
                     ret: Type::Str,
                 })),
                 _ => self.no_member("fs", name, pos),
+            },
+            // The low-level networking primitive (§5.3, `--allow-net`). The
+            // handler is called per request with the raw `(method, path, body)`
+            // and returns the raw HTTP response string; the ergonomic
+            // Request/Response layer is `std:http`, written in Mersey on top of
+            // this. String-in/string-out keeps the native boundary trivial.
+            Type::Namespace(Ns::Net) => match name {
+                "serve" => {
+                    let strp = || ParamType {
+                        ty: Type::Str,
+                        optional: false,
+                        rest: false,
+                    };
+                    let handler = Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![strp(), strp(), strp()],
+                        ret: Type::Str,
+                    }));
+                    Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![
+                            ParamType {
+                                ty: Type::Int(IntKind::I32),
+                                optional: false,
+                                rest: false,
+                            },
+                            ParamType {
+                                ty: handler,
+                                optional: false,
+                                rest: false,
+                            },
+                        ],
+                        ret: Type::Void,
+                    }))
+                }
+                _ => self.no_member("net", name, pos),
             },
             Type::Namespace(Ns::Env) => match name {
                 // Absent variables are `null`, not `""` — the caller has to say
