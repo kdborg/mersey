@@ -1,4 +1,11 @@
-# Ladybird integration (Stage B)
+# Mersey Ladybird — Ladybird integration (Stage B)
+
+> ⚠️ **Mersey Ladybird (Experimental).** This is an experimental Mersey-engine
+> fork of Ladybird, **not for production use**. It is not affiliated with or
+> endorsed by the Ladybird project; "Ladybird" here names the upstream engine
+> this fork is built on. The build is renamed to **Mersey Ladybird** (bundle
+> display name, window title, startup banner, console notice) so it can't be
+> confused with upstream Ladybird.
 
 **The fork is built and measured.** `<script type="text/mersey">` in a page is
 compiled and executed by the Mersey engine inside Ladybird — no LibJS for the

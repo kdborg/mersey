@@ -1,4 +1,11 @@
-# Chromium integration (Stage B)
+# Mersey Blink — Chromium integration (Stage B)
+
+> ⚠️ **Mersey Blink (Experimental).** This is an experimental Mersey-engine fork
+> of Chromium, **not for production use**. It is not affiliated with, endorsed
+> by, or supported by Google or the Chromium project; "Chromium" and "Blink"
+> here name the upstream engine this fork is built on, not the shipping product.
+> The build is renamed to **Mersey Blink** so it can't be confused with a real
+> Chromium/Chrome install.
 
 **The fork exists.** `<script type="text/mersey">` in a page is compiled and
 executed by the Mersey engine inside Blink — no V8, no WASM in the stack —

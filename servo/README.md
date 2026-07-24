@@ -1,4 +1,10 @@
-# Servo integration (Stage B)
+# Mersey Servo — Servo integration (Stage B)
+
+> ⚠️ **Mersey Servo (Experimental).** This is an experimental Mersey-engine fork
+> of Servo, **not for production use**. It is not affiliated with or endorsed by
+> the Servo project; "Servo" here names the upstream engine this fork is built
+> on. The build is renamed to **Mersey Servo** (window title, startup banner,
+> console notice) so it can't be confused with upstream Servo.
 
 **The fork exists.** `<script type="text/mersey">` in a page is compiled and
 executed by the Mersey engine inside Servo — no SpiderMonkey for the Mersey

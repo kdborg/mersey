@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
 // Native leg of the web-platform benchmark: the same Mersey workloads, run by
 // the engine hosted INSIDE the Firefox fork (dom/mersey), reaching web APIs
 // through the universal bridge in C++. Compare with the "poly" rows from
@@ -30,7 +33,7 @@ const FORK_DIR = process.env.GECKO_SRC
 // the plain dist/bin path.
 const FORK =
   process.platform === "darwin"
-    ? `${FORK_DIR}/dist/Nightly.app/Contents/MacOS/firefox`
+    ? `${FORK_DIR}/dist/Mersey Gecko (Experimental).app/Contents/MacOS/firefox`
     : `${FORK_DIR}/dist/bin/firefox`;
 const PAGE_SIZE = 4096;
 const REPEATS = 3;

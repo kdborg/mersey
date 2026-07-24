@@ -186,6 +186,20 @@ static void reset_handles(Runner* runner, JS::Realm& realm)
         return JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8(text)));
     }, 1);
     (void)global.create_data_property(JS::PropertyKey { "mersey"_utf16_fly_string }, JS::Value(repl.ptr()));
+    // Warn in the page console, once per realm, that this is an experimental build.
+    {
+        auto& notice_vm = realm.vm();
+        if (auto console = global.get(JS::PropertyKey { "console"_utf16_fly_string });
+            !console.is_error() && console.value().is_object()) {
+            auto console_value = console.release_value();
+            if (auto warn = console_value.as_object().get(JS::PropertyKey { "warn"_utf16_fly_string });
+                !warn.is_error() && warn.value().is_function()) {
+                auto message = JS::Value(JS::PrimitiveString::create(notice_vm, Utf16String::from_utf8(
+                    "[mersey] Mersey Ladybird is an EXPERIMENTAL build — not for production use, and not affiliated with the Ladybird project."sv)));
+                (void)JS::call(notice_vm, warn.release_value(), console_value, message);
+            }
+        }
+    }
     runner->handles->append(JS::Value(&global));
     runner->by_object.set(&global, 0);
     runner->set_timeout_handle = INT64_MIN;
@@ -1586,6 +1600,15 @@ static Runner* ensure_runner(JS::Realm& realm)
     auto table = host_table();
     table.data = runner;
     runner->ctx = msy_context_new(&table);
+
+    // Announce, once per process, that this is an experimental build. "Mersey
+    // Ladybird" is a Mersey-engine fork of Ladybird -- not for production use,
+    // and not affiliated with the Ladybird project.
+    static bool s_banner_emitted = false;
+    if (!s_banner_emitted) {
+        s_banner_emitted = true;
+        warnln("\n  Mersey Ladybird (Experimental)\n  A Mersey-engine fork of Ladybird. Experimental software -- NOT for\n  production use. Not affiliated with the Ladybird project.\n");
+    }
     return runner;
 }
 
