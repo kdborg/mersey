@@ -74,13 +74,13 @@ echo "        (cd $REPO && cargo build --release -p mersey_capi)"
 echo "        $SRC/third_party/mersey/refresh.sh   # copies libmersey_capi.* into third_party/mersey/lib/"
 
 # 5. Completeness proof: after applying onto the pinned upstream, the tree must
-#    equal the fork's `mersey` ref for every non-artifact file. A non-empty diff
+#    equal the fork's `main` ref for every non-artifact file. A non-empty diff
 #    means the overlay missed a file — capture it and re-run.
 if [ "$VERIFY" = 1 ]; then
-  echo "--- verify: tree vs fork mersey ref (empty = overlay complete) ---"
+  echo "--- verify: tree vs fork main ref (empty = overlay complete) ---"
   # Ignore submodules: gclient-managed pointers (dawn, …) drift independently of
   # the overlay, which never touches a submodule.
-  git -C "$SRC" diff --stat --ignore-submodules=all mersey -- . \
+  git -C "$SRC" diff --stat --ignore-submodules=all main -- . \
     ':(exclude)third_party/mersey/lib' \
     ':(exclude)third_party/devtools-frontend' || true
 fi

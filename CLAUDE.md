@@ -58,7 +58,7 @@ as `{"__cb__":id}` and re-enter through `__merseyInvoke`).
 Browser forks (checkouts live under `~/Work/mersey/browsers/`, NOT in this repo):
 - `browsers/firefox` (dom/mersey, branch `mersey`; `browsers/gecko` symlinks to
   it), `browsers/chromium/src` (blink core/script/mersey_script_runner, branch
-  `mersey`), `browsers/servo` (components/script/mersey), `browsers/ladybird`
+  `main`), `browsers/servo` (components/script/mersey), `browsers/ladybird`
   (Libraries/LibWeb/Mersey). The full browser source is never stored here: each
   fork's Mersey delta lives in the repo as `<fork>/overlay/` (snapshots) +
   `<fork>/BASELINE` (pinned upstream revision + regen/build hooks), and the fork
