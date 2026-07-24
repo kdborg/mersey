@@ -1,0 +1,75 @@
+# The Mersey engine: a Rust engine behind a C ABI, linked into Blink.
+#
+# Both hosts link the engine as a *cdylib*, and deliberately so. As a staticlib
+# the crate bundles its own copy of Rust's std, and Blink links Chromium's own
+# std — two definitions of `rust_eh_personality` and friends, and the link fails
+# (`-Wl,-z,defs` on Linux; `ld64: duplicate symbol` on macOS). A cdylib exports
+# only the `msy_*` symbols of include/mersey.h and keeps its std internal, which
+# is what a boundary is for. It differs per host only in extension and how the
+# loader is told where the sidecar lives:
+#
+#   Linux — `libmersey_capi.so`, found at runtime via -rpath=$ORIGIN (the `.so`
+#   lands beside the binaries, which already carry that rpath).
+#
+#   macOS — `libmersey_capi.dylib` (install_name @rpath/libmersey_capi.dylib),
+#   copied to the build root and found via an absolute -rpath into it. This is a
+#   dev build run from the out dir, not a relocatable .app; the follow-up that
+#   builds the crate with GN's Rust rules removes the sidecar entirely.
+#
+# (The planned follow-up builds the crate graph with GN's Rust rules, which uses
+# Chromium's std and makes both of these moot — and makes all six platform/arch
+# targets come from one build.)
+
+config("mersey_include") {
+  include_dirs = [ "include" ]
+}
+
+if (is_mac) {
+  # The cdylib is copied to the build root and linked from there; its
+  # @rpath/ install_name resolves against the absolute rpath below.
+  copy("mersey_engine_lib") {
+    sources = [ "lib/libmersey_capi.dylib" ]
+    outputs = [ "$root_out_dir/libmersey_capi.dylib" ]
+  }
+
+  config("mersey_rpath") {
+    ldflags = [ "-Wl,-rpath," + rebase_path(root_out_dir) ]
+  }
+
+  source_set("mersey_engine") {
+    public = [ "include/mersey.h" ]
+    public_configs = [
+      ":mersey_include",
+      ":mersey_rpath",
+    ]
+    all_dependent_configs = [ ":mersey_rpath" ]
+    deps = [ ":mersey_engine_lib" ]
+    libs = [ "$root_out_dir/libmersey_capi.dylib" ]
+  }
+} else {
+  # The engine lands beside the binaries, which already carry -rpath=$ORIGIN.
+  copy("mersey_engine_lib") {
+    sources = [ "lib/libmersey_capi.so" ]
+    outputs = [ "$root_out_dir/libmersey_capi.so" ]
+  }
+
+  # The engine sits beside the binary that loads it. A component build already
+  # passes -rpath=$ORIGIN; a static one does not, so anything linking the engine
+  # has to say where it lives.
+  config("mersey_rpath") {
+    if (is_linux) {
+      ldflags = [ "-Wl,-rpath=\$ORIGIN" ]
+    }
+  }
+
+  source_set("mersey_engine") {
+    public = [ "include/mersey.h" ]
+    public_configs = [
+      ":mersey_include",
+      ":mersey_rpath",
+    ]
+    all_dependent_configs = [ ":mersey_rpath" ]
+    deps = [ ":mersey_engine_lib" ]
+    libs = [ "$root_out_dir/libmersey_capi.so" ]
+  }
+}

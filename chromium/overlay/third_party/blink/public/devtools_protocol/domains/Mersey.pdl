@@ -1,0 +1,124 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The Mersey engine hosted in this renderer. Mersey is a separate language with
+# a separate engine and a separate heap: it holds integer handles to host
+# objects and never a JS value, so NO binding is shared with the JS realm.
+# That is why this is its own domain rather than a mode of Runtime — a Mersey
+# turn cannot be expressed as an evaluation in a V8 context.
+experimental domain Mersey
+  depends on Page
+
+  # Evaluate one console turn in the page's Mersey engine.
+  #
+  # The session is one growing, always-typechecked module: each turn appends a
+  # fragment and re-checks the whole program, then runs only the new items.
+  # The language has no `eval` — this is the ordinary compile pipeline, not a
+  # separate interpreter mode.
+  command evaluate
+    parameters
+      # The Mersey source for this turn.
+      string expression
+    returns
+      # Display text of a trailing bare expression; empty when the turn only
+      # declared something.
+      string result
+      # True when the turn failed: either rejected by the checker (it never
+      # ran) or thrown at runtime. `result` then carries the diagnostics.
+      boolean isError
+      # True when the turn was rejected before running, false when it threw.
+      # Only meaningful if isError.
+      boolean isCompileError
+
+  # The names the Mersey session can see, for console completion. This is
+  # Mersey's view, not the JS realm's: the session's own top-level bindings
+  # plus the std:console prelude, and deliberately no window/document.
+  command completions
+    returns
+      array of string names
+
+  # A Mersey source this document has executed.
+  type Script extends object
+    properties
+      # The DOCUMENT the script came from (an inline script's page URL), or
+      # "<repl>" for the console session.
+      string url
+      string source
+      # The engine's own module name — what a paused frame's `url` reports:
+      # a graph module's spec, or "<script>" for an inline block.
+      string spec
+      # 0-based document line where the source's first line sits — the line
+      # of the <script> tag. Sources-panel gutter lines map to engine lines
+      # as: engineLine0 = documentLine0 - startLine.
+      integer startLine
+
+  # Every Mersey source this document has run, including the growing console
+  # session. A front-end needs these to display code and place breakpoints:
+  # the engine is not V8, so none of them appear in the Debugger domain.
+  command getScripts
+    returns
+      array of Script scripts
+
+  # ---- debugger -------------------------------------------------------------
+  #
+  # Pausing IS blocking: when the engine stops, the renderer sits inside the
+  # pause callback running a nested message loop (the same one V8 uses), so
+  # DevTools keeps being serviced. Nothing resumes on its own — one of the
+  # resume-family commands below must arrive.
+
+  # One frame of a paused Mersey stack, outermost LAST (index 0 is innermost).
+  type CallFrame extends object
+    properties
+      string functionName
+      # The module this frame is executing, as the engine names it.
+      string url
+      integer lineNumber
+      integer columnNumber
+      array of Scope scopeChain
+
+  type Scope extends object
+    properties
+      # "Locals" | "Closure N" | "Globals"
+      string name
+      array of Variable variables
+
+  type Variable extends object
+    properties
+      string name
+      # Display text. Mersey values are not JS values, so there is no
+      # RemoteObject and nothing to grip.
+      string value
+
+  # Attach the debugger. Forces the engine's tree-walker, so it costs speed —
+  # that is the deliberate trade, the same one V8 makes.
+  command enableDebugger
+
+  # Detach and restore the engine's VM tier.
+  command disableDebugger
+
+  # REPLACES the breakpoint set for `url`. An empty url matches every module,
+  # which is how a front-end that does not track Mersey sources still breaks.
+  command setBreakpoints
+    parameters
+      string url
+      array of integer lines
+
+  # Stop at the next statement.
+  command pause
+
+  # The resume family. Step depths are the engine's business — it knows the
+  # paused frame count, so no caller computes one.
+  command resume
+  command stepOver
+  command stepInto
+  command stepOut
+
+  # The engine stopped. The renderer is blocked until a resume-family command.
+  event paused
+    parameters
+      # "breakpoint" | "step" | "pause"
+      string reason
+      array of CallFrame callFrames
+
+  event resumed

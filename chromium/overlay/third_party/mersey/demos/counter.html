@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!-- Self-contained demo for the MERSEY-NATIVE Chromium fork. Unlike the polyfill
+     pages in the engine repo this uses NO WASM loader and NO external src: the
+     whole program is an INLINE <script type="text/mersey">, the only form the
+     fork executes (Blink hands it straight to MerseyScriptRunner). Open it in
+     the fork's built shell, e.g.
+         out/mersey-arm64/content_shell third_party/mersey/demos/counter.html
+     or the built Chromium.app. The counter is driven entirely by the Mersey
+     engine; no hand-written JavaScript on the page. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mersey — native fork demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }
+    button { font-size: 1.2rem; padding: .5rem 1.5rem; }
+    #out { font-size: 1.5rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Mersey, native</h1>
+  <p>This counter is executed by the embedded Mersey engine — no WASM polyfill,
+     no JavaScript on the page. If it counts, the fork works.</p>
+  <div id="out">loading…</div>
+  <button id="btn">Click me</button>
+
+  <script type="text/mersey">
+import { console } from "std:console";
+import { document } from "browser:dom";
+
+class Counter {
+    private count: int32 = 0;
+    private readonly caption: string;
+
+    public constructor(caption: string) {
+        this.caption = caption;
+    }
+
+    public increment(): void {
+        this.count += 1;
+    }
+
+    public render(): string {
+        const wave: string = this.count >= 5 ? " 🌊" : "";
+        return `${this.caption}: ${this.count}${wave}`;
+    }
+}
+
+const counter = new Counter("Clicks");
+const out = document.getElementById("out") as Element;
+const btn = document.getElementById("btn") as Element;
+
+out.textContent = counter.render();
+btn.addEventListener("click", () => {
+    counter.increment();
+    out.textContent = counter.render();
+});
+
+console.log("Mersey is running in your browser 🌊");
+  </script>
+</body>
+</html>

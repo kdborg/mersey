@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<title>A Mersey class with a constructor and a readonly field drives the DOM</title>
+<div id="out">?</div>
+<button id="btn">click</button>
+
+<script type="text/mersey">
+// The native counter demo, as a deterministic test. Beyond what events.html
+// covers this exercises a constructor argument, a `readonly` field, compound
+// assignment (`+=`) and a ternary — the render is `caption: count` with a wave
+// appended once the count reaches five.
+import { document } from "browser:dom";
+import { Element } from "browser:dom";
+
+class Counter {
+    private count: int32 = 0;
+    private readonly caption: string;
+
+    public constructor(caption: string) {
+        this.caption = caption;
+    }
+
+    public increment(): void {
+        this.count += 1;
+    }
+
+    public render(): string {
+        const wave: string = this.count >= 5 ? " 🌊" : "";
+        return `${this.caption}: ${this.count}${wave}`;
+    }
+}
+
+const counter = new Counter("Clicks");
+const out = document.getElementById("out") as Element;
+const btn = document.getElementById("btn") as Element;
+
+out.textContent = counter.render();
+btn.addEventListener("click", () => {
+    counter.increment();
+    out.textContent = counter.render();
+});
+</script>
+
+<script>
+// Drive it from JavaScript so the harness can see the result: six clicks take
+// the count past the wave threshold.
+if (window.testRunner) {
+  testRunner.dumpAsText();
+}
+const btn = document.getElementById("btn");
+for (let i = 0; i < 6; i++) {
+  btn.click();
+}
+</script>

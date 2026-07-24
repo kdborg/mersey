@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<title>A Blink event fires a Mersey closure</title>
+<div id="out">?</div>
+<button id="btn">click</button>
+
+<script type="text/mersey">
+// The round trip: Blink dispatches a click, the engine runs a Mersey closure,
+// the closure mutates a field of a Mersey object and writes the result back
+// into a real DOM Element. `count` has no initializer — a numeric field starts
+// at its type's zero (spec §3.2), which is the rule that made compiled code
+// able to believe a declared type.
+import { document } from "browser:dom";
+import { Element } from "browser:dom";
+
+class Counter {
+    private count: int32;
+
+    public bump(): void {
+        this.count = this.count + 1;
+    }
+
+    public render(): string {
+        if (this.count >= 5) {
+            return `Clicks: ${this.count} 🌊`;
+        }
+        return `Clicks: ${this.count}`;
+    }
+}
+
+const counter = new Counter();
+const out = document.getElementById("out") as Element;
+out.textContent = counter.render();
+
+(document.getElementById("btn") as Element).addEventListener("click", () => {
+    counter.bump();
+    out.textContent = counter.render();
+});
+</script>
+
+<script>
+if (window.testRunner) {
+  testRunner.dumpAsText();
+}
+const btn = document.getElementById("btn");
+for (let i = 0; i < 6; i++) {
+  btn.click();
+}
+</script>

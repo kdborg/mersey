@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<title>&lt;script type="text/mersey"&gt; runs on the Mersey engine</title>
+<div id="out">not run</div>
+<div id="result">FAIL (test did not complete)</div>
+
+<script type="text/mersey">
+// A statically typed, class-based language, in a page — no JavaScript written
+// by hand, and no JavaScript engine underneath it. Blink hands this source to
+// the Mersey engine, which type-checks it, lowers it to bytecode and runs it.
+// V8 is not in this stack.
+import { document } from "browser:dom";
+import { Element } from "browser:dom";
+
+class Greeting {
+    private readonly who: string;
+
+    public constructor(who: string) {
+        this.who = who;
+    }
+
+    public render(): string {
+        return `Mersey ran here, ${this.who}`;
+    }
+}
+
+const out = document.getElementById("out") as Element;
+out.textContent = new Greeting("Blink").render();
+</script>
+
+<script>
+// The check itself is JavaScript, so the test harness can see it: the Mersey
+// script above must have run, and must have written through the DOM bindings.
+if (window.testRunner) {
+  testRunner.dumpAsText();
+}
+const got = document.getElementById("out").textContent;
+const want = "Mersey ran here, Blink";
+document.getElementById("result").textContent =
+    got === want ? "PASS" : `FAIL (got "${got}", wanted "${want}")`;
+</script>

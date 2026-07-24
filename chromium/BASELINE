@@ -16,7 +16,10 @@
 #      fresh third_party/mersey/lib/libmersey_capi.a in place — the engine
 #      staticlib is a build artifact, never a source of truth.
 #
-# Pinned upstream revisions (from .gclient_previous_sync_commits / DEPS):
+# Pinned upstream revisions — the true upstream the overlay applies onto.
+# (af7f1f9877 is the FIRST mersey commit, NOT upstream; 97ecf411 is its parent,
+# i.e. the real Chromium base. devtools-frontend base is the parent of the
+# single mersey devtools commit 574f0c839b.)
 
-chromium/src                 af7f1f98774125312eb092405d0573aebf13d5d0
+chromium/src                 97ecf411f258aae7ad0e6d5c1152063226ca5155
 devtools-frontend (DEPS)     746e32534e7b2ca7bf3ec411a754113eece78d7d
