@@ -1,7 +1,8 @@
 name: build
 
 # Phase 3a — validate the cross-platform build (scripts/build.sh) on real
-# Linux / macOS / Windows runners, and capture per-platform engine perf. The
+# Linux / macOS / Windows runners, x64 and arm64, and capture per-platform
+# engine perf. The
 # portable core (engine, CLI, staticlib, wasm) is native cargo, so this proves
 # the Phase 2 cross-platform claim. Browser-fork builds are phase 3b (heavy,
 # self-hosted).
@@ -17,9 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  name: linux-x64 }
-          - { os: macos-latest,   name: macos-arm64 }
-          - { os: windows-latest, name: windows-x64 }
+          - { os: ubuntu-latest,    name: linux-x64 }
+          - { os: ubuntu-24.04-arm, name: linux-arm64 }
+          - { os: macos-latest,     name: macos-arm64 }
+          - { os: windows-latest,   name: windows-x64 }
+          - { os: windows-11-arm,   name: windows-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
