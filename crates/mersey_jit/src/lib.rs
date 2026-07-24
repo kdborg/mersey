@@ -3940,10 +3940,19 @@ pub fn hardening() -> Vec<(&'static str, bool)> {
 
 /// Hardening that is knowingly absent, and why. A gap listed here is one we
 /// have looked at; anything else being off is a regression.
-pub const KNOWN_GAPS: &[(&str, &str)] = &[(
-    "forward-edge CFI (CET/endbr64)",
-    "Cranelift exposes no CET setting (checked 0.116, 0.123); x86-64 only",
-)];
+pub const KNOWN_GAPS: &[(&str, &str)] = &[
+    (
+        "forward-edge CFI (CET/endbr64)",
+        "Cranelift exposes no CET setting (checked 0.116, 0.123); x86-64 only",
+    ),
+    (
+        "object-returning functions are compiled",
+        "a returned object is (ptr, fields, handle) — 3 return values that fit \
+         aarch64's return registers but overflow x86-64's rax:rdx (Cranelift \
+         #9510). On x86-64 such functions fall back to the interpreter (correct \
+         results, not compiled). Fix: return objects through an out-pointer.",
+    ),
+];
 
 #[cfg(test)]
 mod divmagic_tests {
