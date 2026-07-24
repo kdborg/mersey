@@ -1,0 +1,59 @@
+name: build
+
+# Phase 3a — validate the cross-platform build (scripts/build.sh) on real
+# Linux / macOS / Windows runners, and capture per-platform engine perf. The
+# portable core (engine, CLI, staticlib, wasm) is native cargo, so this proves
+# the Phase 2 cross-platform claim. Browser-fork builds are phase 3b (heavy,
+# self-hosted).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux-x64 }
+          - { os: macos-latest,   name: macos-arm64 }
+          - { os: windows-latest, name: windows-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # The whole point: one script, every platform.
+      - name: build engine + CLI + staticlib
+        shell: bash
+        run: scripts/build.sh engine
+
+      - name: build wasm engine
+        shell: bash
+        run: scripts/build.sh wasm
+
+      # mersey_wasm is a wasm32 cdylib importing host hooks; it cannot link on a
+      # native test target (except Linux, which tolerates undefined symbols), so
+      # it is excluded here and covered by the wasm build above / the web tests.
+      - name: test
+        run: cargo test --workspace --exclude mersey_wasm
+
+      # Per-platform engine perf: the CLI-safe compute kernels self-time and
+      # print `RESULT <wl> <ms> <checksum>`. Portable (no OS-specific timer).
+      - name: engine perf stats
+        shell: bash
+        run: |
+          out="perf-${{ matrix.name }}.txt"
+          { echo "platform: ${{ matrix.name }}"; rustc --version; } > "$out"
+          for wl in compute calls fcompute mathk; do
+            ./target/release/mersey run "bench/web/mersey/$wl.mersey" | tee -a "$out"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ matrix.name }}
+          path: perf-${{ matrix.name }}.txt

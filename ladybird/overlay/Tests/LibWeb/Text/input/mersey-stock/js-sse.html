@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js sse</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/sse.mersey — identical workload.
+// One EventSource, N server-pushed events counted via the message event;
+// the client closes the stream when its count is reached.
+const name = "sse";
+const N = 2000;
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  return new Promise((resolve) => {
+    const es = new EventSource(`http://127.0.0.1:51894/bench/sse?n=${n}`);
+    es.addEventListener("message", (ev) => {
+      const data = ev.data;
+      sum = sum + data.length;
+      i += 1;
+      if (i >= n) {
+        resolve(sum);
+        es.close();
+      }
+    });
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

@@ -1,0 +1,294 @@
+<title>CLI runtime benchmark — Node vs Bun vs Deno vs Mersey</title>
+<style>
+  :root {
+    --bg: #f6f7f4;
+    --panel: #ffffff;
+    --panel-2: #f0f2ee;
+    --border: #e3e7df;
+    --border-strong: #cfd5c9;
+    --text: #1a2028;
+    --muted: #5c6773;
+    --faint: #8a94a0;
+    --node: #5f9c4a;
+    --deno: #3f83c9;
+    --bun: #9b6fca;
+    --mersey: #e8481f;
+    --track: #eceee9;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --panel-2: #1a2029;
+      --border: #232a33;
+      --border-strong: #313b47;
+      --text: #d6dde6;
+      --muted: #8a95a3;
+      --faint: #626d7b;
+      --node: #7fb069;
+      --deno: #5b9bd5;
+      --bun: #b98bd9;
+      --mersey: #ff6a3d;
+      --track: #1e252e;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f4; --panel: #ffffff; --panel-2: #f0f2ee; --border: #e3e7df;
+    --border-strong: #cfd5c9; --text: #1a2028; --muted: #5c6773; --faint: #8a94a0;
+    --node: #5f9c4a; --deno: #3f83c9; --bun: #9b6fca; --mersey: #e8481f; --track: #eceee9;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1116; --panel: #161b22; --panel-2: #1a2029; --border: #232a33;
+    --border-strong: #313b47; --text: #d6dde6; --muted: #8a95a3; --faint: #626d7b;
+    --node: #7fb069; --deno: #5b9bd5; --bun: #b98bd9; --mersey: #ff6a3d; --track: #1e252e;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  /* ---- header ---- */
+  .eyebrow {
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--mersey); margin: 0 0 12px;
+  }
+  h1 {
+    font-family: var(--mono); font-weight: 600; font-size: clamp(26px, 4.4vw, 40px);
+    line-height: 1.08; letter-spacing: -0.01em; margin: 0 0 16px; text-wrap: balance;
+  }
+  h1 .vs { color: var(--faint); font-weight: 400; }
+  h1 .win { color: var(--mersey); }
+  .lede {
+    font-family: var(--sans); font-size: 16px; color: var(--muted);
+    max-width: 62ch; margin: 0 0 24px;
+  }
+  .lede code {
+    font-family: var(--mono); font-size: 13.5px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text);
+  }
+
+  /* ---- legend ---- */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .chip {
+    display: inline-flex; align-items: baseline; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+    padding: 6px 13px 6px 11px; font-size: 13px;
+  }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; align-self: center; }
+  .chip .ver { color: var(--faint); font-size: 12px; }
+  .chip.mersey-chip { border-color: color-mix(in srgb, var(--mersey) 45%, var(--border)); }
+  .n-node { background: var(--node); } .n-deno { background: var(--deno); }
+  .n-bun { background: var(--bun); } .n-mersey { background: var(--mersey); }
+  .t-mersey { color: var(--mersey); }
+
+  .meta {
+    font-size: 12.5px; color: var(--faint); margin: 14px 0 0; display: flex;
+    flex-wrap: wrap; gap: 6px 18px;
+  }
+  .meta b { color: var(--muted); font-weight: 600; }
+  .ok { color: var(--node); }
+
+  /* ---- callouts ---- */
+  .cards {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    margin: 32px 0 8px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 15px;
+  }
+  .card.hero { border-color: color-mix(in srgb, var(--mersey) 40%, var(--border)); }
+  .card .k { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .card .v { font-size: 27px; font-weight: 600; line-height: 1.1; margin: 8px 0 4px; letter-spacing: -0.02em; }
+  .card .v.good { color: var(--mersey); }
+  .card .v.warn { color: var(--muted); }
+  .card .d { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+
+  /* ---- metric block ---- */
+  .block { margin-top: 44px; }
+  .block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border-strong); padding-bottom: 10px; margin-bottom: 20px; }
+  .block-head h2 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  .block-head h2 .unit { color: var(--faint); font-weight: 400; }
+  .block-head .hint { font-size: 12px; color: var(--faint); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 32px; }
+
+  .wl-name { font-size: 14px; font-weight: 600; margin: 0; }
+  .wl-desc { font-size: 12px; color: var(--muted); font-family: var(--sans); margin: 2px 0 12px; }
+
+  .bar { display: grid; grid-template-columns: 62px 1fr; align-items: center; gap: 10px; margin: 7px 0; }
+  .bar .rt { font-size: 12.5px; color: var(--muted); }
+  .bar.best .rt { color: var(--text); font-weight: 600; }
+  .track { position: relative; height: 22px; background: var(--track); border-radius: 4px; overflow: hidden; }
+  .fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; opacity: 0.5; transition: none; }
+  .bar.best .fill { opacity: 1; }
+  .fill.node { background: var(--node); } .fill.deno { background: var(--deno); }
+  .fill.bun { background: var(--bun); } .fill.mersey { background: var(--mersey); }
+  .val {
+    position: absolute; top: 0; right: 8px; height: 22px; display: flex; align-items: center;
+    font-size: 12px; color: var(--text); mix-blend-mode: normal;
+  }
+  .bar.best .val::after { content: " ◂ best"; color: var(--faint); font-size: 10.5px; letter-spacing: 0.05em; }
+
+  /* ---- footer ---- */
+  .foot { margin-top: 52px; border-top: 1px solid var(--border); padding-top: 22px; font-family: var(--sans); }
+  .foot h3 { font-family: var(--mono); font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); margin: 0 0 10px; }
+  .foot p { font-size: 13.5px; color: var(--muted); max-width: 74ch; margin: 0 0 10px; }
+  .foot code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text); }
+  .foot .src { font-size: 12px; color: var(--faint); margin-top: 16px; }
+
+  @media (max-width: 720px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Command-line runtime benchmark · macOS arm64</p>
+  <h1>Node <span class="vs">vs</span> Bun <span class="vs">vs</span> Deno <span class="vs">vs</span> <span class="win">Mersey CLI</span></h1>
+  <p class="lede">
+    Four command-line runtimes on the browser-free subset of the Mersey benchmark suite — the
+    compute workloads whose Mersey twin imports only <code>std:</code>, so each has a line-for-line
+    JavaScript twin that runs unchanged in Node, Bun and Deno. Every leg prints an identical
+    checksum, so the times below measure the same computation four ways.
+  </p>
+
+  <div class="legend">
+    <span class="chip"><span class="dot n-node"></span>Node.js <span class="ver">v20.19.3</span></span>
+    <span class="chip"><span class="dot n-bun"></span>Bun <span class="ver">1.3.14</span></span>
+    <span class="chip"><span class="dot n-deno"></span>Deno <span class="ver">2.9.4</span></span>
+    <span class="chip mersey-chip"><span class="dot n-mersey"></span><span class="t-mersey">Mersey CLI</span> <span class="ver">release</span></span>
+  </div>
+  <p class="meta">
+    <span><b>5</b> repeats/cell</span>
+    <span>work &amp; wall = best-of-5</span>
+    <span>RSS = median peak (<code style="all:unset;font-family:var(--mono)">time -l</code>)</span>
+    <span>checksum parity across all four: <span class="ok">verified ✓</span></span>
+  </p>
+
+  <div class="cards" id="cards"></div>
+
+  <div id="metrics"></div>
+
+  <div class="foot">
+    <h3>Method &amp; caveats</h3>
+    <p>
+      Each workload runs as its own fresh process. <b>Work</b> is self-timed inside the language
+      (<code>performance.now</code> / <code>time.monotonic</code>) after an in-process warm-up, so it
+      isolates steady-state kernel throughput and excludes process startup. <b>Wall</b> is the whole
+      <code>/usr/bin/time</code> invocation — startup, JIT warm-up and work together — i.e. what you
+      actually wait for at the shell. <b>Peak RSS</b> is the macOS <code>time -l</code> "maximum
+      resident set size".
+    </p>
+    <p>
+      The <code>compute</code> and <code>calls</code> checksums are exact int32 values; <code>fcompute</code>
+      and <code>mathk</code> self-check with a boolean, because bit-identical float results across two
+      independent code generators aren't guaranteed. Only these four workloads are browser-free — the
+      rest of the suite needs a web host and can't run in a bare JS runtime either.
+    </p>
+    <p class="src">Source: <code>bench/cli/run.mjs</code> · twins in <code>bench/cli/js/</code> and <code>bench/web/mersey/</code> · raw data in <code>bench/cli/results.json</code>.</p>
+  </div>
+</div>
+
+<script>
+  const RT = [
+    { key: "node", label: "Node" },
+    { key: "bun", label: "Bun" },
+    { key: "deno", label: "Deno" },
+    { key: "mersey", label: "Mersey" },
+  ];
+  const WL = {
+    compute:  { title: "compute", desc: "int32 hot loop — xorshift mix, no allocation" },
+    calls:    { title: "calls", desc: "20M tiny function calls — call overhead" },
+    fcompute: { title: "fcompute", desc: "float64 leapfrog orbit integrator" },
+    mathk:    { title: "mathk", desc: "sqrt / max / abs intrinsics, 5M iterations" },
+  };
+  const DATA = {
+    work: {
+      compute:  { node: 87.65, bun: 96.57, deno: 96.56, mersey: 87.40 },
+      calls:    { node: 121.70, bun: 31.15, deno: 27.83, mersey: 22.03 },
+      fcompute: { node: 102.90, bun: 102.77, deno: 104.26, mersey: 102.74 },
+      mathk:    { node: 13.44, bun: 14.32, deno: 13.10, mersey: 15.73 },
+    },
+    wall: {
+      compute:  { node: 120, bun: 110, deno: 110, mersey: 90 },
+      calls:    { node: 140, bun: 40, deno: 30, mersey: 20 },
+      fcompute: { node: 130, bun: 110, deno: 110, mersey: 100 },
+      mathk:    { node: 40, bun: 20, deno: 20, mersey: 10 },
+    },
+    rss: {
+      compute:  { node: 38.7, bun: 29.1, deno: 34.8, mersey: 6.0 },
+      calls:    { node: 38.9, bun: 31.2, deno: 34.8, mersey: 5.9 },
+      fcompute: { node: 40.5, bun: 29.0, deno: 36.8, mersey: 5.5 },
+      mathk:    { node: 39.8, bun: 30.7, deno: 36.9, mersey: 5.6 },
+    },
+  };
+  const METRICS = [
+    { key: "work", title: "Work", unit: "steady-state kernel, ms", hint: "lower is better · excludes startup" },
+    { key: "wall", title: "Wall", unit: "whole invocation, ms", hint: "lower is better · incl. startup + warm-up" },
+    { key: "rss",  title: "Peak RSS", unit: "MiB", hint: "lower is better · resident memory" },
+  ];
+  const fmt = (v) => (Number.isInteger(v) ? v : v.toFixed(v < 100 ? 2 : 1));
+
+  // ---- callouts
+  const CARDS = [
+    { cls: "hero", k: "Memory", v: "≈5.5 MiB", vc: "good", d: "flat across every workload — ~7× lighter than Node, ~5× under Bun/Deno. A native binary with no JS heap or GC, and no WebIDL surface loaded unless used." },
+    { k: "Cold start", v: "fastest", vc: "good", d: "wall-clock wins calls (20 ms) and ties/beats on compute & fcompute — the WebIDL surface now parses lazily, so a non-web program skips ~25 ms of startup." },
+    { k: "Compute", v: "parity", vc: "", d: "ties Node on the int & float kernels — Cranelift Tier-1 reaches the same native throughput as V8/JSC; 22 ms on 20M calls is quickest of the four." },
+    { k: "Math intrinsics", v: "~parity", vc: "", d: "mathk 15.7 ms vs ~13 — was 2× behind until math.max stopped round-tripping its compare through a GPR, off the loop-carried path. sqrt/mod were already free." },
+  ];
+  document.getElementById("cards").innerHTML = CARDS.map((c) => `
+    <div class="card ${c.cls || ""}">
+      <div class="k">${c.k}</div>
+      <div class="v ${c.vc}">${c.v}</div>
+      <div class="d">${c.d}</div>
+    </div>`).join("");
+
+  // ---- metric blocks
+  document.getElementById("metrics").innerHTML = METRICS.map((m) => {
+    const cards = Object.keys(WL).map((wl) => {
+      const row = DATA[m.key][wl];
+      const max = Math.max(...RT.map((r) => row[r.key]));
+      const best = Math.min(...RT.map((r) => row[r.key]));
+      const bars = RT.map((r) => {
+        const v = row[r.key];
+        const w = Math.max((v / max) * 100, 2);
+        const isBest = v === best;
+        return `
+          <div class="bar ${isBest ? "best" : ""}">
+            <span class="rt">${r.label}</span>
+            <span class="track">
+              <span class="fill ${r.key}" style="width:${w}%"></span>
+              <span class="val">${fmt(v)}</span>
+            </span>
+          </div>`;
+      }).join("");
+      return `
+        <div class="wl">
+          <p class="wl-name">${WL[wl].title}</p>
+          <p class="wl-desc">${WL[wl].desc}</p>
+          ${bars}
+        </div>`;
+    }).join("");
+    return `
+      <section class="block">
+        <div class="block-head">
+          <h2>${m.title} <span class="unit">— ${m.unit}</span></h2>
+          <span class="hint">${m.hint}</span>
+        </div>
+        <div class="grid2">${cards}</div>
+      </section>`;
+  }).join("");
+</script>

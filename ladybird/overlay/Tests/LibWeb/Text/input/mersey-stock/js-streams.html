@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js streams</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/streams.mersey — identical workload.
+// A pull-sourced ReadableStream consumed chunk by chunk through the
+// reader's read() promise chain.
+const name = "streams";
+const N = 2000;
+function work(n) {
+  let produced = 0;
+  let sum = 0;
+  return new Promise((resolve) => {
+    const stream = new ReadableStream({
+      pull: (c) => {
+        if (produced < n) {
+          c.enqueue(`chunk-${produced}`);
+          produced += 1;
+        } else {
+          c.close();
+        }
+      },
+    });
+    const reader = stream.getReader();
+    function pump() {
+      reader.read().then((r) => {
+        if (r.done) {
+          resolve(sum);
+          return;
+        }
+        sum = sum + r.value.length;
+        pump();
+      });
+    }
+    pump();
+  });
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

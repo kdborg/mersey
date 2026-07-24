@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js timers</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/timers.mersey — identical workload.
+// Measures arming + disarming a timer (registration cost), not firing:
+// a fired setTimeout(0) chain is dominated by the spec's 4ms nesting clamp,
+// which would measure the clamp, not the API.
+const name = "timers";
+const N = 20000;
+function noop() {}
+function work(n) {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const id = setTimeout(noop, 1000);
+    clearTimeout(id);
+    if (id > 0) sum += 1;
+  }
+  return sum;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

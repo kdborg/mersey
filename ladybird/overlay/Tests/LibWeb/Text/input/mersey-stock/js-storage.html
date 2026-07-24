@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js storage</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/storage.mersey — identical workload.
+const name = "storage";
+const N = 20000;
+function work(n) {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    localStorage.setItem("mersey.bench", `value-${i}`);
+    const got = localStorage.getItem("mersey.bench");
+    if (got != null) sum += got.length;
+  }
+  return sum;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

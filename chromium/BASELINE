@@ -1,0 +1,25 @@
+# Chromium fork baseline — the exact upstream the Mersey overlay applies onto.
+#
+# The fork is NOT a GitHub mirror of Chromium: gclient checkouts are shallow,
+# multi-repo (DEPS), and carry >100 MB blobs in history that GitHub rejects
+# (a raw `git push` of the fork branch fails on an old devtools-frontend
+# puppeteer chrome binary). Instead the fork is reconstructed = pinned upstream
+# + the Mersey overlay committed here.
+#
+# Reconstruct:
+#   1. gclient sync to the revisions below (fetches from googlesource, which
+#      handles the shallow/large-file history natively).
+#   2. Apply the overlay:
+#        chromium/patches/*.patch                 -> src/
+#        chromium/patches-devtools-frontend/*.patch -> src/third_party/devtools-frontend/src/
+#   3. Build: scripts/build-macos-arm64.sh rebuilds mersey_capi and drops the
+#      fresh third_party/mersey/lib/libmersey_capi.a in place — the engine
+#      staticlib is a build artifact, never a source of truth.
+#
+# Pinned upstream revisions — the true upstream the overlay applies onto.
+# (af7f1f9877 is the FIRST mersey commit, NOT upstream; 97ecf411 is its parent,
+# i.e. the real Chromium base. devtools-frontend base is the parent of the
+# single mersey devtools commit 574f0c839b.)
+
+chromium/src                 97ecf411f258aae7ad0e6d5c1152063226ca5155
+devtools-frontend (DEPS)     746e32534e7b2ca7bf3ec411a754113eece78d7d

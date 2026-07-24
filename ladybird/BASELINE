@@ -1,0 +1,15 @@
+# Ladybird fork overlay — reconstruct on top of pinned upstream Ladybird.
+# The full checkout is not stored here; only the Mersey delta in overlay/.
+# See scripts/fork-overlay.sh (apply / verify / bootstrap).
+
+upstream  https://github.com/LadybirdBrowser/ladybird.git
+revision  9b6432a9a0791333828938ee19170595811eeb1d
+
+# Libraries/LibWeb/Mersey/mersey.h is the canonical ABI header copied in — never
+# stored here; regenerate it after apply.
+regen     cp "$MERSEY_REPO/crates/mersey_capi/include/mersey.h" Libraries/LibWeb/Mersey/mersey.h
+
+# The engine is a prebuilt Rust staticlib the CMake links by path (build it in
+# the Mersey repo), then a normal Ladybird build.
+build     (cd "$MERSEY_REPO" && cargo build --release -p mersey_capi)
+build     cmake --preset Release && ninja -C Build/release

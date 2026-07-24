@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js urlpattern</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/urlpattern.mersey — identical workload.
+// One compiled URLPattern; a test() + exec() per iteration with the matched
+// pathname input read back.
+const name = "urlpattern";
+const N = 5000;
+const p = new URLPattern("/users/:id/*", "https://example.com");
+function work(n) {
+  let sum = 0;
+  let i = 0;
+  while (i < n) {
+    const u = `https://example.com/users/${i}/posts`;
+    if (p.test(u)) {
+      sum += 1;
+    }
+    const r = p.exec(u);
+    sum = sum + r.pathname.input.length;
+    i += 1;
+  }
+  return sum;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

@@ -1,0 +1,22 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+EXPORTS.mozilla.dom += [
+    "MerseyBridgeSource.h",
+    "MerseyScriptRunner.h",
+]
+
+# The engine's C ABI header, as the Rust crate publishes it. Kept in sync by
+# dom/mersey/refresh.sh, which also rebuilds the crate.
+EXPORTS += [
+    "include/mersey.h",
+]
+
+UNIFIED_SOURCES += [
+    "MerseyScriptRunner.cpp",
+]
+
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul"

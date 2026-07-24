@@ -55,18 +55,23 @@ tier, and identical checksums across tiers/browsers are the correctness proof.
 indices into its table, objects deduped via `handleFor`; mersey closures cross
 as `{"__cb__":id}` and re-enter through `__merseyInvoke`).
 
-Browser forks (checkouts live BESIDE this repo, not in it):
-- `~/Work/mersey/firefox` (dom/mersey, branch `mersey`; `~/Work/mersey/gecko` is a
-  symlink to it), `~/Work/mersey/chromium` (blink core/script/mersey_script_runner,
-  branch `mersey`), `~/Work/mersey/servo` (components/script/mersey), `~/Work/ladybird`
-  (Libraries/LibWeb/Mersey). The repo keeps each fork's glue under `servo/`,
-  `ladybird/`, `chromium/` with an idempotent `apply.sh` that installs it into
-  the checkout; `servo/refresh-bridge.sh` regenerates Servo's embedded copy of
-  `web/mersey-bridge.js` — never edit the embedded copy by hand. The Ladybird
-  fork has NO embedded bridge: its host table is native C++ end to end (own
-  handle table, LibJS reflection in C++, closures as NativeFunctions).
-- Gecko and Chromium fork changes are committed in their own checkouts;
-  Servo/Ladybird glue is versioned here and applied.
+Browser forks (checkouts live under `~/Work/mersey/browsers/`, NOT in this repo):
+- `browsers/firefox` (dom/mersey, branch `mersey`; `browsers/gecko` symlinks to
+  it), `browsers/chromium/src` (blink core/script/mersey_script_runner, branch
+  `mersey`), `browsers/servo` (components/script/mersey), `browsers/ladybird`
+  (Libraries/LibWeb/Mersey). The full browser source is never stored here: each
+  fork's Mersey delta lives in the repo as `<fork>/overlay/` (snapshots) +
+  `<fork>/BASELINE` (pinned upstream revision + regen/build hooks), and the fork
+  is reconstructed on top of pinned upstream — `scripts/fork-overlay.sh
+  apply|verify|bootstrap <fork>` for servo/ladybird/firefox, and the bespoke
+  `chromium/{apply,bootstrap,verify}.sh` for Chromium's gclient monorepo (which
+  can't be a plain git clone). Regenerated, never stored: the engine staticlib,
+  Servo's embedded `web/mersey-bridge.js` (`servo/refresh-bridge.sh`), Ladybird's
+  copied `mersey.h`, Firefox's vendored Cranelift crates (`mach vendor rust`).
+  The Ladybird fork has NO embedded bridge: its host table is native C++ end to
+  end (own handle table, LibJS reflection in C++, closures as NativeFunctions).
+- CI's `fork-overlays` job guards every overlay against rot (no binaries,
+  well-formed BASELINE, patches parse) without needing a multi-GB checkout.
 
 Benchmarks (`bench/web/`): twenty-five web technologies as line-for-line
 `js/<wl>.js` + `mersey/<wl>.mersey` twins, self-timed, checksum-verified

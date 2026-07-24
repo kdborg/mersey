@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lb-stock js crypto</title>
+<body><div id="out"></div>
+<script src="../include.js"></script>
+<script>
+// Plain-JS counterpart of mersey/crypto.mersey — identical workload.
+const name = "crypto";
+const N = 20000;
+const buf = new Uint8Array(16);
+function work(n) {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    crypto.getRandomValues(buf);
+    sum += buf.length;
+  }
+  return sum;
+}
+
+asyncTest(async (done) => {
+  try {
+    if (typeof setup === "function") setup();
+    await work(Math.min(1000, N)); // warm up
+    const t0 = performance.now();
+    const checksum = await work(N);
+    const t1 = performance.now();
+    println("RESULT " + name + " " + (t1 - t0) + " " + checksum);
+  } catch (e) { println("ERROR " + (e && e.message)); }
+  done();
+});
+</script>
+</body>

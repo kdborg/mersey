@@ -25,7 +25,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // MUST be invoked through the .app bundle path — a bare `chrome` symlink makes
 // dlopen look in out/../Frameworks (nonexistent) and the stub aborts
 // (main -> FatalError). Linux keeps the plain `chrome`.
-const CHROMIUM_SRC = process.env.CHROMIUM_SRC || join(here, "../../../chromium/src");
+const CHROMIUM_SRC = process.env.CHROMIUM_SRC || join(here, "../../../browsers/chromium/src");
 const FORK =
   process.platform === "darwin"
     ? `${CHROMIUM_SRC}/out/mersey-arm64/Chromium.app/Contents/MacOS/Chromium`

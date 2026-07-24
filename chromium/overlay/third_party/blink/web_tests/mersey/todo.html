@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<title>A Mersey TODO list builds and mutates real DOM Elements</title>
+<p id="count">?</p>
+<input id="new-todo">
+<button id="add">Add</button>
+<ul id="list"></ul>
+
+<script type="text/mersey">
+// The native TODO demo, as a deterministic test. Beyond events.html this
+// exercises a Map keyed by string, document.createElement/appendChild, a
+// per-item click-to-remove closure that captures locals, and a size-driven
+// re-render with ternary pluralization. The add button reads the input's
+// value through the HTMLInputElement binding.
+import { document } from "browser:dom";
+import { Element } from "browser:dom";
+import { HTMLInputElement } from "browser:dom";
+
+class TodoList {
+    private items: Map<string, Element> = new Map<string, Element>();
+    private nextId: int32 = 1;
+    private readonly container: Element;
+    private readonly counter: Element;
+
+    public constructor(container: Element, counter: Element) {
+        this.container = container;
+        this.counter = counter;
+        this.render();
+    }
+
+    public addItem(text: string): void {
+        if (text.length == 0) { return; }
+        const key = `todo-${this.nextId}`;
+        this.nextId += 1;
+        const li = document.createElement("li");
+        li.textContent = text + "  (click to remove)";
+        const items = this.items;
+        const self = this;
+        li.addEventListener("click", () => {
+            li.remove();
+            items.remove(key);
+            self.render();
+        });
+        this.items.set(key, li);
+        this.container.appendChild(li);
+        this.render();
+    }
+
+    public render(): void {
+        const n = this.items.size;
+        this.counter.textContent = n == 0
+            ? "nothing to do 🌊"
+            : `${n} item${n == 1 ? "" : "s"} to do`;
+    }
+}
+
+const list = new TodoList(
+    document.getElementById("list") as Element,
+    document.getElementById("count") as Element,
+);
+const input = document.getElementById("new-todo") as HTMLInputElement;
+const add = document.getElementById("add") as Element;
+
+add.addEventListener("click", () => {
+    list.addItem(input.value);
+    input.value = "";
+});
+</script>
+
+<script>
+// Drive it from JavaScript: add two items, then remove the first by clicking
+// its <li>. The count reflects the survivor.
+if (window.testRunner) {
+  testRunner.dumpAsText();
+}
+const input = document.getElementById("new-todo");
+const add = document.getElementById("add");
+function addTodo(text) {
+  input.value = text;
+  add.click();
+}
+addTodo("write tests");
+addTodo("ship it");
+document.querySelector("#list li").click();  // removes "write tests"
+</script>

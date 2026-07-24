@@ -56,6 +56,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo run --release -p mersey_fuzz -- all 20000 $GITHUB_RUN_NUMBER
 
+  # None of the four browser forks live in this repo — each is a small overlay
+  # that reconstructs it on pinned upstream. This guards every overlay against
+  # rot (a binary sneaking in, a malformed BASELINE, a corrupt patch) without
+  # needing a multi-GB checkout. The full reconstruct proof runs where a
+  # checkout exists, not in CI.
+  fork-overlays:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: chromium/verify.sh
+      - run: scripts/fork-overlay.sh verify servo
+      - run: scripts/fork-overlay.sh verify ladybird
+      - run: scripts/fork-overlay.sh verify firefox
+
   browser:
     runs-on: ubuntu-latest
     steps:

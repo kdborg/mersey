@@ -1,0 +1,28 @@
+[package]
+name = "mersey_gecko"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "The Mersey engine, as a crate of gkrust"
+
+[dependencies]
+# The engine's C ABI crate, exactly as //third_party/mersey uses it in the
+# Chromium fork — the same `extern "C"` symbols, the same host table.
+#
+# It is a *crate*, not a prebuilt library, and that is the whole reason Gecko is
+# the better place to develop this: Firefox compiles all its Rust into one
+# staticlib (gkrust) sharing one `std`, so the engine shares it too. The
+# problems that cost days on the Chromium side — a second copy of `std` and its
+# duplicate `rust_eh_personality`, the allocator symbols missing from every
+# component .so, a soname and an rpath for a bundled shared library — cannot
+# occur here. There is one std, one allocator, one link.
+# Tier 1 JIT (Cranelift) is ENABLED here: compute-bound Mersey compiles to
+# native code instead of walking the bytecode VM. This drags ~24 crates
+# (cranelift-*, regalloc2, target-lexicon, …) into Gecko's vendored tree —
+# added via `./mach vendor rust`. Web-API-bound code is unaffected (the JIT
+# refuses functions that allocate or call the host, which every bridge call
+# does); the JIT is the win for arithmetic/loops.
+mersey_capi = { path = "../../../../mersey/crates/mersey_capi" }
+
+[lib]
+path = "src/lib.rs"

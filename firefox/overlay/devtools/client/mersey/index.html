@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <style>
+    html, body { margin: 0; height: 100%;
+      font: message-box; background: var(--theme-body-background, #fff);
+      color: var(--theme-body-color, #0c0c0d); }
+    #toolbar { display: flex; gap: 6px; padding: 4px 8px; flex-wrap: wrap;
+      border-bottom: 1px solid var(--theme-splitter-color, #e0e0e2); }
+    #toolbar button { padding: 2px 8px; }
+    #status { padding: 4px 8px; font-family: monospace; }
+    #split { display: flex; align-items: flex-start; height: calc(100% - 70px); }
+    #source { flex: 2; overflow: auto; font-family: monospace; font-size: 11px;
+      white-space: pre; padding: 4px 0; }
+    #source div { cursor: pointer; padding: 0 6px; }
+    #source div.paused { background: var(--theme-highlight-yellow, #fff2c9); }
+    #stack { flex: 1; overflow: auto; font-family: monospace; font-size: 11px;
+      white-space: pre-wrap; padding: 4px 8px;
+      border-inline-start: 1px solid var(--theme-splitter-color, #e0e0e2); }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="refresh">Refresh</button>
+    <button id="pause">Pause</button>
+    <button id="resume">Resume</button>
+    <button id="stepOver">Step over</button>
+    <button id="stepInto">Step into</button>
+    <button id="stepOut">Step out</button>
+  </div>
+  <div id="status">not attached</div>
+  <div id="split"><div id="source"></div><div id="stack"></div></div>
+</body>
+</html>

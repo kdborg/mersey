@@ -1,0 +1,156 @@
+{
+  "arch": "arm64",
+  "repeats": 5,
+  "rows": [
+    {
+      "wl": "compute",
+      "checksums": {
+        "node": "1765835917",
+        "bun": "1765835917",
+        "deno": "1765835917",
+        "mersey": "1765835917"
+      },
+      "legs": {
+        "node": {
+          "work": 87.65,
+          "wall": 120,
+          "rssMiB": 38.7
+        },
+        "bun": {
+          "work": 96.57,
+          "wall": 110,
+          "rssMiB": 29.1
+        },
+        "deno": {
+          "work": 96.56,
+          "wall": 110,
+          "rssMiB": 34.8
+        },
+        "mersey": {
+          "work": 87.4,
+          "wall": 90,
+          "rssMiB": 6
+        }
+      },
+      "checksumOk": true
+    },
+    {
+      "wl": "calls",
+      "checksums": {
+        "node": "452320592",
+        "bun": "452320592",
+        "deno": "452320592",
+        "mersey": "452320592"
+      },
+      "legs": {
+        "node": {
+          "work": 121.7,
+          "wall": 140,
+          "rssMiB": 38.9
+        },
+        "bun": {
+          "work": 31.15,
+          "wall": 40,
+          "rssMiB": 31.2
+        },
+        "deno": {
+          "work": 27.83,
+          "wall": 30,
+          "rssMiB": 34.8
+        },
+        "mersey": {
+          "work": 22.03,
+          "wall": 20,
+          "rssMiB": 5.9
+        }
+      },
+      "checksumOk": true
+    },
+    {
+      "wl": "fcompute",
+      "checksums": {
+        "node": "true",
+        "bun": "true",
+        "deno": "true",
+        "mersey": "true"
+      },
+      "legs": {
+        "node": {
+          "work": 102.9,
+          "wall": 130,
+          "rssMiB": 40.5
+        },
+        "bun": {
+          "work": 102.77,
+          "wall": 110,
+          "rssMiB": 29
+        },
+        "deno": {
+          "work": 104.26,
+          "wall": 110,
+          "rssMiB": 36.8
+        },
+        "mersey": {
+          "work": 102.74,
+          "wall": 100,
+          "rssMiB": 5.5
+        }
+      },
+      "checksumOk": true
+    },
+    {
+      "wl": "mathk",
+      "checksums": {
+        "node": "true",
+        "bun": "true",
+        "deno": "true",
+        "mersey": "true"
+      },
+      "legs": {
+        "node": {
+          "work": 13.44,
+          "wall": 40,
+          "rssMiB": 39.8
+        },
+        "bun": {
+          "work": 14.32,
+          "wall": 20,
+          "rssMiB": 30.7
+        },
+        "deno": {
+          "work": 13.1,
+          "wall": 20,
+          "rssMiB": 36.9
+        },
+        "mersey": {
+          "work": 15.73,
+          "wall": 10,
+          "rssMiB": 5.6
+        }
+      },
+      "checksumOk": true
+    }
+  ],
+  "runtimes": [
+    {
+      "key": "node",
+      "label": "Node.js",
+      "bin": "node"
+    },
+    {
+      "key": "bun",
+      "label": "Bun",
+      "bin": "/Users/kirkbrown/.bun/bin/bun"
+    },
+    {
+      "key": "deno",
+      "label": "Deno",
+      "bin": "/Users/kirkbrown/.deno/bin/deno"
+    },
+    {
+      "key": "mersey",
+      "label": "Mersey CLI",
+      "bin": "/Users/kirkbrown/Work/mersey/mersey/target/release/mersey"
+    }
+  ]
+}
