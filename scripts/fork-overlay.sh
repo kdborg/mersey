@@ -42,7 +42,7 @@ run_hooks() { # $1=key
 }
 
 apply() {
-  SRC="${1:-$(cd "$MERSEY_REPO/.." && pwd)/$FORK}"; export SRC
+  SRC="${1:-$(cd "$MERSEY_REPO/.." && pwd)/browsers/$FORK}"; export SRC
   [ -d "$SRC" ] || { echo "no checkout at $SRC" >&2; exit 1; }
   want="$REVISION"; have="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo '?')"
   [ "$have" = "$want" ] || echo "warn: $SRC at ${have:0:12}, BASELINE pins ${want:0:12}"
@@ -82,7 +82,7 @@ verify() {
 }
 
 bootstrap() {
-  local DEST="${1:-$(cd "$MERSEY_REPO/.." && pwd)/$FORK}"; SRC="$DEST"; export SRC
+  local DEST="${1:-$(cd "$MERSEY_REPO/.." && pwd)/browsers/$FORK}"; SRC="$DEST"; export SRC
   echo "=== $FORK: clone $UPSTREAM @ ${REVISION:0:12} ==="
   if [ "$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo none)" = "$REVISION" ]; then
     echo "already at BASELINE"

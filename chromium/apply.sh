@@ -12,19 +12,19 @@
 #
 # Usage:
 #   chromium/apply.sh [CHROMIUM_SRC] [--verify]
-#     CHROMIUM_SRC  path to the gclient `src` dir (default: ../../chromium/src)
+#     CHROMIUM_SRC  path to the gclient `src` dir (default: ../../browsers/chromium/src)
 #     --verify      after applying, assert the tree matches the fork's `mersey`
 #                   ref (proves the overlay is complete — no file was missed)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-SRC="${1:-$(cd "$REPO/.." && pwd)/chromium/src}"
+SRC="${1:-$(cd "$REPO/.." && pwd)/browsers/chromium/src}"
 VERIFY=0; [ "${2:-}" = "--verify" ] && VERIFY=1
 
 [ -d "$SRC/third_party/blink" ] || {
   echo "not a Chromium src checkout: $SRC" >&2
-  echo "  pass the gclient src path, e.g. chromium/apply.sh ~/Work/mersey/chromium/src" >&2
+  echo "  pass the gclient src path, e.g. chromium/apply.sh ~/Work/mersey/browsers/chromium/src" >&2
   exit 1
 }
 

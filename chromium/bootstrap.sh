@@ -12,7 +12,7 @@
 # is fast. Safe to re-run: a checkout already at BASELINE is not re-synced.
 #
 # Usage:  chromium/bootstrap.sh [CHROMIUM_DIR] [--no-build]
-#   CHROMIUM_DIR  where the gclient checkout lives (default: ../../chromium,
+#   CHROMIUM_DIR  where the gclient checkout lives (default: ../../browsers/chromium,
 #                 i.e. a sibling of this repo — the layout the build scripts use)
 #   --no-build    reconstruct only (sync + overlay + staticlib); skip the
 #                 hours-long compile
@@ -28,7 +28,7 @@ for a in "$@"; do
     *) DEST="$a" ;;
   esac
 done
-[ -n "$DEST" ] || DEST="$(cd "$REPO/.." && pwd)/chromium"
+[ -n "$DEST" ] || DEST="$(cd "$REPO/.." && pwd)/browsers/chromium"
 SRC="$DEST/src"
 CR_REV="$(awk '/^chromium\/src/{print $2}' "$HERE/BASELINE")"
 [ -n "$CR_REV" ] || { echo "no chromium/src pin in BASELINE" >&2; exit 1; }

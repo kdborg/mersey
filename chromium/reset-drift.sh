@@ -11,7 +11,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-SRC="${1:-$(cd "$REPO/.." && pwd)/chromium/src}"
+SRC="${1:-$(cd "$REPO/.." && pwd)/browsers/chromium/src}"
 
 [ -d "$SRC/.git" ] || [ -f "$SRC/.git" ] || { echo "not a git checkout: $SRC" >&2; exit 1; }
 

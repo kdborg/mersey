@@ -8,14 +8,14 @@
 # toolchain archaeology: the hermetic toolchains work and only target_os /
 # target_cpu change (see chromium/README.md).
 #
-# The fork checkouts are NOT in this repo — they live BESIDE it (siblings of
-# this repo dir, i.e. under ~/Work/mersey/ when the repo is ~/Work/mersey/mersey):
-#     ../firefox        (Firefox fork, branch mersey)        [build only]
-#     ../chromium/src   (Blink fork,   branch mersey)
-#     ../servo          (Servo fork)
-#     ../ladybird  or  ../../ladybird   (Ladybird fork)
-# Each default below takes the first candidate that actually exists, so both the
-# in-tree (~/Work/mersey/ladybird) and beside-tree (~/Work/ladybird) layouts work.
+# The fork checkouts are NOT in this repo — they live under the container's
+# browsers/ dir (…/mersey/browsers/ when the repo is …/mersey/mersey):
+#     ../browsers/firefox        (Firefox fork, branch mersey)   [build only]
+#     ../browsers/chromium/src   (Blink fork,   branch mersey)
+#     ../browsers/servo          (Servo fork)
+#     ../browsers/ladybird       (Ladybird fork)
+# Each default below takes the first candidate that actually exists, so the old
+# sibling layouts (../firefox, ~/Work/ladybird) still resolve as a fallback.
 # Override any of them with the same env vars the runners use:
 #     GECKO_SRC  CHROMIUM_SRC  SERVO_SRC  LADYBIRD_SRC
 # Other knobs:
@@ -37,17 +37,19 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"                 # the mersey repo (…/mersey/mersey)
-WORK="$(cd "$REPO/.." && pwd)"                 # …/mersey  → the forks are siblings here
+WORK="$(cd "$REPO/.." && pwd)"                 # …/mersey  → the container
+BROWSERS="$WORK/browsers"                      # the fork checkouts now live here
 
-OUTER="$(cd "$WORK/.." && pwd)"                # …/Work → ladybird may live up here
+OUTER="$(cd "$WORK/.." && pwd)"                # …/Work → old ladybird location
 
-# First candidate that exists wins; falls back to the first one for the error message.
+# First candidate that exists wins; falls back to the first one for the error
+# message. Prefers browsers/ (the current layout), then the old sibling layouts.
 pick() { for c in "$@"; do [ -e "$c" ] && { printf '%s\n' "$c"; return; }; done; printf '%s\n' "$1"; }
 
-GECKO_SRC="${GECKO_SRC:-$(pick "$WORK/firefox" "$WORK/gecko")}"
-CHROMIUM_SRC="${CHROMIUM_SRC:-$WORK/chromium/src}"
-SERVO_SRC="${SERVO_SRC:-$(pick "$WORK/servo" "$WORK/servo-src")}"
-LADYBIRD_SRC="${LADYBIRD_SRC:-$(pick "$WORK/ladybird" "$OUTER/ladybird")}"
+GECKO_SRC="${GECKO_SRC:-$(pick "$BROWSERS/firefox" "$BROWSERS/gecko" "$WORK/firefox" "$WORK/gecko")}"
+CHROMIUM_SRC="${CHROMIUM_SRC:-$(pick "$BROWSERS/chromium/src" "$WORK/chromium/src")}"
+SERVO_SRC="${SERVO_SRC:-$(pick "$BROWSERS/servo" "$WORK/servo" "$WORK/servo-src")}"
+LADYBIRD_SRC="${LADYBIRD_SRC:-$(pick "$BROWSERS/ladybird" "$WORK/ladybird" "$OUTER/ladybird")}"
 
 STATICLIB="$REPO/target/release/libmersey_capi.a"
 CHROMIUM_OUT="${CHROMIUM_OUT:-out/mersey-arm64}"   # relative to CHROMIUM_SRC
