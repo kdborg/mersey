@@ -699,24 +699,22 @@ fn serve_loop(interp: &mut interp::Interp, port: u16, cb_id: u32) -> ExitCode {
             Err(_) => continue,
         };
         let _ = stream.set_nodelay(true);
-        match read_http_request(&mut stream) {
-            Some((method, path, body)) => {
-                match interp.http_dispatch(cb_id, &method, &path, &body) {
-                    Ok(resp) => {
-                        use std::io::Write;
-                        let _ = stream.write_all(resp.as_bytes());
-                        let _ = stream.flush();
-                    }
-                    Err(t) => {
-                        use std::io::Write;
-                        eprintln!("mersey: handler error: {}", interp.describe_thrown(&t));
-                        let _ = stream.write_all(
+        // None: malformed / closed early — drop the connection.
+        if let Some((method, path, body)) = read_http_request(&mut stream) {
+            match interp.http_dispatch(cb_id, &method, &path, &body) {
+                Ok(resp) => {
+                    use std::io::Write;
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+                Err(t) => {
+                    use std::io::Write;
+                    eprintln!("mersey: handler error: {}", interp.describe_thrown(&t));
+                    let _ = stream.write_all(
                         b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     );
-                    }
                 }
             }
-            None => {} // malformed / closed early: drop the connection
         }
     }
     ExitCode::SUCCESS
