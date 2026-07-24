@@ -96,7 +96,7 @@ node bench/web/run-firefox-real.mjs   # -> results.firefox-real.json
 # Playwright does not drive Servo). Override the binary with SERVO_BIN=…:
 node bench/web/run-servo.mjs    # -> results.servo.json
 
-# Native, via the Firefox fork (needs the fork built at ~/Work/gecko/obj-mersey):
+# Native, via the Firefox fork (needs the fork built at ~/Work/mersey/browsers/firefox/obj-mersey):
 node bench/web/run-native.mjs   # -> results.native.json
 
 # Native, via the Servo fork (needs servoshell built at ~/Work/mersey/browsers/servo with the

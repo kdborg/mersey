@@ -5,7 +5,7 @@
 # appends the epilogue that instantiates __merseyBridge in the page realm,
 # wired to the __merseyInvoke native the module injects.
 #
-# Mirrors ~/Work/gecko/dom/mersey/refresh.sh. Called by servo/apply.sh; run directly
+# Mirrors browsers/firefox/dom/mersey/refresh.sh. Called by servo/apply.sh; run directly
 # to refresh the in-repo servo/mersey/bridge.js after editing mersey-bridge.js.
 #
 # Usage:  servo/refresh-bridge.sh [OUT] [MERSEY_REPO]

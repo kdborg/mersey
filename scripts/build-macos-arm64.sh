@@ -46,7 +46,7 @@ OUTER="$(cd "$WORK/.." && pwd)"                # …/Work → old ladybird locat
 # message. Prefers browsers/ (the current layout), then the old sibling layouts.
 pick() { for c in "$@"; do [ -e "$c" ] && { printf '%s\n' "$c"; return; }; done; printf '%s\n' "$1"; }
 
-GECKO_SRC="${GECKO_SRC:-$(pick "$BROWSERS/firefox" "$BROWSERS/gecko" "$WORK/firefox" "$WORK/gecko")}"
+GECKO_SRC="${GECKO_SRC:-$(pick "$BROWSERS/firefox" "$WORK/firefox")}"
 CHROMIUM_SRC="${CHROMIUM_SRC:-$(pick "$BROWSERS/chromium/src" "$WORK/chromium/src")}"
 SERVO_SRC="${SERVO_SRC:-$(pick "$BROWSERS/servo" "$WORK/servo" "$WORK/servo-src")}"
 LADYBIRD_SRC="${LADYBIRD_SRC:-$(pick "$BROWSERS/ladybird" "$WORK/ladybird" "$OUTER/ladybird")}"
