@@ -31,7 +31,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CHROMIUM_SRC = process.env.CHROMIUM_SRC || join(here, "../../../browsers/chromium/src");
 const FORK =
   process.platform === "darwin"
-    ? `${CHROMIUM_SRC}/out/mersey-arm64/Chromium.app/Contents/MacOS/Chromium`
+    ? `${CHROMIUM_SRC}/out/mersey-arm64/Mersey Blink (Experimental).app/Contents/MacOS/Mersey Blink (Experimental)`
     : `${CHROMIUM_SRC}/out/mersey-arm64/chrome`;
 const REPEATS = 3;
 
