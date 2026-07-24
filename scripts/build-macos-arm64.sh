@@ -225,19 +225,14 @@ build_servo() {
   # Media stack. On macOS Servo accepts ONLY the official GStreamer .pkg: it
   # tests os.path.exists('/Library/Frameworks/GStreamer.framework/Versions/1.0')
   # in python/servo/platform/macos.py and never consults pkg-config, so a
-  # Homebrew gstreamer cannot satisfy it. Set SERVO_MEDIA_STACK=dummy to skip
-  # the check and build without media — fine for bench/web, whose workloads use
-  # no video/audio/WebRTC. Leave unset for the default (auto) behaviour.
-  # NB: no bash arrays here — macOS ships bash 3.2, where "${arr[@]}" on an
-  # empty array is an "unbound variable" error under the set -u above.
+  # Homebrew gstreamer cannot satisfy it. Default to the dummy stack (no media —
+  # fine for bench/web, whose workloads use no video/audio/WebRTC); override with
+  # SERVO_MEDIA_STACK=gstreamer only if you install the framework.
+  SERVO_MEDIA_STACK="${SERVO_MEDIA_STACK:-dummy}"
   servo_mach_build() {
-    if [ -n "${SERVO_MEDIA_STACK:-}" ]; then
-      ( cd "$SERVO_SRC" && ./mach build --release --media-stack "$SERVO_MEDIA_STACK" -j "$JOBS" )
-    else
-      ( cd "$SERVO_SRC" && ./mach build --release -j "$JOBS" )
-    fi
+    ( cd "$SERVO_SRC" && ./mach build --release --media-stack "$SERVO_MEDIA_STACK" -j "$JOBS" )
   }
-  if [ -n "${SERVO_MEDIA_STACK:-}" ]; then ok "media stack: $SERVO_MEDIA_STACK"; fi
+  ok "media stack: $SERVO_MEDIA_STACK"
   say "servo: ./mach build --release (-j$JOBS)"
   if servo_mach_build; then
     [ -x "$SERVO_SRC/target/release/servoshell" ] \
@@ -248,10 +243,17 @@ build_servo() {
   fi
 }
 
+# PATH with a Homebrew gnubin GNU libtool removed (no-op if absent), so skia's
+# vcpkg build reaches Apple's /usr/bin/libtool for `libtool -static`. Without
+# this: "libtool: error: unrecognised option: '-static'" and the skia build dies.
+apple_libtool_path() {
+  printf '%s' "$PATH" | tr ':' '\n' | grep -vxF '/opt/homebrew/opt/libtool/libexec/gnubin' | paste -sd ':' -
+}
+
 # ---------------------------------------------------------------------------
 # Ladybird fork — prebuilt staticlib linked into LibWeb. Apply the glue (points
-# CMake at the staticlib), then build the test-web headless runner. On macOS
-# with Qt6/vcpkg present none of the Linux workarounds are needed.
+# CMake at the staticlib), then build the test-web headless runner. The only
+# macOS quirk is the libtool shadowing above (skia via vcpkg).
 # ---------------------------------------------------------------------------
 build_ladybird() {
   say "ladybird: Ladybird fork"
@@ -263,7 +265,7 @@ build_ladybird() {
   MERSEY_STATICLIB="$STATICLIB" "$REPO/ladybird/apply.sh" "$LADYBIRD_SRC" "$REPO" \
     || { fail ladybird "apply.sh failed"; return; }
   say "ladybird: ./Meta/ladybird.py build test-web"
-  if ( cd "$LADYBIRD_SRC" && ./Meta/ladybird.py build test-web ); then
+  if ( cd "$LADYBIRD_SRC" && PATH="$(apple_libtool_path)" ./Meta/ladybird.py build test-web ); then
     if [ -x "$LADYBIRD_SRC/Build/release/bin/test-web" ]; then
       done_ ladybird "test-web -> $LADYBIRD_SRC/Build/release/bin/test-web"
     else

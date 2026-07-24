@@ -10,4 +10,8 @@ revision  736ad1bda08c1af419aadc903e82938f8610a65d
 regen     "$MERSEY_REPO/servo/refresh-bridge.sh" components/script/mersey/bridge.js "$MERSEY_REPO"
 
 # Servo builds the mersey_capi crate itself (referenced by path in Cargo.toml).
-build     ./mach build --release
+# --media-stack dummy: macOS Servo's GStreamer check wants the official
+# GStreamer.framework (it never consults pkg-config/Homebrew), and Mersey's
+# workloads use no audio/video/WebRTC, so build without media. Drop the flag
+# (or pass --media-stack gstreamer) only if you install the framework.
+build     ./mach build --release --media-stack dummy

@@ -12,4 +12,8 @@ regen     cp "$MERSEY_REPO/crates/mersey_capi/include/mersey.h" Libraries/LibWeb
 # The engine is a prebuilt Rust staticlib the CMake links by path (build it in
 # the Mersey repo), then a normal Ladybird build.
 build     (cd "$MERSEY_REPO" && cargo build --release -p mersey_capi)
-build     cmake --preset Release && ninja -C Build/release
+# skia's vcpkg build archives static libs with `libtool -static`, which only
+# Apple's /usr/bin/libtool understands. If a Homebrew GNU libtool shadows it on
+# PATH (the gnubin dir), strip just that entry (no-op if absent / on Linux) so
+# Apple's wins. Symptom without this: "libtool: error: unrecognised option: '-static'".
+build     export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF '/opt/homebrew/opt/libtool/libexec/gnubin' | paste -sd ':' -)"; cmake --preset Release && ninja -C Build/release
