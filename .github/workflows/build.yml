@@ -47,13 +47,19 @@ jobs:
 
       # Per-platform engine perf: the CLI-safe compute kernels self-time and
       # print `RESULT <wl> <ms> <checksum>`. Portable (no OS-specific timer).
-      - name: engine perf stats
+      # This is the NATIVE engine — the compiled `target/release/mersey` binary
+      # running the Cranelift Tier-1 JIT (on by default; MERSEY_JIT=0 would fall
+      # back to the bytecode VM, ~60-100x slower). It is not wasm: the wasm
+      # engine is a separate leg gated by bench/web/perf-test.mjs against
+      # perf-baselines.json, not measured here.
+      - name: engine perf stats (native, JIT tier-1)
         shell: bash
         run: |
           out="perf-${{ matrix.name }}.txt"
-          { echo "platform: ${{ matrix.name }}"; rustc --version; } > "$out"
+          { echo "platform: ${{ matrix.name }} (native cdylib, Cranelift Tier-1 JIT)"
+            rustc --version; } > "$out"
           for wl in compute calls fcompute mathk; do
-            ./target/release/mersey run "bench/web/mersey/$wl.mersey" | tee -a "$out"
+            MERSEY_JIT=1 ./target/release/mersey run "bench/web/mersey/$wl.mersey" | tee -a "$out"
           done
 
       - uses: actions/upload-artifact@v4
