@@ -1,0 +1,86 @@
+name: browsers
+
+# Phase 3b — build the browser forks and capture native performance stats
+# (time / memory) per platform.
+#
+# Browser builds are heavy (Chromium is ~29 GB and hours to build), so this runs
+# on SELF-HOSTED runners you provision, on demand or on a schedule — never on
+# every push. It is a scaffold: it will run once runners exist.
+#
+# Runner setup (one per platform you care about):
+#   - Register a self-hosted GitHub Actions runner labeled `self-hosted,<os>,<arch>`
+#     (e.g. self-hosted,macos,arm64 — the dev Mac is the obvious one).
+#   - Have the fork checkouts present under the container's browsers/ dir the
+#     first time (run `chromium/bootstrap.sh` and `scripts/fork-overlay.sh
+#     bootstrap <fork>` once — the full upstream sync is a one-time cost that
+#     persists on the runner). After that this workflow only reconstructs the
+#     overlay onto the existing checkout and rebuilds — fast.
+#   - Point the build/bench scripts at those checkouts with BROWSERS env vars if
+#     they are not the default `../browsers` beside the repo:
+#     CHROMIUM_SRC, GECKO_SRC, SERVO_SRC, LADYBIRD_SRC.
+on:
+  workflow_dispatch:
+    inputs:
+      fork:
+        description: which fork(s) to build
+        type: choice
+        default: all
+        options: [all, chromium, firefox, servo, ladybird]
+  schedule:
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+
+jobs:
+  browser:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: [self-hosted, macos, arm64],   name: macos-arm64 }
+          - { runner: [self-hosted, linux, x64],     name: linux-x64 }
+          - { runner: [self-hosted, linux, arm64],   name: linux-arm64 }
+          - { runner: [self-hosted, windows, x64],   name: windows-x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The C-ABI staticlib every fork links.
+      - name: engine staticlib
+        shell: bash
+        run: scripts/build.sh engine
+
+      # Reconstruct the Mersey overlay onto the persistent upstream checkouts,
+      # then build. (First-time checkout needs a one-off bootstrap — see header.)
+      - name: reconstruct + build fork(s)
+        shell: bash
+        run: |
+          forks='${{ github.event.inputs.fork }}'; [ -n "$forks" ] || forks=all
+          [ "$forks" = all ] && forks='chromium firefox servo ladybird'
+          for f in $forks; do
+            echo "::group::$f"
+            if [ "$f" = chromium ]; then chromium/apply.sh; else scripts/fork-overlay.sh apply "$f"; fi
+            scripts/build.sh "$f"
+            echo "::endgroup::"
+          done
+
+      # Native performance: time + memory, checksum-verified. Each runner runs
+      # the legs whose fork it just built; the runners are self-timed and print
+      # to results.native.*.json.
+      - name: native benchmarks (time / memory)
+        shell: bash
+        working-directory: bench/web
+        run: |
+          npm ci || npm install || true
+          forks='${{ github.event.inputs.fork }}'; [ -n "$forks" ] || forks=all
+          run() { node "$1" || echo "leg $1 skipped/failed on ${{ matrix.name }}"; }
+          case "$forks" in *all*|*chromium*) run run-native-chromium.mjs ;; esac
+          case "$forks" in *all*|*firefox*)  run run-native.mjs ;; esac
+          case "$forks" in *all*|*servo*)    run run-native-servo.mjs ;; esac
+          case "$forks" in *all*|*ladybird*) run run-native-ladybird.mjs && run run-native-ladybird-mem.mjs ;; esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.name }}
+          path: bench/web/results.*.json
+          if-no-files-found: warn
