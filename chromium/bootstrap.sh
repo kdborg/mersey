@@ -3,19 +3,32 @@
 # repo's overlay. No full Chromium source lives here; this fetches upstream at
 # chromium/BASELINE, lays the ~40-file Mersey overlay on top, and builds.
 #
-# The heavy step is `gclient sync` (tens of minutes, ~29 GB, from googlesource —
-# which handles the shallow/large-file history that GitHub cannot). Everything
-# else is fast. Safe to re-run: an existing checkout already at BASELINE is not
-# re-synced.
+# The heavy step is `gclient sync` — a FULL-history fetch from googlesource
+# (budget ~60 GB of disk and tens of minutes). It must be full history, NOT
+# shallow: googlesource rejects a shallow want-by-sha of an arbitrary historical
+# revision (HTTP 500), and BASELINE pins exactly such a revision, so gclient
+# fetches full history and checks the pin out from it locally. A shared
+# GCLIENT_CACHE (git cache-dir) makes repeat/other forks cheap. Everything else
+# is fast. Safe to re-run: a checkout already at BASELINE is not re-synced.
 #
-# Usage:  chromium/bootstrap.sh [CHROMIUM_DIR]
+# Usage:  chromium/bootstrap.sh [CHROMIUM_DIR] [--no-build]
 #   CHROMIUM_DIR  where the gclient checkout lives (default: ../../chromium,
 #                 i.e. a sibling of this repo — the layout the build scripts use)
+#   --no-build    reconstruct only (sync + overlay + staticlib); skip the
+#                 hours-long compile
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-DEST="${1:-$(cd "$REPO/.." && pwd)/chromium}"
+DEST=""
+NO_BUILD=0
+for a in "$@"; do
+  case "$a" in
+    --no-build) NO_BUILD=1 ;;
+    *) DEST="$a" ;;
+  esac
+done
+[ -n "$DEST" ] || DEST="$(cd "$REPO/.." && pwd)/chromium"
 SRC="$DEST/src"
 CR_REV="$(awk '/^chromium\/src/{print $2}' "$HERE/BASELINE")"
 [ -n "$CR_REV" ] || { echo "no chromium/src pin in BASELINE" >&2; exit 1; }
@@ -39,10 +52,23 @@ if [ "$have" = "$CR_REV" ]; then
   echo "already at BASELINE — skipping sync"
 else
   mkdir -p "$DEST"
+  # No arrays — this must run under macOS's stock bash 3.2.
   ( cd "$DEST"
-    [ -f .gclient ] || gclient config --name src --unmanaged https://chromium.googlesource.com/chromium/src.git
-    # -r pins src to the baseline; --no-history keeps it shallow.
-    gclient sync -r "src@$CR_REV" --no-history --shallow --reset --force
+    if [ ! -f .gclient ]; then
+      if [ -n "${GCLIENT_CACHE:-}" ]; then
+        gclient config --name src --unmanaged --cache-dir "$GCLIENT_CACHE" https://chromium.googlesource.com/chromium/src.git
+      else
+        gclient config --name src --unmanaged https://chromium.googlesource.com/chromium/src.git
+      fi
+    fi
+    # Full history (see header): -r pins src to the baseline revision, gclient
+    # checks it out from the fetched history. --nohooks when we won't build,
+    # since hooks pull the (large) toolchains a compile needs.
+    if [ "$NO_BUILD" = 1 ]; then
+      gclient sync -r "src@$CR_REV" --reset --force --nohooks
+    else
+      gclient sync -r "src@$CR_REV" --reset --force
+    fi
   )
 fi
 
@@ -58,6 +84,11 @@ say "engine staticlib"
   echo "note: refresh.sh missing/not-executable — the platform build script also refreshes it"
 
 # 5. Build the fork with the platform toolchain.
+if [ "$NO_BUILD" = 1 ]; then
+  say "done (--no-build)"
+  echo "fork reconstructed at $SRC — build with scripts/build-macos-arm64.sh chromium (or the Linux recipe)"
+  exit 0
+fi
 say "build"
 os="$(uname -s)"
 if [ "$os" = "Darwin" ]; then
