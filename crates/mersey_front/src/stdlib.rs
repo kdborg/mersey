@@ -27,5 +27,12 @@ pub fn is_source_module(spec: &str) -> bool {
 /// same way it enumerates the native ones: by checking them and listing what they
 /// export, so the reference cannot describe an export that does not exist.
 pub fn source_modules() -> &'static [&'static str] {
-    &["std:result", "std:url", "std:date", "std:abort", "std:test", "std:http"]
+    &[
+        "std:result",
+        "std:url",
+        "std:date",
+        "std:abort",
+        "std:test",
+        "std:http",
+    ]
 }

@@ -5095,7 +5095,10 @@ impl Interp {
             "net.serve" => {
                 let port = args.first().and_then(as_i64).unwrap_or(0);
                 if !(1..=65535).contains(&port) {
-                    return Err(self.throw("RangeError", format!("net.serve: port {port} is outside 1..=65535")));
+                    return Err(self.throw(
+                        "RangeError",
+                        format!("net.serve: port {port} is outside 1..=65535"),
+                    ));
                 }
                 let cb = args.get(1).cloned().unwrap_or(Value::Null);
                 let cb_id = self.callbacks.len() as u32;
