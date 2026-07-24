@@ -30,7 +30,7 @@ import { tagRows, mergeRows } from "./rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
-  join(here, "../../../browsers/servo-src/target/release/servoshell");
+  join(here, "../../../browsers/servo/target/release/servoshell");
 const REPEATS = 3;
 // idb + locks excluded: Servo implements neither IndexedDB nor Web Locks
 // (the stock legs prove both absences).
