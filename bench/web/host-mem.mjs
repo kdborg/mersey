@@ -97,7 +97,8 @@ function linuxPidsMatchingExeSync(prefix) {
 async function macPidsMatching(pred) {
   let out;
   try {
-    ({ stdout: out } = await execFileAsync("ps", ["-Axo", "pid=,command="], { maxBuffer: 8 << 20 }));
+    ({ stdout: out } = await execFileAsync("ps", ["-Axo", "pid=,command="],
+      { maxBuffer: 8 << 20, timeout: 8000, killSignal: "SIGKILL" }));
   } catch { return []; }
   return parsePs(out, pred);
 }
@@ -121,7 +122,8 @@ async function macFootprintKiB(pids) {
   for (const p of pids) args.push("-p", String(p));
   let out;
   try {
-    ({ stdout: out } = await execFileAsync("footprint", args, { maxBuffer: 8 << 20 }));
+    ({ stdout: out } = await execFileAsync("footprint", args,
+      { maxBuffer: 8 << 20, timeout: 8000, killSignal: "SIGKILL" }));
   } catch (e) {
     // footprint exits non-zero if every target died mid-sample; it still prints
     // what it managed to collect, so use that rather than losing the sample.

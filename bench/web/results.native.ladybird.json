@@ -203,250 +203,200 @@
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "bchannel",
-    "ms": 26.071,
+    "ms": 26.659000000000002,
     "checksum": 5890,
-    "platform": "macos",
-    "rss": 81139,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "blob",
-    "ms": 30.784000000000002,
+    "ms": 30.085,
     "checksum": 198890,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "canvas",
-    "ms": 9.232,
+    "ms": 10.680999999999997,
     "checksum": 20000,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "compression",
-    "ms": 27.698,
+    "ms": 26.101000000000003,
     "checksum": 8690,
-    "platform": "macos",
-    "rss": 132147,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "crypto",
-    "ms": 13.125000000000004,
+    "ms": 12.686,
     "checksum": 320000,
-    "platform": "macos",
-    "rss": 448,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "cssom",
-    "ms": 33.766,
+    "ms": 32.911,
     "checksum": 48000,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "dom",
-    "ms": 16.456999999999997,
+    "ms": 16.187,
     "checksum": 10000,
-    "platform": "macos",
-    "rss": 96291,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "encoding",
-    "ms": 21.875,
+    "ms": 21.424,
     "checksum": 437780,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "events",
-    "ms": 17.938,
+    "ms": 18.242,
     "checksum": 10000,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "fetch",
-    "ms": 46.565,
+    "ms": 44.784000000000006,
     "checksum": 20990,
-    "platform": "macos",
-    "rss": 85939,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "geometry",
-    "ms": 27.888,
+    "ms": 27.190999999999995,
     "checksum": 95000,
-    "platform": "macos",
-    "rss": 2144,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "idb",
-    "ms": 32.241,
+    "ms": 31.988999999999997,
     "checksum": 4390,
-    "platform": "macos",
-    "rss": 81635,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "json",
-    "ms": 2.2300000000000004,
+    "ms": 2.2390000000000008,
     "checksum": 848890,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "locks",
-    "ms": 20.101000000000003,
+    "ms": 21.151,
     "checksum": 5500,
-    "platform": "macos",
-    "rss": 83587,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "msgchannel",
-    "ms": 23.787999999999997,
+    "ms": 24.418000000000003,
     "checksum": 5890,
-    "platform": "macos",
-    "rss": 81891,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "query",
-    "ms": 5.8629999999999995,
+    "ms": 5.832999999999998,
     "checksum": 214900,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "sse",
-    "ms": 45.861999999999995,
+    "ms": 45.977999999999994,
     "checksum": 14890,
-    "platform": "macos",
-    "rss": 79491,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "storage",
-    "ms": 1062.7510000000002,
+    "ms": 1087.455,
     "checksum": 208890,
-    "platform": "macos",
-    "rss": 74643,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "streams",
-    "ms": 15.462999999999997,
+    "ms": 15.186000000000003,
     "checksum": 18890,
-    "platform": "macos",
-    "rss": 86019,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "timers",
-    "ms": 15.754000000000001,
+    "ms": 15.426000000000002,
     "checksum": 20000,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 38.09,
+    "ms": 35.98500000000001,
     "checksum": 537780,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "urlpattern",
-    "ms": 54.13,
+    "ms": 53.455000000000005,
     "checksum": 88890,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "websocket",
-    "ms": 27.296000000000003,
+    "ms": 23.933000000000003,
     "checksum": 1290,
-    "platform": "macos",
-    "rss": 80035,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "xhr",
-    "ms": 47.772999999999996,
+    "ms": 49.275,
     "checksum": 20990,
-    "platform": "macos",
-    "rss": 81795,
-    "mem_metric": "footprint"
+    "platform": "macos"
   },
   {
     "browser": "ladybird-fork",
     "impl": "native",
     "wl": "compute",
-    "ms": 88.466,
+    "ms": 95.43299999999999,
     "checksum": 1765835917,
-    "platform": "macos",
-    "rss": 0,
-    "mem_metric": "footprint"
+    "platform": "macos"
   }
 ]
