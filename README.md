@@ -6,7 +6,8 @@ the historical baggage: there is exactly one mode (strict), no prototype system,
 no `var`, no implicit stringly-typed coercion, and no `eval`.
 
 Source files use the `.mersey` extension and are encoded in UTF-8, so any
-common editor works; the `string` type is 4-byte code points internally.
+common editor works; the `string` type is UTF-16, matching JavaScript's
+code-unit semantics.
 
 ## Design pillars
 
@@ -24,9 +25,11 @@ common editor works; the `string` type is 4-byte code points internally.
    plus arbitrary-precision `bigint` and `bigdec`.
 6. **Classes with real access control.** `public`, `protected`, `private` —
    enforced by the type system and the runtime.
-7. **Code-point strings.** The default `string` type uses 4-byte code points:
-   `s[i]` is O(1) and always a whole character — no surrogate-pair traps.
-   Source files are plain UTF-8, decoded to code points at the front door.
+7. **UTF-16 strings.** The `string` type is a sequence of UTF-16 code units with
+   JavaScript-aligned semantics: `s[i]` is a code unit (O(1)) and `s.length`
+   counts code units, surrogate pairs behaving exactly as in JS — so a checksum
+   the engine computes matches the browser bit-for-bit. The engine uses WTF-16
+   under the hood. Source files are plain UTF-8, decoded at the front door.
 8. **Consistent APIs.** The standard library follows a single naming and
    signature convention (see spec §Overview); no JS-style inconsistencies.
 9. **Performant.** Tiered execution: bytecode interpreter → optimizing JIT.
