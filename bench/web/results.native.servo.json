@@ -430,5 +430,15 @@
     "checksum": 1765835917,
     "platform": "macos",
     "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "frameworkui",
+    "ms": 98.97166599999998,
+    "rss": 22560,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

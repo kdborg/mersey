@@ -46,7 +46,7 @@ const TIMEOUT_S = { js: 60, tjs: 300, poly: 900 };
 // LibWasm interpreter interpreting an interpreter — excluded from poly/tjs.
 // worker excluded: pages load from file:// and the worker script would be an
 // absolute-http (cross-origin) URL, which dedicated workers refuse.
-const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
 const PLAN = {
   js: [...WEB_WORKLOADS, "compute"],
   tjs: [...WEB_WORKLOADS],
