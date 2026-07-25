@@ -75,7 +75,7 @@ const WORKLOADS = process.env.PERF_WL
     ? [
         "bchannel", "blob", "calls", "canvas", "compression", "compute",
         "crypto", "cssom", "dom", "encoding", "events", "fcompute", "fetch",
-        "geometry", "idb", "json", "locks", "mathk", "msgchannel", "query",
+        "frameworkui", "geometry", "idb", "json", "locks", "mathk", "msgchannel", "query",
         "sse", "storage", "streams", "timers", "url", "urlpattern",
         "websocket", "worker", "xhr",
       ]

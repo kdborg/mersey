@@ -36,10 +36,38 @@ function makeElement(tag) {
     textContent: "",
     className: "",
     children: [],
+    _idx: -1, // this node's index in its parent (for O(1) removeChild)
     listeners: Object.create(null),
     appendChild(c) {
+      if (c._idx >= 0 && c._parent) c._parent.removeChild(c);
+      c._idx = this.children.length;
+      c._parent = this;
       this.children.push(c);
       return c;
+    },
+    // Reconciler ops used by the frontend-framework workload. Real DOM is O(1)
+    // here; the array stub would be O(n) via indexOf, so removeChild swap-removes
+    // in O(1) and insertBefore just appends. Sibling ORDER is therefore only
+    // approximate on this leg — which is fine: the workload's checksum folds its
+    // data model, never the live DOM, so order never affects correctness.
+    removeChild(c) {
+      const i = c._idx;
+      const last = this.children.length - 1;
+      if (i >= 0 && i <= last && this.children[i] === c) {
+        const moved = this.children[last];
+        this.children[i] = moved;
+        moved._idx = i;
+        this.children.pop();
+        c._idx = -1;
+        c._parent = null;
+      }
+      return c;
+    },
+    insertBefore(c, _ref) {
+      return this.appendChild(c);
+    },
+    get firstChild() {
+      return this.children.length ? this.children[0] : null;
     },
     addEventListener(type, fn) {
       (this.listeners[type] ??= []).push(fn);

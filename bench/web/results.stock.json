@@ -2234,5 +2234,49 @@
     "checksum": 20990,
     "platform": "macos",
     "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "frameworkui",
+    "ms": 4.059999999590218,
+    "rss": 22753,
+    "heap": 10000000,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "frameworkui",
+    "ms": 112.45000000018626,
+    "rss": 82497,
+    "heap": 0,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "frameworkui",
+    "ms": 4.959999999999994,
+    "rss": 81426,
+    "heap": 0,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "frameworkui",
+    "ms": 409.9200000000001,
+    "rss": 105745,
+    "heap": 0,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

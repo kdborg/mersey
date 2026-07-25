@@ -296,17 +296,6 @@
   {
     "browser": "engine",
     "impl": "wasm",
-    "wl": "canvas",
-    "ms": 62.73524999999999,
-    "rss": 42497,
-    "heap": 10551296,
-    "checksum": 20000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
     "wl": "compression",
     "ms": 79.21337500000001,
     "rss": 60867,
@@ -340,44 +329,11 @@
   {
     "browser": "engine",
     "impl": "wasm",
-    "wl": "cssom",
-    "ms": 120.765958,
-    "rss": 44017,
-    "heap": 10551296,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
-    "wl": "dom",
-    "ms": 74.74129199999999,
-    "rss": 64903,
-    "heap": 10551296,
-    "checksum": 10000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
     "wl": "encoding",
     "ms": 77.44891599999998,
     "rss": 50243,
     "heap": 10551296,
     "checksum": 437780,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
-    "wl": "events",
-    "ms": 70.866333,
-    "rss": 45282,
-    "heap": 14811136,
-    "checksum": 10000,
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -462,17 +418,6 @@
     "rss": 42945,
     "heap": 14811136,
     "checksum": 5890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
-    "wl": "query",
-    "ms": 87.613083,
-    "rss": 45505,
-    "heap": 11599872,
-    "checksum": 214900,
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -564,6 +509,72 @@
     "rss": 74114,
     "heap": 14811136,
     "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "frameworkui",
+    "ms": 712.682166,
+    "rss": 130518,
+    "heap": 60424192,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "dom",
+    "ms": 70.115,
+    "rss": 105624,
+    "heap": 10551296,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "query",
+    "ms": 81.67695799999998,
+    "rss": 58449,
+    "heap": 11272192,
+    "checksum": 214900,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "cssom",
+    "ms": 96.695708,
+    "rss": 57889,
+    "heap": 10551296,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "canvas",
+    "ms": 48.205042000000006,
+    "rss": 54224,
+    "heap": 10551296,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "events",
+    "ms": 61.587708000000006,
+    "rss": 59537,
+    "heap": 14811136,
+    "checksum": 10000,
     "platform": "macos",
     "mem_metric": "footprint"
   }
