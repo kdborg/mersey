@@ -40,9 +40,10 @@ common editor works; the `string` type is 4-byte code points internally.
 - **`mersey`** — standalone engine/CLI (run, check, compile, format, convert).
 - **Browser integration** — loaded like JavaScript
   (`<script type="text/mersey" src="app.mersey">`) but executed by its own
-  engine, *not* inside the JavaScript engine. Chromium is the first target;
-  see `docs/architecture/browser-integration.md` for the two-stage plan
-  (WASM-hosted shim first, native Blink integration second).
+  engine, *not* inside the JavaScript engine. The engine is hosted natively in
+  four experimental browser forks — **Mersey Blink** (Chromium), **Mersey Gecko**
+  (Firefox), **Mersey Servo**, and **Mersey Ladybird** — plus a WASM polyfill for
+  stock browsers. See `docs/architecture/browser-integration.md`.
 
 ## Repository layout
 
@@ -81,15 +82,24 @@ generator bodies (which execute on the VM) break and step like sync code.
 
 ## Status
 
-**MVP working end-to-end.** The frontend (lexer → parser → binder) is done;
-an MVP interpreter runs Mersey natively (`mersey run app.mersey`) and in the
-browser via the Stage A polyfill:
+The frontend (lexer → parser → binder), the type checker, the typed-bytecode
+VM, and the Cranelift Tier-1 JIT are all in place. `mersey run app.mersey`
+executes natively; the same engine runs as a WASM polyfill in stock browsers
+and natively inside four browser forks (Mersey Blink / Gecko / Servo /
+Ladybird), all checksum-verified bit-for-bit against each other. Twenty-five
+web-platform workloads are benchmarked across every leg (`bench/web`).
+
+Mersey is **experimental and pre-1.0** — behaviour may change before 1.0.0, and
+the browser builds are not for production use. The conformance suites are the
+contract; see `ROADMAP.md`.
 
 ```sh
 ./web/build-and-test.sh          # build engine to WASM + headless e2e test
 cd web && python3 -m http.server # then open http://localhost:8000
 ```
 
-The type checker, bytecode VM, and JIT replace the MVP internals in later
-phases without changing behavior — the conformance suites are the contract.
-See `ROADMAP.md`.
+## License
+
+Apache-2.0 — see `LICENSE` and `NOTICE`. The browser-fork overlays are
+derivative works of their upstream projects and keep those licenses (Chromium
+BSD-3-Clause, Firefox/Servo MPL-2.0, Ladybird BSD-2-Clause).

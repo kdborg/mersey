@@ -153,9 +153,9 @@ staticlib**, so build it in this repo first:
 ```bash
 cargo build --release -p mersey_capi        # -> target/release/libmersey_capi.a (jit on)
 
-ladybird/apply.sh ~/Work/ladybird                # install the module + wire CMake + hook
+ladybird/apply.sh browsers/ladybird              # install the module + wire CMake + hook
 
-cd ~/Work/ladybird
+cd browsers/ladybird
 ./Meta/ladybird.py build test-web           # builds LibWeb (+ the fork) and the helper processes
 ```
 
@@ -167,7 +167,7 @@ node bench/web/report.mjs                    # merge into REPORT.md
 ```
 
 `run-native-ladybird.mjs` writes each workload as an inline `text/mersey` Text
-test under `~/Work/ladybird/Tests/LibWeb/Text/input/mersey/`, plus a trailing
+test under `browsers/ladybird/Tests/LibWeb/Text/input/mersey/`, plus a trailing
 `include.js` + `test(() => {})` so the test completes at once. The engine's host
 `print` hook writes the `RESULT` line to WebContent's stdout, which `test-web`
 captures into a per-test `.logs.html` — that is where the harness reads it
