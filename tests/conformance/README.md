@@ -1,8 +1,9 @@
 # Conformance suite
 
 The permanent, implementation-independent test suite (ROADMAP Phase 0 item).
-Every Mersey implementation — the Rust engine, the Stage A WASM build, the
-Stage B Chromium integration — must pass it unmodified.
+Every Mersey implementation — the Rust engine, the Stage A WASM build, and the
+Stage B browser forks (Mersey Blink / Gecko / Servo / Ladybird) — must pass it
+unmodified.
 
 ## Format: golden files
 
