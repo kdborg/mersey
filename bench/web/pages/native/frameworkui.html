@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native frameworkui</title>
+<body><div id="out"></div>
+<script type="text/mersey">
+// Web-platform workload: a keyed reactive list framework doing the
+// js-framework-benchmark row operations (create / keyed-update / swap / remove
+// / clear). Line-for-line twin of js/frameworkui.js. The checksum folds the
+// data model after each op — DOM-independent — so every leg matches bit-for-bit.
+import { console } from "std:console";
+import { time } from "std:time";
+import { document } from "browser:dom";
+
+const N: int32 = 10;
+const ROWS: int32 = 200;
+const MID: int32 = 100;
+
+// A row of state. `v` is a version bumped on update, so the reconciler and the
+// checksum both see updates without inspecting the DOM.
+class Row {
+    public id: int32;
+    public v: int32;
+    public constructor(id: int32) {
+        this.id = id;
+        this.v = 0;
+    }
+}
+
+class Entry {
+    public node: Element;
+    public v: int32;
+    public constructor(node: Element, v: int32) {
+        this.node = node;
+        this.v = v;
+    }
+}
+
+// A keyed reconciler: syncs a container's children to a rows array (keyed by
+// id), doing minimal real-DOM work — create, text-update, move, remove.
+class ListView {
+    private readonly container: Element;
+    private readonly nodes: Map<int32, Entry> = new Map<int32, Entry>();
+
+    public constructor(container: Element) {
+        this.container = container;
+    }
+
+    public render(rows: Row[]): void {
+        const container = this.container;
+        const nodes = this.nodes;
+        const keep = new Set<int32>();
+        for (let i = 0; i < rows.length; i += 1) {
+            keep.add(rows[i].id);
+        }
+        const drop: int32[] = [];
+        for (const [id, entry] of nodes.entries()) {
+            if (!keep.has(id)) {
+                drop.push(id);
+            }
+        }
+        for (let i = 0; i < drop.length; i += 1) {
+            const entry = nodes.get(drop[i]);
+            if (entry != null) {
+                container.removeChild(entry.node);
+                nodes.remove(drop[i]);
+            }
+        }
+        for (let i = 0; i < rows.length; i += 1) {
+            const r = rows[i];
+            const existing = nodes.get(r.id);
+            let node: Element;
+            if (existing == null) {
+                node = document.createElement("div");
+                node.textContent = `row ${r.id} v${r.v}`;
+                nodes.set(r.id, new Entry(node, r.v));
+            } else {
+                node = existing.node;
+                if (existing.v != r.v) {
+                    node.textContent = `row ${r.id} v${r.v}`;
+                    existing.v = r.v;
+                }
+            }
+            const cur = i < container.children.length ? container.children[i] as Element : null;
+            if (cur != node) {
+                container.insertBefore(node, cur);
+            }
+        }
+    }
+}
+
+// Fold the data model into the checksum after each op: order (i), identity
+// (id), and update version (v). int32 arithmetic wraps at every step, matching
+// the Math.imul + | 0 in the JS twin.
+function fold(rows: Row[], checksum: int32): int32 {
+    let s: int32 = 0;
+    for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        s = s + (i + 1) * (r.id * 1000 + r.v);
+    }
+    return checksum * 31 + s;
+}
+
+function work(rounds: int32): int32 {
+    const container = document.createElement("div");
+    const body = document.body as Element;
+    body.appendChild(container);
+    const view = new ListView(container);
+    let rows: Row[] = [];
+    let idc: int32 = 0;
+    let checksum: int32 = 0;
+    for (let round = 0; round < rounds; round += 1) {
+        // create 1000 rows
+        rows = [];
+        for (let i = 0; i < ROWS; i += 1) {
+            idc += 1;
+            rows.push(new Row(idc));
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        // update every 10th row's text
+        for (let i = 0; i < rows.length; i += 10) {
+            rows[i].v += 1;
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        // swap two rows
+        const t = rows[1];
+        rows[1] = rows[ROWS - 2];
+        rows[ROWS - 2] = t;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        // remove one row (index 500)
+        const next: Row[] = [];
+        for (let i = 0; i < rows.length; i += 1) {
+            if (i != MID) {
+                next.push(rows[i]);
+            }
+        }
+        rows = next;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        // clear
+        rows = [];
+        view.render(rows);
+        checksum = fold(rows, checksum);
+    }
+    return checksum;
+}
+
+work(1);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT frameworkui ${t1 - t0} ${c}`);
+
+</script>
+</body>

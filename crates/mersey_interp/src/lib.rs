@@ -370,6 +370,17 @@ pub trait Host {
     fn web_bind(&mut self, _target: i64, _bind_id: u32, _args: &[f64]) -> Option<WebReply> {
         None
     }
+    /// Apply a batch of DOM mutations in one host call (ABI v10; see
+    /// docs/architecture/dom-batching.md). `ops` is the flat op stream (groups
+    /// of 4: opcode, x, y, z — opcodes 0 create, 1 set-text, 2 append, 3 insert,
+    /// 4 remove). A node operand is a non-negative index into `nodes` (a live
+    /// handle) or a negative `-(k+1)` naming the k-th node the batch created;
+    /// str operands index `strs` (tag names + texts). Returns the created nodes'
+    /// live handles in creation order, or `None` if the host has no batched path
+    /// (the engine then replays the ops one at a time — identical result).
+    fn web_apply(&mut self, _ops: &[i32], _nodes: &[i64], _strs: &[String]) -> Option<Vec<i64>> {
+        None
+    }
     /// The `web_bind` entry as a raw C function pointer plus its host data, so
     /// the compiled tier can call it *directly* — skipping the interpreter
     /// reentry and the dynamic dispatch that `web_bind` would go through. A host
@@ -2790,11 +2801,12 @@ impl Interp {
                 Ok(())
             }
             "std:math" | "std:format" | "std:fs" | "std:env" | "std:caps" | "std:json"
-            | "std:random" | "std:net" => {
+            | "std:random" | "std:net" | "std:dom" => {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
                         "std:json" => ("json", &["stringify", "parse"], &[]),
                         "std:net" => ("net", &["serve"], &[]),
+                        "std:dom" => ("dom", &["apply"], &[]),
                         "std:random" => ("random", &["float", "int", "bytes"], &[]),
                         "std:math" => (
                             "math",
@@ -5109,6 +5121,49 @@ impl Interp {
                 match self.host.request_serve(port as u16, cb_id) {
                     Ok(()) => Ok(Value::Null),
                     Err(msg) => Err(self.throw("Error", msg)),
+                }
+            }
+            // dom.apply(ops, nodes, strs): submit a whole render's DOM mutations
+            // in ONE host call and get back the created nodes. See
+            // docs/architecture/dom-batching.md. Node operands cross as JsRef
+            // (typed `unknown`); the created nodes come back as JsRef too.
+            "dom.apply" => {
+                let ops: Vec<i32> = match args.first() {
+                    Some(Value::Array(a)) => a
+                        .borrow()
+                        .iter()
+                        .map(|v| as_i64(v).unwrap_or(0) as i32)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let nodes: Vec<i64> = match args.get(1) {
+                    Some(Value::Array(a)) => a
+                        .borrow()
+                        .iter()
+                        .map(|v| if let Value::JsRef(h) = v { *h } else { -1 })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let strs: Vec<String> = match args.get(2) {
+                    Some(Value::Array(a)) => a
+                        .borrow()
+                        .iter()
+                        .map(|v| {
+                            if let Value::Str(s) = v {
+                                utf16_to_string(s)
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                match self.host.web_apply(&ops, &nodes, &strs) {
+                    Some(handles) => Ok(new_array(handles.into_iter().map(Value::JsRef).collect())),
+                    None => Err(self.throw(
+                        "Error",
+                        "std:dom.apply: host has no batched path".to_string(),
+                    )),
                 }
             }
             "caps.has" => {
