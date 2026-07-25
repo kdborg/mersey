@@ -520,5 +520,15 @@
     "checksum": 20990,
     "platform": "macos",
     "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox-fork",
+    "impl": "native",
+    "wl": "frameworkui",
+    "ms": 54.54145833333334,
+    "rss": -38801,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]
