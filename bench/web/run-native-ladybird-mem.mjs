@@ -24,7 +24,7 @@
 // harness (inline text/mersey + include.js + test(()=>{})).
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -33,7 +33,7 @@ const LADYBIRD_SRC = process.env.LADYBIRD_SRC || join(here, "../../../browsers/l
 const BUILD_BIN = process.env.LADYBIRD_BIN || `${LADYBIRD_SRC}/Build/release/bin`;
 const TEST_WEB = process.env.TEST_WEB || `${BUILD_BIN}/test-web`;
 const PYTHON = process.env.PYTHON || "python3";
-const REPEATS = Number(process.env.MEM_REPEATS || 5);
+const REPEATS = Number(process.env.MEM_REPEATS || 3);
 // Linux poll cadence. /proc reads are cheap enough to sample at single-digit ms;
 // macOS cannot (each footprint call is ~100ms), so on that host the sampler
 // picks its own slower rate and this value is ignored unless set explicitly.
@@ -48,6 +48,24 @@ const ASYNC_WORKLOADS = new Set([
   "streams", "websocket", "xhr",
 ]);
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : WEB_WORKLOADS;
+
+// SAFETY GATE — opt-in. This poller repeatedly spawns test-web (plus its
+// WebContent/RequestServer/ImageDecoder children) and samples with ps+footprint
+// every ~120ms. On a host with a low per-user process cap (e.g. macOS default
+// kern.maxprocperuid), that sustained spawn rate can exhaust the PID table and
+// wedge the whole machine — and an in-process watchdog CANNOT rescue it, because
+// under PID exhaustion it can't fork to check. So it does not run unless you
+// explicitly opt in AND have given the host headroom (raise kern.maxproc /
+// kern.maxprocperuid, or restrict WL + keep MEM_REPEATS small). The hardening in
+// runOncePeak (hard timeout, process-group kill, stray sweep) reduces but does
+// not eliminate the risk on a constrained host.
+if (!process.env.MEM_ALLOW_LADYBIRD) {
+  console.error(
+    "run-native-ladybird-mem is opt-in: it can exhaust the process table and\n" +
+    "wedge a low-limit host. Set MEM_ALLOW_LADYBIRD=1 to run it, and only on a\n" +
+    "host with process headroom. See this file's header for details.");
+  process.exit(2);
+}
 
 if (!existsSync(TEST_WEB)) {
   console.error(`test-web not found at ${TEST_WEB}\n  build the fork first (see ladybird/README.md), or set TEST_WEB=…`);
@@ -93,22 +111,54 @@ await writeFile(join(pageDir, `blank.html`), `<!doctype html>
 </body>`);
 
 
+// SIGKILL any lingering test-web / WebContent (etc.) from this build tree. The
+// peak sampler and the hard timeout below both rely on the tree actually dying;
+// a stuck WebContent that outlives its test-web is what accumulated until macOS
+// ran out of PIDs, so we sweep before and after every run as a backstop.
+function killStrays() {
+  try { execFileSync("pkill", ["-9", "-f", BUILD_BIN], { stdio: "ignore" }); } catch {}
+}
+// Never leave a test-web tree behind on interrupt/crash — this is the exact
+// failure that filled the process table and wedged the host.
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { killStrays(); process.exit(1); });
+process.on("exit", killStrays);
+
 // Run one page once; poll the tree's memory peak across its whole process life.
 // Returns peak KiB. The sampler picks the host's metric and a poll rate it can
 // sustain (see host-mem.mjs): Linux reads /proc every few ms, macOS drives
 // `footprint`, which costs ~100ms a call and so samples far more coarsely.
+//
+// Hardened against the hang that exhausted the process table: the child is its
+// own process group (detached), a hard timeout force-kills the WHOLE group if a
+// run wedges (test-web's own -t can miss a stuck WebContent), and strays are
+// swept before and after — so runOncePeak ALWAYS settles and never leaks a tree.
 function runOncePeak(wl) {
   return new Promise((resolve) => {
+    killStrays();
     const sampler = createPeakSampler(BUILD_BIN, { intervalMs: POLL_MS });
     sampler.reset();
     const child = spawn(TEST_WEB,
       ["--test-path", testRoot, "-f", `mersey/${wl}`, "-P", PYTHON,
         "-j1", "-t", String(PER_TEST_TIMEOUT), "-R", resultsDir],
-      { env: { ...process.env, LADYBIRD_SOURCE_DIR: LADYBIRD_SRC }, stdio: "ignore" });
+      { env: { ...process.env, LADYBIRD_SOURCE_DIR: LADYBIRD_SRC }, stdio: "ignore",
+        detached: true });
     sampler.start();
-    const done = () => { sampler.stop(); resolve(sampler.peakKiB); };
-    child.on("exit", done);
-    child.on("error", done);
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hard);
+      sampler.stop();
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      killStrays();
+      resolve(sampler.peakKiB);
+    };
+    // test-web's -t is its per-test budget; give it a margin, then force-kill so
+    // a wedged run can never stall the whole script (and keep the sampler firing).
+    const hard = setTimeout(finish, (PER_TEST_TIMEOUT + 15) * 1000);
+    if (hard.unref) hard.unref();
+    child.on("exit", finish);
+    child.on("error", finish);
   });
 }
 
@@ -148,4 +198,5 @@ for (const wl of WORKLOADS) {
 
 await writeFile(resultsPath, JSON.stringify(rows, null, 2));
 echoServer.close();
+killStrays();
 console.log(`\nupdated rss in ${resultsPath}`);
