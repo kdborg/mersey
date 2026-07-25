@@ -541,6 +541,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
         Ns::Env,
         Ns::Caps,
         Ns::Net,
+        Ns::Dom,
         Ns::Gc,
     ];
     for ns in namespaces {
@@ -829,6 +830,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::Format => &["pad", "fixed"],
         Ns::Fs => &["readText"],
         Ns::Net => &["serve"],
+        Ns::Dom => &["apply"],
         Ns::Env => &["get"],
         Ns::Caps => &["has", "list", "drop"],
         Ns::Json => &["stringify", "parse"],
@@ -859,6 +861,7 @@ pub fn namespace_module(ns: Ns) -> &'static str {
         Ns::Format => "std:format",
         Ns::Fs => "std:fs",
         Ns::Net => "std:net",
+        Ns::Dom => "std:dom",
         Ns::Env => "std:env",
         Ns::Caps => "std:caps",
         Ns::Json => "std:json",
@@ -1365,6 +1368,8 @@ pub enum Ns {
     Json,
     Random,
     Net,
+    /// `std:dom` — the batched DOM-mutation primitive (`apply`).
+    Dom,
     /// The `Promise` value from `std:async` (`resolve`/`reject`/`all`), as
     /// distinct from the `Promise<T>` *type*.
     PromiseNs,
@@ -2744,6 +2749,7 @@ impl Checker {
                         ("std:format", _) => Type::Namespace(Ns::Format),
                         ("std:fs", _) => Type::Namespace(Ns::Fs),
                         ("std:net", _) => Type::Namespace(Ns::Net),
+                        ("std:dom", _) => Type::Namespace(Ns::Dom),
                         ("std:env", _) => Type::Namespace(Ns::Env),
                         ("std:caps", _) => Type::Namespace(Ns::Caps),
                         ("std:json", _) => Type::Namespace(Ns::Json),
@@ -6949,6 +6955,30 @@ impl Checker {
                     }))
                 }
                 _ => self.no_member("net", name, pos),
+            },
+            // dom.apply(ops, nodes, strs): submit a batch of DOM mutations in one
+            // host call, get back the created nodes. Node operands cross as
+            // `unknown` (cast to Element at the call sites), so this needs no
+            // WebIDL typing. See docs/architecture/dom-batching.md.
+            Type::Namespace(Ns::Dom) => match name {
+                "apply" => {
+                    let arr = |t: Type| Type::Array(Rc::new(t));
+                    let p = |t: Type| ParamType {
+                        ty: t,
+                        optional: false,
+                        rest: false,
+                    };
+                    Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![
+                            p(arr(Type::Int(IntKind::I32))),
+                            p(arr(Type::Unknown)),
+                            p(arr(Type::Str)),
+                        ],
+                        ret: arr(Type::Unknown),
+                    }))
+                }
+                _ => self.no_member("dom", name, pos),
             },
             Type::Namespace(Ns::Env) => match name {
                 // Absent variables are `null`, not `""` — the caller has to say

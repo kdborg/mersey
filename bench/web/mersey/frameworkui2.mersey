@@ -1,0 +1,217 @@
+// Web-platform workload: the frameworkui keyed reconciler again, but committing
+// each render's DOM mutations in ONE host crossing via std:dom.apply (the
+// web_apply batch primitive, ABI v10) instead of one crossing per op. Same
+// operations, same data model, same checksum as frameworkui — the only
+// difference is how the writes reach the DOM. Line-for-line twin of
+// js/frameworkui2.js. On a native fork the per-op frameworkui pays a boundary
+// crossing per createElement/appendChild/textContent; this pays one per render.
+import { console } from "std:console";
+import { time } from "std:time";
+import { dom } from "std:dom";
+import { document } from "browser:dom";
+
+const N: int32 = 10;
+const ROWS: int32 = 200;
+const MID: int32 = 100;
+
+// Op codes for the batch stream (groups of 4 int32: op, a, b, c). Kept in sync
+// with web/mersey-bridge.js's apply() and every fork host.
+const OP_CREATE: int32 = 0;
+const OP_SET_TEXT: int32 = 1;
+const OP_APPEND: int32 = 2;
+const OP_INSERT: int32 = 3;
+const OP_REMOVE: int32 = 4;
+
+// A batch of DOM mutations accumulated in-engine (no crossings) and committed
+// once. A node operand is either a temp id (>= 0, an index into the nodes this
+// batch creates) or a live node (-(i+1), an index into `liveNodes`).
+class Batch {
+    private readonly ops: int32[] = [];
+    private readonly liveNodes: unknown[] = [];
+    private readonly strs: string[] = [];
+    private tempCount: int32 = 0;
+    private created: unknown[] = [];
+
+    // Register an existing node, returning a live ref (negative).
+    public live(node: Element): int32 {
+        this.liveNodes.push(node);
+        return -(this.liveNodes.length);
+    }
+    private str(s: string): int32 {
+        this.strs.push(s);
+        return this.strs.length - 1;
+    }
+    // Create a node, returning a temp ref (>= 0) usable later in this batch.
+    public create(tag: string): int32 {
+        const t = this.tempCount;
+        this.tempCount += 1;
+        this.ops.push(OP_CREATE);
+        this.ops.push(this.str(tag));
+        this.ops.push(t);
+        this.ops.push(0);
+        return t;
+    }
+    public setText(ref: int32, text: string): void {
+        this.ops.push(OP_SET_TEXT);
+        this.ops.push(ref);
+        this.ops.push(this.str(text));
+        this.ops.push(0);
+    }
+    public append(parent: int32, child: int32): void {
+        this.ops.push(OP_APPEND);
+        this.ops.push(parent);
+        this.ops.push(child);
+        this.ops.push(0);
+    }
+    public remove(parent: int32, child: int32): void {
+        this.ops.push(OP_REMOVE);
+        this.ops.push(parent);
+        this.ops.push(child);
+        this.ops.push(0);
+    }
+    // Commit the batch in one crossing; created nodes become live handles.
+    public apply(): void {
+        this.created = dom.apply(this.ops, this.liveNodes, this.strs);
+    }
+    public node(ref: int32): Element {
+        return this.created[ref] as Element;
+    }
+}
+
+class Row {
+    public id: int32;
+    public v: int32;
+    public constructor(id: int32) {
+        this.id = id;
+        this.v = 0;
+    }
+}
+
+class Entry {
+    public node: Element;
+    public v: int32;
+    public constructor(node: Element, v: int32) {
+        this.node = node;
+        this.v = v;
+    }
+}
+
+// A keyed reconciler that batches. It never reads the DOM mid-render (the whole
+// point — reads are crossings too), so it re-appends every row in order:
+// appendChild on an existing child moves it, so one pass makes the container's
+// children match `rows` exactly. Text is only rewritten when the version bumps.
+class ListView {
+    private readonly container: Element;
+    private readonly nodes: Map<int32, Entry> = new Map<int32, Entry>();
+
+    public constructor(container: Element) {
+        this.container = container;
+    }
+
+    public render(rows: Row[]): void {
+        const nodes = this.nodes;
+        const batch = new Batch();
+        const cref = batch.live(this.container);
+        const keep = new Set<int32>();
+        for (let i = 0; i < rows.length; i += 1) {
+            keep.add(rows[i].id);
+        }
+        const drop: int32[] = [];
+        for (const [id, entry] of nodes.entries()) {
+            if (!keep.has(id)) {
+                drop.push(id);
+            }
+        }
+        for (let i = 0; i < drop.length; i += 1) {
+            const entry = nodes.get(drop[i]);
+            if (entry != null) {
+                batch.remove(cref, batch.live(entry.node));
+                nodes.remove(drop[i]);
+            }
+        }
+        const newRows: Row[] = [];
+        const newRefs: int32[] = [];
+        for (let i = 0; i < rows.length; i += 1) {
+            const r = rows[i];
+            const existing = nodes.get(r.id);
+            let ref: int32;
+            if (existing == null) {
+                ref = batch.create("div");
+                batch.setText(ref, `row ${r.id} v${r.v}`);
+                newRows.push(r);
+                newRefs.push(ref);
+            } else {
+                ref = batch.live(existing.node);
+                if (existing.v != r.v) {
+                    batch.setText(ref, `row ${r.id} v${r.v}`);
+                    existing.v = r.v;
+                }
+            }
+            batch.append(cref, ref);
+        }
+        batch.apply();
+        for (let i = 0; i < newRows.length; i += 1) {
+            const r = newRows[i];
+            nodes.set(r.id, new Entry(batch.node(newRefs[i]), r.v));
+        }
+    }
+}
+
+// Identical fold to frameworkui — DOM-independent, so the checksum matches
+// frameworkui bit-for-bit across every leg.
+function fold(rows: Row[], checksum: int32): int32 {
+    let s: int32 = 0;
+    for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        s = s + (i + 1) * (r.id * 1000 + r.v);
+    }
+    return checksum * 31 + s;
+}
+
+function work(rounds: int32): int32 {
+    const container = document.createElement("div");
+    const body = document.body as Element;
+    body.appendChild(container);
+    const view = new ListView(container);
+    let rows: Row[] = [];
+    let idc: int32 = 0;
+    let checksum: int32 = 0;
+    for (let round = 0; round < rounds; round += 1) {
+        rows = [];
+        for (let i = 0; i < ROWS; i += 1) {
+            idc += 1;
+            rows.push(new Row(idc));
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        for (let i = 0; i < rows.length; i += 10) {
+            rows[i].v += 1;
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        const t = rows[1];
+        rows[1] = rows[ROWS - 2];
+        rows[ROWS - 2] = t;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        const next: Row[] = [];
+        for (let i = 0; i < rows.length; i += 1) {
+            if (i != MID) {
+                next.push(rows[i]);
+            }
+        }
+        rows = next;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        rows = [];
+        view.render(rows);
+        checksum = fold(rows, checksum);
+    }
+    return checksum;
+}
+
+work(1);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT frameworkui2 ${t1 - t0} ${c}`);

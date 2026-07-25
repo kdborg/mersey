@@ -438,5 +438,39 @@ export function makeBridge(globalObject, invokeCallback) {
         return err(e);
       }
     },
+    // Batched DOM mutation (ABI v10, web_apply): one crossing applies a whole
+    // render's ops. `batchJson` is {ops:[…i32 groups of 4…], nodes:[…live
+    // handles…], strs:[…]}. A node operand is a temp id (>=0, an index into the
+    // nodes created earlier in THIS batch) or a live node (-(i+1) -> nodes[i]);
+    // NULL_REF names "no node" (insertBefore's append case). Returns the created
+    // handles as a comma-separated string, or `!msg` on error — a plain wire
+    // format the wasm host parses without a JSON reader.
+    apply(batchJson) {
+      const NULL_REF = -2147483648;
+      const CREATE = 0, SET_TEXT = 1, APPEND = 2, INSERT = 3, REMOVE = 4;
+      try {
+        const { ops, nodes, strs } = JSON.parse(batchJson);
+        const doc = globalObject.document;
+        const created = [];
+        const resolve = (ref) => {
+          if (ref === NULL_REF) return null;
+          if (ref >= 0) return created[ref];
+          return handles[nodes[-ref - 1]];
+        };
+        for (let i = 0; i < ops.length; i += 4) {
+          const op = ops[i], a = ops[i + 1], b = ops[i + 2], c = ops[i + 3];
+          switch (op) {
+            case CREATE: created[b] = doc.createElement(strs[a]); break;
+            case SET_TEXT: resolve(a).textContent = strs[b]; break;
+            case APPEND: resolve(a).appendChild(resolve(b)); break;
+            case INSERT: resolve(a).insertBefore(resolve(b), resolve(c)); break;
+            case REMOVE: resolve(a).removeChild(resolve(b)); break;
+          }
+        }
+        return created.map(handleFor).join(",");
+      } catch (e) {
+        return "!" + String(e && e.message ? e.message : e);
+      }
+    },
   };
 }

@@ -74,6 +74,11 @@ extern "C" {
         a_len: usize,
     ) -> u64;
     fn host_web_new(c_ptr: *const u8, c_len: usize, a_ptr: *const u8, a_len: usize) -> u64;
+    /// Batched DOM mutation (ABI v10). One crossing applies a whole render's
+    /// worth of create/set-text/append/insert/remove ops; the JSON payload is
+    /// `{"ops":[…i32…],"nodes":[…handles…],"strs":[…]}` and the reply is a
+    /// comma-separated list of the created nodes' handles (or `!msg` on error).
+    fn host_web_apply(j_ptr: *const u8, j_len: usize) -> u64;
 
     // Fast paths: member names are interned once, scalars skip JSON.
     fn host_web_intern(n_ptr: *const u8, n_len: usize) -> u32;
@@ -195,6 +200,61 @@ impl Host for WasmHost {
                 args_json.len(),
             )
         })
+    }
+    fn web_apply(&mut self, ops: &[i32], nodes: &[i64], strs: &[String]) -> Option<Vec<i64>> {
+        // Marshal the batch as one JSON payload (no serde in this crate — the
+        // shape is fixed and small, so hand-build it). ops/nodes are plain
+        // integers; strs are JSON-escaped.
+        let mut json = String::with_capacity(ops.len() * 4 + strs.len() * 8 + 32);
+        json.push_str("{\"ops\":[");
+        for (i, o) in ops.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&o.to_string());
+        }
+        json.push_str("],\"nodes\":[");
+        for (i, n) in nodes.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&n.to_string());
+        }
+        json.push_str("],\"strs\":[");
+        for (i, s) in strs.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push('"');
+            for ch in s.chars() {
+                match ch {
+                    '"' => json.push_str("\\\""),
+                    '\\' => json.push_str("\\\\"),
+                    '\n' => json.push_str("\\n"),
+                    '\r' => json.push_str("\\r"),
+                    '\t' => json.push_str("\\t"),
+                    c if (c as u32) < 0x20 => json.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => json.push(c),
+                }
+            }
+            json.push('"');
+        }
+        json.push_str("]}");
+        let reply = read_packed(unsafe { host_web_apply(json.as_ptr(), json.len()) });
+        // Reply: comma-separated created-node handles, empty for none, `!` prefix
+        // signals the host declined or errored -> fall back to the per-op path.
+        if reply.starts_with('!') {
+            return None;
+        }
+        if reply.is_empty() {
+            return Some(Vec::new());
+        }
+        Some(
+            reply
+                .split(',')
+                .filter_map(|t| t.parse::<i64>().ok())
+                .collect(),
+        )
     }
     fn web_intern(&mut self, name: &str) -> u32 {
         // The host returns u32::MAX to opt out (A/B benchmarking).

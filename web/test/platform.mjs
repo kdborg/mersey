@@ -168,6 +168,7 @@ const imports = {
       packed(bridge.call(Number(t), readStr(mp, ml), readStr(ap, al))),
     host_web_new: (cp, cl, ap, al) =>
       packed(bridge.construct(readStr(cp, cl), readStr(ap, al))),
+    host_web_apply: (jp, jl) => packed(bridge.apply(readStr(jp, jl))),
     host_web_intern: (np, nl) => bridge.intern(readStr(np, nl)),
     host_web_get_id: (t, id) => packed(bridge.getId(Number(t), id)),
     host_web_set_str: (t, id, vp, vl) => packed(bridge.setScalar(Number(t), id, readStr(vp, vl))),
