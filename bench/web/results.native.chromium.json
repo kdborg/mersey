@@ -460,5 +460,12 @@
     "wl": "xhr",
     "ms": null,
     "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "frameworkui",
+    "ms": null,
+    "platform": "macos"
   }
 ]
