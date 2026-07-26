@@ -237,6 +237,7 @@ fn table() -> MsyHostTable {
         web_call_u16: None,
         web_new_u16: None,
         web_bind: None,
+        web_apply: None,
     }
 }
 

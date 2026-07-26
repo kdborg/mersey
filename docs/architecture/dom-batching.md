@@ -23,47 +23,56 @@ accumulates a mutation list in-engine (no crossings), then submits it once; the
 host decodes and applies it against the real DOM and hands back the handles of
 the nodes it created.
 
-### Encoding
+### Encoding (as shipped)
 
-A batch is an op stream plus a UTF-16 string pool (texts and tag names, so no
-per-string crossing either). Nodes created earlier in the same batch are named
-by **temp id** — a small non-negative index into the batch's own created list —
-so the reconciler can create a node and reference it in a later `insert` without
-a round trip. Existing nodes are named by their normal engine handle. The two
-namespaces are disjoint by sign: `handle >= 0` is a temp id, `handle < 0`
-(offset) is a live handle — or a dedicated `is_temp` flag per operand.
+A batch is three parallel arrays: a flat **int32 op stream** in groups of four
+`(op, a, b, c)`, a **UTF-16 string pool** (`msy_str16` = ptr+len entries — tag
+names and texts, so no per-string crossing either), and a **live-node array** of
+engine handles. Nodes created earlier in the same batch are named by **temp id**
+— a small non-negative index into the batch's own created list — so the
+reconciler can create a node and reference it in a later `append`/`insert`
+without a round trip. The two namespaces are disjoint by sign, so a single int32
+operand suffices:
 
-```c
-typedef struct {
-    uint32_t op;   /* MSY_DOM_CREATE / SET_TEXT / APPEND / INSERT / REMOVE */
-    int64_t  a;    /* CREATE: str-pool offset<<32 | len of the tag name
-                    * SET_TEXT: target node    APPEND/REMOVE: parent
-                    * INSERT: parent */
-    int64_t  b;    /* CREATE: temp id assigned  SET_TEXT: str-pool ref
-                    * APPEND/REMOVE: child      INSERT: child */
-    int64_t  c;    /* INSERT: ref node (or MSY_DOM_NULL to append) */
-} msy_dom_op;
+- `ref >= 0` — a **temp id**: an index into the nodes this batch creates.
+- `ref < 0` — a **live node**: `nodes[-ref - 1]` (an engine handle).
+- `ref == MSY_DOM_NULL` (`INT32_MIN`) — "no node" (insertBefore's append case).
+
+The op codes (`MSY_DOM_*`, in `mersey.h`):
+
+```
+CREATE   (0)  a = str index of tag name   b = temp id assigned   c = document operand
+SET_TEXT (1)  a = target node operand      b = str index of text
+APPEND   (2)  a = parent operand           b = child operand
+INSERT   (3)  a = parent  b = child        c = ref operand (or MSY_DOM_NULL)
+REMOVE   (4)  a = parent operand           b = child operand
 ```
 
-Operands that name a node carry a tag bit (temp vs live handle). `str-pool ref`
-is `offset<<32 | len` into `strpool` (UTF-16 code units).
+`CREATE` names the document in operand `c` (a live node), so a fork needs no
+ambient-document accessor — the reconciler registers `document` once as a live
+node and every `create` references it.
 
 ### ABI hook (host table, ABI v10)
 
 ```c
-/* Apply a batch of DOM mutations in one crossing. `created_out[i]` receives the
- * live handle of the node created with temp id i (up to `created_cap`); returns
- * the number of nodes created. NULL declines -> the engine falls back to the
- * per-op web_new_u16 / web_call_u16 path, identical result. */
-size_t (*web_apply)(void *data,
-                    const msy_dom_op *ops, size_t nops,
-                    const uint16_t *strpool, size_t strpool_len,
+typedef struct { const uint16_t *ptr; uint32_t len; } msy_str16;
+
+/* Apply a batch of DOM mutations in one crossing. `ops` is 4*nops int32; a node
+ * created with temp id i has its live handle written to created_out[i] (up to
+ * created_cap, which the engine sizes to the CREATE count). Returns the number
+ * created. NULL declines -> std:dom.apply throws (no batched path on this host). */
+size_t (*web_apply)(void *data, const int32_t *ops, size_t nops,
+                    const int64_t *nodes, size_t nnodes,
+                    const msy_str16 *strs, size_t nstrs,
                     int64_t *created_out, size_t created_cap);
 ```
 
 `MSY_ABI_VERSION` -> `10`. Every host bumps its constant and either implements
-`web_apply` or leaves it `NULL` (safe: per-op fallback). Because the version is
-checked strictly, all hosts that link a v10 engine must be rebuilt at v10.
+`web_apply` or leaves it `NULL`. Because the version is checked strictly, all
+hosts that link a v10 engine must be rebuilt at v10. (A per-op replay fallback
+for NULL hosts is planned but not yet implemented — all four forks and the wasm
+host implement `web_apply`, so `std:dom.apply` only throws on a bare host that
+declines it, e.g. `native/host_demo.c`'s other contexts.)
 
 ## Engine + language surface
 
