@@ -324,6 +324,14 @@ void HostWebBindShim(void* aData, int64_t aTarget, uint32_t aBindId,
   Runner(aData)->HostWebBind(aTarget, aBindId, aArgs, aArgc, aOut);
 }
 
+size_t HostWebApplyShim(void* aData, const int32_t* aOps, size_t aNops,
+                        const int64_t* aNodes, size_t aNnodes,
+                        const msy_str16* aStrs, size_t aNstrs,
+                        int64_t* aCreatedOut, size_t aCreatedCap) {
+  return Runner(aData)->HostWebApply(aOps, aNops, aNodes, aNnodes, aStrs, aNstrs,
+                                     aCreatedOut, aCreatedCap);
+}
+
 // `mersey(source)` — the browser-console REPL: one growing, always-typechecked
 // module against this document's engine (msy_context_repl_turn). Echoes a
 // trailing bare expression; a rejected turn's diagnostics throw.
@@ -463,6 +471,7 @@ MerseyScriptRunner::MerseyScriptRunner(Document* aDocument)
   table.web_call_u16 = HostWebCallU16Shim;
   table.web_new_u16 = HostWebNewU16Shim;
   table.web_bind = HostWebBindShim;
+  table.web_apply = HostWebApplyShim;
 
   // Tier 1 maps W^X pages, which this process permits. MSY_FLAG_NO_JIT is the
   // lever if a platform ever refuses a second JIT.
@@ -2022,6 +2031,121 @@ void MerseyScriptRunner::HostWebNewU16(uint32_t aCtorId, const msy_arg16* aArgs,
   }
   const double lead[1] = {double(aCtorId)};
   CallBridgeWide("newWide", lead, 1, aArgs, aArgc, aOut);
+}
+
+size_t MerseyScriptRunner::HostWebApply(const int32_t* aOps, size_t aNops,
+                                        const int64_t* aNodes, size_t aNnodes,
+                                        const msy_str16* aStrs, size_t aNstrs,
+                                        int64_t* aCreatedOut,
+                                        size_t aCreatedCap) {
+  // Resolve a live handle to an nsINode* (Element and Document both are one).
+  // The stored ptr is the typed pointer, so cast through the concrete type.
+  auto resolveHandle = [&](int64_t handle) -> nsINode* {
+    int32_t kind;
+    void* ptr = UnwrapNative(handle, kind);
+    if (!ptr) {
+      return nullptr;
+    }
+    if (kind == kNativeElement) {
+      return static_cast<Element*>(ptr);
+    }
+    if (kind == kNativeDocument) {
+      return static_cast<Document*>(ptr);
+    }
+    return nullptr;
+  };
+  // A node operand: >= 0 a temp id (its handle is in aCreatedOut), < 0 a live
+  // handle (aNodes[-r-1]), MSY_DOM_NULL nothing. See mersey.h MSY_DOM_*.
+  auto resolve = [&](int32_t ref) -> nsINode* {
+    if (ref == MSY_DOM_NULL) {
+      return nullptr;
+    }
+    if (ref >= 0) {
+      return size_t(ref) < aCreatedCap ? resolveHandle(aCreatedOut[ref])
+                                       : nullptr;
+    }
+    size_t idx = size_t(-ref - 1);
+    return idx < aNnodes ? resolveHandle(aNodes[idx]) : nullptr;
+  };
+  size_t created = 0;
+  for (size_t g = 0; g < aNops; ++g) {
+    int32_t op = aOps[g * 4], a = aOps[g * 4 + 1], b = aOps[g * 4 + 2],
+            c = aOps[g * 4 + 3];
+    switch (op) {
+      case MSY_DOM_CREATE: {
+        // `c` names the document (a live node).
+        Document* doc = nullptr;
+        if (c < 0 && size_t(-c - 1) < aNnodes) {
+          int32_t kind;
+          void* ptr = UnwrapNative(aNodes[size_t(-c - 1)], kind);
+          if (kind == kNativeDocument && ptr) {
+            doc = static_cast<Document*>(ptr);
+          }
+        }
+        if (!doc) {
+          doc = mDocument;  // the runner's own document (like Blink's Supplementable)
+        }
+        int64_t h = 0;
+        if (doc && a >= 0 && size_t(a) < aNstrs) {
+          nsDependentString tag(reinterpret_cast<const char16_t*>(aStrs[a].ptr),
+                                aStrs[a].len);
+          RefPtr<Element> el = doc->CreateElem(tag, nullptr, kNameSpaceID_XHTML);
+          if (el) {
+            NativeObj o;
+            o.kind = kNativeElement;
+            o.ptr = el.get();
+            o.holder = ToSupports(el.get());
+            h = AddNativeObj(std::move(o));
+            ++created;
+          }
+        }
+        if (size_t(b) < aCreatedCap) {
+          aCreatedOut[b] = h;
+        }
+        break;
+      }
+      case MSY_DOM_SET_TEXT:
+        if (nsINode* node = resolve(a)) {
+          if (b >= 0 && size_t(b) < aNstrs) {
+            nsDependentString text(
+                reinterpret_cast<const char16_t*>(aStrs[b].ptr), aStrs[b].len);
+            IgnoredErrorResult rv;
+            node->SetTextContent(text, rv);
+          }
+        }
+        break;
+      case MSY_DOM_APPEND: {
+        nsINode* parent = resolve(a);
+        nsINode* child = resolve(b);
+        if (parent && child) {
+          IgnoredErrorResult rv;
+          parent->AppendChild(*child, rv);
+        }
+        break;
+      }
+      case MSY_DOM_INSERT: {
+        nsINode* parent = resolve(a);
+        nsINode* child = resolve(b);
+        if (parent && child) {
+          IgnoredErrorResult rv;
+          parent->InsertBefore(*child, resolve(c), rv);
+        }
+        break;
+      }
+      case MSY_DOM_REMOVE: {
+        nsINode* parent = resolve(a);
+        nsINode* child = resolve(b);
+        if (parent && child) {
+          IgnoredErrorResult rv;
+          parent->RemoveChild(*child, rv);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return created;
 }
 
 void MerseyScriptRunner::HostPrint(std::string_view aMessage, bool aIsError) {

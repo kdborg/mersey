@@ -450,7 +450,6 @@ export function makeBridge(globalObject, invokeCallback) {
       const CREATE = 0, SET_TEXT = 1, APPEND = 2, INSERT = 3, REMOVE = 4;
       try {
         const { ops, nodes, strs } = JSON.parse(batchJson);
-        const doc = globalObject.document;
         const created = [];
         const resolve = (ref) => {
           if (ref === NULL_REF) return null;
@@ -460,7 +459,7 @@ export function makeBridge(globalObject, invokeCallback) {
         for (let i = 0; i < ops.length; i += 4) {
           const op = ops[i], a = ops[i + 1], b = ops[i + 2], c = ops[i + 3];
           switch (op) {
-            case CREATE: created[b] = doc.createElement(strs[a]); break;
+            case CREATE: created[b] = resolve(c).createElement(strs[a]); break;
             case SET_TEXT: resolve(a).textContent = strs[b]; break;
             case APPEND: resolve(a).appendChild(resolve(b)); break;
             case INSERT: resolve(a).insertBefore(resolve(b), resolve(c)); break;

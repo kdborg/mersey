@@ -31,9 +31,16 @@ class Batch {
     private readonly strs: string[] = [];
     private tempCount: int32 = 0;
     private created: unknown[] = [];
+    private readonly docRef: int32;
+
+    // The document is registered once as a live node; CREATE ops name it so the
+    // host knows which document to create elements in.
+    public constructor(doc: unknown) {
+        this.docRef = this.live(doc);
+    }
 
     // Register an existing node, returning a live ref (negative).
-    public live(node: Element): int32 {
+    public live(node: unknown): int32 {
         this.liveNodes.push(node);
         return -(this.liveNodes.length);
     }
@@ -48,7 +55,7 @@ class Batch {
         this.ops.push(OP_CREATE);
         this.ops.push(this.str(tag));
         this.ops.push(t);
-        this.ops.push(0);
+        this.ops.push(this.docRef);
         return t;
     }
     public setText(ref: int32, text: string): void {
@@ -110,7 +117,7 @@ class ListView {
 
     public render(rows: Row[]): void {
         const nodes = this.nodes;
-        const batch = new Batch();
+        const batch = new Batch(document);
         const cref = batch.live(this.container);
         const keep = new Set<int32>();
         for (let i = 0; i < rows.length; i += 1) {

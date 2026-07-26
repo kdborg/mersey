@@ -20,12 +20,13 @@ const OP_REMOVE = 4;
 // A batch of DOM mutations. A node operand is a temp id (>= 0, an index into the
 // nodes this batch creates) or a live node (-(i+1), an index into `liveNodes`).
 class Batch {
-  constructor() {
+  constructor(doc) {
     this.ops = [];
     this.liveNodes = [];
     this.strs = [];
     this.tempCount = 0;
     this.created = [];
+    this.docRef = this.live(doc);
   }
   live(node) {
     this.liveNodes.push(node);
@@ -38,7 +39,7 @@ class Batch {
   create(tag) {
     const t = this.tempCount;
     this.tempCount += 1;
-    this.ops.push(OP_CREATE, this.str(tag), t, 0);
+    this.ops.push(OP_CREATE, this.str(tag), t, this.docRef);
     return t;
   }
   setText(ref, text) {
@@ -58,7 +59,7 @@ class Batch {
     for (let i = 0; i < ops.length; i += 4) {
       const op = ops[i], a = ops[i + 1], b = ops[i + 2], c = ops[i + 3];
       switch (op) {
-        case OP_CREATE: created[b] = document.createElement(strs[a]); break;
+        case OP_CREATE: created[b] = resolve(c).createElement(strs[a]); break;
         case OP_SET_TEXT: resolve(a).textContent = strs[b]; break;
         case OP_APPEND: resolve(a).appendChild(resolve(b)); break;
         case OP_INSERT: resolve(a).insertBefore(resolve(b), c === -2147483648 ? null : resolve(c)); break;
@@ -85,7 +86,7 @@ class ListView {
   }
   render(rows) {
     const nodes = this.nodes;
-    const batch = new Batch();
+    const batch = new Batch(document);
     const cref = batch.live(this.container);
     const keep = new Set();
     for (let i = 0; i < rows.length; i++) keep.add(rows[i].id);

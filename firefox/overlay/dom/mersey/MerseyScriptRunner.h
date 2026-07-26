@@ -133,6 +133,10 @@ class MerseyScriptRunner final {
   // a receiver-type mismatch.
   void HostWebBind(int64_t aTarget, uint32_t aBindId, const double* aArgs,
                    size_t aArgc, msy_reply* aOut);
+  // Batched DOM mutation (web_apply, ABI v10): a whole render's ops in one call.
+  size_t HostWebApply(const int32_t* aOps, size_t aNops, const int64_t* aNodes,
+                      size_t aNnodes, const msy_str16* aStrs, size_t aNstrs,
+                      int64_t* aCreatedOut, size_t aCreatedCap);
 
  private:
   ~MerseyScriptRunner();

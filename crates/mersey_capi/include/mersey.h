@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 9u
+#define MSY_ABI_VERSION 10u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -84,6 +84,24 @@ typedef struct {
     const uint16_t *str16; /* tag 2 / 5 / 7: UTF-16 text */
     size_t str16_len;      /* in UTF-16 code units */
 } msy_reply;
+
+/* A borrowed UTF-16 string in a batch's string pool (ABI v10). */
+typedef struct {
+    const uint16_t *ptr;
+    uint32_t len; /* code units */
+} msy_str16;
+
+/* web_apply op codes (ABI v10). A batch is a flat int32 stream in groups of
+ * four — (op, a, b, c) — plus a UTF-16 string pool and a live-node array. */
+#define MSY_DOM_CREATE   0 /* a = str index of tag, b = temp id, c = document operand */
+#define MSY_DOM_SET_TEXT 1 /* a = node operand, b = str index of the text */
+#define MSY_DOM_APPEND   2 /* a = parent operand, b = child operand */
+#define MSY_DOM_INSERT   3 /* a = parent, b = child, c = ref operand or MSY_DOM_NULL */
+#define MSY_DOM_REMOVE   4 /* a = parent operand, b = child operand */
+/* A node operand names a node by sign: >= 0 is a temp id (an index into the
+ * nodes this batch creates), < 0 is a live node (-(i+1) -> nodes[i]). This
+ * sentinel means "no node" — insertBefore's append-at-end case. */
+#define MSY_DOM_NULL (-2147483647 - 1) /* INT32_MIN */
 
 /* Context-creation flags. */
 #define MSY_FLAG_NO_JIT 0x1u /* Tier 0 only: never map executable pages. */
@@ -207,6 +225,20 @@ typedef struct {
      * mismatch. May be NULL: the engine then uses web_call_u16. */
     void (*web_bind)(void *data, int64_t target, uint32_t bind_id,
                      const double *args, size_t argc, msy_reply *out);
+
+    /* ---- batched DOM mutation (ABI v10) -------------------------------- */
+    /* Apply a whole render's DOM mutations in ONE crossing instead of one per
+     * op. `ops` is 4*`nops` int32 in groups of (op, a, b, c) using the MSY_DOM_*
+     * op codes and node-operand encoding above; `strs` is the UTF-16 string pool
+     * the ops index; `nodes` holds the live handles a `-(i+1)` operand names.
+     * The node created by the CREATE op with temp id i has its live handle
+     * written to `created_out[i]` (up to `created_cap`, which the engine sizes to
+     * the CREATE count). Returns the number of nodes created. May be NULL: the
+     * engine then throws for std:dom.apply (no batched path on this host). */
+    size_t (*web_apply)(void *data, const int32_t *ops, size_t nops,
+                        const int64_t *nodes, size_t nnodes,
+                        const msy_str16 *strs, size_t nstrs,
+                        int64_t *created_out, size_t created_cap);
 } msy_host_table;
 
 /* Typed-binding ids (ABI v7). Append only; never renumber. Numeric-argument

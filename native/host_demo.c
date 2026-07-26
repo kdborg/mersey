@@ -78,6 +78,78 @@ static void host_add_listener(void *data, const char *id, size_t il,
     e->cbs[e->n_cbs++] = cb;
 }
 
+/* ---- a handle-based fake DOM, to exercise the web_apply batch path ----- */
+#define MAX_NODES 64
+typedef struct {
+    int kind; /* 0 document, 1 element */
+    char tag[32];
+    char text[256];
+    int64_t children[MAX_NODES];
+    int n_children;
+} WNode;
+typedef struct {
+    WNode nodes[MAX_NODES];
+    int n_nodes; /* handle 0 unused, 1 = document */
+} WebDom;
+
+static void str16_to_c(const msy_str16 *s, char *out, size_t cap) {
+    size_t n = s->len < cap - 1 ? s->len : cap - 1;
+    for (size_t i = 0; i < n; i++) out[i] = (char)(s->ptr[i] & 0xff); /* ASCII test data */
+    out[n] = 0;
+}
+
+static int64_t webdom_global(void *data, const char *name, size_t len) {
+    (void)name;
+    (void)len;
+    WebDom *w = data;
+    if (w->n_nodes < 2) {
+        w->n_nodes = 2;
+        w->nodes[1].kind = 0; /* the document */
+    }
+    return 1;
+}
+
+static size_t webdom_apply(void *data, const int32_t *ops, size_t nops,
+                           const int64_t *nodes, size_t nnodes,
+                           const msy_str16 *strs, size_t nstrs,
+                           int64_t *created_out, size_t created_cap) {
+    (void)nnodes;
+    (void)nstrs;
+    WebDom *w = data;
+    int64_t created[MAX_NODES];
+    size_t nc = 0;
+#define RESOLVE(r) \
+    ((r) == MSY_DOM_NULL ? (int64_t)0 : ((r) >= 0 ? created[(r)] : nodes[-(r) - 1]))
+    for (size_t g = 0; g < nops; g++) {
+        int32_t op = ops[g * 4], a = ops[g * 4 + 1], b = ops[g * 4 + 2], c = ops[g * 4 + 3];
+        if (op == MSY_DOM_CREATE) {
+            (void)c; /* c = document operand; this demo has a single document */
+            int64_t h = w->n_nodes++;
+            w->nodes[h].kind = 1;
+            str16_to_c(&strs[a], w->nodes[h].tag, sizeof w->nodes[h].tag);
+            created[b] = h;
+            if ((size_t)b < created_cap) created_out[b] = h;
+            nc++;
+        } else if (op == MSY_DOM_SET_TEXT) {
+            int64_t t = RESOLVE(a);
+            str16_to_c(&strs[b], w->nodes[t].text, sizeof w->nodes[t].text);
+        } else if (op == MSY_DOM_APPEND || op == MSY_DOM_INSERT) {
+            int64_t p = RESOLVE(a), ch = RESOLVE(b);
+            w->nodes[p].children[w->nodes[p].n_children++] = ch;
+        } else if (op == MSY_DOM_REMOVE) {
+            int64_t p = RESOLVE(a), ch = RESOLVE(b);
+            WNode *pn = &w->nodes[p];
+            for (int i = 0; i < pn->n_children; i++)
+                if (pn->children[i] == ch) {
+                    pn->children[i] = pn->children[--pn->n_children];
+                    break;
+                }
+        }
+    }
+#undef RESOLVE
+    return nc;
+}
+
 /* ---- driver ------------------------------------------------------------ */
 static int failures = 0;
 static void expect_str(const char *what, const char *actual, const char *want) {
@@ -212,6 +284,44 @@ int main(void) {
     if (j != 0) failures++;
     expect_str("jitless output", dom4.log, "fib: 2584\n");
     msy_context_free(ctx4);
+
+    /* Batched DOM mutation (web_apply, ABI v10): one crossing applies a whole
+     * op stream. Proves the mersey_capi marshalling (ops/nodes/UTF-16 pool ->
+     * created handles back) end to end, the shared path every fork host reuses. */
+    WebDom web = {0};
+    msy_host_table t5 = {
+        .data = &web,
+        .web_global = webdom_global,
+        .web_apply = webdom_apply,
+    };
+    msy_context *ctx5 = msy_context_new(&t5);
+    const char *batch =
+        "import { document } from \"browser:dom\";\n"
+        "import { dom } from \"std:dom\";\n"
+        "const ops: int32[] = [\n"
+        "  0,0,0,-1, 1,0,1,0, 2,-1,0,0,\n"  /* create div temp0, text hello, append */
+        "  0,0,1,-1, 1,1,2,0, 2,-1,1,0,\n"  /* create div temp1, text world, append */
+        "  4,-1,0,0\n"                        /* remove temp0 from document */
+        "];\n"
+        "const created = dom.apply(ops, [document], [\"div\",\"hello\",\"world\"]);\n"
+        "if (created.length != 2) { throw new Error(\"bad created count\"); }\n";
+    uint32_t bstat = msy_context_run(ctx5, batch, strlen(batch));
+    printf("%s  web_apply run status (%u)\n", bstat == 0 ? "PASS" : "FAIL", bstat);
+    if (bstat != 0) failures++;
+    /* The document (handle 1) should hold exactly one child — temp1, whose text
+     * is "world" — after temp0 was appended then removed. */
+    int doc_kids = web.nodes[1].n_children;
+    printf("%s  web_apply: document has one child (got %d)\n", doc_kids == 1 ? "PASS" : "FAIL",
+           doc_kids);
+    if (doc_kids != 1) failures++;
+    if (doc_kids == 1) {
+        const char *kid_text = web.nodes[web.nodes[1].children[0]].text;
+        expect_str("web_apply: surviving child's text", kid_text, "world");
+    }
+    /* Two elements created -> handles 2 and 3 (document is 1). */
+    printf("%s  web_apply: created two element nodes\n", web.n_nodes == 4 ? "PASS" : "FAIL");
+    if (web.n_nodes != 4) failures++;
+    msy_context_free(ctx5);
 
     msy_context_free(ctx);
 

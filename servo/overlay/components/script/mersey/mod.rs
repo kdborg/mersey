@@ -48,7 +48,7 @@ use script_bindings::settings_stack::run_a_script;
 use mersey_capi::{
     msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
     MsyContext, MsyHostTable,
-    MsyReply, MsyScalar,
+    MsyReply, MsyScalar, MsyStr16,
 };
 
 use std::collections::HashMap;
@@ -1539,6 +1539,132 @@ extern "C" fn host_web_bind(
     }
 }
 
+/// Batched DOM mutation (web_apply, ABI v10): apply a whole render's create /
+/// set-text / append / insert / remove ops in ONE crossing over Servo's own DOM.
+/// See mersey.h MSY_DOM_* for the op codes and node-operand encoding. Returns the
+/// number of nodes created; each created node's handle lands in `created_out[i]`.
+extern "C" fn host_web_apply(
+    _d: *mut c_void,
+    ops: *const i32,
+    nops: usize,
+    nodes: *const i64,
+    nnodes: usize,
+    strs: *const MsyStr16,
+    nstrs: usize,
+    created_out: *mut i64,
+    created_cap: usize,
+) -> usize {
+    const OP_CREATE: i32 = 0;
+    const OP_SET_TEXT: i32 = 1;
+    const OP_APPEND: i32 = 2;
+    const OP_INSERT: i32 = 3;
+    const OP_REMOVE: i32 = 4;
+    const NULL_REF: i32 = i32::MIN;
+    unsafe {
+        if ops.is_null() {
+            return 0;
+        }
+        let ops = std::slice::from_raw_parts(ops, nops * 4);
+        let nodes = if nodes.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(nodes, nnodes)
+        };
+        let strs = if strs.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(strs, nstrs)
+        };
+        let Some(mut cx) = JSContext::get_from_thread() else {
+            return 0;
+        };
+        let cx = &mut cx;
+        let str_at = |i: i32| -> String {
+            let s = &strs[i as usize];
+            if s.ptr.is_null() {
+                return String::new();
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(s.ptr, s.len as usize))
+        };
+        // Temp id -> the node created earlier in THIS batch (a DomRoot keeps it
+        // alive for the batch's duration). Resolve a node operand to an owned
+        // DomRoot<Node>: >=0 is a temp id, <0 a live handle, NULL_REF nothing.
+        let resolve = |cx: &mut JSContext, r: i32, created: &Vec<DomRoot<Node>>| -> Option<DomRoot<Node>> {
+            if r == NULL_REF {
+                return None;
+            }
+            if r >= 0 {
+                return created.get(r as usize).cloned();
+            }
+            let h = *nodes.get((-r - 1) as usize)?;
+            resolve_node(cx, h).map(DomRoot::from_ref)
+        };
+        let mut created: Vec<DomRoot<Node>> = Vec::with_capacity(created_cap);
+        for g in 0..ops.len() / 4 {
+            let (op, a, b, c) = (ops[g * 4], ops[g * 4 + 1], ops[g * 4 + 2], ops[g * 4 + 3]);
+            match op {
+                OP_CREATE => {
+                    // `c` names the document (always a live node).
+                    let Some(&dh) = nodes.get((-c - 1) as usize) else {
+                        continue;
+                    };
+                    let Some(doc) = resolve_document(cx, dh) else {
+                        continue;
+                    };
+                    let options = StringOrElementCreationOptions::String(DOMString::new());
+                    let Ok(el) = doc.CreateElement(cx, DOMString::from(str_at(a)), options) else {
+                        continue;
+                    };
+                    let node: DomRoot<Node> = DomRoot::from_ref(el.upcast::<Node>());
+                    // Register a handle for the engine and cache the native so the
+                    // next render resolves it without a bridge round-trip.
+                    let obj = el.reflector().get_jsobject().get();
+                    let h = bridge_register_object(cx, obj);
+                    if h >= 0 {
+                        let r = runner_ptr();
+                        let nat = (&mut (*r).natives).entry(h).or_default();
+                        nat.element = &*el as *const Element;
+                        nat.node = &*node as *const Node;
+                        if (b as usize) < created_cap && !created_out.is_null() {
+                            *created_out.add(b as usize) = h;
+                        }
+                    }
+                    created.push(node);
+                },
+                OP_SET_TEXT => {
+                    if let Some(node) = resolve(cx, a, &created) {
+                        let _ = node.SetTextContent(cx, Some(DOMString::from(str_at(b))));
+                    }
+                },
+                OP_APPEND => {
+                    if let (Some(parent), Some(child)) =
+                        (resolve(cx, a, &created), resolve(cx, b, &created))
+                    {
+                        let _ = parent.AppendChild(cx, &child);
+                    }
+                },
+                OP_INSERT => {
+                    if let (Some(parent), Some(child)) =
+                        (resolve(cx, a, &created), resolve(cx, b, &created))
+                    {
+                        let refc = resolve(cx, c, &created);
+                        let _ = parent.InsertBefore(cx, &child, refc.as_deref());
+                    }
+                },
+                OP_REMOVE => {
+                    if let (Some(parent), Some(child)) =
+                        (resolve(cx, a, &created), resolve(cx, b, &created))
+                    {
+                        let _ = parent.RemoveChild(cx, &child);
+                    }
+                },
+                _ => {},
+            }
+        }
+        created.len()
+    }
+}
+
 fn host_table() -> MsyHostTable {
     MsyHostTable {
         data: ptr::null_mut(),
@@ -1581,6 +1707,9 @@ fn host_table() -> MsyHostTable {
         // Typed-binding fast path: the JIT-compiled canvas loop calls this with
         // raw f64s; we dispatch straight to CanvasRenderingContext2D.
         web_bind: Some(host_web_bind),
+        // Batched DOM mutation: a whole render's create/append/set-text/insert/
+        // remove ops applied in one crossing (Servo's own DOM, no JSON).
+        web_apply: Some(host_web_apply),
     }
 }
 

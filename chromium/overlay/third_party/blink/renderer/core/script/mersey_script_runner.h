@@ -204,6 +204,15 @@ class CORE_EXPORT MerseyScriptRunner final
                      const msy_arg16* args,
                      size_t argc,
                      msy_reply* out);
+  // Batched DOM mutation (web_apply, ABI v10): a whole render's ops in one call.
+  size_t HostWebApply(const int32_t* ops,
+                      size_t nops,
+                      const int64_t* nodes,
+                      size_t nnodes,
+                      const msy_str16* strs,
+                      size_t nstrs,
+                      int64_t* created_out,
+                      size_t created_cap);
 
  private:
   // Interned-name ids the fast paths switch on. Append-only.

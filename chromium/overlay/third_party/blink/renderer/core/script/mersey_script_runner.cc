@@ -235,6 +235,19 @@ void HostWebNewU16Shim(void* data,
   Runner(data)->HostWebNewU16(ctor_id, args, argc, out);
 }
 
+size_t HostWebApplyShim(void* data,
+                        const int32_t* ops,
+                        size_t nops,
+                        const int64_t* nodes,
+                        size_t nnodes,
+                        const msy_str16* strs,
+                        size_t nstrs,
+                        int64_t* created_out,
+                        size_t created_cap) {
+  return Runner(data)->HostWebApply(ops, nops, nodes, nnodes, strs, nstrs,
+                                    created_out, created_cap);
+}
+
 const char* HostCapsShim(void* data, size_t* out_len) {
   // The universal bridge is coming online (URL first), so grant the full
   // surface Gecko does; the engine still gates each API by import (spec §5.4),
@@ -552,6 +565,7 @@ MerseyScriptRunner::MerseyScriptRunner(Document& document)
   table.web_set_u16 = HostWebSetU16Shim;
   table.web_call_u16 = HostWebCallU16Shim;
   table.web_new_u16 = HostWebNewU16Shim;
+  table.web_apply = HostWebApplyShim;
 
   CHECK_EQ(msy_abi_version(), uint32_t{MSY_ABI_VERSION})
       << "engine/header ABI mismatch";
@@ -1918,6 +1932,91 @@ void MerseyScriptRunner::HostWebNewU16(uint32_t ctor_id,
     return;
   }
   FillNull(out);
+}
+
+size_t MerseyScriptRunner::HostWebApply(const int32_t* ops,
+                                        size_t nops,
+                                        const int64_t* nodes,
+                                        size_t nnodes,
+                                        const msy_str16* strs,
+                                        size_t nstrs,
+                                        int64_t* created_out,
+                                        size_t created_cap) {
+  // A node operand resolves to a live blink::Node*: a temp id (>= 0) names a
+  // node this batch created (its handle is already in created_out[id], and
+  // AllocNode has it traced), a negative operand names a live handle, and
+  // MSY_DOM_NULL is "no node". See mersey.h MSY_DOM_* for the op stream.
+  auto resolve = [&](int32_t ref) -> Node* {
+    if (ref == MSY_DOM_NULL) {
+      return nullptr;
+    }
+    if (ref >= 0) {
+      return static_cast<size_t>(ref) < created_cap ? NodeFor(created_out[ref])
+                                                    : nullptr;
+    }
+    size_t idx = static_cast<size_t>(-ref - 1);
+    return idx < nnodes ? NodeFor(nodes[idx]) : nullptr;
+  };
+  auto str_at = [&](int32_t i) -> String {
+    return (i >= 0 && static_cast<size_t>(i) < nstrs)
+               ? Str16ToString(strs[i].ptr, strs[i].len)
+               : String();
+  };
+  size_t created = 0;
+  for (size_t g = 0; g < nops; ++g) {
+    int32_t op = ops[g * 4], a = ops[g * 4 + 1], b = ops[g * 4 + 2],
+            c = ops[g * 4 + 3];
+    switch (op) {
+      case MSY_DOM_CREATE: {
+        Document* document = DynamicTo<Document>(resolve(c));
+        if (!document) {
+          document = GetSupplementable();
+        }
+        Node* element = nullptr;
+        if (document) {
+          element = document->CreateElementForBinding(AtomicString(str_at(a)),
+                                                      ASSERT_NO_EXCEPTION);
+        }
+        int64_t handle = element ? AllocNode(element) : 0;
+        if (static_cast<size_t>(b) < created_cap) {
+          created_out[b] = handle;
+        }
+        if (element) {
+          ++created;
+        }
+        break;
+      }
+      case MSY_DOM_SET_TEXT:
+        if (Node* node = resolve(a)) {
+          node->setTextContent(str_at(b));
+        }
+        break;
+      case MSY_DOM_APPEND:
+        if (Node* parent = resolve(a)) {
+          if (Node* child = resolve(b)) {
+            parent->appendChild(child);
+          }
+        }
+        break;
+      case MSY_DOM_INSERT:
+        if (Node* parent = resolve(a)) {
+          if (Node* child = resolve(b)) {
+            parent->insertBefore(child, resolve(c));
+          }
+        }
+        break;
+      case MSY_DOM_REMOVE:
+        if (Node* parent = resolve(a)) {
+          if (Node* child = resolve(b)) {
+            parent->removeChild(child);
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return created;
 }
 
 void MerseyScriptRunner::HostWebRelease(int64_t target) {

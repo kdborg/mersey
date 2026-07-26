@@ -33,7 +33,7 @@ use mersey_interp::{embed, new_interp, DebugHook, DebugPause, Host, Interp, WebS
 
 /// Bumped whenever the table layout or a boundary contract changes. The
 /// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 9;
+pub const MSY_ABI_VERSION: u32 = 10;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).
@@ -127,6 +127,31 @@ pub struct MsyHostTable {
     // typed-binding fast path (ABI v7): a compiled numeric web method as a
     // compile-time id + raw f64 args, no name and no MsyArg16 marshalling.
     pub web_bind: Option<extern "C" fn(*mut c_void, i64, u32, *const f64, usize, *mut MsyReply)>,
+    // batched DOM mutation (ABI v10): a whole render's ops in one crossing.
+    // (data, ops, nops, nodes, nnodes, strs, nstrs, created_out, created_cap)
+    #[allow(clippy::type_complexity)]
+    pub web_apply: Option<
+        extern "C" fn(
+            *mut c_void,
+            *const i32,
+            usize,
+            *const i64,
+            usize,
+            *const MsyStr16,
+            usize,
+            *mut i64,
+            usize,
+        ) -> usize,
+    >,
+}
+
+/// A borrowed UTF-16 string in a batch's string pool — field for field with
+/// `msy_str16` in include/mersey.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MsyStr16 {
+    pub ptr: *const u16,
+    pub len: u32,
 }
 
 /// A UTF-16 argument, field for field with `msy_arg16` in include/mersey.h.
@@ -572,6 +597,35 @@ impl Host for CHost {
             &mut reply,
         );
         Some(read_msy_reply(&reply))
+    }
+    fn web_apply(&mut self, ops: &[i32], nodes: &[i64], strs: &[String]) -> Option<Vec<i64>> {
+        let f = self.table.web_apply?;
+        // UTF-16 encode the string pool; the Vec<Vec<u16>> owns the buffers the
+        // borrowed MsyStr16 pointers reference, so it must outlive the call.
+        let utf16: Vec<Vec<u16>> = strs.iter().map(|s| s.encode_utf16().collect()).collect();
+        let cstrs: Vec<MsyStr16> = utf16
+            .iter()
+            .map(|u| MsyStr16 {
+                ptr: u.as_ptr(),
+                len: u.len() as u32,
+            })
+            .collect();
+        // Exactly one handle comes back per CREATE op (op code 0 at a group head).
+        let created_cap = ops.chunks_exact(4).filter(|c| c[0] == 0).count();
+        let mut created = vec![0i64; created_cap];
+        let n = f(
+            self.table.data,
+            ops.as_ptr(),
+            ops.len() / 4,
+            nodes.as_ptr(),
+            nodes.len(),
+            cstrs.as_ptr(),
+            cstrs.len(),
+            created.as_mut_ptr(),
+            created.len(),
+        );
+        created.truncate(n.min(created_cap));
+        Some(created)
     }
     fn web_bind_raw(&self) -> Option<(mersey_interp::WebBindFn, *mut std::ffi::c_void)> {
         let f = self.table.web_bind?;

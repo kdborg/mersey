@@ -43,7 +43,7 @@ const PER_TEST_TIMEOUT = 20; // seconds; a fallback — tests complete in well u
 // from both promise reactions and event tasks; what once read as a re-entry
 // gap was the page template ending the test before an async RESULT could
 // land (see ASYNC_WORKLOADS below).
-const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "frameworkui2", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 // Reference checksums (the other native forks); the engine must match them.

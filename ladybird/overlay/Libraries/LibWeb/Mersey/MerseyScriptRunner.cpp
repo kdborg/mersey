@@ -1543,6 +1543,96 @@ static void host_web_bind(void*, int64_t target, uint32_t bind_id, double const*
     }());
 }
 
+// Batched DOM mutation (web_apply, ABI v10): apply a whole render's create /
+// set-text / append / insert / remove ops in ONE crossing over LibWeb's DOM.
+// See mersey.h MSY_DOM_* for the op codes and node-operand encoding. Returns the
+// number of nodes created; each created node's handle lands in created_out[i].
+static size_t host_web_apply(void*, int32_t const* ops, size_t nops,
+    int64_t const* nodes, size_t nnodes,
+    msy_str16 const* strs, size_t nstrs,
+    int64_t* created_out, size_t created_cap)
+{
+    auto* runner = s_runner;
+    if (!runner || !runner->realm)
+        return 0;
+    auto str_at = [&](int32_t i) -> Utf16String {
+        if (i < 0 || static_cast<size_t>(i) >= nstrs)
+            return Utf16String {};
+        return Utf16String::from_utf16(Utf16View { reinterpret_cast<char16_t const*>(strs[i].ptr), strs[i].len });
+    };
+    // A node operand: >= 0 a temp id (its handle is in created_out), < 0 a live
+    // handle (nodes[-r-1]), MSY_DOM_NULL nothing.
+    auto node_of = [&](int32_t ref) -> GC::Ptr<Web::DOM::Node> {
+        if (ref == MSY_DOM_NULL)
+            return {};
+        int64_t handle;
+        if (ref >= 0) {
+            if (static_cast<size_t>(ref) >= created_cap)
+                return {};
+            handle = created_out[ref];
+        } else {
+            size_t idx = static_cast<size_t>(-ref - 1);
+            if (idx >= nnodes)
+                return {};
+            handle = nodes[idx];
+        }
+        auto obj = handle_object(runner, handle);
+        if (!obj || !is<Web::DOM::Node>(*obj))
+            return {};
+        return GC::Ptr<Web::DOM::Node> { as<Web::DOM::Node>(*obj) };
+    };
+    size_t created = 0;
+    for (size_t g = 0; g < nops; ++g) {
+        int32_t op = ops[g * 4], a = ops[g * 4 + 1], b = ops[g * 4 + 2], c = ops[g * 4 + 3];
+        switch (op) {
+        case MSY_DOM_CREATE: {
+            int64_t h = 0;
+            auto doc_node = node_of(c); // c names the document (a live node)
+            if (doc_node && is<Web::DOM::Document>(*doc_node) && a >= 0 && static_cast<size_t>(a) < nstrs) {
+                auto el_or = Web::DOM::create_element(as<Web::DOM::Document>(*doc_node),
+                    Utf16FlyString { str_at(a) }, Web::Namespace::HTML);
+                if (!el_or.is_error()) {
+                    JS::Object& obj = *el_or.release_value();
+                    h = handle_for(runner, JS::Value(&obj));
+                    ++created;
+                }
+            }
+            if (static_cast<size_t>(b) < created_cap)
+                created_out[b] = h;
+            break;
+        }
+        case MSY_DOM_SET_TEXT:
+            if (auto node = node_of(a); node && b >= 0 && static_cast<size_t>(b) < nstrs)
+                (void)node->set_text_content(str_at(b));
+            break;
+        case MSY_DOM_APPEND: {
+            auto parent = node_of(a);
+            auto child = node_of(b);
+            if (parent && child)
+                (void)parent->append_child(GC::Ref<Web::DOM::Node> { *child });
+            break;
+        }
+        case MSY_DOM_INSERT: {
+            auto parent = node_of(a);
+            auto child = node_of(b);
+            if (parent && child)
+                (void)parent->insert_before(GC::Ref<Web::DOM::Node> { *child }, node_of(c));
+            break;
+        }
+        case MSY_DOM_REMOVE: {
+            auto parent = node_of(a);
+            auto child = node_of(b);
+            if (parent && child)
+                (void)parent->remove_child(GC::Ref<Web::DOM::Node> { *child });
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return created;
+}
+
 // ---- context setup ---------------------------------------------------------
 
 static msy_host_table host_table()
@@ -1575,6 +1665,8 @@ static msy_host_table host_table()
     // Typed-binding fast path: the JIT-compiled canvas loop calls this directly
     // with raw doubles; we dispatch straight to the C++ CanvasRenderingContext2D.
     table.web_bind = host_web_bind;
+    // Batched DOM mutation: a whole render's ops applied in one crossing.
+    table.web_apply = host_web_apply;
     // The rest (print_level, error, web_bytes_*, random_bytes, the legacy
     // fake-DOM hooks) is left NULL: the engine denies or falls back.
     return table;
