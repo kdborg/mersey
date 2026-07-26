@@ -5160,10 +5160,10 @@ impl Interp {
                 };
                 match self.host.web_apply(&ops, &nodes, &strs) {
                     Some(handles) => Ok(new_array(handles.into_iter().map(Value::JsRef).collect())),
-                    None => Err(self.throw(
-                        "Error",
-                        "std:dom.apply: host has no batched path".to_string(),
-                    )),
+                    // The host declined the batched path (web_apply is NULL):
+                    // replay the ops one at a time through the ordinary web
+                    // bridge. Same result, no crossing-collapse.
+                    None => self.dom_apply_replay(&ops, &nodes, &strs),
                 }
             }
             "caps.has" => {
@@ -7536,6 +7536,76 @@ impl Interp {
                 None => Err(self.throw("Error", format!("bad bridge reply: {s}"))),
             },
         }
+    }
+
+    /// Per-op replay for a host whose `web_apply` is NULL: apply the batch's ops
+    /// one at a time through the ordinary reflective web bridge (createElement /
+    /// textContent / appendChild / insertBefore / removeChild). Identical result
+    /// to the batched path — just no crossing-collapse — so `std:dom.apply` keeps
+    /// working on a host that declines it. See mersey.h MSY_DOM_* for the encoding.
+    fn dom_apply_replay(&mut self, ops: &[i32], nodes: &[i64], strs: &[String]) -> VResult {
+        const OP_CREATE: i32 = 0;
+        const OP_SET_TEXT: i32 = 1;
+        const OP_APPEND: i32 = 2;
+        const OP_INSERT: i32 = 3;
+        const OP_REMOVE: i32 = 4;
+        const NULL_REF: i32 = i32::MIN;
+        let str_at = |i: i32| -> Value {
+            Value::Str(Rc::new(utf16(
+                strs.get(i as usize).map_or("", |s| s.as_str()),
+            )))
+        };
+        // A node operand -> its live handle: a temp id (>= 0, into the nodes this
+        // batch created), a live node (< 0 -> nodes[-r-1]), or None for MSY_DOM_NULL.
+        let handle_of = |r: i32, created: &[i64]| -> Option<i64> {
+            if r == NULL_REF {
+                return None;
+            }
+            if r >= 0 {
+                return created.get(r as usize).copied();
+            }
+            nodes.get((-r - 1) as usize).copied()
+        };
+        let mut created: Vec<i64> = Vec::new();
+        for group in ops.chunks_exact(4) {
+            let (op, a, b, c) = (group[0], group[1], group[2], group[3]);
+            match op {
+                OP_CREATE => {
+                    // `c` names the document (a live node).
+                    let h = match handle_of(c, &created) {
+                        Some(doc) => match self.web_call(doc, "createElement", vec![str_at(a)])? {
+                            Value::JsRef(h) => h,
+                            _ => -1,
+                        },
+                        None => -1,
+                    };
+                    created.push(h);
+                }
+                OP_SET_TEXT => {
+                    if let Some(t) = handle_of(a, &created) {
+                        self.web_set(t, "textContent", str_at(b))?;
+                    }
+                }
+                OP_APPEND => {
+                    if let (Some(p), Some(ch)) = (handle_of(a, &created), handle_of(b, &created)) {
+                        self.web_call(p, "appendChild", vec![Value::JsRef(ch)])?;
+                    }
+                }
+                OP_INSERT => {
+                    if let (Some(p), Some(ch)) = (handle_of(a, &created), handle_of(b, &created)) {
+                        let refv = handle_of(c, &created).map_or(Value::Null, Value::JsRef);
+                        self.web_call(p, "insertBefore", vec![Value::JsRef(ch), refv])?;
+                    }
+                }
+                OP_REMOVE => {
+                    if let (Some(p), Some(ch)) = (handle_of(a, &created), handle_of(b, &created)) {
+                        self.web_call(p, "removeChild", vec![Value::JsRef(ch)])?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(new_array(created.into_iter().map(Value::JsRef).collect()))
     }
 
     fn web_get(&mut self, target: i64, prop: &str) -> VResult {

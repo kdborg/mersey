@@ -448,6 +448,9 @@ export function makeBridge(globalObject, invokeCallback) {
     apply(batchJson) {
       const NULL_REF = -2147483648;
       const CREATE = 0, SET_TEXT = 1, APPEND = 2, INSERT = 3, REMOVE = 4;
+      // Opt out of the batched path (like __MERSEY_NO_FASTPATH) so the engine's
+      // per-op replay fallback can be exercised and checksum-verified.
+      if (globalObject.__MERSEY_NO_WEB_APPLY) return "!declined";
       try {
         const { ops, nodes, strs } = JSON.parse(batchJson);
         const created = [];

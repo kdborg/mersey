@@ -372,6 +372,10 @@ const packed = (s) => {
   const [p, l] = writeStr(s);
   return (BigInt(p) << 32n) | BigInt(l);
 };
+// Test hook: MERSEY_NO_WEB_APPLY=1 makes the bridge decline the batched path,
+// so std:dom.apply exercises the engine's per-op replay fallback instead.
+realm.__MERSEY_NO_WEB_APPLY = !!process.env.MERSEY_NO_WEB_APPLY;
+
 const bridge = makeBridge(realm, (cb, argsJson) => {
   const [p, l] = writeStr(argsJson);
   exports.msy_invoke_args(cb, p, l);
