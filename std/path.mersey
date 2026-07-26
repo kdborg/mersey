@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// File paths — the string arithmetic, not the filesystem.
+//
+// This joins, splits and cleans up paths; it never touches disk (that is
+// `std:fs`, and it is capability-gated). Because it is pure string work it runs
+// in every host, and its answers do not depend on where — or whether — a file
+// actually exists.
+//
+// It is POSIX: `/` is the separator, `/foo` is absolute. Windows paths (`\`,
+// drive letters, UNC) are deliberately out of scope — a value type that quietly
+// behaves differently depending on the machine it runs on is the bug this
+// library exists to avoid. `normalize` collapses `.`, `..`, and repeated
+// slashes lexically, and drops a trailing slash from anything but the root.
+
+/// Is `p` an absolute path (rooted at `/`)?
+export function isAbsolute(p: string): bool {
+    return p.startsWith("/");
+}
+
+/// Collapse `.`, `..` and repeated slashes, lexically. `..` cannot rise above
+/// an absolute root (it is dropped) or above a relative one (it is kept). The
+/// empty path normalizes to `.`; an absolute path keeps its leading `/`.
+export function normalize(p: string): string {
+    const absolute = p.startsWith("/");
+    let out: string[] = [];
+    for (const seg of p.split("/")) {
+        if (seg.length == 0 || seg == ".") {
+            continue;
+        }
+        if (seg == "..") {
+            if (out.length > 0 && out[out.length - 1] != "..") {
+                out = out.slice(0, out.length - 1);
+            } else if (!absolute) {
+                out.push("..");
+            }
+            // absolute with nothing to pop: `..` above `/` is still `/`.
+            continue;
+        }
+        out.push(seg);
+    }
+    const joined = out.join("/");
+    if (absolute) {
+        return `/${joined}`;
+    }
+    return joined.length == 0 ? "." : joined;
+}
+
+/// Join segments with `/` and normalize the result. Empty segments are
+/// skipped; an all-empty (or empty) list joins to `.`.
+export function join(parts: string[]): string {
+    let joined = "";
+    for (const part of parts) {
+        if (part.length == 0) {
+            continue;
+        }
+        joined = joined.length == 0 ? part : `${joined}/${part}`;
+    }
+    if (joined.length == 0) {
+        return ".";
+    }
+    return normalize(joined);
+}
+
+/// The directory containing `p` — everything up to the last `/`. No trailing
+/// slash except at the root. A path with no slash has directory `.`.
+export function dirname(p: string): string {
+    const s = dropTrailingSlashes(p);
+    const slash = s.lastIndexOf("/");
+    if (slash < 0) {
+        return ".";
+    }
+    if (slash == 0) {
+        return "/";
+    }
+    return s.slice(0, slash);
+}
+
+/// The last segment of `p` (the file name). The root `/` has no basename (`""`).
+export function basename(p: string): string {
+    const s = dropTrailingSlashes(p);
+    const slash = s.lastIndexOf("/");
+    return slash < 0 ? s : s.slice(slash + 1);
+}
+
+/// The extension of `p`, including the leading dot (`".txt"`), or `""`. A
+/// dotfile with no other dot (`.bashrc`) has no extension.
+export function extname(p: string): string {
+    const base = basename(p);
+    const dot = base.lastIndexOf(".");
+    if (dot <= 0) {
+        return "";
+    }
+    return base.slice(dot);
+}
+
+/// The basename of `p` without its extension (`a/b.txt` -> `b`). A dotfile is
+/// returned whole.
+export function stem(p: string): string {
+    const base = basename(p);
+    const dot = base.lastIndexOf(".");
+    if (dot <= 0) {
+        return base;
+    }
+    return base.slice(0, dot);
+}
+
+/// A relative path from `base` to `target`, computed lexically. Both are
+/// normalized first; they should be the same kind (both absolute or both
+/// relative), since a purely lexical answer cannot bridge the two without a
+/// working directory.
+export function relative(base: string, target: string): string {
+    const f = segments(normalize(base));
+    const t = segments(normalize(target));
+    let i: int32 = 0;
+    while (i < f.length && i < t.length && f[i] == t[i]) {
+        i += 1;
+    }
+    const out: string[] = [];
+    for (let j: int32 = i; j < f.length; j += 1) {
+        out.push("..");
+    }
+    for (let j: int32 = i; j < t.length; j += 1) {
+        out.push(t[j]);
+    }
+    const r = out.join("/");
+    return r.length == 0 ? "." : r;
+}
+
+// ---- internals --------------------------------------------------------------
+
+/// Drop trailing `/`, but never the last character of a lone root.
+function dropTrailingSlashes(p: string): string {
+    let end: int32 = p.length;
+    while (end > 1 && p.charAt(end - 1) == "/") {
+        end -= 1;
+    }
+    return p.slice(0, end);
+}
+
+/// The non-empty, non-`.` path components, in order.
+function segments(p: string): string[] {
+    const out: string[] = [];
+    for (const s of p.split("/")) {
+        if (s.length > 0 && s != ".") {
+            out.push(s);
+        }
+    }
+    return out;
+}

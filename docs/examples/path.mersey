@@ -1,0 +1,20 @@
+// File paths — the string arithmetic, not the filesystem.
+//
+// Pure string work, POSIX semantics (`/` separates, `/foo` is absolute), so it
+// runs in every host and never touches disk. `normalize` collapses `.`, `..`
+// and repeated slashes lexically; the rest read a path apart.
+import { console } from "std:console";
+import { join, normalize, dirname, basename, extname, stem, relative, isAbsolute } from "std:path";
+
+// Join and clean up in one step.
+console.log(join(["src", "..", "lib", "util.mersey"]));
+console.log(normalize("//a//b/../c/"));
+
+// Take a path apart.
+const p = "/home/ada/report.tar.gz";
+console.log(dirname(p), basename(p));
+console.log(extname(p), stem(p));
+
+// Absolute vs relative, and the path from one place to another.
+console.log(isAbsolute(p), isAbsolute("./notes.md"));
+console.log(relative("/home/ada/src", "/home/ada/lib/util.mersey"));

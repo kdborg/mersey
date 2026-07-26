@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:path, tested in Mersey. POSIX semantics throughout.
+
+import { test, assert, refute } from "std:test";
+import {
+    isAbsolute, normalize, join, dirname, basename, extname, stem, relative,
+} from "std:path";
+
+test("isAbsolute distinguishes rooted paths", () => {
+    assert(isAbsolute("/a/b"), "/a/b");
+    assert(isAbsolute("/"), "/");
+    refute(isAbsolute("a/b"), "a/b");
+    refute(isAbsolute(""), "empty");
+});
+
+test("normalize collapses . .. and repeated slashes", () => {
+    assert(normalize("/a/b/../c") == "/a/c", "..");
+    assert(normalize("a/./b") == "a/b", ".");
+    assert(normalize("//a//b/") == "/a/b", "repeated + trailing");
+    assert(normalize("a/b/") == "a/b", "trailing dropped");
+    assert(normalize("") == ".", "empty is .");
+    assert(normalize("/") == "/", "root stays root");
+    assert(normalize("./") == ".", "just . is .");
+});
+
+test("normalize respects the root when .. would rise above it", () => {
+    assert(normalize("a/../..") == "..", "relative may rise");
+    assert(normalize("/a/../..") == "/", "absolute cannot rise above /");
+    assert(normalize("../a") == "../a", "leading .. kept when relative");
+});
+
+test("join concatenates then normalizes", () => {
+    assert(join(["a", "b", "c"]) == "a/b/c", "simple");
+    assert(join(["/a", "b"]) == "/a/b", "absolute head");
+    assert(join(["a", "", "b"]) == "a/b", "empty segment skipped");
+    assert(join(["a/", "/b"]) == "a/b", "slashes coalesced");
+    assert(join(["a", "..", "b"]) == "b", "normalized");
+    assert(join([]) == ".", "empty list is .");
+});
+
+test("dirname strips the last segment", () => {
+    assert(dirname("/a/b/c") == "/a/b", "nested");
+    assert(dirname("/a/b/") == "/a", "trailing slash");
+    assert(dirname("a") == ".", "no slash is .");
+    assert(dirname("/a") == "/", "one level under root");
+    assert(dirname("/") == "/", "root");
+    assert(dirname("a/b") == "a", "relative");
+});
+
+test("basename returns the last segment", () => {
+    assert(basename("/a/b.txt") == "b.txt", "file");
+    assert(basename("/a/b/") == "b", "trailing slash");
+    assert(basename("a") == "a", "bare");
+    assert(basename("/") == "", "root has none");
+});
+
+test("extname and stem split on the final dot", () => {
+    assert(extname("index.html") == ".html", "extension");
+    assert(extname("a/b.tar.gz") == ".gz", "final dot only");
+    assert(extname(".bashrc") == "", "dotfile has no extension");
+    assert(extname("a.") == ".", "trailing dot");
+    assert(extname("noext") == "", "no dot");
+    assert(stem("a/b.txt") == "b", "stem");
+    assert(stem("a.b.c") == "a.b", "stem keeps inner dots");
+    assert(stem(".bashrc") == ".bashrc", "dotfile stem is whole");
+});
+
+test("relative walks up then down, lexically", () => {
+    assert(relative("/a/b/c", "/a/b/d") == "../d", "sibling");
+    assert(relative("/a/b", "/a/b/c/d") == "c/d", "descend");
+    assert(relative("/a/b/c", "/a/b/c") == ".", "same path");
+    assert(relative("a/b", "a/c") == "../c", "relative inputs");
+});
