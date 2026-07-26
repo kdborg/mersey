@@ -467,5 +467,15 @@
     "wl": "frameworkui",
     "ms": null,
     "platform": "macos"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "frameworkui2",
+    "ms": 73.68500000238419,
+    "rss": 608,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
   }
 ]

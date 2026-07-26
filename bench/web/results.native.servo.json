@@ -435,8 +435,18 @@
     "browser": "servo-fork",
     "impl": "native",
     "wl": "frameworkui",
-    "ms": 98.97166599999998,
-    "rss": 22560,
+    "ms": 95.78062499999999,
+    "rss": 22208,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "servo-fork",
+    "impl": "native",
+    "wl": "frameworkui2",
+    "ms": 42.102875000000004,
+    "rss": 19392,
     "checksum": -413913408,
     "platform": "macos",
     "mem_metric": "footprint"

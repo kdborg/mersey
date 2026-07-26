@@ -515,17 +515,6 @@
   {
     "browser": "engine",
     "impl": "wasm",
-    "wl": "frameworkui",
-    "ms": 712.682166,
-    "rss": 130518,
-    "heap": 60424192,
-    "checksum": -413913408,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "engine",
-    "impl": "wasm",
     "wl": "dom",
     "ms": 70.115,
     "rss": 105624,
@@ -575,6 +564,28 @@
     "rss": 59537,
     "heap": 14811136,
     "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "frameworkui",
+    "ms": 830.822708,
+    "rss": 134102,
+    "heap": 60424192,
+    "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "engine",
+    "impl": "wasm",
+    "wl": "frameworkui2",
+    "ms": 83.384167,
+    "rss": 55523,
+    "heap": 14942208,
+    "checksum": -413913408,
     "platform": "macos",
     "mem_metric": "footprint"
   }

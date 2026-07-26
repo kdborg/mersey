@@ -40,7 +40,7 @@ const REPEATS = Number(process.env.MEM_REPEATS || 3);
 const POLL_MS = process.env.POLL_MS ? Number(process.env.POLL_MS) : undefined;
 const PER_TEST_TIMEOUT = 20;
 // fetch excluded for the same reason as the time runner (file:// + async RESULT).
-const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "compute", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "compute", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "frameworkui2", "geometry", "idb", "json", "locks", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "xhr"];
 // Async workloads self-report from a later task: their test must stay open
 // long enough for the RESULT (and the workload's allocations) to happen.
 const ASYNC_WORKLOADS = new Set([

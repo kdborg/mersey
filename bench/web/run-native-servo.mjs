@@ -34,7 +34,7 @@ const SERVO = process.env.SERVO_BIN ||
 const REPEATS = 3;
 // idb + locks excluded: Servo implements neither IndexedDB nor Web Locks
 // (the stock legs prove both absences).
-const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "geometry", "json", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "worker", "xhr"];
+const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "frameworkui2", "geometry", "json", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "worker", "xhr"];
 const WORKLOADS = process.env.WL ? process.env.WL.split(",") : [...WEB_WORKLOADS, "compute"];
 
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killServo(); process.exit(3); });
