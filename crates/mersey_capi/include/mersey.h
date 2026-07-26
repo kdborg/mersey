@@ -234,7 +234,8 @@ typedef struct {
      * The node created by the CREATE op with temp id i has its live handle
      * written to `created_out[i]` (up to `created_cap`, which the engine sizes to
      * the CREATE count). Returns the number of nodes created. May be NULL: the
-     * engine then throws for std:dom.apply (no batched path on this host). */
+     * engine then replays the batch one op at a time through the reflective web
+     * bridge (identical result, no crossing-collapse). */
     size_t (*web_apply)(void *data, const int32_t *ops, size_t nops,
                         const int64_t *nodes, size_t nnodes,
                         const msy_str16 *strs, size_t nstrs,

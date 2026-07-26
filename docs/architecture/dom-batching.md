@@ -69,10 +69,13 @@ size_t (*web_apply)(void *data, const int32_t *ops, size_t nops,
 
 `MSY_ABI_VERSION` -> `10`. Every host bumps its constant and either implements
 `web_apply` or leaves it `NULL`. Because the version is checked strictly, all
-hosts that link a v10 engine must be rebuilt at v10. (A per-op replay fallback
-for NULL hosts is planned but not yet implemented — all four forks and the wasm
-host implement `web_apply`, so `std:dom.apply` only throws on a bare host that
-declines it, e.g. `native/host_demo.c`'s other contexts.)
+hosts that link a v10 engine must be rebuilt at v10. When `web_apply` is NULL the
+engine **replays** the batch one op at a time through the reflective web bridge
+(`createElement` / `textContent` / `appendChild` / `insertBefore` / `removeChild`)
+— identical result, no crossing-collapse — so `std:dom.apply` works on any host,
+not just the four forks + wasm host that implement the batched path. (Verified on
+the engine leg: forcing the fallback checksums bit-for-bit against the batched
+path via the `__MERSEY_NO_WEB_APPLY` test hook.)
 
 ## Engine + language surface
 
