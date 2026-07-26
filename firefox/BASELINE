@@ -9,8 +9,11 @@ revision  5555170839c3b7a3f7731781d7cd077988325efd
 
 # dom/mersey/include/mersey.h is the canonical ABI header copied in — regenerate.
 regen     cp "$MERSEY_REPO/crates/mersey_capi/include/mersey.h" dom/mersey/include/mersey.h
-# Regenerate the vendored Rust crate tree from the pinned Cargo.lock. Needs the
-# Mersey repo adjacent (dom/mersey/rust references mersey_capi by relative path).
-regen     ./mach vendor rust --ignore-modified
-
+# Regenerate the vendored Rust crate tree (Cranelift &co.) from the pinned
+# Cargo.lock. BOOTSTRAP-only: the Mersey engine itself is a path dep (dom/mersey/
+# rust references mersey_capi by relative path), so an incremental `apply` on an
+# already-vendored checkout doesn't need it — and it fails on `mach cargo vet`
+# for an unaudited crate. So it lives with `build` (run only by a fresh
+# `bootstrap`, before ./mach build), not `regen` (run by every `apply`).
+build     ./mach vendor rust --ignore-modified
 build     ./mach build

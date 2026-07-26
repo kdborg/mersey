@@ -4,8 +4,9 @@
 # Build the Mersey browser forks on macOS arm64 (Apple silicon).
 #
 # One driver for all four Stage-B hosts plus the C-ABI staticlib they share.
-# It applies this repo's fork glue (the idempotent apply.sh scripts) and then
-# builds each fork with its native toolchain. Unlike the Linux-arm64 recipes
+# It applies this repo's fork glue (servo/ladybird/gecko via
+# scripts/fork-overlay.sh apply; chromium via its bespoke chromium/apply.sh) and
+# then builds each fork with its native toolchain. Unlike the Linux-arm64 recipes
 # (chromium/setup-arm64-host.sh, chromium/args.arm64.gn), macOS needs no
 # toolchain archaeology: the hermetic toolchains work and only target_os /
 # target_cpu change (see chromium/README.md).
@@ -133,6 +134,8 @@ EOF
   else
     ok "using existing mozconfig (objdir must be obj-mersey for the bench runner)"
   fi
+  say "gecko: fork-overlay.sh apply firefox"
+  "$REPO/scripts/fork-overlay.sh" apply firefox "$GECKO_SRC" || { fail gecko "overlay apply failed"; return; }
   warn "if this is a fresh checkout, run '(cd $GECKO_SRC && ./mach bootstrap)' once (interactive)"
   if ( cd "$GECKO_SRC" && ./mach build ); then
     if [ -x "$GECKO_SRC/obj-mersey/dist/bin/firefox" ]; then
@@ -158,6 +161,9 @@ build_chromium() {
   command -v gn >/dev/null 2>&1 && command -v autoninja >/dev/null 2>&1 || {
     skip chromium "gn/autoninja not on PATH — add depot_tools to PATH"; return; }
   [ -f "$STATICLIB" ] || { fail chromium "staticlib missing — build 'staticlib' first"; return; }
+
+  say "chromium: apply.sh (gclient overlay)"
+  "$REPO/chromium/apply.sh" "$CHROMIUM_SRC" || { fail chromium "apply.sh failed"; return; }
 
   # Refresh the engine into the fork. The fork's refresh.sh is Linux-only (it
   # cross-links a .so against the bullseye sysroot); on macOS the fork links the
@@ -214,8 +220,8 @@ build_servo() {
   if [ ! -f "$SERVO_SRC/mach" ]; then
     skip servo "no ./mach at $SERVO_SRC — set SERVO_SRC"; return
   fi
-  say "servo: apply.sh"
-  "$REPO/servo/apply.sh" "$SERVO_SRC" "$REPO" || { fail servo "apply.sh failed"; return; }
+  say "servo: fork-overlay.sh apply"
+  "$REPO/scripts/fork-overlay.sh" apply servo "$SERVO_SRC" || { fail servo "overlay apply failed"; return; }
   if [ -d "$SERVO_SRC/vendor" ]; then
     say "servo: vendor-deps.sh (vendored-source tree)"
     "$REPO/servo/vendor-deps.sh" "$SERVO_SRC" "$REPO" || warn "vendor-deps.sh failed"
@@ -261,9 +267,9 @@ build_ladybird() {
     skip ladybird "no Meta/ladybird.py at $LADYBIRD_SRC — set LADYBIRD_SRC"; return
   fi
   [ -f "$STATICLIB" ] || { fail ladybird "staticlib missing — build 'staticlib' first"; return; }
-  say "ladybird: apply.sh (MERSEY_STATICLIB=$STATICLIB)"
-  MERSEY_STATICLIB="$STATICLIB" "$REPO/ladybird/apply.sh" "$LADYBIRD_SRC" "$REPO" \
-    || { fail ladybird "apply.sh failed"; return; }
+  say "ladybird: fork-overlay.sh apply"
+  "$REPO/scripts/fork-overlay.sh" apply ladybird "$LADYBIRD_SRC" \
+    || { fail ladybird "overlay apply failed"; return; }
   say "ladybird: ./Meta/ladybird.py build test-web"
   if ( cd "$LADYBIRD_SRC" && PATH="$(apple_libtool_path)" ./Meta/ladybird.py build test-web ); then
     if [ -x "$LADYBIRD_SRC/Build/release/bin/test-web" ]; then
