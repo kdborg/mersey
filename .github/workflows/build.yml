@@ -45,6 +45,15 @@ jobs:
       - name: test
         run: cargo test --workspace --exclude mersey_wasm
 
+      # Native C-ABI embedding (Stage B): compile native/host_demo.c against the
+      # staticlib and run it — exercises the full msy_context_* / web_* boundary
+      # end to end, including the batched web_apply path (ABI v10). It is POSIX C
+      # (memmem, -ldl), so it runs on Linux + macOS, not Windows.
+      - name: native C-ABI host + web_apply
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./native/build-and-test.sh
+
       # Per-platform engine perf: the CLI-safe compute kernels self-time and
       # print `RESULT <wl> <ms> <checksum>`. Portable (no OS-specific timer).
       # This is the NATIVE engine — the compiled `target/release/mersey` binary
