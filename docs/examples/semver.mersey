@@ -1,0 +1,31 @@
+// Semantic versions — parsing and precedence (SemVer 2.0.0).
+//
+// Pure computation, so it runs in every host. Precedence follows the spec
+// exactly: the numeric core compares field by field, a prerelease is older than
+// its release, and build metadata is ignored. `satisfies` covers the range
+// operators a program writes against a single version — exact, `^`, `~`, and
+// the comparators — but not a package manager's full grammar.
+import { console } from "std:console";
+import { Version, parse, valid, compare, satisfies } from "std:semver";
+
+// Parse reads the parts; invalid input is null, never a guess.
+const v = parse("1.4.2-rc.1+build.7");
+console.log(v == null ? "null" : v.core(), v == null ? "" : v.prerelease);
+console.log(valid("1.2.3"), valid("1.2"), valid("01.2.3"));
+
+// Precedence: a prerelease is older than its release; build is ignored.
+console.log(compare("1.0.0", "2.0.0"), compare("1.0.0-rc", "1.0.0"));
+console.log(compare("1.0.0+a", "1.0.0+b"));
+
+// The classic trap — numeric identifiers compare as numbers, not text.
+console.log(compare("1.0.0-beta.2", "1.0.0-beta.11"));
+
+// Incrementing gives a clean release (prerelease and build dropped).
+const rel = parse("1.4.2-rc.1");
+console.log(rel == null ? "null" : rel.nextMinor().toString());
+
+// Ranges, against a single version.
+console.log(satisfies("1.9.0", "^1.2.0"), satisfies("2.0.0", "^1.2.0"));
+console.log(satisfies("0.2.9", "^0.2.3"), satisfies("0.3.0", "^0.2.3"));
+console.log(satisfies("1.2.9", "~1.2.3"), satisfies("1.2.3", ">=1.2.3"));
+console.log(satisfies("9.9.9", "*"));

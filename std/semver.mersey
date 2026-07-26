@@ -1,0 +1,376 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// Semantic versions — parsing and precedence (SemVer 2.0.0).
+//
+// A `Version` is `MAJOR.MINOR.PATCH`, optionally with a `-prerelease` tag and
+// `+build` metadata. It is pure computation and imports nothing from the host,
+// so it works everywhere the language runs — the standalone engine, a worker,
+// a browser.
+//
+// Precedence follows the spec exactly (§11): the numeric core compares field by
+// field; a prerelease version is *older* than its release (`1.0.0-rc <
+// 1.0.0`); prerelease identifiers compare by the spec's rules — numeric
+// identifiers numerically, alphanumeric ones lexically, numeric ranks below
+// alphanumeric, and more identifiers beats fewer when all the shared ones are
+// equal. Build metadata is ignored in every comparison (§10), exactly as the
+// spec requires.
+//
+// `satisfies` covers the range operators a program actually writes against a
+// single version — exact, `^`, `~`, and the comparators `>`, `>=`, `<`, `<=`.
+// It is deliberately not a full npm range grammar: no compound `>=1 <2`, no
+// `||`, no `x`-ranges, and no npm's special prerelease-exclusion rule. Those
+// belong to a package manager, not to a value type. Everything here compares by
+// precedence and nothing else.
+
+/// A parsed semantic version. Immutable — to change one, make another.
+export class Version {
+    public readonly major: int32 = 0;
+    public readonly minor: int32 = 0;
+    public readonly patch: int32 = 0;
+    /// The prerelease tag without its leading `-` (`"alpha.1"`), or `""`.
+    public readonly prerelease: string = "";
+    /// The build metadata without its leading `+` (`"001"`), or `""`. Ignored
+    /// in every comparison (§10).
+    public readonly build: string = "";
+
+    public constructor(major: int32, minor: int32, patch: int32,
+                       prerelease: string, build: string) {
+        this.major = major;
+        this.minor = minor;
+        this.patch = patch;
+        this.prerelease = prerelease;
+        this.build = build;
+    }
+
+    /// Parse a version string, or null. Null, not a throw and not a guess:
+    /// SemVer is precise about what is valid — no leading zeros on the numeric
+    /// parts or numeric prerelease identifiers, prerelease/build identifiers are
+    /// `[0-9A-Za-z-]` — and an invalid version is a fact the caller decides how
+    /// to handle. A leading `v`/`V` (common in git tags) is tolerated.
+    public static parse(text: string): Version? {
+        let s = text.trim();
+        if (s.startsWith("v") || s.startsWith("V")) {
+            s = s.slice(1);
+        }
+        // Build metadata comes last and may contain `-`, so strip it first.
+        let build = "";
+        const plus = s.indexOf("+");
+        if (plus >= 0) {
+            build = s.slice(plus + 1);
+            s = s.slice(0, plus);
+            if (!validIdentifiers(build, true)) {
+                return null;
+            }
+        }
+        // The prerelease is everything after the first `-`; it too may contain
+        // `-`, so split on the first one only.
+        let pre = "";
+        const dash = s.indexOf("-");
+        if (dash >= 0) {
+            pre = s.slice(dash + 1);
+            s = s.slice(0, dash);
+            if (!validIdentifiers(pre, false)) {
+                return null;
+            }
+        }
+        const parts = s.split(".");
+        if (parts.length != 3) {
+            return null;
+        }
+        const major = numericId(parts[0]);
+        const minor = numericId(parts[1]);
+        const patch = numericId(parts[2]);
+        if (major == null || minor == null || patch == null) {
+            return null;
+        }
+        return new Version(major, minor, patch, pre, build);
+    }
+
+    /// SemVer precedence: negative if this is older than `other`, 0 if they
+    /// have equal precedence, positive if newer. Build metadata is not compared.
+    public compare(other: Version): int32 {
+        if (this.major != other.major) {
+            return this.major < other.major ? -1 : 1;
+        }
+        if (this.minor != other.minor) {
+            return this.minor < other.minor ? -1 : 1;
+        }
+        if (this.patch != other.patch) {
+            return this.patch < other.patch ? -1 : 1;
+        }
+        return comparePre(this.prerelease, other.prerelease);
+    }
+
+    /// Equal *precedence* — so `1.0.0+a` equals `1.0.0+b` (build is ignored).
+    /// For byte-identical equality compare `toString()`.
+    public equals(other: Version): bool { return this.compare(other) == 0; }
+    public isBefore(other: Version): bool { return this.compare(other) < 0; }
+    public isAfter(other: Version): bool { return this.compare(other) > 0; }
+
+    /// The next release in each position. Prerelease and build are dropped —
+    /// an incremented version is a clean release.
+    public nextMajor(): Version { return new Version(this.major + 1, 0, 0, "", ""); }
+    public nextMinor(): Version { return new Version(this.major, this.minor + 1, 0, "", ""); }
+    public nextPatch(): Version { return new Version(this.major, this.minor, this.patch + 1, "", ""); }
+
+    /// `major.minor.patch`, without the prerelease or build.
+    public core(): string {
+        return `${this.major}.${this.minor}.${this.patch}`;
+    }
+
+    public toString(): string {
+        let s = this.core();
+        if (this.prerelease.length > 0) {
+            s = `${s}-${this.prerelease}`;
+        }
+        if (this.build.length > 0) {
+            s = `${s}+${this.build}`;
+        }
+        return s;
+    }
+
+    /// Does this version satisfy `range`? Supported: `*`/empty (any), exact
+    /// (`1.2.3` or `=1.2.3`), caret (`^1.2.3`), tilde (`~1.2.3`), and a single
+    /// comparator `>`, `>=`, `<`, `<=` before a full `major.minor.patch`.
+    /// A malformed range is not satisfied (returns false) rather than throwing.
+    public satisfies(range: string): bool {
+        const r = range.trim();
+        if (r.length == 0 || r == "*") {
+            return true;
+        }
+        if (r.startsWith("^")) {
+            const base = Version.parse(r.slice(1));
+            if (base == null) {
+                return false;
+            }
+            return this.compare(base) >= 0 && this.compare(caretUpper(base)) < 0;
+        }
+        if (r.startsWith("~")) {
+            const base = Version.parse(r.slice(1));
+            if (base == null) {
+                return false;
+            }
+            const upper = new Version(base.major, base.minor + 1, 0, "", "");
+            return this.compare(base) >= 0 && this.compare(upper) < 0;
+        }
+        let op = "=";
+        let rest = r;
+        if (r.startsWith(">=")) {
+            op = ">="; rest = r.slice(2);
+        } else if (r.startsWith("<=")) {
+            op = "<="; rest = r.slice(2);
+        } else if (r.startsWith(">")) {
+            op = ">"; rest = r.slice(1);
+        } else if (r.startsWith("<")) {
+            op = "<"; rest = r.slice(1);
+        } else if (r.startsWith("=")) {
+            op = "="; rest = r.slice(1);
+        }
+        const target = Version.parse(rest.trim());
+        if (target == null) {
+            return false;
+        }
+        const c = this.compare(target);
+        if (op == ">=") { return c >= 0; }
+        if (op == "<=") { return c <= 0; }
+        if (op == ">") { return c > 0; }
+        if (op == "<") { return c < 0; }
+        return c == 0;
+    }
+}
+
+// ---- module functions: the string-in, string-out convenience layer ----------
+
+/// Parse, or null. The free-function form of `Version.parse`.
+export function parse(text: string): Version? {
+    return Version.parse(text);
+}
+
+/// True if `text` is a valid semantic version.
+export function valid(text: string): bool {
+    return Version.parse(text) != null;
+}
+
+/// Compare two version strings by precedence: negative / 0 / positive, or null
+/// if either string is not a valid version — you cannot order a non-version.
+export function compare(a: string, b: string): int32? {
+    const va = Version.parse(a);
+    const vb = Version.parse(b);
+    if (va == null || vb == null) {
+        return null;
+    }
+    return va.compare(vb);
+}
+
+/// Does `version` satisfy `range`? Null if `version` does not parse — a
+/// question with no answer for a non-version. An unparseable `range` is simply
+/// not satisfied.
+export function satisfies(version: string, range: string): bool? {
+    const v = Version.parse(version);
+    if (v == null) {
+        return null;
+    }
+    return v.satisfies(range);
+}
+
+// ---- internals --------------------------------------------------------------
+
+/// A numeric identifier: ASCII digits only, and no leading zero unless it is
+/// exactly `"0"` (§2). Returns its value, or null when it is not one.
+function numericId(s: string): int32? {
+    if (s.length == 0) {
+        return null;
+    }
+    if (s.length > 1 && s.charAt(0) == "0") {
+        return null;
+    }
+    let v: int32 = 0;
+    for (let i: int32 = 0; i < s.length; i += 1) {
+        const d = digitVal(s.codePointAt(i));
+        if (d < 0) {
+            return null;
+        }
+        v = v * 10 + d;
+    }
+    return v;
+}
+
+function digitVal(cp: int32?): int32 {
+    if (cp == null || cp < 48 || cp > 57) {
+        return -1;
+    }
+    return cp - 48;
+}
+
+/// Validate a dot-separated identifier list. `build` metadata (§10) allows
+/// leading zeros; a `prerelease` (§9) does not on its numeric identifiers.
+function validIdentifiers(s: string, build: bool): bool {
+    if (s.length == 0) {
+        return false;
+    }
+    for (const id of s.split(".")) {
+        if (id.length == 0) {
+            return false;
+        }
+        if (!identChars(id)) {
+            return false;
+        }
+        if (!build && isNumeric(id) && id.length > 1 && id.charAt(0) == "0") {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Every character is `[0-9A-Za-z-]`.
+function identChars(s: string): bool {
+    for (let i: int32 = 0; i < s.length; i += 1) {
+        const cp = s.codePointAt(i);
+        if (cp == null) {
+            return false;
+        }
+        const isDigit = cp >= 48 && cp <= 57;
+        const isUpper = cp >= 65 && cp <= 90;
+        const isLower = cp >= 97 && cp <= 122;
+        const isDash = cp == 45;
+        if (!(isDigit || isUpper || isLower || isDash)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function isNumeric(s: string): bool {
+    if (s.length == 0) {
+        return false;
+    }
+    for (let i: int32 = 0; i < s.length; i += 1) {
+        if (digitVal(s.codePointAt(i)) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Compare prerelease tags per §11.3–§11.4. A missing prerelease outranks a
+/// present one; otherwise compare identifier by identifier, and more beats
+/// fewer when the shared ones tie.
+function comparePre(a: string, b: string): int32 {
+    if (a == b) {
+        return 0;
+    }
+    if (a.length == 0) {
+        return 1;   // no prerelease has higher precedence
+    }
+    if (b.length == 0) {
+        return -1;
+    }
+    const ai = a.split(".");
+    const bi = b.split(".");
+    const n = ai.length < bi.length ? ai.length : bi.length;
+    for (let i: int32 = 0; i < n; i += 1) {
+        const c = compareIdent(ai[i], bi[i]);
+        if (c != 0) {
+            return c;
+        }
+    }
+    if (ai.length == bi.length) {
+        return 0;
+    }
+    return ai.length < bi.length ? -1 : 1;
+}
+
+/// One prerelease identifier vs another (§11.4). Numeric identifiers compare
+/// numerically and rank below alphanumeric ones; alphanumeric compare by ASCII.
+function compareIdent(a: string, b: string): int32 {
+    const an = isNumeric(a);
+    const bn = isNumeric(b);
+    if (an && bn) {
+        // Both are digit strings with no leading zeros, so the longer one is the
+        // larger number; equal length falls back to lexical order. This avoids
+        // overflowing an int on a version that uses a very large identifier.
+        if (a.length != b.length) {
+            return a.length < b.length ? -1 : 1;
+        }
+        return lexCmp(a, b);
+    }
+    if (an) {
+        return -1;   // numeric < alphanumeric
+    }
+    if (bn) {
+        return 1;
+    }
+    return lexCmp(a, b);
+}
+
+/// Lexical comparison by code unit. The identifiers here are ASCII by
+/// construction, so a per-index code point is a per-code-unit compare.
+function lexCmp(a: string, b: string): int32 {
+    const n = a.length < b.length ? a.length : b.length;
+    for (let i: int32 = 0; i < n; i += 1) {
+        const ca = a.codePointAt(i);
+        const cb = b.codePointAt(i);
+        const va = ca == null ? 0 : ca;
+        const vb = cb == null ? 0 : cb;
+        if (va != vb) {
+            return va < vb ? -1 : 1;
+        }
+    }
+    if (a.length == b.length) {
+        return 0;
+    }
+    return a.length < b.length ? -1 : 1;
+}
+
+/// The exclusive upper bound of a caret range (§npm `^`): the next version that
+/// changes the left-most non-zero part.
+function caretUpper(base: Version): Version {
+    if (base.major > 0) {
+        return new Version(base.major + 1, 0, 0, "", "");
+    }
+    if (base.minor > 0) {
+        return new Version(0, base.minor + 1, 0, "", "");
+    }
+    return new Version(0, 0, base.patch + 1, "", "");
+}
