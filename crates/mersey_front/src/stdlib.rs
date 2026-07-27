@@ -27,6 +27,7 @@ pub fn source(spec: &str) -> Option<&'static str> {
         "std:cookie" => include_str!("../../../std/cookie.mersey"),
         "std:jwt" => include_str!("../../../std/jwt.mersey"),
         "std:base32" => include_str!("../../../std/base32.mersey"),
+        "std:totp" => include_str!("../../../std/totp.mersey"),
         _ => return None,
     })
 }
@@ -57,5 +58,6 @@ pub fn source_modules() -> &'static [&'static str] {
         "std:cookie",
         "std:jwt",
         "std:base32",
+        "std:totp",
     ]
 }

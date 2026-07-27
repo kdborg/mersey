@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// One-time passwords — HOTP (RFC 4226) and TOTP (RFC 6238).
+//
+// The 6-8 digit codes an authenticator app shows. `hotp` is the counter-based
+// primitive; `at`/`now` are the time-based codes on top of it; `verify` checks
+// a code, tolerating a little clock drift. Built on `std:hash`'s HMAC-SHA-1,
+// which is what authenticators use (the SHA-1 here is HOTP's construction, not
+// a signature).
+//
+// The key is raw bytes. An authenticator secret is usually written in base32 —
+// decode it with `std:base32` first — but the RFC test vectors (and this
+// module) work in the raw key, so encoding is the caller's choice, not baked in.
+
+import { hash } from "std:hash";
+import { bytes } from "std:bytes";
+import { time } from "std:time";
+
+/// HOTP (RFC 4226): the `digits`-length code for a key and a counter.
+export function hotp(key: Bytes, counter: int64, digits: int32): string {
+    // The counter as 8 big-endian bytes.
+    const cb = bytes.alloc(8);
+    let t: int64 = counter;
+    for (let i: int32 = 7; i >= 0; i -= 1) {
+        cb[i] = (t % 256) as int32;
+        t = t / 256;
+    }
+    const hs = hash.hmacSha1(key, cb);
+    // Dynamic truncation (RFC 4226 §5.3): the low nibble of the last byte picks
+    // a 4-byte window; its top bit is cleared to keep a positive 31-bit number.
+    const offset = hs[19] % 16;
+    const bin = (hs[offset] % 128) * 16777216
+        + hs[offset + 1] * 65536
+        + hs[offset + 2] * 256
+        + hs[offset + 3];
+    const otp = bin % pow10(digits);
+    let s = `${otp}`;
+    while (s.length < digits) {
+        s = `0${s}`;
+    }
+    return s;
+}
+
+/// TOTP (RFC 6238) at a specific Unix time (seconds). `period` is the step
+/// length in seconds (30 is standard).
+export function at(key: Bytes, unixSeconds: int64, period: int32, digits: int32): string {
+    return hotp(key, unixSeconds / period, digits);
+}
+
+/// TOTP for the current wall-clock time.
+export function now(key: Bytes, period: int32, digits: int32): string {
+    const secs: int64 = (time.now() / 1000.0) as int64;
+    return at(key, secs, period, digits);
+}
+
+/// Does `code` match the TOTP at `unixSeconds`, allowing +/- `skew` steps of
+/// clock drift? Checks every window before answering (no early exit on a hit),
+/// so acceptance does not leak which step matched.
+export function verify(key: Bytes, code: string, unixSeconds: int64, period: int32,
+                       digits: int32, skew: int32): bool {
+    const step: int64 = unixSeconds / period;
+    let ok: bool = false;
+    for (let d: int32 = -skew; d <= skew; d += 1) {
+        if (hotp(key, step + d, digits) == code) {
+            ok = true;
+        }
+    }
+    return ok;
+}
+
+// ---- internals --------------------------------------------------------------
+
+function pow10(n: int32): int32 {
+    let v: int32 = 1;
+    for (let i: int32 = 0; i < n; i += 1) {
+        v = v * 10;
+    }
+    return v;
+}

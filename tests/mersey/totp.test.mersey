@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:totp, tested against the RFC 6238 (TOTP) and RFC 4226 (HOTP) vectors,
+// which both use the 20-byte ASCII seed "12345678901234567890".
+
+import { test, assert, refute } from "std:test";
+import { bytes } from "std:bytes";
+import { hotp, at, verify } from "std:totp";
+
+function seed(): Bytes {
+    return bytes.encodeUtf8("12345678901234567890");
+}
+
+test("RFC 6238 TOTP vectors (SHA-1, 8 digits, 30s period)", () => {
+    const k = seed();
+    assert(at(k, 59, 30, 8) == "94287082", "T=59");
+    assert(at(k, 1111111109, 30, 8) == "07081804", "T=1111111109");
+    assert(at(k, 1111111111, 30, 8) == "14050471", "T=1111111111");
+    assert(at(k, 1234567890, 30, 8) == "89005924", "T=1234567890");
+    assert(at(k, 2000000000, 30, 8) == "69279037", "T=2000000000");
+    // 20_000_000_000 exceeds int32, so build it as int64 arithmetic.
+    const base: int64 = 2000000000;
+    assert(at(k, base * 10, 30, 8) == "65353130", "T=20000000000");
+});
+
+test("RFC 4226 HOTP vectors (6 digits)", () => {
+    const k = seed();
+    assert(hotp(k, 0, 6) == "755224", "counter 0");
+    assert(hotp(k, 1, 6) == "287082", "counter 1");
+    assert(hotp(k, 2, 6) == "359152", "counter 2");
+    assert(hotp(k, 3, 6) == "969429", "counter 3");
+});
+
+test("verify tolerates clock skew and rejects the rest", () => {
+    const k = seed();
+    const t: int64 = 1111111109;
+    const code = at(k, t, 30, 8);
+    assert(verify(k, code, t, 30, 8, 1), "exact time");
+    assert(verify(k, code, t + 30, 30, 8, 1), "one step late, within skew");
+    assert(verify(k, code, t - 30, 30, 8, 1), "one step early, within skew");
+    refute(verify(k, code, t + 300, 30, 8, 1), "far out of the skew window");
+    refute(verify(k, "00000000", t, 30, 8, 1), "a wrong code never matches");
+});

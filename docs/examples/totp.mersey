@@ -1,0 +1,18 @@
+// One-time passwords — HOTP (RFC 4226) and TOTP (RFC 6238).
+//
+// The codes an authenticator app shows, on std:hash's HMAC-SHA-1. The key is
+// raw bytes (decode an authenticator's base32 secret with std:base32 first).
+// `at` is the code at a given time; `verify` checks one with a skew window.
+// `now` (not shown, to stay deterministic) uses the wall clock.
+import { console } from "std:console";
+import { at, verify } from "std:totp";
+import { bytes } from "std:bytes";
+
+const key = bytes.encodeUtf8("12345678901234567890");   // an RFC 6238 test seed
+
+// A TOTP is fixed for a given time, key, digits and period.
+console.log(at(key, 1234567890, 30, 8));                // 89005924
+
+// verify accepts codes within +/- one 30s step of the given time.
+console.log(verify(key, "89005924", 1234567890, 30, 8, 1));
+console.log(verify(key, "00000000", 1234567890, 30, 8, 1));
