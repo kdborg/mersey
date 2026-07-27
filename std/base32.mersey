@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// Base32 — bytes to base-32 text and back (RFC 4648, the standard alphabet).
+//
+// The sibling of `std:base64` and `std:hex`. Base32 is case-insensitive and
+// avoids easily-confused glyphs, which is why it shows up in TOTP secrets,
+// filenames, and anything a human might read aloud or type. Pure computation
+// over `std:bytes`.
+//
+// Encoding pads with `=` to an 8-character boundary. Decoding accepts either
+// case, ignores padding and ASCII whitespace, and returns null on any character
+// outside the alphabet — null, not a dropped byte.
+
+import { bytes } from "std:bytes";
+
+const ALPHABET: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// Standard base32 with `=` padding.
+export function encode(data: Bytes): string {
+    let out: string = "";
+    let buffer: int32 = 0; // accumulates up to ~12 valid low bits
+    let bits: int32 = 0;
+    for (let i: int32 = 0; i < data.length; i += 1) {
+        buffer = buffer * 256 + data[i];
+        bits += 8;
+        while (bits >= 5) {
+            bits -= 5;
+            const div = pow2(bits);
+            out = `${out}${ALPHABET.charAt((buffer / div) % 32)}`;
+            buffer = buffer % div;
+        }
+    }
+    if (bits > 0) {
+        // Left-align the remaining bits (pad with zeros on the right) into 5.
+        out = `${out}${ALPHABET.charAt((buffer * pow2(5 - bits)) % 32)}`;
+    }
+    while (out.length % 8 != 0) {
+        out = `${out}=`;
+    }
+    return out;
+}
+
+/// Base32 text to bytes, or null. Either case; padding and whitespace ignored.
+export function decode(text: string): Bytes? {
+    const values: int32[] = [];
+    for (let i: int32 = 0; i < text.length; i += 1) {
+        const cp = text.codePointAt(i);
+        if (cp == null || cp == 61) {
+            continue; // '=' padding (61) — skip; null cannot occur but satisfies the check
+        }
+        if (cp == 32 || cp == 9 || cp == 10 || cp == 13) {
+            continue;
+        }
+        const v = symbolValue(cp);
+        if (v < 0) {
+            return null;
+        }
+        values.push(v);
+    }
+    // Accumulate 5 bits per symbol and emit a byte whenever 8 are available.
+    const out: int32[] = [];
+    let buffer: int32 = 0;
+    let bits: int32 = 0;
+    for (let i: int32 = 0; i < values.length; i += 1) {
+        buffer = buffer * 32 + values[i];
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            const div = pow2(bits);
+            out.push((buffer / div) % 256);
+            buffer = buffer % div;
+        }
+    }
+    // Any leftover bits (< 8) are the zero padding of the final group.
+    const buf = bytes.alloc(out.length);
+    for (let i: int32 = 0; i < out.length; i += 1) {
+        buf[i] = out[i];
+    }
+    return buf;
+}
+
+/// A string's UTF-8, base32 encoded.
+export function encodeText(s: string): string {
+    return encode(bytes.encodeUtf8(s));
+}
+
+/// Decode base32 and read the bytes back as UTF-8. Null if the text is not
+/// base32, or is base32 of something that is not UTF-8.
+export function decodeText(text: string): string? {
+    const raw = decode(text);
+    if (raw == null) {
+        return null;
+    }
+    return bytes.decodeUtf8(raw);
+}
+
+// ---- internals --------------------------------------------------------------
+
+/// The 5-bit value of a base32 symbol (code point), either case, or -1.
+function symbolValue(cp: int32): int32 {
+    if (cp >= 65 && cp <= 90) {
+        return cp - 65; // A-Z -> 0-25
+    }
+    if (cp >= 97 && cp <= 122) {
+        return cp - 97; // a-z -> 0-25
+    }
+    if (cp >= 50 && cp <= 55) {
+        return cp - 24; // 2-7 -> 26-31
+    }
+    return -1;
+}
+
+/// 2^n for small non-negative n — the shift these routines need as arithmetic.
+function pow2(n: int32): int32 {
+    let v: int32 = 1;
+    for (let i: int32 = 0; i < n; i += 1) {
+        v = v * 2;
+    }
+    return v;
+}

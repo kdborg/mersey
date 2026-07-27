@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:base32, tested in Mersey against the RFC 4648 §10 vectors.
+
+import { test, assert } from "std:test";
+import { bytes } from "std:bytes";
+import { encode, decode, encodeText, decodeText } from "std:base32";
+
+function mk(vals: int32[]): Bytes {
+    const b = bytes.alloc(vals.length);
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        b[i] = vals[i];
+    }
+    return b;
+}
+
+function sameBytes(b: Bytes?, vals: int32[]): bool {
+    if (b == null) {
+        return false;
+    }
+    if (b.length != vals.length) {
+        return false;
+    }
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        if (b[i] != vals[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test("encodes the RFC 4648 text vectors with padding", () => {
+    assert(encodeText("") == "", "empty");
+    assert(encodeText("f") == "MY======", "f");
+    assert(encodeText("fo") == "MZXQ====", "fo");
+    assert(encodeText("foo") == "MZXW6===", "foo");
+    assert(encodeText("foob") == "MZXW6YQ=", "foob");
+    assert(encodeText("fooba") == "MZXW6YTB", "fooba");
+    assert(encodeText("foobar") == "MZXW6YTBOI======", "foobar");
+});
+
+test("decodes back, case-insensitively and ignoring padding/space", () => {
+    assert(decodeText("MZXW6YTBOI======") == "foobar", "canonical");
+    assert(decodeText("mzxw6ytboi") == "foobar", "lowercase, no padding");
+    assert(decodeText("MZXW 6YTB OI") == "foobar", "spaces ignored");
+});
+
+test("round-trips arbitrary bytes", () => {
+    const data: int32[] = [0, 1, 31, 32, 127, 128, 200, 254, 255];
+    assert(sameBytes(decode(encode(mk(data))), data), "round-trip");
+    assert(encode(mk([255, 255, 255, 255, 255])) == "77777777", "all ones -> all 7s");
+});
+
+test("rejects characters outside the alphabet", () => {
+    assert(decode("0189") == null, "0/1/8/9 are not base32 symbols");
+    assert(decode("MZXW6!") == null, "punctuation");
+});

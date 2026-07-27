@@ -1,0 +1,11 @@
+// Base32 — bytes to base-32 text and back (RFC 4648).
+//
+// The case-insensitive sibling of base64/hex — used for TOTP secrets and
+// anything a person might type. Pure computation over std:bytes; decoding takes
+// either case and ignores padding/whitespace, and is null on anything invalid.
+import { console } from "std:console";
+import { encodeText, decodeText, decode } from "std:base32";
+
+console.log(encodeText("foobar"));                     // MZXW6YTBOI======
+console.log(decodeText("mzxw6ytboi") == null ? "null" : decodeText("mzxw6ytboi"));
+console.log(decode("0189") == null);                   // digits 0/1/8/9 are not base32
