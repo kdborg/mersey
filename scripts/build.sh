@@ -8,9 +8,12 @@
 # C-ABI staticlib and the WASM build are portable cargo builds that work on every
 # platform (Linux / macOS / Windows × arm64 / x86_64) — built NATIVELY on
 # whatever host runs this (that's how the CI runners in phase 3 validate the
-# whole matrix). The browser forks dispatch to a per-platform recipe,
-# scripts/build-<os>-<arch>.sh (macOS arm64 exists today; the rest land with the
-# CI runners).
+# whole matrix). A browser fork builds via a per-platform fast-path recipe,
+# scripts/build-<os>-<arch>.sh (macOS arm64 has one), or, on any other platform,
+# via the portable fallback: reconstruct the overlay onto the pinned checkout
+# and run the fork's own build (fork-overlay.sh bootstrap / chromium bootstrap).
+# So `build.sh <fork>` works on Linux / macOS / Windows, not only where a
+# bespoke recipe exists.
 #
 # Usage:  scripts/build.sh [target ...]
 #   engine     the `mersey` CLI + libmersey_capi staticlib/dylib   (default)
@@ -62,20 +65,27 @@ build_wasm() {
   cp target/wasm32-unknown-unknown/release/mersey_wasm.wasm web/mersey_wasm.wasm
 }
 
-# ---- browser forks (per-platform recipe) -----------------------------------
+# ---- browser forks ---------------------------------------------------------
+# A fork builds one of two ways. A platform may ship a fast-path recipe
+# (scripts/build-<os>-<arch>.sh) that knows that platform's toolchain quirks —
+# macOS arm64 has one. Where it does not, we fall back to the PORTABLE path:
+# reconstruct the Mersey overlay onto the pinned upstream checkout and run the
+# fork's OWN build commands (its BASELINE `build` hook, or chromium's
+# bootstrap). Those commands were written by whoever set the fork up, so this
+# works on any platform whose build dependencies are present — the same path the
+# self-hosted CI runners (browsers.yml) take — without a per-platform recipe
+# guessing at toolchains. `bootstrap` skips the (large) upstream clone when the
+# checkout is already present at the pinned revision, so it is safe to re-run.
 build_browser() { # $1 = fork
   local fork="$1" recipe="$REPO/scripts/build-$PLATFORM.sh"
   if [ -x "$recipe" ]; then
     "$recipe" "$fork"
+  elif [ "$fork" = chromium ]; then
+    say "$fork: no scripts/build-$PLATFORM.sh — reconstructing + building via chromium/bootstrap.sh"
+    "$REPO/chromium/bootstrap.sh"
   else
-    say "$fork: no build recipe for $PLATFORM yet (scripts/build-$PLATFORM.sh)"
-    echo "    The browser-fork build matrix is filled in and validated by the CI"
-    echo "    runners (phase 3). To reconstruct + build the checkout by hand:"
-    if [ "$fork" = chromium ]; then
-      echo "      chromium/bootstrap.sh              # sync upstream + apply overlay + build"
-    else
-      echo "      scripts/fork-overlay.sh bootstrap $fork"
-    fi
+    say "$fork: no scripts/build-$PLATFORM.sh — reconstructing + building via fork-overlay.sh"
+    "$REPO/scripts/fork-overlay.sh" bootstrap "$fork"
   fi
 }
 
