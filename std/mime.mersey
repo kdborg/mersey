@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// MIME content types — the `Content-Type` a static file server sends.
+//
+// `typeFor` maps a filename or path to its content type by extension, or null
+// when the extension is unknown — an HTTP server turns that null into
+// `application/octet-stream` (the honest "bytes, kind unknown"), which
+// `orOctetStream` does for you. Text types carry `; charset=utf-8`, because the
+// engine's strings are UTF-16 and the wire is UTF-8, and a server that omits
+// the charset leaves the browser guessing.
+//
+// The table is the common web set, not the IANA registry. It is a `switch` in
+// function form — no module-level state, so a program that never asks for a
+// content type pays nothing for this module being present.
+
+/// The content type for `path` (by its extension), or null if unknown.
+export function typeFor(path: string): string? {
+    return forExt(extensionOf(path));
+}
+
+/// Like `typeFor`, but an unknown extension yields `application/octet-stream`
+/// rather than null — the safe default for "serve these bytes as a download".
+export function orOctetStream(path: string): string {
+    const t = typeFor(path);
+    return t == null ? "application/octet-stream" : t;
+}
+
+/// The lowercased extension of `path` without its dot (`"HTML"`/`".html"` alike
+/// give `"html"`), or `""` when there is none.
+export function extensionOf(path: string): string {
+    let dot: int32 = -1;
+    let slash: int32 = -1;
+    for (let i: int32 = 0; i < path.length; i += 1) {
+        const c = path.charAt(i);
+        if (c == ".") {
+            dot = i;
+        } else if (c == "/") {
+            slash = i;
+        }
+    }
+    // A dot in a parent directory (`a.b/c`) is not an extension; a leading-dot
+    // file (`/.bashrc`) has none either.
+    if (dot < 0 || dot < slash || dot == slash + 1 || dot == 0) {
+        return "";
+    }
+    return path.slice(dot + 1).toLowerCase();
+}
+
+// ---- the table --------------------------------------------------------------
+
+const TEXT: string = "; charset=utf-8";
+
+function forExt(ext: string): string? {
+    // Markup and text.
+    if (ext == "html" || ext == "htm") {
+        return `text/html${TEXT}`;
+    }
+    if (ext == "css") {
+        return `text/css${TEXT}`;
+    }
+    if (ext == "js" || ext == "mjs") {
+        return `text/javascript${TEXT}`;
+    }
+    if (ext == "mersey") {
+        return `text/mersey${TEXT}`;
+    }
+    if (ext == "json") {
+        return `application/json${TEXT}`;
+    }
+    if (ext == "xml") {
+        return `application/xml${TEXT}`;
+    }
+    if (ext == "txt" || ext == "text") {
+        return `text/plain${TEXT}`;
+    }
+    if (ext == "csv") {
+        return `text/csv${TEXT}`;
+    }
+    if (ext == "md" || ext == "markdown") {
+        return `text/markdown${TEXT}`;
+    }
+    if (ext == "wasm") {
+        return "application/wasm";
+    }
+    if (ext == "pdf") {
+        return "application/pdf";
+    }
+    // Images.
+    if (ext == "png") {
+        return "image/png";
+    }
+    if (ext == "jpg" || ext == "jpeg") {
+        return "image/jpeg";
+    }
+    if (ext == "gif") {
+        return "image/gif";
+    }
+    if (ext == "webp") {
+        return "image/webp";
+    }
+    if (ext == "svg") {
+        return `image/svg+xml${TEXT}`;
+    }
+    if (ext == "ico") {
+        return "image/x-icon";
+    }
+    if (ext == "avif") {
+        return "image/avif";
+    }
+    // Fonts.
+    if (ext == "woff") {
+        return "font/woff";
+    }
+    if (ext == "woff2") {
+        return "font/woff2";
+    }
+    if (ext == "ttf") {
+        return "font/ttf";
+    }
+    if (ext == "otf") {
+        return "font/otf";
+    }
+    // Audio and video.
+    if (ext == "mp3") {
+        return "audio/mpeg";
+    }
+    if (ext == "wav") {
+        return "audio/wav";
+    }
+    if (ext == "mp4") {
+        return "video/mp4";
+    }
+    if (ext == "webm") {
+        return "video/webm";
+    }
+    // Archives.
+    if (ext == "zip") {
+        return "application/zip";
+    }
+    if (ext == "gz") {
+        return "application/gzip";
+    }
+    return null;
+}

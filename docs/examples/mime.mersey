@@ -1,0 +1,13 @@
+// MIME content types — the `Content-Type` a static file server sends.
+//
+// `typeFor` maps a path to its type by extension (text types carry the utf-8
+// charset), or null when the extension is unknown; `orOctetStream` turns that
+// null into the safe `application/octet-stream` default. Pure, no state.
+import { console } from "std:console";
+import { typeFor, orOctetStream, extensionOf } from "std:mime";
+
+console.log(extensionOf("/assets/app.MJS"));
+console.log(typeFor("index.html") == null ? "null" : typeFor("index.html"));
+console.log(typeFor("engine.wasm") == null ? "null" : typeFor("engine.wasm"));
+console.log(typeFor("data.unknownext") == null ? "null" : typeFor("data.unknownext"));
+console.log(orOctetStream("data.unknownext"));

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:mime, tested in Mersey.
+
+import { test, assert } from "std:test";
+import { typeFor, orOctetStream, extensionOf } from "std:mime";
+
+test("extensionOf takes the lowercased final extension", () => {
+    assert(extensionOf("index.html") == "html", "simple");
+    assert(extensionOf("/a/b/style.CSS") == "css", "lowercased, with dirs");
+    assert(extensionOf("archive.tar.gz") == "gz", "final extension only");
+    assert(extensionOf("Makefile") == "", "no extension");
+    assert(extensionOf("/etc/.bashrc") == "", "leading-dot file has none");
+    assert(extensionOf("a.b/c") == "", "dot in a parent directory is not one");
+});
+
+test("typeFor maps the common web types", () => {
+    assert(typeFor("page.html") == "text/html; charset=utf-8", "html + charset");
+    assert(typeFor("app.mjs") == "text/javascript; charset=utf-8", "mjs");
+    assert(typeFor("data.json") == "application/json; charset=utf-8", "json");
+    assert(typeFor("engine.wasm") == "application/wasm", "wasm, no charset");
+    assert(typeFor("logo.svg") == "image/svg+xml; charset=utf-8", "svg is text-ish");
+    assert(typeFor("photo.JPG") == "image/jpeg", "case-insensitive, jpeg alias");
+    assert(typeFor("font.woff2") == "font/woff2", "font");
+});
+
+test("an unknown or missing extension is null (or the octet-stream default)", () => {
+    assert(typeFor("mystery.qwerty") == null, "unknown extension");
+    assert(typeFor("README") == null, "no extension");
+    assert(orOctetStream("mystery.qwerty") == "application/octet-stream", "default");
+    assert(orOctetStream("page.html") == "text/html; charset=utf-8", "known passes through");
+});
