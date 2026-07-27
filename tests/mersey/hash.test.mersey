@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:hash, tested in Mersey against the SHA-256 (FIPS 180-4) vectors.
+
+import { test, assert } from "std:test";
+import { hash } from "std:hash";
+import { bytes } from "std:bytes";
+import { encode } from "std:hex";
+
+function sha256hex(s: string): string {
+    return encode(hash.sha256(bytes.encodeUtf8(s)));
+}
+
+test("sha256 matches the known vectors", () => {
+    assert(sha256hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+           "empty string");
+    assert(sha256hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+           "abc");
+    assert(sha256hex("The quick brown fox jumps over the lazy dog") ==
+           "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592", "fox");
+});
+
+test("the digest is 32 bytes and is deterministic", () => {
+    const a = hash.sha256(bytes.encodeUtf8("session-token"));
+    const b = hash.sha256(bytes.encodeUtf8("session-token"));
+    assert(a.length == 32, "256 bits");
+    assert(encode(a) == encode(b), "same input, same digest");
+});

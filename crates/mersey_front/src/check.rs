@@ -544,6 +544,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
         Ns::Dom,
         Ns::Gc,
         Ns::Mersey,
+        Ns::Hash,
     ];
     for ns in namespaces {
         let members = c
@@ -839,6 +840,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::PromiseNs => &["resolve", "reject", "all"],
         Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
         Ns::Mersey => &["version", "abiVersion"],
+        Ns::Hash => &["sha256"],
         Ns::Gc => &["collect", "stats"],
         Ns::Regex => &["compile"],
         Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
@@ -871,6 +873,7 @@ pub fn namespace_module(ns: Ns) -> &'static str {
         Ns::PromiseNs => "std:async",
         Ns::Time => "std:time",
         Ns::Mersey => "std:mersey",
+        Ns::Hash => "std:hash",
         Ns::Gc => "std:gc",
         Ns::Regex => "std:regex",
         Ns::Parse => "std:parse",
@@ -1378,6 +1381,8 @@ pub enum Ns {
     PromiseNs,
     /// `std:mersey` — the engine's own facts (`version`, `abiVersion`).
     Mersey,
+    /// `std:hash` — cryptographic digests (`sha256`).
+    Hash,
     Opaque,
 }
 
@@ -2748,6 +2753,7 @@ impl Checker {
                         ("std:bytes", _) => Type::Namespace(Ns::Bytes),
                         ("std:time", _) => Type::Namespace(Ns::Time),
                         ("std:mersey", _) => Type::Namespace(Ns::Mersey),
+                        ("std:hash", _) => Type::Namespace(Ns::Hash),
                         ("std:gc", _) => Type::Namespace(Ns::Gc),
                         ("std:regex", _) => Type::Namespace(Ns::Regex),
                         ("std:parse", _) => Type::Namespace(Ns::Parse),
@@ -6899,6 +6905,25 @@ impl Checker {
                 "abiVersion" => Type::Int(IntKind::I32),
                 _ => self.no_member("Mersey", name, pos),
             },
+            Type::Namespace(Ns::Hash) => {
+                let bytes_ty = match self.bytes_id {
+                    Some(id) => Type::Class(id, Rc::new(vec![])),
+                    None => Type::Err,
+                };
+                match name {
+                    // sha256(data: Bytes): Bytes — the 32-byte digest.
+                    "sha256" => Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![ParamType {
+                            ty: bytes_ty.clone(),
+                            optional: false,
+                            rest: false,
+                        }],
+                        ret: bytes_ty,
+                    })),
+                    _ => self.no_member("hash", name, pos),
+                }
+            }
             Type::Namespace(Ns::Format) => {
                 let p = |ty: Type| ParamType {
                     ty,

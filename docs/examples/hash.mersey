@@ -1,0 +1,14 @@
+// Cryptographic digests — SHA-256 (std:hash).
+//
+// `sha256` takes a `std:bytes` buffer and returns the 32-byte digest. It is
+// pure computation (no capability needed) — hashing reads bytes, it does not
+// touch the world. Pair it with `std:hex` or `std:base64` to render the digest,
+// and `std:bytes` to feed it text.
+import { console } from "std:console";
+import { hash } from "std:hash";
+import { bytes } from "std:bytes";
+import { encode } from "std:hex";
+
+const digest = hash.sha256(bytes.encodeUtf8("abc"));
+console.log(digest.length);      // 32 bytes
+console.log(encode(digest));     // the canonical SHA-256("abc")
