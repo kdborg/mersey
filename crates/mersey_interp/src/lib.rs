@@ -120,13 +120,73 @@ pub fn sha256(data: &[u8]) -> Vec<u8> {
     h.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
 
-/// HMAC-SHA-256 (RFC 2104): keyed message authentication over [`sha256`]. The
-/// primitive for a signed cookie or a JWT signature. Returns the 32-byte MAC.
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+/// SHA-1 (FIPS 180-1), a dependency-free reference implementation. Returns the
+/// 20-byte digest. Exposed as `std:hash`'s `sha1`. SHA-1 is broken for
+/// collision resistance and must not be used for new signatures, but it is
+/// still what git object IDs, HMAC-SHA1 and TOTP are defined over — this exists
+/// for those, not for security.
+pub fn sha1(data: &[u8]) -> Vec<u8> {
+    let mut h: [u32; 5] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
+    let mut msg = data.to_vec();
+    let bit_len = (data.len() as u64) * 8;
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = if i < 20 {
+                ((b & c) | ((!b) & d), 0x5a827999u32)
+            } else if i < 40 {
+                (b ^ c ^ d, 0x6ed9eba1)
+            } else if i < 60 {
+                ((b & c) | (b & d) | (c & d), 0x8f1bbcdc)
+            } else {
+                (b ^ c ^ d, 0xca62c1d6)
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    h.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+/// HMAC (RFC 2104) over a chosen hash with a 64-byte block. Shared by
+/// [`hmac_sha256`] and [`hmac_sha1`].
+fn hmac(hashfn: fn(&[u8]) -> Vec<u8>, key: &[u8], data: &[u8]) -> Vec<u8> {
     const BLOCK: usize = 64;
     // A key longer than the block is hashed down; then it is zero-padded.
     let mut k = if key.len() > BLOCK {
-        sha256(key)
+        hashfn(key)
     } else {
         key.to_vec()
     };
@@ -134,11 +194,23 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut inner = Vec::with_capacity(BLOCK + data.len());
     inner.extend(k.iter().map(|b| b ^ 0x36));
     inner.extend_from_slice(data);
-    let inner_hash = sha256(&inner);
-    let mut outer = Vec::with_capacity(BLOCK + 32);
+    let inner_hash = hashfn(&inner);
+    let mut outer = Vec::with_capacity(BLOCK + inner_hash.len());
     outer.extend(k.iter().map(|b| b ^ 0x5c));
     outer.extend_from_slice(&inner_hash);
-    sha256(&outer)
+    hashfn(&outer)
+}
+
+/// HMAC-SHA-256 (RFC 2104): the primitive for a signed cookie or a JWT
+/// signature. Returns the 32-byte MAC.
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    hmac(sha256, key, data)
+}
+
+/// HMAC-SHA-1 (RFC 2104): what TOTP/HOTP authenticator codes are built on.
+/// Returns the 20-byte MAC.
+pub fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
+    hmac(sha1, key, data)
 }
 
 // ---- host interface ---------------------------------------------------------
@@ -2928,7 +3000,7 @@ impl Interp {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
                         "std:json" => ("json", &["stringify", "parse"], &[]),
-                        "std:hash" => ("hash", &["sha256", "hmacSha256"], &[]),
+                        "std:hash" => ("hash", &["sha256", "sha1", "hmacSha256", "hmacSha1"], &[]),
                         "std:net" => ("net", &["serve"], &[]),
                         "std:dom" => ("dom", &["apply"], &[]),
                         "std:random" => ("random", &["float", "int", "bytes"], &[]),
@@ -5495,6 +5567,13 @@ impl Interp {
                 let digest = sha256(&b.borrow());
                 Ok(Value::Bytes(Rc::new(RefCell::new(digest))))
             }
+            "hash.sha1" => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("hash.sha1 needs a Bytes buffer");
+                };
+                let digest = sha1(&b.borrow());
+                Ok(Value::Bytes(Rc::new(RefCell::new(digest))))
+            }
             "hash.hmacSha256" => {
                 let (Some(Value::Bytes(key)), Some(Value::Bytes(data))) =
                     (args.first(), args.get(1))
@@ -5502,6 +5581,15 @@ impl Interp {
                     return self.type_error("hash.hmacSha256 needs (key: Bytes, data: Bytes)");
                 };
                 let mac = hmac_sha256(&key.borrow(), &data.borrow());
+                Ok(Value::Bytes(Rc::new(RefCell::new(mac))))
+            }
+            "hash.hmacSha1" => {
+                let (Some(Value::Bytes(key)), Some(Value::Bytes(data))) =
+                    (args.first(), args.get(1))
+                else {
+                    return self.type_error("hash.hmacSha1 needs (key: Bytes, data: Bytes)");
+                };
+                let mac = hmac_sha1(&key.borrow(), &data.borrow());
                 Ok(Value::Bytes(Rc::new(RefCell::new(mac))))
             }
             "bytes.encodeUtf8" => {

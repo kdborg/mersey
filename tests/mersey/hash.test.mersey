@@ -47,3 +47,23 @@ test("hmacSha256 depends on the key", () => {
     const b = encode(hash.hmacSha256(bytes.encodeUtf8("k2"), data));
     assert(a != b, "different keys, different MACs");
 });
+
+function sha1hex(s: string): string {
+    return encode(hash.sha1(bytes.encodeUtf8(s)));
+}
+
+test("sha1 matches the known vectors (20-byte digest)", () => {
+    assert(sha1hex("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709", "empty");
+    assert(sha1hex("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "abc");
+    assert(hash.sha1(bytes.encodeUtf8("x")).length == 20, "160 bits");
+});
+
+test("hmacSha1 matches the RFC 2202 vectors", () => {
+    const key1 = bytes.alloc(20);
+    bytes.fill(key1, 11); // 0x0b
+    assert(encode(hash.hmacSha1(key1, bytes.encodeUtf8("Hi There"))) ==
+           "b617318655057264e28bc0b6fb378c8ef146be00", "case 1");
+    assert(encode(hash.hmacSha1(bytes.encodeUtf8("Jefe"),
+                                bytes.encodeUtf8("what do ya want for nothing?"))) ==
+           "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79", "case 2");
+});

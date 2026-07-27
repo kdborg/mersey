@@ -840,7 +840,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::PromiseNs => &["resolve", "reject", "all"],
         Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
         Ns::Mersey => &["version", "abiVersion"],
-        Ns::Hash => &["sha256", "hmacSha256"],
+        Ns::Hash => &["sha256", "sha1", "hmacSha256", "hmacSha1"],
         Ns::Gc => &["collect", "stats"],
         Ns::Regex => &["compile"],
         Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
@@ -6915,19 +6915,25 @@ impl Checker {
                     optional: false,
                     rest: false,
                 };
-                match name {
-                    // sha256(data: Bytes): Bytes — the 32-byte digest.
-                    "sha256" => Type::Fn(Rc::new(FnType {
+                let digest = |input: Type| {
+                    Type::Fn(Rc::new(FnType {
                         tparams: vec![],
-                        params: vec![p(bytes_ty.clone())],
-                        ret: bytes_ty,
-                    })),
-                    // hmacSha256(key: Bytes, data: Bytes): Bytes — the 32-byte MAC.
-                    "hmacSha256" => Type::Fn(Rc::new(FnType {
+                        params: vec![p(input)],
+                        ret: bytes_ty.clone(),
+                    }))
+                };
+                let mac = || {
+                    Type::Fn(Rc::new(FnType {
                         tparams: vec![],
                         params: vec![p(bytes_ty.clone()), p(bytes_ty.clone())],
-                        ret: bytes_ty,
-                    })),
+                        ret: bytes_ty.clone(),
+                    }))
+                };
+                match name {
+                    // (data: Bytes): Bytes — the digest (32 bytes sha256, 20 sha1).
+                    "sha256" | "sha1" => digest(bytes_ty.clone()),
+                    // (key: Bytes, data: Bytes): Bytes — the MAC.
+                    "hmacSha256" | "hmacSha1" => mac(),
                     _ => self.no_member("hash", name, pos),
                 }
             }
