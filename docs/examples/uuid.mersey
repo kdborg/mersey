@@ -1,0 +1,17 @@
+// caps: random
+// UUIDs (RFC 4122) — generate, format, parse and validate.
+//
+// `v4()` is a random UUID and so needs the `random` capability (declared above,
+// the same grant `std:random` requires). Its *value* is random, but its shape
+// is not: a v4 is always valid and always reports version 4 — which is what
+// this prints, so the output stays deterministic. Everything else is pure.
+import { console } from "std:console";
+import { v4, nil, isValid, version } from "std:uuid";
+
+const id = v4();
+console.log(isValid(id));       // always true
+console.log(version(id));       // always 4
+
+console.log(nil());
+console.log(version(nil()));    // 0
+console.log(isValid("not-a-uuid"));

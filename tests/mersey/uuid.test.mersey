@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:uuid, tested in Mersey. Only the pure surface is exercised here — `v4`
+// needs the `random` capability, and its end-to-end behaviour is shown by the
+// documentation example (which declares that capability).
+
+import { test, assert, refute } from "std:test";
+import { bytes } from "std:bytes";
+import { format, parse, isValid, version, nil } from "std:uuid";
+
+// The bytes of 01234567-89ab-cdef-0011-223344556677.
+function sample(): Bytes {
+    const vals: int32[] = [1, 35, 69, 103, 137, 171, 205, 239, 0, 17, 34, 51, 68, 85, 102, 119];
+    const b = bytes.alloc(vals.length);
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        b[i] = vals[i];
+    }
+    return b;
+}
+
+test("format writes canonical 8-4-4-4-12 hex", () => {
+    assert(format(sample()) == "01234567-89ab-cdef-0011-223344556677", "canonical");
+    assert(format(bytes.alloc(15)) == null, "wrong length is null");
+});
+
+test("parse round-trips and is strict about shape", () => {
+    const s = "01234567-89ab-cdef-0011-223344556677";
+    const raw = parse(s);
+    assert(raw != null, "parses a canonical id");
+    if (raw != null) {
+        assert(format(raw) == s, "parse then format round-trips");
+    }
+    assert(parse("01234567-89ab-cdef-0011-22334455667") == null, "too short");
+    assert(parse("0123456789abcdef0011223344556677") == null, "missing dashes");
+    assert(parse("g1234567-89ab-cdef-0011-223344556677") == null, "non-hex digit");
+    assert(parse("01234567+89ab-cdef-0011-223344556677") == null, "wrong separator");
+});
+
+test("isValid and version read a UUID's shape", () => {
+    assert(isValid("01234567-89ab-cdef-0011-223344556677"), "well-formed");
+    refute(isValid("nope"), "malformed");
+    assert(version("00000000-0000-4000-8000-000000000000") == 4, "version 4");
+    assert(version("00000000-0000-1000-8000-000000000000") == 1, "version 1");
+    assert(version("bad") == -1, "invalid id has no version");
+});
+
+test("nil is the all-zero UUID", () => {
+    assert(nil() == "00000000-0000-0000-0000-000000000000", "nil form");
+    assert(isValid(nil()), "nil is well-formed");
+    assert(version(nil()) == 0, "nil version is 0");
+});

@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// UUIDs (RFC 4122) — generate, format, parse and validate.
+//
+// `v4()` is a random UUID; it needs the `random` capability (spec §5.3, the
+// same grant `std:random` requires) because a token that seeds a session or a
+// key is authority, not arithmetic. Everything else — `format`, `parse`,
+// `isValid`, `version`, `nil` — is pure and works in any host: reading a UUID
+// apart never needs randomness.
+//
+// The canonical text form is 8-4-4-4-12 lowercase hex. `parse` is strict about
+// that shape and returns null otherwise, rather than guessing at a malformed id.
+
+import { bytes } from "std:bytes";
+import { random } from "std:random";
+
+const HEX: string = "0123456789abcdef";
+
+/// A random (version 4) UUID. Requires the `random` capability.
+export function v4(): string {
+    const b = random.bytes(16);
+    // Set the version (4) and the RFC 4122 variant (10xx) bits. Arithmetic
+    // stands in for the masks: `% 16` clears the high nibble, `+ 64` sets it to
+    // 4; `% 64` clears the top two bits, `+ 128` sets the variant.
+    b[6] = (b[6] % 16) + 64;
+    b[8] = (b[8] % 64) + 128;
+    const s = format(b);
+    return s == null ? "" : s; // 16 bytes always format
+}
+
+/// The all-zero UUID.
+export function nil(): string {
+    return "00000000-0000-0000-0000-000000000000";
+}
+
+/// Format 16 raw bytes as a canonical UUID string, or null if `data` is not
+/// exactly 16 bytes. The bytes are written as-is — no version/variant bits are
+/// imposed (that is `v4`'s job).
+export function format(data: Bytes): string? {
+    if (data.length != 16) {
+        return null;
+    }
+    let out: string = "";
+    for (let i: int32 = 0; i < 16; i += 1) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            out = `${out}-`;
+        }
+        const b = data[i];
+        out = `${out}${HEX.charAt(b / 16)}${HEX.charAt(b % 16)}`;
+    }
+    return out;
+}
+
+/// Parse a canonical UUID string into its 16 bytes, or null. Strict: exactly 36
+/// characters, dashes in the 8-4-4-4-12 positions, hex everywhere else.
+export function parse(s: string): Bytes? {
+    if (s.length != 36) {
+        return null;
+    }
+    if (s.charAt(8) != "-" || s.charAt(13) != "-" || s.charAt(18) != "-" || s.charAt(23) != "-") {
+        return null;
+    }
+    const out = bytes.alloc(16);
+    let oi: int32 = 0;
+    let i: int32 = 0;
+    while (i < 36) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            i += 1;
+            continue;
+        }
+        const hi = nibble(s.codePointAt(i));
+        const lo = nibble(s.codePointAt(i + 1));
+        if (hi < 0 || lo < 0) {
+            return null;
+        }
+        out[oi] = hi * 16 + lo;
+        oi += 1;
+        i += 2;
+    }
+    return out;
+}
+
+/// Is `s` a well-formed canonical UUID?
+export function isValid(s: string): bool {
+    return parse(s) != null;
+}
+
+/// The version nibble of `s` (4 for a `v4`), or -1 if `s` is not a valid UUID.
+export function version(s: string): int32 {
+    const raw = parse(s);
+    if (raw == null) {
+        return -1;
+    }
+    return raw[6] / 16;
+}
+
+// ---- internals --------------------------------------------------------------
+
+/// The value of one hex digit (code point), or -1. Accepts either case.
+function nibble(cp: int32?): int32 {
+    if (cp == null) {
+        return -1;
+    }
+    if (cp >= 48 && cp <= 57) {
+        return cp - 48;
+    }
+    if (cp >= 97 && cp <= 102) {
+        return cp - 87;
+    }
+    if (cp >= 65 && cp <= 70) {
+        return cp - 55;
+    }
+    return -1;
+}
