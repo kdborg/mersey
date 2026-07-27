@@ -840,7 +840,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::PromiseNs => &["resolve", "reject", "all"],
         Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
         Ns::Mersey => &["version", "abiVersion"],
-        Ns::Hash => &["sha256"],
+        Ns::Hash => &["sha256", "hmacSha256"],
         Ns::Gc => &["collect", "stats"],
         Ns::Regex => &["compile"],
         Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
@@ -6910,15 +6910,22 @@ impl Checker {
                     Some(id) => Type::Class(id, Rc::new(vec![])),
                     None => Type::Err,
                 };
+                let p = |ty: Type| ParamType {
+                    ty,
+                    optional: false,
+                    rest: false,
+                };
                 match name {
                     // sha256(data: Bytes): Bytes — the 32-byte digest.
                     "sha256" => Type::Fn(Rc::new(FnType {
                         tparams: vec![],
-                        params: vec![ParamType {
-                            ty: bytes_ty.clone(),
-                            optional: false,
-                            rest: false,
-                        }],
+                        params: vec![p(bytes_ty.clone())],
+                        ret: bytes_ty,
+                    })),
+                    // hmacSha256(key: Bytes, data: Bytes): Bytes — the 32-byte MAC.
+                    "hmacSha256" => Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![p(bytes_ty.clone()), p(bytes_ty.clone())],
                         ret: bytes_ty,
                     })),
                     _ => self.no_member("hash", name, pos),

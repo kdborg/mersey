@@ -120,6 +120,27 @@ pub fn sha256(data: &[u8]) -> Vec<u8> {
     h.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
 
+/// HMAC-SHA-256 (RFC 2104): keyed message authentication over [`sha256`]. The
+/// primitive for a signed cookie or a JWT signature. Returns the 32-byte MAC.
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    const BLOCK: usize = 64;
+    // A key longer than the block is hashed down; then it is zero-padded.
+    let mut k = if key.len() > BLOCK {
+        sha256(key)
+    } else {
+        key.to_vec()
+    };
+    k.resize(BLOCK, 0);
+    let mut inner = Vec::with_capacity(BLOCK + data.len());
+    inner.extend(k.iter().map(|b| b ^ 0x36));
+    inner.extend_from_slice(data);
+    let inner_hash = sha256(&inner);
+    let mut outer = Vec::with_capacity(BLOCK + 32);
+    outer.extend(k.iter().map(|b| b ^ 0x5c));
+    outer.extend_from_slice(&inner_hash);
+    sha256(&outer)
+}
+
 // ---- host interface ---------------------------------------------------------
 
 /// A call/constructor argument that needs no JSON: a number or a string. The
@@ -2907,7 +2928,7 @@ impl Interp {
                 let (ns_name, natives, consts): (&str, &[&str], &[(&str, Value)]) =
                     match im.from.as_str() {
                         "std:json" => ("json", &["stringify", "parse"], &[]),
-                        "std:hash" => ("hash", &["sha256"], &[]),
+                        "std:hash" => ("hash", &["sha256", "hmacSha256"], &[]),
                         "std:net" => ("net", &["serve"], &[]),
                         "std:dom" => ("dom", &["apply"], &[]),
                         "std:random" => ("random", &["float", "int", "bytes"], &[]),
@@ -5473,6 +5494,15 @@ impl Interp {
                 };
                 let digest = sha256(&b.borrow());
                 Ok(Value::Bytes(Rc::new(RefCell::new(digest))))
+            }
+            "hash.hmacSha256" => {
+                let (Some(Value::Bytes(key)), Some(Value::Bytes(data))) =
+                    (args.first(), args.get(1))
+                else {
+                    return self.type_error("hash.hmacSha256 needs (key: Bytes, data: Bytes)");
+                };
+                let mac = hmac_sha256(&key.borrow(), &data.borrow());
+                Ok(Value::Bytes(Rc::new(RefCell::new(mac))))
             }
             "bytes.encodeUtf8" => {
                 let text = self.want_string(args.first())?;

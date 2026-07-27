@@ -27,3 +27,23 @@ test("the digest is 32 bytes and is deterministic", () => {
     assert(a.length == 32, "256 bits");
     assert(encode(a) == encode(b), "same input, same digest");
 });
+
+test("hmacSha256 matches the RFC 4231 vectors", () => {
+    // Test case 1: a 20-byte key of 0x0b, message "Hi There".
+    const key1 = bytes.alloc(20);
+    bytes.fill(key1, 11); // 0x0b
+    const mac1 = encode(hash.hmacSha256(key1, bytes.encodeUtf8("Hi There")));
+    assert(mac1 == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", mac1);
+
+    // Test case 2: key "Jefe", message "what do ya want for nothing?".
+    const mac2 = encode(hash.hmacSha256(bytes.encodeUtf8("Jefe"),
+                                        bytes.encodeUtf8("what do ya want for nothing?")));
+    assert(mac2 == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", mac2);
+});
+
+test("hmacSha256 depends on the key", () => {
+    const data = bytes.encodeUtf8("same message");
+    const a = encode(hash.hmacSha256(bytes.encodeUtf8("k1"), data));
+    const b = encode(hash.hmacSha256(bytes.encodeUtf8("k2"), data));
+    assert(a != b, "different keys, different MACs");
+});
