@@ -47,10 +47,14 @@ use script_bindings::settings_stack::run_a_script;
 
 use mersey_capi::{
     msy_context_debug_enable, msy_context_debug_resume, msy_context_debug_set_breakpoints,
+    msy_context_debug_step_in, msy_context_debug_step_out, msy_context_debug_step_over,
     msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
     MsyContext, MsyHostTable,
     MsyReply, MsyScalar, MsyStr16,
 };
+
+use devtools_traits::{MerseyDebugAction, ScriptToDevtoolsControlMsg};
+use servo_base::generic_channel;
 
 use std::collections::HashMap;
 
@@ -202,6 +206,9 @@ struct Runner {
     /// Debugger: JSON pause snapshots recorded by the on-paused hook, one per
     /// breakpoint hit, drained by `__merseyDebugLog`.
     debug_log: Vec<String>,
+    /// Debugger mode: true once `MerseyDebugArm` (RDP) turned on interactive
+    /// pausing; false leaves the on-paused hook in record-and-continue (trace).
+    debug_interactive: bool,
 }
 
 thread_local! {
@@ -691,8 +698,59 @@ extern "C" fn on_mersey_paused(data: *mut c_void, json: *const c_char, len: usiz
         if r.is_null() {
             return;
         }
-        (*r).debug_log.push(str_from(json, len).to_string());
-        msy_context_debug_resume((*r).ctx);
+        let snapshot = str_from(json, len).to_string();
+        if !(*r).debug_interactive {
+            // Trace mode: record the snapshot and continue (see __merseyDebugLog).
+            (*r).debug_log.push(snapshot);
+            msy_context_debug_resume((*r).ctx);
+            return;
+        }
+        // Interactive mode: hand the pause to the devtools `merseyDebugger` actor
+        // over the reverse channel with a reply sender, then BLOCK the script
+        // thread until the actor sends the resume/step action back. Servo's
+        // devtools run on their own thread, so blocking here does not stall them.
+        let global = GlobalScope::from_object((*r).global);
+        let Some(chan) = global.devtools_chan() else {
+            msy_context_debug_resume((*r).ctx);
+            return;
+        };
+        let Some((tx, rx)) = generic_channel::channel::<MerseyDebugAction>() else {
+            msy_context_debug_resume((*r).ctx);
+            return;
+        };
+        let _ = chan.send(ScriptToDevtoolsControlMsg::MerseyPaused(
+            global.pipeline_id(),
+            snapshot,
+            tx,
+        ));
+        let action = rx.recv().unwrap_or(MerseyDebugAction::Resume);
+        match action {
+            MerseyDebugAction::Resume => msy_context_debug_resume((*r).ctx),
+            MerseyDebugAction::StepOver => msy_context_debug_step_over((*r).ctx),
+            MerseyDebugAction::StepIn => msy_context_debug_step_in((*r).ctx),
+            MerseyDebugAction::StepOut => msy_context_debug_step_out((*r).ctx),
+        }
+    }
+}
+
+/// Arm Mersey breakpoints from the devtools `merseyDebugger` actor (RDP) and
+/// switch the on-paused hook into interactive mode. Runs on the script thread
+/// (the thread that owns the engine), driven by `DevtoolScriptControlMsg`.
+pub(crate) fn debug_arm(source: &str, lines: &[u32]) {
+    unsafe {
+        let r = runner_ptr();
+        if r.is_null() || (*r).ctx.is_null() {
+            return;
+        }
+        (*r).debug_interactive = true;
+        msy_context_debug_enable((*r).ctx, Some(on_mersey_paused), r as *mut c_void);
+        msy_context_debug_set_breakpoints(
+            (*r).ctx,
+            source.as_ptr() as *const c_char,
+            source.len(),
+            lines.as_ptr(),
+            lines.len(),
+        );
     }
 }
 
@@ -1808,6 +1866,7 @@ unsafe fn ensure_runner(global_obj: *mut JSObject) -> *mut Runner {
         natives: HashMap::new(),
         start: Instant::now(),
         debug_log: Vec::new(),
+        debug_interactive: false,
     }));
     RUNNER.with(|c| c.set(runner));
 
