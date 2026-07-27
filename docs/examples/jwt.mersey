@@ -1,0 +1,17 @@
+// JSON Web Tokens — HS256 sign and verify (std:jwt).
+//
+// Works in JSON strings: `sign` takes the claims as text and `verify` returns
+// them as text (parse with `std:json`). Only HS256 — no `alg: none`, no picking
+// the algorithm from the token, which is the classic JWT footgun. `verify`
+// returns null on any failure and never throws.
+import { console } from "std:console";
+import { sign, verify } from "std:jwt";
+
+const secret = "s3cr3t";
+const token = sign("{\"user\":\"ada\",\"admin\":true}", secret);
+console.log(token);
+
+// A good secret returns the payload; a wrong one returns null.
+const ok = verify(token, secret);
+console.log(ok == null ? "null" : ok);
+console.log(verify(token, "guess") == null);

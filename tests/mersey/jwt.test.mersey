@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:jwt, tested in Mersey against the canonical jwt.io HS256 example.
+
+import { test, assert } from "std:test";
+import { sign, verify, decode } from "std:jwt";
+
+const SECRET: string = "your-256-bit-secret";
+const PAYLOAD: string = "{\"sub\":\"1234567890\",\"name\":\"John Doe\",\"iat\":1516239022}";
+const TOKEN: string =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ." +
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+test("sign reproduces the canonical jwt.io HS256 token", () => {
+    assert(sign(PAYLOAD, SECRET) == TOKEN, sign(PAYLOAD, SECRET));
+});
+
+test("verify accepts a good token and returns the payload", () => {
+    assert(verify(TOKEN, SECRET) == PAYLOAD, "payload round-trips");
+});
+
+test("verify rejects a wrong key or a tampered token", () => {
+    assert(verify(TOKEN, "wrong-secret") == null, "wrong key");
+    // Flip the last character of the signature.
+    const tampered = TOKEN.slice(0, TOKEN.length - 1) + (TOKEN.slice(TOKEN.length - 1) == "c" ? "d" : "c");
+    assert(verify(tampered, SECRET) == null, "tampered signature");
+    assert(verify("not.a.jwt.token", SECRET) == null, "wrong shape");
+    assert(verify("onlyonepart", SECRET) == null, "too few parts");
+});
+
+test("decode reads the payload without verifying", () => {
+    assert(decode(TOKEN) == PAYLOAD, "payload visible unverified");
+    assert(decode("bad") == null, "malformed is null");
+});
+
+test("a freshly signed token verifies with the same secret", () => {
+    const claims = "{\"user\":\"ada\",\"admin\":true}";
+    const t = sign(claims, "s3cr3t");
+    assert(verify(t, "s3cr3t") == claims, "self round-trip");
+    assert(verify(t, "other") == null, "not under another secret");
+});
