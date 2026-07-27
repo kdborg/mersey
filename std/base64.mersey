@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// Base64 — bytes to text and back (RFC 4648).
+//
+// Two alphabets: the standard one (`+` and `/`, `=`-padded) that MIME, HTTP
+// Basic auth and data URIs use, and the URL-safe one (`-` and `_`, unpadded)
+// that goes in a query string or a JWT segment. Pure computation over
+// `std:bytes` buffers, so it runs in every host.
+//
+// Decoding is strict about the alphabet — an unknown character is a decode
+// failure (null), not a silently-dropped byte — but lenient about layout:
+// `=` padding is optional and ASCII whitespace (a MIME line break) is ignored.
+// A `null` result means "this was not base64", the same way `bytes.decodeUtf8`
+// returns null rather than papering a bad decode over with replacement chars.
+
+import { bytes } from "std:bytes";
+
+const STD: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const URL: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Standard base64 with `=` padding.
+export function encode(data: Bytes): string {
+    return encodeWith(data, STD, true);
+}
+
+/// Standard base64 to bytes, or null if `text` is not valid base64.
+export function decode(text: string): Bytes? {
+    return decodeWith(text, STD);
+}
+
+/// URL-safe base64 (`-`/`_`), without padding — what belongs in a URL.
+export function encodeUrl(data: Bytes): string {
+    return encodeWith(data, URL, false);
+}
+
+/// URL-safe base64 to bytes, or null. Padding is accepted but not required.
+export function decodeUrl(text: string): Bytes? {
+    return decodeWith(text, URL);
+}
+
+/// A string's UTF-8, standard-base64 encoded — the common "encode this text"
+/// case, e.g. an HTTP Basic credential.
+export function encodeText(s: string): string {
+    return encode(bytes.encodeUtf8(s));
+}
+
+/// Decode standard base64 and read the bytes back as UTF-8. Null if the text is
+/// not base64, or is base64 of something that is not UTF-8.
+export function decodeText(text: string): string? {
+    const raw = decode(text);
+    if (raw == null) {
+        return null;
+    }
+    return bytes.decodeUtf8(raw);
+}
+
+// ---- internals --------------------------------------------------------------
+
+// Integer arithmetic stands in for bit operations throughout: `>> k` is `/ 2^k`
+// and `<< k` is `* 2^k` on these small non-negative byte values, and `/` on
+// int32 is integer division. This keeps the module independent of whether the
+// host spells the shifts as operators.
+function encodeWith(data: Bytes, alphabet: string, pad: bool): string {
+    let out: string = "";
+    const n = data.length;
+    let i: int32 = 0;
+    while (i + 3 <= n) {
+        const b0 = data[i];
+        const b1 = data[i + 1];
+        const b2 = data[i + 2];
+        out = `${out}${alphabet.charAt(b0 / 4)}${alphabet.charAt((b0 % 4) * 16 + b1 / 16)}${alphabet.charAt((b1 % 16) * 4 + b2 / 64)}${alphabet.charAt(b2 % 64)}`;
+        i += 3;
+    }
+    const rem = n - i;
+    if (rem == 1) {
+        const b0 = data[i];
+        out = `${out}${alphabet.charAt(b0 / 4)}${alphabet.charAt((b0 % 4) * 16)}`;
+        if (pad) {
+            out = `${out}==`;
+        }
+    } else if (rem == 2) {
+        const b0 = data[i];
+        const b1 = data[i + 1];
+        out = `${out}${alphabet.charAt(b0 / 4)}${alphabet.charAt((b0 % 4) * 16 + b1 / 16)}${alphabet.charAt((b1 % 16) * 4)}`;
+        if (pad) {
+            out = `${out}=`;
+        }
+    }
+    return out;
+}
+
+function decodeWith(text: string, alphabet: string): Bytes? {
+    // Gather the 6-bit values, skipping `=` padding and ASCII whitespace and
+    // failing on anything the alphabet does not contain.
+    const vals: int32[] = [];
+    for (let i: int32 = 0; i < text.length; i += 1) {
+        const c = text.charAt(i);
+        if (c == "=") {
+            continue;
+        }
+        const cp = text.codePointAt(i);
+        if (cp == 32 || cp == 9 || cp == 10 || cp == 13) {
+            continue;
+        }
+        const v = alphabet.indexOf(c);
+        if (v < 0) {
+            return null;
+        }
+        vals.push(v);
+    }
+    const groups = vals.length / 4;
+    const rem = vals.length % 4;
+    if (rem == 1) {
+        return null; // a single trailing sextet cannot encode any whole byte
+    }
+    let outLen = groups * 3;
+    if (rem == 2) {
+        outLen += 1;
+    } else if (rem == 3) {
+        outLen += 2;
+    }
+    const out = bytes.alloc(outLen);
+    let oi: int32 = 0;
+    let vi: int32 = 0;
+    for (let g: int32 = 0; g < groups; g += 1) {
+        const c0 = vals[vi];
+        const c1 = vals[vi + 1];
+        const c2 = vals[vi + 2];
+        const c3 = vals[vi + 3];
+        out[oi] = c0 * 4 + c1 / 16;
+        out[oi + 1] = (c1 % 16) * 16 + c2 / 4;
+        out[oi + 2] = (c2 % 4) * 64 + c3;
+        oi += 3;
+        vi += 4;
+    }
+    if (rem == 2) {
+        const c0 = vals[vi];
+        const c1 = vals[vi + 1];
+        out[oi] = c0 * 4 + c1 / 16;
+    } else if (rem == 3) {
+        const c0 = vals[vi];
+        const c1 = vals[vi + 1];
+        const c2 = vals[vi + 2];
+        out[oi] = c0 * 4 + c1 / 16;
+        out[oi + 1] = (c1 % 16) * 16 + c2 / 4;
+    }
+    return out;
+}

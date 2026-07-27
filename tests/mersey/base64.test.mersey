@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:base64, tested in Mersey against the RFC 4648 §10 vectors.
+
+import { test, assert, refute } from "std:test";
+import { bytes } from "std:bytes";
+import {
+    encode, decode, encodeUrl, decodeUrl, encodeText, decodeText,
+} from "std:base64";
+
+function mk(vals: int32[]): Bytes {
+    const b = bytes.alloc(vals.length);
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        b[i] = vals[i];
+    }
+    return b;
+}
+
+function sameBytes(b: Bytes?, vals: int32[]): bool {
+    if (b == null) {
+        return false;
+    }
+    if (b.length != vals.length) {
+        return false;
+    }
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        if (b[i] != vals[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test("the RFC 4648 §10 text vectors encode exactly", () => {
+    assert(encodeText("") == "", "empty");
+    assert(encodeText("f") == "Zg==", "f");
+    assert(encodeText("fo") == "Zm8=", "fo");
+    assert(encodeText("foo") == "Zm9v", "foo");
+    assert(encodeText("foob") == "Zm9vYg==", "foob");
+    assert(encodeText("fooba") == "Zm9vYmE=", "fooba");
+    assert(encodeText("foobar") == "Zm9vYmFy", "foobar");
+});
+
+test("decodeText reverses encodeText", () => {
+    assert(decodeText("Zm9vYmFy") == "foobar", "foobar");
+    const words = "the quick brown fox — ünïcödé 🦊";
+    assert(decodeText(encodeText(words)) == words, "round-trips unicode");
+});
+
+test("padding lands on the right boundary", () => {
+    // 1 left-over byte -> two pad chars, 2 -> one, 0 -> none.
+    assert(encode(mk([102])) == "Zg==", "one byte");
+    assert(encode(mk([102, 111])) == "Zm8=", "two bytes");
+    assert(encode(mk([102, 111, 111])) == "Zm9v", "three bytes, no pad");
+});
+
+test("the standard alphabet uses + and /", () => {
+    assert(encode(mk([251])) == "+w==", "value 62 is +");
+    assert(encode(mk([255, 255])) == "//8=", "value 63 is /");
+});
+
+test("URL-safe uses - and _ and drops padding", () => {
+    assert(encodeUrl(mk([251])) == "-w", "62 is - , no pad");
+    assert(encodeUrl(mk([255, 255])) == "__8", "63 is _ , no pad");
+    assert(encodeUrl(mk([102, 111, 111, 98])) == "Zm9vYg", "unpadded");
+});
+
+test("decode round-trips arbitrary bytes on both alphabets", () => {
+    const data: int32[] = [0, 1, 2, 250, 251, 252, 253, 254, 255, 128, 64];
+    assert(sameBytes(decode(encode(mk(data))), data), "standard");
+    assert(sameBytes(decodeUrl(encodeUrl(mk(data))), data), "url-safe");
+});
+
+test("decode is lenient about padding and whitespace", () => {
+    assert(sameBytes(decode("Zm9v YmFy"), [102, 111, 111, 98, 97, 114]), "spaces ignored");
+    assert(sameBytes(decode("Zm9v\nYmFy"), [102, 111, 111, 98, 97, 114]), "newline ignored");
+    assert(sameBytes(decodeUrl("Zg"), [102]), "url decode without padding");
+    assert(sameBytes(decodeUrl("Zg=="), [102]), "url decode tolerates padding");
+});
+
+test("decode rejects what is not base64", () => {
+    assert(decode("****") == null, "characters outside the alphabet");
+    assert(decode("Zg!v") == null, "one bad character anywhere");
+    assert(decode("Z") == null, "a lone trailing sextet is impossible");
+    // A URL-safe body is not valid under the standard alphabet.
+    assert(decode("-_") == null, "wrong alphabet");
+});
+
+test("decodeText fails on base64 of non-UTF-8", () => {
+    // 0xFF alone is not valid UTF-8, so decoding it back to text must fail.
+    assert(encode(mk([255])) == "/w==", "encodes the byte");
+    assert(decodeText("/w==") == null, "not valid UTF-8 -> null");
+    assert(decodeText("not base64!") == null, "not base64 -> null");
+});

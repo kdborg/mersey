@@ -1,0 +1,21 @@
+// Base64 — bytes to text and back (RFC 4648).
+//
+// The standard alphabet (`+`/`/`, `=`-padded) for MIME, HTTP Basic auth and
+// data URIs; the URL-safe one (`-`/`_`, unpadded) for query strings and JWT
+// segments. Pure computation over `std:bytes`. Decoding is strict about the
+// alphabet — an unknown character yields null — and lenient about layout.
+import { console } from "std:console";
+import { encodeText, decodeText, encodeUrl, decode } from "std:base64";
+import { bytes } from "std:bytes";
+
+// Text in, base64 out, and straight back.
+const token = encodeText("aladdin:opensesame");   // an HTTP Basic credential
+console.log(token);
+console.log(decodeText(token) == null ? "null" : decodeText(token));
+
+// URL-safe, unpadded — what goes in a query string.
+console.log(encodeUrl(bytes.encodeUtf8("~subject?")));
+
+// A bad decode is null, never a guess.
+console.log(decode("not base64!") == null);
+console.log(decodeText("Zm9vYmFy") == null ? "null" : decodeText("Zm9vYmFy"));

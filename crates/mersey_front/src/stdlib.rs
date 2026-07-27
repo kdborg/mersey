@@ -19,6 +19,7 @@ pub fn source(spec: &str) -> Option<&'static str> {
         "std:http" => include_str!("../../../std/http.mersey"),
         "std:semver" => include_str!("../../../std/semver.mersey"),
         "std:path" => include_str!("../../../std/path.mersey"),
+        "std:base64" => include_str!("../../../std/base64.mersey"),
         _ => return None,
     })
 }
@@ -41,5 +42,6 @@ pub fn source_modules() -> &'static [&'static str] {
         "std:http",
         "std:semver",
         "std:path",
+        "std:base64",
     ]
 }
