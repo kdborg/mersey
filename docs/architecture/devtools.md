@@ -110,6 +110,23 @@ the already-working `mersey()` global and JS-eval path. The end-to-end RDP test
 (`browsers.yml`), not from a laptop check — that is the remaining verification
 step, the same bar the Ladybird/Firefox/Chromium consoles meet.
 
+Runtime-verified. The shared debug controller (`msy_context_debug_enable`/
+`set_breakpoints`/`resume`, ABI v10) is wired into Servo's engine integration
+(`components/script/mersey/mod.rs`) and exercised from a stock headless
+`servoshell`: arming a breakpoint on an inline module and running it produces a
+DevTools-grade pause snapshot —
+
+```
+{"reason":"breakpoint","frames":[{"name":"<module>","line":2,"column":5,
+  "scopes":[{"name":"Locals",...},{"name":"Globals",...}]}]}
+```
+
+— captured by the `on_paused` hook in a real build (`servo/test-mersey-debug.mjs`).
+This build records-and-continues (a breakpoint trace); the remaining layer is the
+interactive RDP `merseyDebugger` actor that blocks on an off-thread resume so a
+Firefox front-end can drive pause/step over the wire — the engine half it needs
+is now proven working in Servo.
+
 ## Firefox: the dropdown, and a build-shaped blocker
 
 The fork now carries the whole path, client to engine:
