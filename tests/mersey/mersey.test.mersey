@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:mersey — the engine's own facts, tested in Mersey.
+
+import { test, assert } from "std:test";
+import { Mersey } from "std:mersey";
+import { valid, satisfies } from "std:semver";
+
+test("Mersey.version is a valid semantic version", () => {
+    assert(Mersey.version.length > 0, "version is non-empty");
+    assert(valid(Mersey.version), `version "${Mersey.version}" parses as semver`);
+    // It is a data property, usable directly in a range check (pairs with std:semver).
+    const ok = satisfies(Mersey.version, ">=0.1.0");
+    assert(ok != null && ok, "version satisfies >=0.1.0");
+});
+
+test("Mersey.abiVersion is the host ABI version", () => {
+    assert(Mersey.abiVersion > 0, "abiVersion is positive");
+    // The single source of truth shared with mersey_capi / mersey.h.
+    assert(Mersey.abiVersion == 10, "abiVersion is 10");
+});

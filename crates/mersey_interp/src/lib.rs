@@ -38,6 +38,12 @@ pub mod webjson;
 use bignum::{BigDec, BigInt, RoundingMode};
 use webjson::Json;
 
+/// The host-embedding ABI version. The single source of truth: `mersey_capi`'s
+/// `MSY_ABI_VERSION` references this, and the language surfaces it as
+/// `Mersey.abiVersion` (via `std:mersey`), so a program, the C header, and the
+/// engine cannot disagree about which host contract they speak.
+pub const ABI_VERSION: u32 = 10;
+
 // ---- host interface ---------------------------------------------------------
 
 /// A call/constructor argument that needs no JSON: a number or a string. The
@@ -2796,6 +2802,26 @@ impl Interp {
                     entries,
                 }));
                 for n in names {
+                    env_define(&self.globals, &n.text, ns.clone());
+                }
+                Ok(())
+            }
+            "std:mersey" => {
+                // Data properties, built at import time (a `Str` cannot live in a
+                // `const` slice, so this namespace gets its own arm). `version` is
+                // the engine's own package version; `abiVersion` is the single
+                // source of truth shared with the C header and `mersey_capi`.
+                let mut entries = HashMap::new();
+                entries.insert(
+                    "version".to_string(),
+                    Value::Str(Rc::new(utf16(env!("CARGO_PKG_VERSION")))),
+                );
+                entries.insert("abiVersion".to_string(), Value::I32(ABI_VERSION as i32));
+                let ns = Value::Namespace(Rc::new(Namespace {
+                    name: "Mersey".to_string(),
+                    entries,
+                }));
+                for n in names.iter().chain(namespace_alias.iter()) {
                     env_define(&self.globals, &n.text, ns.clone());
                 }
                 Ok(())

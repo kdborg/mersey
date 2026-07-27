@@ -543,6 +543,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
         Ns::Net,
         Ns::Dom,
         Ns::Gc,
+        Ns::Mersey,
     ];
     for ns in namespaces {
         let members = c
@@ -837,6 +838,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::Random => &["float", "int", "bytes"],
         Ns::PromiseNs => &["resolve", "reject", "all"],
         Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
+        Ns::Mersey => &["version", "abiVersion"],
         Ns::Gc => &["collect", "stats"],
         Ns::Regex => &["compile"],
         Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
@@ -868,6 +870,7 @@ pub fn namespace_module(ns: Ns) -> &'static str {
         Ns::Random => "std:random",
         Ns::PromiseNs => "std:async",
         Ns::Time => "std:time",
+        Ns::Mersey => "std:mersey",
         Ns::Gc => "std:gc",
         Ns::Regex => "std:regex",
         Ns::Parse => "std:parse",
@@ -1373,6 +1376,8 @@ pub enum Ns {
     /// The `Promise` value from `std:async` (`resolve`/`reject`/`all`), as
     /// distinct from the `Promise<T>` *type*.
     PromiseNs,
+    /// `std:mersey` — the engine's own facts (`version`, `abiVersion`).
+    Mersey,
     Opaque,
 }
 
@@ -2742,6 +2747,7 @@ impl Checker {
                         ("std:console", _) => Type::Namespace(Ns::Console),
                         ("std:bytes", _) => Type::Namespace(Ns::Bytes),
                         ("std:time", _) => Type::Namespace(Ns::Time),
+                        ("std:mersey", _) => Type::Namespace(Ns::Mersey),
                         ("std:gc", _) => Type::Namespace(Ns::Gc),
                         ("std:regex", _) => Type::Namespace(Ns::Regex),
                         ("std:parse", _) => Type::Namespace(Ns::Parse),
@@ -6887,6 +6893,12 @@ impl Checker {
                     _ => self.no_member("math", name, pos),
                 }
             }
+            Type::Namespace(Ns::Mersey) => match name {
+                // Data properties, not calls: `Mersey.version`, `Mersey.abiVersion`.
+                "version" => Type::Str,
+                "abiVersion" => Type::Int(IntKind::I32),
+                _ => self.no_member("Mersey", name, pos),
+            },
             Type::Namespace(Ns::Format) => {
                 let p = |ty: Type| ParamType {
                     ty,

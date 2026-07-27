@@ -32,8 +32,10 @@ use mersey_interp::debug::{DebugController, StopReason};
 use mersey_interp::{embed, new_interp, DebugHook, DebugPause, Host, Interp, WebScalar};
 
 /// Bumped whenever the table layout or a boundary contract changes. The
-/// embedder checks before installing a table.
-pub const MSY_ABI_VERSION: u32 = 10;
+/// embedder checks before installing a table. Defined once in `mersey_interp`
+/// so the engine, this C ABI, and the language-level `Mersey.abiVersion` all
+/// report the same number; `mersey.h`'s `#define MSY_ABI_VERSION` must match it.
+pub const MSY_ABI_VERSION: u32 = mersey_interp::ABI_VERSION;
 
 /// Tier 0 only: never map executable pages (the jitless configuration for
 /// sandboxes that forbid a second JIT).

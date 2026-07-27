@@ -1,0 +1,16 @@
+// The `Mersey` object — the engine's own facts.
+//
+// `version` is the engine/language version (a semantic version, so `std:semver`
+// reads it directly); `abiVersion` is the host-embedding ABI the engine speaks,
+// the same number the C header and `mersey_capi` report. They are data
+// properties, not calls.
+import { console } from "std:console";
+import { Mersey } from "std:mersey";
+import { satisfies } from "std:semver";
+
+console.log(Mersey.version);
+console.log(Mersey.abiVersion);
+
+// Feature-gate on the engine version, the way a library would.
+const okp = satisfies(Mersey.version, ">=0.1.0");
+console.log(okp == null ? "null" : okp);
