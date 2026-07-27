@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:cookie, tested in Mersey.
+
+import { test, assert } from "std:test";
+import { parse, Cookie } from "std:cookie";
+
+test("parse reads a Cookie request header into name -> value", () => {
+    const m = parse("a=1; b=2; c=3");
+    assert(m.get("a") == "1" && m.get("b") == "2" && m.get("c") == "3", "three pairs");
+    assert(parse("sid=abc123").get("sid") == "abc123", "single");
+    assert(parse("a=1;b=2").get("b") == "2", "no space after ;");
+    assert(parse("").size == 0, "empty header, no pairs");
+    const flag = parse("flag; a=1");
+    assert(flag.get("flag") == "" && flag.get("a") == "1", "bare token maps to empty");
+});
+
+test("Cookie serializes name=value with no attributes by default", () => {
+    assert(new Cookie("sid", "x").serialize() == "sid=x", "minimal");
+});
+
+test("Cookie serializes the attributes that are set, in order", () => {
+    const c = new Cookie("sid", "abc");
+    c.path = "/";
+    c.maxAge = 3600;
+    c.httpOnly = true;
+    c.secure = true;
+    c.sameSite = "Lax";
+    assert(c.serialize() == "sid=abc; Path=/; Max-Age=3600; Secure; HttpOnly; SameSite=Lax", c.serialize());
+});
+
+test("maxAge boundary and an invalid SameSite are handled", () => {
+    const expire = new Cookie("sid", "");
+    expire.maxAge = 0; // 0 is valid: expire now
+    assert(expire.serialize() == "sid=; Max-Age=0", "maxAge 0 kept");
+    const c = new Cookie("a", "b");
+    c.maxAge = -5; // negative means unset
+    c.sameSite = "Bogus"; // not a real value -> omitted
+    assert(c.serialize() == "a=b", "unset maxAge and bogus SameSite omitted");
+});

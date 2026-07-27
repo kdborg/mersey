@@ -24,6 +24,7 @@ pub fn source(spec: &str) -> Option<&'static str> {
         "std:uuid" => include_str!("../../../std/uuid.mersey"),
         "std:mime" => include_str!("../../../std/mime.mersey"),
         "std:csv" => include_str!("../../../std/csv.mersey"),
+        "std:cookie" => include_str!("../../../std/cookie.mersey"),
         _ => return None,
     })
 }
@@ -51,5 +52,6 @@ pub fn source_modules() -> &'static [&'static str] {
         "std:uuid",
         "std:mime",
         "std:csv",
+        "std:cookie",
     ]
 }

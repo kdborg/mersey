@@ -1,0 +1,3 @@
+abc123
+dark
+sid=abc123; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax

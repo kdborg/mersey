@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// HTTP cookies — reading a `Cookie` request header and building a `Set-Cookie`
+// response header (RFC 6265).
+//
+// The two directions are not symmetric, and the types say so. A request's
+// `Cookie` header is just name=value pairs, so `parse` returns a map. A
+// response's `Set-Cookie` carries one cookie plus its attributes (path,
+// max-age, flags…), so `Cookie` is a small builder you fill in and `serialize`.
+//
+// Pure string work over `std:http`/`std:net`'s wire, usable by any backend.
+// Values are written as given: a cookie value must already be token-safe
+// (RFC 6265 §4.1.1) — url-encode anything else with `std:url` first, rather
+// than have this quietly mangle it.
+
+/// Parse a `Cookie:` request header ("a=1; b=2") into name -> value. A bare
+/// token with no `=` maps to "". Later duplicates win, as browsers send them.
+export function parse(header: string): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const part of header.split(";")) {
+        const p = part.trim();
+        if (p.length == 0) {
+            continue;
+        }
+        const eq = p.indexOf("=");
+        if (eq < 0) {
+            out.set(p, "");
+        } else {
+            out.set(p.slice(0, eq).trim(), p.slice(eq + 1).trim());
+        }
+    }
+    return out;
+}
+
+/// One `Set-Cookie` cookie: a name/value plus the attributes a server sets.
+/// Fill in the attributes you need, then `serialize`. Unset attributes are
+/// omitted — an empty string for the string ones, a negative `maxAge`.
+export class Cookie {
+    public readonly name: string = "";
+    public readonly value: string = "";
+    public path: string = "";
+    public domain: string = "";
+    /// Lifetime in seconds. Negative means unset; `0` expires the cookie now.
+    public maxAge: int32 = -1;
+    public secure: bool = false;
+    public httpOnly: bool = false;
+    /// "Strict", "Lax", or "None" — anything else is omitted.
+    public sameSite: string = "";
+
+    public constructor(name: string, value: string) {
+        this.name = name;
+        this.value = value;
+    }
+
+    /// The `Set-Cookie` header value (without the `Set-Cookie:` name).
+    public serialize(): string {
+        let s = `${this.name}=${this.value}`;
+        if (this.path.length > 0) {
+            s = `${s}; Path=${this.path}`;
+        }
+        if (this.domain.length > 0) {
+            s = `${s}; Domain=${this.domain}`;
+        }
+        if (this.maxAge >= 0) {
+            s = `${s}; Max-Age=${this.maxAge}`;
+        }
+        if (this.secure) {
+            s = `${s}; Secure`;
+        }
+        if (this.httpOnly) {
+            s = `${s}; HttpOnly`;
+        }
+        if (this.sameSite == "Strict" || this.sameSite == "Lax" || this.sameSite == "None") {
+            s = `${s}; SameSite=${this.sameSite}`;
+        }
+        return s;
+    }
+}

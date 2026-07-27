@@ -1,0 +1,20 @@
+// HTTP cookies — reading a `Cookie` request header and building `Set-Cookie`.
+//
+// The directions are asymmetric and the types say so: a request's `Cookie` is
+// name=value pairs (`parse` -> a map); a response's `Set-Cookie` is one cookie
+// plus attributes (the `Cookie` builder -> `serialize`). Pure string work.
+import { console } from "std:console";
+import { parse, Cookie } from "std:cookie";
+
+// Request side: read what the browser sent.
+const jar = parse("sid=abc123; theme=dark");
+console.log(jar.get("sid") == null ? "null" : jar.get("sid"));
+console.log(jar.get("theme") == null ? "null" : jar.get("theme"));
+
+// Response side: build a Set-Cookie value.
+const c = new Cookie("sid", "abc123");
+c.path = "/";
+c.maxAge = 3600;
+c.httpOnly = true;
+c.sameSite = "Lax";
+console.log(c.serialize());
