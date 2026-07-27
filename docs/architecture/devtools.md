@@ -82,6 +82,34 @@ unwired; `msy_context_repl_complete` and `Web::Mersey::repl_completions`
 exist for it, but the actor's `autocomplete` handler still returns empty (it
 does for JS too).
 
+## Servo: the console server half
+
+Servo already installs a page-global `mersey(source)`
+(`components/script/mersey/mod.rs` defines it with `JS_DefineFunction`): it runs
+one REPL turn against the page's persistent Mersey context via
+`msy_context_repl_turn`, echoes a trailing expression, and throws a JS error on
+a rejected turn's diagnostics. So the console server half needs no new IPC and
+no script-thread changes — the engine door is already open.
+
+The whole integration is one guarded edit to the devtools `ConsoleActor`
+(`components/devtools/actors/console.rs`, carried as an overlay snapshot): in
+`evaluate_js`, a leading `mersey>` rewrites the input to a call of that global —
+`mersey("<rest>")`, the argument escaped with `serde_json::to_string` — and
+sends it down the ordinary `DevtoolScriptControlMsg::Eval` path. A rejected turn
+surfaces as a console exception (the global throws), the reply still echoes what
+the user typed, and — exactly as with the other RDP forks — a leading `mersey>`
+is what lets a **stock** Firefox DevTools console (which has no Mersey language
+selector yet) drive Mersey against Servo, before a Mersey-aware client sends a
+`language` field.
+
+Verified: `cargo check -p servo-devtools` is clean with the overlay applied — the
+rewrite type-checks against Servo's real actor and `serde_json` APIs, and reuses
+the already-working `mersey()` global and JS-eval path. The end-to-end RDP test
+(a `servo/test-devtools-console.mjs` like the other forks') needs a full
+`./mach build` of servoshell and runs on the self-hosted browser CI
+(`browsers.yml`), not from a laptop check — that is the remaining verification
+step, the same bar the Ladybird/Firefox/Chromium consoles meet.
+
 ## Firefox: the dropdown, and a build-shaped blocker
 
 The fork now carries the whole path, client to engine:
