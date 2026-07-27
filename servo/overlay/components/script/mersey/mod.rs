@@ -46,6 +46,7 @@ use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 
 use mersey_capi::{
+    msy_context_debug_enable, msy_context_debug_resume, msy_context_debug_set_breakpoints,
     msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
     MsyContext, MsyHostTable,
     MsyReply, MsyScalar, MsyStr16,
@@ -198,6 +199,9 @@ struct Runner {
     hot: Vec<Hot>,
     natives: HashMap<i64, Natives>,
     start: Instant,
+    /// Debugger: JSON pause snapshots recorded by the on-paused hook, one per
+    /// breakpoint hit, drained by `__merseyDebugLog`.
+    debug_log: Vec<String>,
 }
 
 thread_local! {
@@ -673,6 +677,80 @@ unsafe extern "C" fn mersey_repl(cx: *mut js::jsapi::JSContext, argc: u32, vp: *
         args.rval().set(UndefinedValue());
     } else {
         args.rval().set(js::jsval::StringValue(&*jsstr));
+    }
+    true
+}
+
+/// The debugger's paused hook (ABI `msy_context_debug_enable`). It BLOCKS the
+/// engine mid-statement until it returns; this build records the snapshot and
+/// resumes immediately (a breakpoint trace / logpoint), which is the piece the
+/// interactive RDP Sources actor will later replace with an off-thread wait.
+extern "C" fn on_mersey_paused(data: *mut c_void, json: *const c_char, len: usize) {
+    unsafe {
+        let r = data as *mut Runner;
+        if r.is_null() {
+            return;
+        }
+        (*r).debug_log.push(str_from(json, len).to_string());
+        msy_context_debug_resume((*r).ctx);
+    }
+}
+
+/// `__merseyDebugSetBreakpoints(source, "l1,l2,...")` — arm breakpoints on a
+/// Mersey source (by its module name) at the given 1-based lines, and enable
+/// the debugger. The snapshots land in `__merseyDebugLog`.
+unsafe extern "C" fn mersey_debug_set_breakpoints(
+    cx: *mut js::jsapi::JSContext,
+    argc: u32,
+    vp: *mut Value,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let r = runner_ptr();
+    if r.is_null() || argc < 2 || !args.get(0).is_string() || !args.get(1).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let cx_safe = JSContext::from_ptr(NonNull::new(cx).unwrap());
+    let source = jsstr_to_string(&cx_safe, NonNull::new(args.get(0).to_string()).unwrap());
+    let csv = jsstr_to_string(&cx_safe, NonNull::new(args.get(1).to_string()).unwrap());
+    let lines: Vec<u32> = csv
+        .split(',')
+        .filter_map(|p| p.trim().parse::<u32>().ok())
+        .collect();
+    msy_context_debug_enable((*r).ctx, Some(on_mersey_paused), r as *mut c_void);
+    msy_context_debug_set_breakpoints(
+        (*r).ctx,
+        source.as_ptr() as *const c_char,
+        source.len(),
+        lines.as_ptr(),
+        lines.len(),
+    );
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// `__merseyDebugLog()` — drain and return the recorded pause snapshots, one
+/// JSON object per line (empty string when nothing paused).
+unsafe extern "C" fn mersey_debug_log(
+    cx: *mut js::jsapi::JSContext,
+    argc: u32,
+    vp: *mut Value,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let r = runner_ptr();
+    if r.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let text = (*r).debug_log.join("\n");
+    (*r).debug_log.clear();
+    let mut cx_safe = JSContext::from_ptr(NonNull::new(cx).unwrap());
+    let chars = js::conversions::Utf8Chars::from(text.as_str());
+    let jsstr = JS_NewStringCopyUTF8N(&mut cx_safe, &*chars as *const _);
+    if jsstr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(StringValue(&*jsstr));
     }
     true
 }
@@ -1729,6 +1807,7 @@ unsafe fn ensure_runner(global_obj: *mut JSObject) -> *mut Runner {
         hot: Vec::new(),
         natives: HashMap::new(),
         start: Instant::now(),
+        debug_log: Vec::new(),
     }));
     RUNNER.with(|c| c.set(runner));
 
@@ -1766,6 +1845,22 @@ pub(crate) fn run_mersey_script(global: &GlobalScope, cx: &mut JSContext, source
             let name = c"__merseyInvoke";
             let _ = JS_DefineFunction(cx, global_handle, name.as_ptr(), Some(mersey_invoke), 2, 0);
             let _ = JS_DefineFunction(cx, global_handle, c"mersey".as_ptr(), Some(mersey_repl), 1, 0);
+            let _ = JS_DefineFunction(
+                cx,
+                global_handle,
+                c"__merseyDebugSetBreakpoints".as_ptr(),
+                Some(mersey_debug_set_breakpoints),
+                2,
+                0,
+            );
+            let _ = JS_DefineFunction(
+                cx,
+                global_handle,
+                c"__merseyDebugLog".as_ptr(),
+                Some(mersey_debug_log),
+                0,
+                0,
+            );
             let _ = global.evaluate_js_on_global(
                 cx,
                 Cow::Borrowed(BRIDGE_JS),
