@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// Hexadecimal — bytes to their base-16 text and back.
+//
+// The encoding a hash digest, a byte dump or a color is written in. Pure
+// computation over `std:bytes`, so it runs in every host. Encoding is
+// lowercase by default (`encodeUpper` for the other case); decoding accepts
+// either case and ignores ASCII whitespace, but an odd number of digits or any
+// non-hex character is a decode failure (null), never a silently dropped byte —
+// the same "null, not a guess" discipline as `std:base64` and `bytes.decodeUtf8`.
+
+import { bytes } from "std:bytes";
+
+const LOWER: string = "0123456789abcdef";
+const UPPER: string = "0123456789ABCDEF";
+
+/// Lowercase hex (`ff09`).
+export function encode(data: Bytes): string {
+    return encodeWith(data, LOWER);
+}
+
+/// Uppercase hex (`FF09`).
+export function encodeUpper(data: Bytes): string {
+    return encodeWith(data, UPPER);
+}
+
+/// Hex text to bytes, or null. Either case; whitespace ignored; an odd digit
+/// count or a non-hex character fails.
+export function decode(text: string): Bytes? {
+    const nibbles: int32[] = [];
+    for (let i: int32 = 0; i < text.length; i += 1) {
+        const cp = text.codePointAt(i);
+        if (cp == null) {
+            return null;
+        }
+        if (cp == 32 || cp == 9 || cp == 10 || cp == 13) {
+            continue;
+        }
+        const v = nibble(cp);
+        if (v < 0) {
+            return null;
+        }
+        nibbles.push(v);
+    }
+    if (nibbles.length % 2 != 0) {
+        return null;
+    }
+    const out = bytes.alloc(nibbles.length / 2);
+    for (let i: int32 = 0; i < out.length; i += 1) {
+        out[i] = nibbles[i * 2] * 16 + nibbles[i * 2 + 1];
+    }
+    return out;
+}
+
+/// A string's UTF-8, hex-encoded (lowercase).
+export function encodeText(s: string): string {
+    return encode(bytes.encodeUtf8(s));
+}
+
+/// Decode hex and read the bytes back as UTF-8. Null if the text is not hex, or
+/// is hex of something that is not UTF-8.
+export function decodeText(text: string): string? {
+    const raw = decode(text);
+    if (raw == null) {
+        return null;
+    }
+    return bytes.decodeUtf8(raw);
+}
+
+// ---- internals --------------------------------------------------------------
+
+function encodeWith(data: Bytes, alphabet: string): string {
+    let out: string = "";
+    for (let i: int32 = 0; i < data.length; i += 1) {
+        const b = data[i];
+        out = `${out}${alphabet.charAt(b / 16)}${alphabet.charAt(b % 16)}`;
+    }
+    return out;
+}
+
+/// The value of one hex digit (code point), or -1.
+function nibble(cp: int32): int32 {
+    if (cp >= 48 && cp <= 57) {
+        return cp - 48; // 0-9
+    }
+    if (cp >= 97 && cp <= 102) {
+        return cp - 87; // a-f
+    }
+    if (cp >= 65 && cp <= 70) {
+        return cp - 55; // A-F
+    }
+    return -1;
+}

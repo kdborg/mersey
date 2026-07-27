@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:hex, tested in Mersey.
+
+import { test, assert } from "std:test";
+import { bytes } from "std:bytes";
+import { encode, encodeUpper, decode, encodeText, decodeText } from "std:hex";
+
+function mk(vals: int32[]): Bytes {
+    const b = bytes.alloc(vals.length);
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        b[i] = vals[i];
+    }
+    return b;
+}
+
+function sameBytes(b: Bytes?, vals: int32[]): bool {
+    if (b == null) {
+        return false;
+    }
+    if (b.length != vals.length) {
+        return false;
+    }
+    for (let i: int32 = 0; i < vals.length; i += 1) {
+        if (b[i] != vals[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test("encode writes two lowercase digits per byte", () => {
+    assert(encode(mk([])) == "", "empty");
+    assert(encode(mk([0, 15, 16, 255])) == "000f10ff", "boundaries");
+    assert(encodeUpper(mk([255, 171])) == "FFAB", "uppercase");
+    assert(encodeText("Hi") == "4869", "text");
+});
+
+test("decode reads either case and ignores whitespace", () => {
+    assert(sameBytes(decode("ffab"), [255, 171]), "lowercase");
+    assert(sameBytes(decode("FFAB"), [255, 171]), "uppercase");
+    assert(sameBytes(decode("Ff aB"), [255, 171]), "mixed case + space");
+    assert(sameBytes(decode("ff\nab"), [255, 171]), "newline ignored");
+    assert(decodeText("48656c6c6f") == "Hello", "decode to text");
+});
+
+test("decode rejects malformed hex", () => {
+    assert(decode("f") == null, "odd digit count");
+    assert(decode("gg") == null, "non-hex character");
+    assert(decode("12x4") == null, "one bad character");
+});
+
+test("round-trips arbitrary bytes and rejects non-UTF-8 text decodes", () => {
+    const data: int32[] = [0, 1, 127, 128, 200, 254, 255];
+    assert(sameBytes(decode(encode(mk(data))), data), "round-trip");
+    assert(encode(mk([255])) == "ff", "single byte");
+    assert(decodeText("ff") == null, "0xff is not valid UTF-8");
+});

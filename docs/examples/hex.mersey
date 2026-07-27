@@ -1,0 +1,15 @@
+// Hexadecimal — bytes to their base-16 text and back.
+//
+// The encoding a hash digest or a byte dump is written in. Pure computation
+// over `std:bytes`. Lowercase by default; decoding takes either case, ignores
+// whitespace, and returns null on anything that is not hex.
+import { console } from "std:console";
+import { encode, encodeUpper, decode, decodeText } from "std:hex";
+import { bytes } from "std:bytes";
+
+console.log(encode(bytes.encodeUtf8("Hi")));
+console.log(encodeUpper(bytes.encodeUtf8("Hi")));
+
+// Decoding is lenient about case and spacing, strict about validity.
+console.log(decodeText("48 65 6c 6c 6f") == null ? "null" : decodeText("48 65 6c 6c 6f"));
+console.log(decode("xyz") == null);
