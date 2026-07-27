@@ -1,0 +1,15 @@
+// CSV — comma-separated values, parsed and serialized (RFC 4180).
+//
+// Text in, a grid of strings out, and back. Quoted fields may hold commas,
+// line breaks and doubled quotes. Everything stays a string — CSV has no types,
+// and guessing "01" is a number is how a ZIP code loses its leading zero.
+import { console } from "std:console";
+import { parse, stringify } from "std:csv";
+
+const rows = parse("name,city\n\"Ada, Countess\",London\n\"o\"\"clock\",x");
+console.log(rows.length);            // 3 records
+console.log(rows[1][0]);             // Ada, Countess  (the comma was inside quotes)
+console.log(rows[2][0]);             // o"clock        (doubled quote decoded)
+
+// Serialize back, quoting only the fields that need it.
+console.log(stringify([["a,b", "plain"], ["c", "d"]]));

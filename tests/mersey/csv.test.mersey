@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Kirk D. Brown
+
+// std:csv, tested in Mersey against the RFC 4180 cases that break naive splits.
+
+import { test, assert } from "std:test";
+import { parse, stringify } from "std:csv";
+
+// A grid flattened to a checkable string: fields by "|", rows by ";".
+function dump(rows: string[][]): string {
+    const parts: string[] = [];
+    for (const row of rows) {
+        parts.push(row.join("|"));
+    }
+    return parts.join(";");
+}
+
+test("parses simple rows and empty fields", () => {
+    assert(dump(parse("a,b,c\n1,2,3")) == "a|b|c;1|2|3", "grid");
+    assert(dump(parse("a,,c")) == "a||c", "empty middle field");
+    assert(dump(parse("")) == "", "empty input is no rows");
+});
+
+test("quoted fields carry commas, quotes and newlines", () => {
+    assert(dump(parse("\"a,b\",c")) == "a,b|c", "comma inside quotes");
+    assert(dump(parse("\"she said \"\"hi\"\"\"")) == "she said \"hi\"", "doubled quote");
+    assert(dump(parse("\"x\ny\",z")) == "x\ny|z", "newline inside quotes");
+});
+
+test("accepts CRLF and ignores a trailing newline", () => {
+    assert(dump(parse("a,b\r\nc,d")) == "a|b;c|d", "CRLF endings");
+    assert(dump(parse("a,b\n")) == "a|b", "no spurious trailing row");
+    assert(dump(parse("a,b\r\n")) == "a|b", "trailing CRLF");
+});
+
+test("stringify quotes only when it must", () => {
+    assert(stringify([["a", "b"], ["c", "d"]]) == "a,b\r\nc,d", "plain, CRLF out");
+    assert(stringify([["a,b", "c"]]) == "\"a,b\",c", "quote a comma field");
+    assert(stringify([["say \"hi\"", "x"]]) == "\"say \"\"hi\"\"\",x", "double the quotes");
+});
+
+test("round-trips grids with every awkward character", () => {
+    const rows: string[][] = [
+        ["a,b", "plain", "he said \"yo\""],
+        ["line1\nline2", "", "trailing "],
+    ];
+    assert(dump(parse(stringify(rows))) == dump(rows), "parse . stringify == id");
+});
