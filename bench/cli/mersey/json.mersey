@@ -1,0 +1,26 @@
+// CLI twin of bench/web/mersey/json.mersey, using the engine's own std:json
+// instead of the browser's JSON — so the Mersey backend can run it. Both emit
+// the same compact text (`{"lang":"mersey","version":0,"ok":true}`), so the
+// checksum is identical to the browser json leg.
+import { console } from "std:console";
+import { time } from "std:time";
+import { json } from "std:json";
+
+const N: int32 = 20000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        const s = json.stringify({ lang: "mersey", version: i, ok: true });
+        sum = sum + s.length;
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000); // warm up (trigger the native tier)
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT json ${t1 - t0} ${c}`);
