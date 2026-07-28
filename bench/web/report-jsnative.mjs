@@ -89,6 +89,52 @@ const WL = Object.keys(DATA).sort((a, b) => {
   return ca === cb ? a.localeCompare(b) : ca ? -1 : 1;
 });
 
+// ---- why a cell has no bar ----------------------------------------------------
+//
+// Omitting an unmeasured cell keeps the grid honest, but on its own it cannot
+// tell "this fork cannot do it" apart from "nobody has run it yet". Each rule
+// below was established by running the workload in the fork and reading the
+// error it printed, not inferred from the missing row. A rule with no `wls`
+// matches every gap in that leg. Rules are tried in order; the catch-all at the
+// end is deliberately an admission, not an excuse.
+const CHROMIUM_BRIDGE =
+  "The Chromium fork constructs host objects in C++ from a hand-written allowlist " +
+  "(<code>TextEncoder</code>, <code>TextDecoder</code>, <code>DOMMatrix</code>, " +
+  "<code>Blob</code>, <code>URL</code>); anything else throws " +
+  "<code>unknown constructor</code>. The Firefox fork reaches the same interfaces " +
+  "through the reflective bridge, which is why its column is complete.";
+const CHROMIUM_GLOBALS =
+  "The Chromium fork does not expose these globals to Mersey: the page throws " +
+  "<code>`fetch` is not defined</code>, <code>`indexedDB` is not defined</code>, " +
+  "<code>`navigator` is not defined</code>, <code>`location` is not defined</code>. " +
+  "Same root as the row above — a hand-written native surface rather than reflection.";
+const CHROMIUM_BUG =
+  "A fork bug, distinct from the two gaps above: the workload throws " +
+  "<code>no member `length` on null</code>, so a bridge call returns null where the " +
+  "workload expects a list.";
+const PAUSED = (who) =>
+  `Not investigated — ${who} support is paused, so these were left as measured.`;
+const RUNNER_LIST = (who) =>
+  `The ${who} runner takes a hard-coded workload list that predates these three ` +
+  "compute kernels; they are not attempted, rather than attempted and failed.";
+
+const WHY_RULES = [
+  { leg: "msy·cr", wls: ["bchannel", "compression", "msgchannel", "sse", "streams", "urlpattern", "worker", "xhr"], why: CHROMIUM_BRIDGE },
+  { leg: "msy·cr", wls: ["fetch", "idb", "locks", "websocket"], why: CHROMIUM_GLOBALS },
+  { leg: "msy·cr", wls: ["frameworkui"], why: CHROMIUM_BUG },
+  { leg: "js·sv", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Servo") },
+  { leg: "js·lb", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Ladybird") },
+  { leg: "msy·sv", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Servo") },
+  { leg: "msy·lb", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Ladybird") },
+  { leg: "js·sv", why: PAUSED("Servo") },
+  { leg: "msy·sv", why: PAUSED("Servo") },
+  { leg: "js·lb", why: PAUSED("Ladybird") },
+  { leg: "msy·lb", why: PAUSED("Ladybird") },
+];
+const whyFor = (leg, wl) =>
+  WHY_RULES.find((r) => r.leg === leg && (!r.wls || r.wls.includes(wl)))?.why ??
+  "Not yet investigated — nobody has run this cell and read the error.";
+
 // ---- rendering ----------------------------------------------------------------
 const T_MIN = 1, T_MAX = 60000; // engine `calls` command-line leg tops ~31 s
 const logPct = (v) =>
@@ -97,12 +143,20 @@ const logPct = (v) =>
 const fmtMs = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v;
 const fmtMi = (v) => v == null ? "" : (v < 0.05 ? "≈0" : v.toFixed(1));
 
-// A memory *delta* can come back at or below the baseline — the workload's peak
-// never rose clear of the noise the runner measured before it started. That is
-// not "used no memory", it is "not measured", and a relative bar chart cannot
-// draw it: every such row collapsed onto the 2% floor and read as a real, tiny
-// measurement. Same rule as everywhere else on this page — no value, no bar.
-const memOrNull = (c) => (c.m != null && c.m > 0 ? c.m : null);
+// The browser arena's memory number is a *delta*: the process tree's footprint
+// on the workload page minus its footprint on a blank page, from two separate
+// launches. A browser's footprint moves by hundreds of KiB between launches, so
+// a workload that allocates almost nothing lands inside that noise and can come
+// back slightly negative — Chromium-native `crypto` measured -256 KiB against a
+// 96,834 KiB baseline, which is 0.3%.
+//
+// That is a real measurement at the floor of the method, not a missing one, and
+// the two deserve different treatment: an absent cell gets no row, while a
+// floor cell keeps its row and says `<0.5` so the reader can see the leg ran.
+// Drawing it to scale instead would put a visible bar on noise.
+const MEM_FLOOR_MIB = 0.5;
+const atMemFloor = (c) => c.m != null && c.m <= MEM_FLOOR_MIB;
+const memOrNull = (c) => (c.m == null ? null : Math.max(c.m, MEM_FLOOR_MIB));
 
 // One measured bar. `cls` sets the colour (js | native | node | bun | deno | mersey);
 // `fk` tags the row with its fork so the selector can hide it; `v` is the raw
@@ -124,7 +178,11 @@ function arena(title, entries, get, pctFn, fmtV, kind) {
     .filter((e) => e.v != null);
   if (!withVal.length) return "";
   const bars = withVal
-    .map(({ lab, v, cls, fk }) => bar(lab, pctFn(v), fmtV(v), cls, fk, v))
+    .map((e) => {
+      const floor = kind === "mem" && atMemFloor(e.cell);
+      return bar(e.lab, pctFn(e.v), floor ? `&lt;${MEM_FLOOR_MIB}` : fmtV(e.v),
+                 e.cls + (floor ? " sub" : ""), e.fk, e.v);
+    })
     .join("");
   return `<div class="ar ${kind}"><div class="ar-t">${title}</div><div class="bars">${bars}</div></div>`;
 }
@@ -171,6 +229,42 @@ const panels = WL.map((w) => {
 }).filter(Boolean).join("\n");
 
 const toc = `<nav class="toc">${WL.map((w) => `<a href="#wl-${w}" data-wl="${w}">${w}</a>`).join("\n    ")}</nav>`;
+
+// ---- coverage: every browser cell with no bar, grouped by cause ---------------
+// Derived from DATA, never hand-listed, so it cannot drift from the grid above.
+const gaps = new Map(); // why -> Map(leg -> [wl])
+let cells = 0, missing = 0;
+for (const w of WL) {
+  for (const f of FORKS) {
+    for (const [kind, leg] of [["js", `js·${f.key}`], ["native", `msy·${f.key}`]]) {
+      cells++;
+      if (DATA[w].browser[f.key]?.[kind]?.t != null) continue;
+      missing++;
+      const why = whyFor(leg, w);
+      const byLeg = gaps.get(why) ?? (gaps.set(why, new Map()), gaps.get(why));
+      byLeg.set(leg, [...(byLeg.get(leg) ?? []), w]);
+    }
+  }
+}
+const covRows = [...gaps.entries()]
+  .sort((a, b) => a[0].localeCompare(b[0]))
+  .flatMap(([why, byLeg]) => [...byLeg.entries()].map(([leg, ws]) =>
+    `<tr><td class="cov-leg">${leg}</td><td class="cov-wl">${ws.sort().join(" ")}</td><td>${why}</td></tr>`))
+  .join("\n      ");
+const coverage = `<details class="cov">
+  <summary><b>Coverage</b> — ${missing} of ${cells} browser cells have no bar, and why</summary>
+  <table>
+    <thead><tr><th>leg</th><th>workloads</th><th>why</th></tr></thead>
+    <tbody>
+      ${covRows}
+    </tbody>
+  </table>
+  <p class="cov-note">The command-line arena covers only the workloads with a Mersey twin that needs
+    no host API — the DOM and networked workloads have no Node equivalent, so they show a browser
+    arena alone. A memory bar reading <code>&lt;${MEM_FLOOR_MIB}</code> is hatched: the delta between
+    the workload page and a blank page fell inside the noise of two separate browser launches, which
+    is a measurement at the floor of the method rather than a missing one.</p>
+</details>`;
 
 const html = `<!doctype html>
 <html lang="en">
@@ -226,6 +320,18 @@ const html = `<!doctype html>
   [hidden]{display:none !important;}
   .toc a{font-family:var(--mono);font-size:.75rem;color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:.18rem .65rem;background:var(--panel);}
   .toc a:hover{border-color:var(--accent);}
+  .cov{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.55rem 1.4rem;
+    box-shadow:var(--shadow);margin:0 0 1rem;font-size:.85rem;}
+  .cov[open]{padding-bottom:1rem;}
+  .cov summary{cursor:pointer;color:var(--ink-soft);}
+  .cov table{width:100%;border-collapse:collapse;margin-top:.8rem;}
+  .cov th{text-align:left;font-weight:600;color:var(--ink-faint);font-size:.72rem;
+    text-transform:uppercase;letter-spacing:.04em;padding:0 .8rem .35rem 0;border-bottom:1px solid var(--line);}
+  .cov td{padding:.5rem .8rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink-soft);}
+  .cov td.cov-leg,.cov td.cov-wl{font-family:var(--mono);font-size:.72rem;color:var(--ink);}
+  .cov td.cov-wl{max-width:19ch;}
+  .cov code{font-family:var(--mono);font-size:.8em;}
+  .cov-note{color:var(--ink-faint);margin:.9rem 0 0;}
   .pt{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.55rem 1.4rem;box-shadow:var(--shadow);margin:0 0 .6rem;scroll-margin-top:1rem;}
   .pt[open]{padding:1.1rem 1.4rem .9rem;}
   .arena-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 1.8rem;}
@@ -246,6 +352,9 @@ const html = `<!doctype html>
   .bar{height:100%;border-radius:4px;min-width:2px;display:flex;align-items:center;justify-content:flex-end;position:relative;max-width:100%;}
   .bar.js{background:var(--js);}.bar.native{background:var(--native);}
   .bar.node{background:var(--node);}.bar.bun{background:var(--bun);}.bar.deno{background:var(--deno);}
+  /* A reading at the floor of the delta method: the bar is there so the row
+     reads as measured, hatched so it never reads as a quantity. */
+  .bar.sub{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,transparent 2px 5px);opacity:.65;}
   .bar .val{font-family:var(--mono);font-size:.68rem;color:#fff;padding:0 6px;white-space:nowrap;font-variant-numeric:tabular-nums;}
   .bar .val.out{color:var(--ink-soft);position:absolute;left:calc(100% + 6px);}
   footer{color:var(--ink-faint);font-size:.8rem;margin-top:1.6rem;}
@@ -283,6 +392,7 @@ ${toc}
     <span><i class="sw bun"></i> Bun</span>
     <span><i class="sw deno"></i> Deno</span>
   </div>
+${coverage}
 ${panels}
   <footer>Generated by <code>bench/web/report-jsnative.mjs</code> from <code>bench/web/results.*.json</code>
     and <code>bench/cli/results.json</code>. The full multi-leg report is <code>report.html</code>;

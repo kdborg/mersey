@@ -1054,24 +1054,6 @@
   {
     "browser": "chromium",
     "impl": "js",
-    "wl": "calls",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "calls",
-    "ms": 11358.185000061989,
-    "rss": 51905,
-    "heap": 0,
-    "checksum": 452320592,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
     "wl": "canvas",
     "ms": 1.8600000143051147,
     "rss": 20049,
@@ -1248,20 +1230,6 @@
   {
     "browser": "chromium",
     "impl": "js",
-    "wl": "fcompute",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "fcompute",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
     "wl": "fetch",
     "ms": 38.360000014305115,
     "rss": 21425,
@@ -1368,20 +1336,6 @@
     "checksum": 5500,
     "platform": "macos",
     "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
-    "wl": "mathk",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "mathk",
-    "ms": null,
-    "platform": "macos"
   },
   {
     "browser": "chromium",
@@ -1672,20 +1626,6 @@
   {
     "browser": "firefox",
     "impl": "js",
-    "wl": "calls",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "calls",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
     "wl": "canvas",
     "ms": 4.519999999999996,
     "rss": 66049,
@@ -1858,20 +1798,6 @@
   {
     "browser": "firefox",
     "impl": "js",
-    "wl": "fcompute",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "fcompute",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
     "wl": "fetch",
     "ms": 76.56,
     "rss": 61025,
@@ -1978,20 +1904,6 @@
     "checksum": 5500,
     "platform": "macos",
     "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
-    "wl": "mathk",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "mathk",
-    "ms": null,
-    "platform": "macos"
   },
   {
     "browser": "firefox",
@@ -2320,6 +2232,134 @@
     "rss": 103874,
     "heap": 0,
     "checksum": -413913408,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "calls",
+    "ms": 30.064999997615814,
+    "rss": 18097,
+    "heap": 10000000,
+    "checksum": 452320592,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "calls",
+    "ms": 11114.604999959469,
+    "rss": 53777,
+    "heap": 0,
+    "checksum": 452320592,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "fcompute",
+    "ms": 106.59999996423721,
+    "rss": 19777,
+    "heap": 10000000,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "fcompute",
+    "ms": 6086.004999995232,
+    "rss": 54465,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "mathk",
+    "ms": 13.794999957084656,
+    "rss": 18977,
+    "heap": 10000000,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "mathk",
+    "ms": 3173.935000002384,
+    "rss": 54193,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "calls",
+    "ms": 23.5,
+    "rss": 75969,
+    "heap": 0,
+    "checksum": 452320592,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "calls",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "fcompute",
+    "ms": 105.62,
+    "rss": 58513,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "fcompute",
+    "ms": 27672.620000000003,
+    "rss": 94178,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "mathk",
+    "ms": 13.14,
+    "rss": 60417,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "mathk",
+    "ms": 17602.920000000002,
+    "rss": 90642,
+    "heap": 0,
+    "checksum": "true",
     "platform": "macos",
     "mem_metric": "footprint"
   }

@@ -64,6 +64,15 @@ const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
 // the echo endpoint admits opaque origins via CORS (see server.mjs).
 import { startServer } from "./server.mjs";
 import { tagRows, mergeRows } from "./rows.mjs";
+
+// A workload's checksum is not always a number: `fcompute` and `mathk` self-check
+// with a boolean, because float bit parity across two independent codegens is not
+// guaranteed. Parsing with `Number()` turned those into NaN -> `null` in the
+// results file, which quietly threw away the correctness proof for two of the
+// eight compute workloads on every browser leg (and made every parity check
+// compare null to null and pass). Keep numbers as numbers so the file shape does
+// not change; keep anything else as the token the workload printed.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
 const { server: echoServer, port: echoPort } = await startServer();
 const absEcho = (text) => text
   .replaceAll("/bench/echo", `http://127.0.0.1:${echoPort}/bench/echo`)
@@ -118,15 +127,15 @@ async function runOnce(wl) {
       (err, stdout, stderr) => resolve(String(stdout ?? "") + String(stderr ?? "")));
   });
   if (process.env.DEBUG_LB) console.error("captured", text.length, "bytes; tail:", JSON.stringify(text.slice(-300)));
-  let m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(text);
+  let m = /RESULT (\S+) ([\d.]+) ([^\s",]+)/.exec(text);
   if (!m) {
     try {
       const log = readFileSync(
         join(resultsDir, "Text", "input", "mersey", `${wl}.html.logs.html`), "utf8");
-      m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(log);
+      m = /RESULT (\S+) ([\d.]+) ([^\s",]+)/.exec(log);
     } catch { /* no log either */ }
   }
-  return m ? { ms: Number(m[2]), checksum: Number(m[3]) } : null;
+  return m ? { ms: Number(m[2]), checksum: parseChecksum(m[3]) } : null;
 }
 
 await rm(resultsDir, { recursive: true, force: true });
@@ -147,7 +156,7 @@ for (const wl of WORKLOADS) {
   samples.sort((a, b) => a.ms - b.ms);
   const med = samples[Math.floor(samples.length / 2)];
   const exp = EXPECTED[wl];
-  if (exp != null && med.checksum !== exp) {
+  if (exp != null && String(med.checksum) !== String(exp)) {
     console.error(`  CHECKSUM MISMATCH ${wl}: got ${med.checksum}, expected ${exp}`);
     process.exit(2);
   }

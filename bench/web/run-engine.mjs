@@ -19,6 +19,15 @@ import { dirname, join } from "node:path";
 import { startServer } from "./server.mjs";
 import { tagRows, mergeRows } from "./rows.mjs";
 
+// A workload's checksum is not always a number: `fcompute` and `mathk` self-check
+// with a boolean, because float bit parity across two independent codegens is not
+// guaranteed. Parsing with `Number()` turned those into NaN -> `null` in the
+// results file, which quietly threw away the correctness proof for two of the
+// eight compute workloads on every browser leg (and made every parity check
+// compare null to null and pass). Keep numbers as numbers so the file shape does
+// not change; keep anything else as the token the workload printed.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const REPEATS = Number(process.env.REPEATS ?? 3);
 
@@ -44,7 +53,7 @@ export async function runChild(arg, env = {}) {
       resolve({
         code,
         ms: r ? Number(r[2]) : null,
-        checksum: r ? Number(r[3]) : null,
+        checksum: r ? parseChecksum(r[3]) : null,
         vmhwm: m ? Number(m[1]) : null,
         wasmheap: m ? Number(m[2]) : null,
         err,

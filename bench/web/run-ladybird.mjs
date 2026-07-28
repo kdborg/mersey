@@ -111,6 +111,15 @@ const testRoot = join(LADYBIRD_SRC, "Tests", "LibWeb");
 import { startServer } from "./server.mjs";
 import { createPeakSampler, PLATFORM } from "./host-mem.mjs";
 import { tagRows, rowPlatform } from "./rows.mjs";
+
+// A workload's checksum is not always a number: `fcompute` and `mathk` self-check
+// with a boolean, because float bit parity across two independent codegens is not
+// guaranteed. Parsing with `Number()` turned those into NaN -> `null` in the
+// results file, which quietly threw away the correctness proof for two of the
+// eight compute workloads on every browser leg (and made every parity check
+// compare null to null and pass). Keep numbers as numbers so the file shape does
+// not change; keep anything else as the token the workload printed.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
 const { server: echoServer, port: echoPort } = await startServer();
 const ECHO = `http://127.0.0.1:${echoPort}/bench/echo`;
 // The websocket workload derives its URL from location.host, which is empty
@@ -219,8 +228,8 @@ function runOnce(pageName, timeoutS) {
       try {
         const text = readFileSync(
           join(resultsDir, "Text", "input", "mersey-stock", `${pageName}.html.actual.txt`), "utf8");
-        const m = /RESULT (\S+) ([\d.]+) (-?\d+)/.exec(text);
-        if (m) result = { ms: Number(m[2]), checksum: Number(m[3]) };
+        const m = /RESULT (\S+) ([\d.]+) ([^\s",]+)/.exec(text);
+        if (m) result = { ms: Number(m[2]), checksum: parseChecksum(m[3]) };
         else if (/ERROR|STATUS/.test(text)) console.error(`    [${pageName}] ${text.trim().split("\n").pop()}`);
       } catch { /* no output */ }
       resolve({ result, peak });
@@ -260,7 +269,7 @@ for (const impl of IMPLS) {
     samples.sort((a, b) => a.ms - b.ms);
     const med = samples[Math.floor(samples.length / 2)];
     const expect = EXPECTED[wl];
-    const mark = expect == null || Number(expect) === med.checksum ? "✓checksum" : `✗checksum ${med.checksum} != ${expect}`;
+    const mark = expect == null || String(expect) === String(med.checksum) ? "✓checksum" : `✗checksum ${med.checksum} != ${expect}`;
     console.log(`  ladybird ${impl.padEnd(4)} ${wl.padEnd(8)} ${med.ms.toFixed(2).padStart(10)} ms   rss ${String(med.rss).padStart(7)} KiB  (n=${samples.length})  ${mark}`);
     rows.push({ browser: "ladybird", impl, wl, ms: med.ms, rss: med.rss, checksum: med.checksum });
   }

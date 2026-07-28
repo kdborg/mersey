@@ -38,6 +38,10 @@ import { startServer } from "./server.mjs";
 import { treeMemoryByDescendantsOf } from "./host-mem.mjs";
 import { tagRows, mergeRows } from "./rows.mjs";
 
+// See the note in run.mjs: a checksum is not always a number (`fcompute` and
+// `mathk` self-check with a boolean), and `Number()` turned those into null.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
 
@@ -196,8 +200,8 @@ const { server, port } = await startServer(0, {
       if (kind === "ready") {
         current.ready = true;
       } else if (kind === "result") {
-        const m = /RESULT (\S+) ([\d.]+) (-?\d+)(?: heap=(\d+))?/.exec(text);
-        if (m) current.result = { ms: Number(m[2]), checksum: Number(m[3]), heap: Number(m[4] ?? 0) };
+        const m = /RESULT (\S+) ([\d.]+) ([^\s",]+)(?: heap=(\d+))?/.exec(text);
+        if (m) current.result = { ms: Number(m[2]), checksum: parseChecksum(m[3]), heap: Number(m[4] ?? 0) };
       } else {
         current.errors.push(text);
       }

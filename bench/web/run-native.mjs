@@ -18,6 +18,25 @@ import { startServer } from "./server.mjs";
 import { treeMemoryByCmdline } from "./host-mem.mjs";
 import { tagRows, mergeRows } from "./rows.mjs";
 
+// A workload's checksum is not always a number: `fcompute` and `mathk` self-check
+// with a boolean, because float bit parity across two independent codegens is not
+// guaranteed. Parsing with `Number()` turned those into NaN -> `null` in the
+// results file, which quietly threw away the correctness proof for two of the
+// eight compute workloads on every browser leg (and made every parity check
+// compare null to null and pass). Keep numbers as numbers so the file shape does
+// not change; keep anything else as the token the workload printed.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
+
+// Time and memory are independent measurements of the same run set, so each
+// gets its own median. Reporting `samples[medianByTime].rss` — which is what
+// this did — picks one arbitrary memory reading out of the repeats, and browser
+// footprint swings by tens of MiB between launches; that is how a workload's
+// delta against the blank baseline came out NEGATIVE often enough to matter.
+const medianRss = (samples) => {
+  const v = samples.map((s) => s.rss).filter((x) => x != null).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : null;
+};
+
 // Reap the whole fork tree on any exit path so a crash or interrupt can't leave
 // orphans (killForks is a hoisted declaration, safe to reference here).
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED", e); killForks(); process.exit(3); });
@@ -133,7 +152,7 @@ async function runPage(pageUrl, profileDir, expectResult = true) {
     child.stdout.on("data", (b) => {
       out += b.toString();
       const m = /RESULT (\S+) ([\d.]+) (\S+)/.exec(out);
-      if (m && !result) result = { ms: Number(m[2]), checksum: Number(m[3]) };
+      if (m && !result) result = { ms: Number(m[2]), checksum: parseChecksum(m[3]) };
     });
     if (process.env.MERSEY_DEBUG) child.stderr.on("data", (b) => process.stderr.write(b));
     if (process.env.MERSEY_DEBUG) child.stdout.on("data", (b) => process.stderr.write(b));
@@ -179,10 +198,11 @@ for (const wl of WORKLOADS) {
   }
   samples.sort((a, b) => a.ms - b.ms);
   const med = samples[Math.floor(samples.length / 2)];
+  const medRss = medianRss(samples);
   console.log(
-    `  native ${wl.padEnd(8)} ${med.ms.toFixed(2).padStart(9)} ms   rss ${String(med.rss).padStart(6)} KiB   (n=${samples.length})`,
+    `  native ${wl.padEnd(8)} ${med.ms.toFixed(2).padStart(9)} ms   rss ${String(medRss).padStart(6)} KiB   (n=${samples.length})`,
   );
-  rows.push({ browser: "firefox-fork", impl: "native", wl, ms: med.ms, rss: med.rss, checksum: med.checksum });
+  rows.push({ browser: "firefox-fork", impl: "native", wl, ms: med.ms, rss: medRss, checksum: med.checksum });
 }
 
 killForks();

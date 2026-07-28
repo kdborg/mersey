@@ -27,6 +27,10 @@ import { startServer } from "./server.mjs";
 import { tagRows } from "./rows.mjs";
 import { treeMemoryByCmdline } from "./host-mem.mjs";
 
+// See the note in run.mjs: a checksum is not always a number (`fcompute` and
+// `mathk` self-check with a boolean), and `Number()` turned those into null.
+const parseChecksum = (raw) => (/^-?\d+$/.test(raw) ? Number(raw) : raw);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = "bench/web/pages";
 
@@ -57,8 +61,8 @@ async function runOne(browser, impl, wl, origin, rssMatch) {
   const page = await context.newPage();
   let result = null;
   page.on("console", (msg) => {
-    const m = /RESULT (\S+) ([\d.]+) (-?\d+)(?: heap=(\d+))?/.exec(msg.text());
-    if (m) result = { ms: Number(m[2]), checksum: Number(m[3]), heap: Number(m[4] ?? 0) };
+    const m = /RESULT (\S+) ([\d.]+) ([^\s",]+)(?: heap=(\d+))?/.exec(msg.text());
+    if (m) result = { ms: Number(m[2]), checksum: parseChecksum(m[3]), heap: Number(m[4] ?? 0) };
   });
   page.on("pageerror", (e) => console.error(`  [pageerror ${impl}/${wl}] ${e.message}`));
 
