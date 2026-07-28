@@ -156,6 +156,27 @@ fn breakpoint_step_inspect_continue() {
         "module scope shows add: {outer_vars}"
     );
 
+    // Evaluate-in-frame (a watch expression): it resolves against the SELECTED
+    // frame's scope. Frame 0 (add) sees a and b; the module frame does not.
+    dap.send(
+        "evaluate",
+        "{\"expression\":\"a + b\",\"frameId\":0,\"context\":\"watch\"}",
+    );
+    let ev = dap.read_until("\"command\":\"evaluate\"");
+    assert!(
+        ev.contains("\"result\":\"3\""),
+        "a + b evaluates in the paused add frame: {ev}"
+    );
+    dap.send(
+        "evaluate",
+        "{\"expression\":\"a\",\"frameId\":1,\"context\":\"watch\"}",
+    );
+    let ev_err = dap.read_until("\"command\":\"evaluate\"");
+    assert!(
+        ev_err.contains("\"success\":false"),
+        "`a` is unbound in the module frame — a failed evaluate, not a crash: {ev_err}"
+    );
+
     // Step over: to `return r` on line 5, with r now bound.
     dap.send("next", "{\"threadId\":1}");
     let step = dap.read_until("\"event\":\"stopped\"");
