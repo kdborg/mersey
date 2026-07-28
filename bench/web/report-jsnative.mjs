@@ -36,11 +36,17 @@ const platform = process.env.BENCH_PLATFORM ||
 const rows = forPlatform(browserRows, platform);
 
 // Fork → { js leg key, native leg key }. Order is the display order.
+//
+// `extra: true` marks a fork that is off by default and revealed by the
+// selector at the top of the page. Chromium and Firefox are the ports under
+// active work, so they and the command line are what the page opens on;
+// Servo and Ladybird are measured and kept, just not in the way of the
+// comparison most readers came for.
 const FORKS = [
   { key: "cr", name: "Chromium", js: "chromium/js", native: "chromium-fork/native" },
   { key: "ff", name: "Firefox", js: "firefox/js", native: "firefox-fork/native" },
-  { key: "sv", name: "Servo", js: "servo/js", native: "servo-fork/native" },
-  { key: "lb", name: "Ladybird", js: "ladybird/js", native: "ladybird-fork/native" },
+  { key: "sv", name: "Servo", js: "servo/js", native: "servo-fork/native", extra: true },
+  { key: "lb", name: "Ladybird", js: "ladybird/js", native: "ladybird-fork/native", extra: true },
 ];
 const legFor = new Map();
 for (const f of FORKS) { legFor.set(f.js, [f.key, "js"]); legFor.set(f.native, [f.key, "native"]); }
@@ -91,22 +97,36 @@ const logPct = (v) =>
 const fmtMs = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v;
 const fmtMi = (v) => v == null ? "" : (v < 0.05 ? "≈0" : v.toFixed(1));
 
-// One measured bar. `cls` sets the colour (js | native | node | bun | deno | mersey).
-const bar = (lab, pct, txt, cls) =>
-  `<div class="bar-row"><div class="bar-lab">${lab}</div><div class="track">
+// A memory *delta* can come back at or below the baseline — the workload's peak
+// never rose clear of the noise the runner measured before it started. That is
+// not "used no memory", it is "not measured", and a relative bar chart cannot
+// draw it: every such row collapsed onto the 2% floor and read as a real, tiny
+// measurement. Same rule as everywhere else on this page — no value, no bar.
+const memOrNull = (c) => (c.m != null && c.m > 0 ? c.m : null);
+
+// One measured bar. `cls` sets the colour (js | native | node | bun | deno | mersey);
+// `fk` tags the row with its fork so the selector can hide it; `v` is the raw
+// value, kept on the row because a memory arena's scale is relative and has to
+// be recomputed whenever the visible set changes.
+const bar = (lab, pct, txt, cls, fk, v) =>
+  `<div class="bar-row${fk ? ` fk-${fk}` : ""}" data-v="${v}"><div class="bar-lab">${lab}</div><div class="track">
      <div class="bar ${cls}" style="width:${pct.toFixed(1)}%">
        <span class="val${pct < 30 ? " out" : ""}">${txt}</span></div></div></div>`;
 
 // A stack of bars for one arena; `get(cell)` picks time or memory. Rows with no
 // value are OMITTED, not drawn as n/a — the grid stays the comparison. Returns
 // "" when the arena has nothing to show, so the caller can drop it entirely.
-function arena(title, entries, get, pctFn, fmtV) {
+// `kind` is "time" (log, absolute) or "mem" (linear, relative to the widest
+// *visible* row — which is why the mem arenas are re-scaled client-side).
+function arena(title, entries, get, pctFn, fmtV, kind) {
   const withVal = entries
     .map((e) => ({ ...e, v: e.cell ? get(e.cell) : null }))
     .filter((e) => e.v != null);
   if (!withVal.length) return "";
-  const bars = withVal.map(({ lab, v, cls }) => bar(lab, pctFn(v), fmtV(v), cls)).join("");
-  return `<div class="ar"><div class="ar-t">${title}</div><div class="bars">${bars}</div></div>`;
+  const bars = withVal
+    .map(({ lab, v, cls, fk }) => bar(lab, pctFn(v), fmtV(v), cls, fk, v))
+    .join("");
+  return `<div class="ar ${kind}"><div class="ar-t">${title}</div><div class="bars">${bars}</div></div>`;
 }
 
 const panels = WL.map((w) => {
@@ -115,41 +135,55 @@ const panels = WL.map((w) => {
   const bEntries = FORKS.flatMap((f) => {
     const g = d.browser[f.key] ?? {};
     return [
-      { lab: `js·${f.key}`, cell: g.js, cls: "js" },
-      { lab: `mersey·${f.key}`, cell: g.native, cls: "native" },
+      { lab: `js·${f.key}`, cell: g.js, cls: "js", fk: f.key },
+      { lab: `mersey·${f.key}`, cell: g.native, cls: "native", fk: f.key },
     ];
   });
   const cliEntries = d.cli
     ? CLI_RT.map((rt) => ({ lab: rt.key, cell: d.cli[rt.key], cls: rt.key === "mersey" ? "native" : rt.key }))
     : null;
 
-  // Memory scale is per-panel (bars are relative within a workload).
-  const bMemMax = Math.max(1, ...bEntries.map((e) => e.cell?.m).filter((v) => v != null));
-  const cMemMax = cliEntries ? Math.max(1, ...cliEntries.map((e) => e.cell?.m).filter((v) => v != null)) : 1;
-  const memPct = (max) => (v) => Math.max(2, v / max * 100);
+  // Memory scale is per-panel and relative, so it is seeded from the forks that
+  // are visible on load; revealing Servo/Ladybird re-scales it in the browser.
+  const memOf = (es) => es.map((e) => (e.cell ? memOrNull(e.cell) : null)).filter((v) => v != null);
+  // `1` only guards the no-values case; using it as a floor would under-scale a
+  // panel whose largest reading is a fraction of a MiB (a lone 0.8 MiB row drew
+  // at 80% of the track instead of filling it).
+  const maxOf = (es) => { const v = memOf(es); return v.length ? Math.max(...v) : 1; };
+  const shown = bEntries.filter((e) => !FORKS.find((f) => f.key === e.fk)?.extra);
+  const bMemMax = maxOf(shown.length ? shown : bEntries);
+  const cMemMax = cliEntries ? maxOf(cliEntries) : 1;
+  const memPct = (max) => (v) => Math.max(2, Math.min(100, v / max * 100));
 
-  const bTime = arena("browser · time (ms, log)", bEntries, (c) => c.t, logPct, fmtMs);
-  const bMem = arena("browser · memory (MiB)", bEntries, (c) => c.m, memPct(bMemMax), fmtMi);
+  const bTime = arena("browser · time (ms, log)", bEntries, (c) => c.t, logPct, fmtMs, "time");
+  const bMem = arena("browser · memory (MiB)", bEntries, memOrNull, memPct(bMemMax), fmtMi, "mem");
   const browserBlock = (bTime || bMem) ? `<div class="arena-grid">${bTime}${bMem}</div>` : "";
 
-  const cTime = cliEntries ? arena("command line · time (ms, log)", cliEntries, (c) => c.t, logPct, fmtMs) : "";
-  const cMem = cliEntries ? arena("command line · memory (MiB)", cliEntries, (c) => c.m, memPct(cMemMax), fmtMi) : "";
+  const cTime = cliEntries ? arena("command line · time (ms, log)", cliEntries, (c) => c.t, logPct, fmtMs, "time") : "";
+  const cMem = cliEntries ? arena("command line · memory (MiB)", cliEntries, memOrNull, memPct(cMemMax), fmtMi, "mem") : "";
   const cliBlock = (cTime || cMem) ? `<div class="arena-grid cli">${cTime}${cMem}</div>` : "";
 
   if (!browserBlock && !cliBlock) return "";
-  const tag = [browserBlock && "browser", cliBlock && "command line"].filter(Boolean).join(" + ");
   return `<details class="pt" id="wl-${w}"${COMPUTE.has(w) ? " open" : ""}>
-    <summary class="wl-name"><span class="chev"></span><b>${w}</b><em>${tag}</em></summary>
+    <summary class="wl-name"><span class="chev"></span><b>${w}</b><em></em></summary>
     ${browserBlock}${cliBlock}
   </details>`;
 }).filter(Boolean).join("\n");
 
-const toc = `<nav class="toc">${WL.map((w) => `<a href="#wl-${w}">${w}</a>`).join("\n    ")}</nav>`;
+const toc = `<nav class="toc">${WL.map((w) => `<a href="#wl-${w}" data-wl="${w}">${w}</a>`).join("\n    ")}</nav>`;
 
 const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>
+  /* Applied before first paint so the default view never flashes the extra
+     forks. The stored choice wins over the default. */
+  document.documentElement.dataset.forks =
+    (() => { try { const v = localStorage.getItem("mersey-jsnative-forks");
+                   return ["none", "sv", "lb", "all"].includes(v) ? v : "none"; }
+             catch { return "none"; } })();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mersey — JS vs native</title>
 <style>
@@ -177,7 +211,19 @@ const html = `<!doctype html>
   .sw{width:11px;height:11px;border-radius:3px;display:inline-block;}
   .sw.js{background:var(--js);}.sw.native{background:var(--native);}
   .sw.node{background:var(--node);}.sw.bun{background:var(--bun);}.sw.deno{background:var(--deno);}
+  .picker{display:flex;align-items:center;gap:.55rem;margin:0 0 1.1rem;font-size:.85rem;color:var(--ink-soft);}
+  .picker select{font-family:var(--sans);font-size:.85rem;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;padding:.3rem .55rem;}
+  .picker select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+  /* Servo and Ladybird are rendered but folded away until the selector asks for
+     them; the re-scaling of the relative memory bars happens in script. */
+  [data-forks="none"] .fk-sv,[data-forks="none"] .fk-lb,
+  [data-forks="sv"] .fk-lb,[data-forks="lb"] .fk-sv{display:none;}
   .toc{display:flex;flex-wrap:wrap;gap:.35rem .5rem;margin:0 0 1.1rem;}
+  .toc a.off{display:none;}
+  /* .arena-grid sets display:grid, which would otherwise beat the UA rule for
+     the hidden attribute the selector script uses. */
+  [hidden]{display:none !important;}
   .toc a{font-family:var(--mono);font-size:.75rem;color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:.18rem .65rem;background:var(--panel);}
   .toc a:hover{border-color:var(--accent);}
   .pt{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.55rem 1.4rem;box-shadow:var(--shadow);margin:0 0 .6rem;scroll-margin-top:1rem;}
@@ -210,14 +256,25 @@ const html = `<!doctype html>
   <h1>Mersey — JS vs native</h1>
   <p class="note">The same program as plain JavaScript and as native Mersey, in two arenas.
     <b>Browser</b> — each fork's own JS engine (<i>js</i>) vs the Mersey engine hosted natively in
-    that fork (<i>mersey</i>), for Chromium (·cr), Firefox (·ff), Servo (·sv), Ladybird (·lb).
+    that fork (<i>mersey</i>), for Chromium (·cr) and Firefox (·ff).
     <b>Command line</b> — Node, Bun and Deno running the JS twin vs the Mersey CLI running the Mersey
     twin (compute workloads only — Node has no DOM). Time is the self-timed workload loop
-    (median, <b>log scale</b>, same checksum on every bar); memory is the process's peak/PSS delta.
+    (median, <b>log scale</b>, same checksum on every bar); memory is the process's peak/PSS delta
+    and is scaled within each panel, so revealing a fork re-scales those bars.
     Platform: <b>${platform}</b>. Rows appear only where measured: a fork that can't run a workload,
-    or a compute kernel with no in-browser JS twin (<code>calls</code>, <code>fcompute</code>,
-    <code>mathk</code> — those live in the command-line arena), simply has no bar. The grid is the
-    comparison, not a field of n/a.</p>
+    a compute kernel with no in-browser JS twin (<code>calls</code>, <code>fcompute</code>,
+    <code>mathk</code> — those live in the command-line arena), or a memory delta that never rose
+    clear of the runner's baseline, simply has no bar. The grid is the comparison, not a field of
+    n/a. Servo and Ladybird are measured too — the selector brings them in.</p>
+  <div class="picker">
+    <label for="forks">Browser ports</label>
+    <select id="forks">
+      <option value="none">Chromium and Firefox</option>
+      <option value="sv">…and Servo</option>
+      <option value="lb">…and Ladybird</option>
+      <option value="all">All four ports</option>
+    </select>
+  </div>
 ${toc}
   <div class="legend">
     <span><i class="sw js"></i> plain JS (browser engine)</span>
@@ -232,9 +289,65 @@ ${panels}
     per-technology (all legs) is <code>report-pertech.html</code>.</footer>
 </div>
 <script>
+  const sel = document.getElementById("forks");
+  const CHOICES = ["none", "sv", "lb", "all"];
+  sel.value = CHOICES.includes(document.documentElement.dataset.forks)
+    ? document.documentElement.dataset.forks : "none";
+
+  /* Structural, not layout-based: a row inside a collapsed <details> has no box
+     but is still part of the comparison, so asking the DOM whether it is on
+     screen would give the wrong answer for every closed panel. */
+  const shown = (row, v) =>
+    row.classList.contains("fk-sv") ? v === "sv" || v === "all"
+    : row.classList.contains("fk-lb") ? v === "lb" || v === "all"
+    : true;
+
+  /* A memory arena's bars are relative to the widest row *in that arena*, so the
+     scale is only honest if it comes from the rows on show. Time is a log scale
+     against a fixed range and needs no such fix-up. */
+  function rescale(v) {
+    for (const ar of document.querySelectorAll(".ar.mem")) {
+      const rows = [...ar.querySelectorAll(".bar-row")].filter((r) => shown(r, v));
+      if (!rows.length) continue;
+      const max = Math.max(...rows.map((r) => Number(r.dataset.v)));
+      for (const r of rows) {
+        const pct = Math.max(2, Math.min(100, Number(r.dataset.v) / max * 100));
+        const b = r.querySelector(".bar");
+        b.style.width = pct.toFixed(1) + "%";
+        b.querySelector(".val").classList.toggle("out", pct < 30);
+      }
+    }
+  }
+
+  /* An arena, an arena grid or a whole panel with nothing left to show is
+     hidden rather than left as an empty frame — and its table-of-contents chip
+     goes with it, so the index never points at something that isn't there. */
+  function prune(v) {
+    const any = (el) => [...el.querySelectorAll(".bar-row")].some((r) => shown(r, v));
+    for (const ar of document.querySelectorAll(".ar")) ar.hidden = !any(ar);
+    for (const g of document.querySelectorAll(".arena-grid")) g.hidden = !any(g);
+    for (const p of document.querySelectorAll(".pt")) {
+      const grids = [...p.querySelectorAll(".arena-grid")].filter((g) => !g.hidden);
+      p.hidden = !grids.length;
+      p.querySelector(".wl-name em").textContent =
+        grids.map((g) => g.classList.contains("cli") ? "command line" : "browser").join(" + ");
+      const chip = document.querySelector('.toc a[data-wl="' + p.id.slice(3) + '"]');
+      if (chip) chip.classList.toggle("off", !grids.length);
+    }
+  }
+
+  function apply(v) {
+    document.documentElement.dataset.forks = v;
+    try { localStorage.setItem("mersey-jsnative-forks", v); } catch {}
+    prune(v);
+    rescale(v);
+  }
+  sel.addEventListener("change", () => apply(sel.value));
+  apply(sel.value);
+
   const openHash = () => {
     const el = location.hash && document.querySelector(location.hash);
-    if (el && el.tagName === "DETAILS") { el.open = true; el.scrollIntoView(); }
+    if (el && el.tagName === "DETAILS" && !el.hidden) { el.open = true; el.scrollIntoView(); }
   };
   addEventListener("hashchange", openHash);
   openHash();
