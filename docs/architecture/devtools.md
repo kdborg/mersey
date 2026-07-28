@@ -359,6 +359,53 @@ scriptable from outside); Gecko dispatches engine event callbacks via posted
 runnables, so a console evaluation that clicks a button returns before the
 listener — and any pause — happens.
 
+## Servo: the debugger
+
+Same engine surface, Servo idioms (`servo/test-mersey-debugger.mjs` verifies
+attach → setBreakpoint → console turn → `merseyPaused` → resume over the real
+Firefox RDP against a built servoshell; `servo/test-mersey-debug.mjs` is the
+trace check):
+
+- `components/script/mersey/mod.rs` records pause snapshots; `on_paused`
+  branches **trace** (log + auto-resume) from **interactive**, which blocks on
+  a `generic_channel::<MerseyDebugAction>` and announces the pause with
+  `ScriptToDevtoolsControlMsg::MerseyPaused` sent through
+  `global.devtools_chan()`. Arming is `DevtoolScriptControlMsg::MerseyDebugArm`.
+- A target-scoped `merseyDebugger` actor
+  (`components/devtools/actors/mersey_debugger.rs`) translates RDP to those:
+  `setBreakpoint` → arm; `resume`/`stepOver`/`stepIn`/`stepOut` → the stored
+  reply sender. It is advertised in the frame `target-available-form` beside
+  `consoleActor`, and the devtools loop routes `MerseyPaused` to it.
+- **Client-gated**, and this is the subtle part: script→devtools messages via
+  `devtools_chan()` are only delivered once a client has `watchTargets` — with
+  no client attached, neither `MerseyPaused` nor even a `ConsoleAPI` arrives.
+  It is not a bug; the actor + an attaching RDP client is what exercises it.
+
+## Ladybird: the debugger
+
+Same engine surface, Ladybird's multiprocess idioms
+(`ladybird/test-mersey-debug.mjs` traces via headless `test-web`;
+`ladybird/test-mersey-debugger.mjs` drives the interactive round-trip over RDP
+against a `Ladybird --devtools`):
+
+- `Libraries/LibWeb/Mersey/MerseyScriptRunner.cpp` wires the controller. Trace
+  mode sits behind page-globals `__merseyDebugSetBreakpoints(source,"1,2,3")` /
+  `__merseyDebugLog()`; interactive mode (`debug_arm_interactive`) routes the
+  blocking pause to the page client.
+- **The pause crosses processes.** The engine's `on_paused` runs in WebContent;
+  it calls a new `Web::PageClient::mersey_debug_pause` whose WebContent override
+  announces the pause (`did_mersey_pause` IPC → UI → the `merseyDebugger`
+  LibDevTools actor emits `merseyPaused`) and then **blocks WebContent on a
+  nested `Core::EventLoop`** that keeps IPC flowing; the `mersey_debug_resume`
+  IPC quits the loop and the returned action code drives the engine. New IPC:
+  `mersey_debug_set_breakpoints` / `mersey_debug_resume` / `did_mersey_pause`.
+- Traps recorded: LibWeb builds with **hidden visibility**, so any
+  `Web::Mersey::` function called from WebContent (here `debug_arm_interactive`)
+  must be `WEB_API`-exported or it vanishes from `liblagom-web.dylib` and fails
+  to link; and a **bare, un-imported `console`** in a `text/mersey` module
+  fails the strict typecheck, so the module never runs and no breakpoint fires
+  — read results back through the JS `__merseyDebugLog()`, not mersey stdout.
+
 ## The debugger half
 
 Already built engine-side and shared by every fork
@@ -374,6 +421,13 @@ more:
 Pausing is blocking by design, so a fork pauses by running a nested message
 loop inside `on_paused` — exactly what V8 does. Nothing else in the engine
 needs a state machine.
+
+Every fork's translation is runtime-verified against its built browser, and
+identical pause snapshots (`"reason":"breakpoint"`, the same frame/line/locals)
+are the cross-fork correctness proof: `chromium/test-mersey-debugger.mjs`
+(custom `Mersey` CDP domain — pauses per statement, so the client resumes every
+pause), `firefox/test-devtools-debugger.mjs`, `servo/test-mersey-debugger.mjs`,
+and `ladybird/test-mersey-debugger.mjs` (all RDP).
 
 ## Recorded limits
 
