@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/mersey/include/mersey.h"
+#include "v8/include/v8.h"
 
 namespace blink {
 
@@ -35,6 +36,9 @@ class HTMLCanvasElement;
 class LocalDOMWindow;
 class Node;
 class NodeList;
+class ScriptState;
+class JSONArray;
+class JSONValue;
 
 // A core->modules hook. `core` cannot depend on `modules`, but some web APIs
 // (localStorage) live there — so modules fills this table at startup
@@ -282,6 +286,11 @@ class CORE_EXPORT MerseyScriptRunner final
       kTextDecoder,
       kMatrix,
       kBlob,
+      // A plain JS value, reached reflectively. The typed kinds above exist so
+      // the hot web APIs never touch V8; this one is the general answer for
+      // everything else, and it is what makes the fork's surface the whole web
+      // platform rather than the list its host table happens to name.
+      kJs,
     };
     Kind kind = Kind::kEmpty;
     std::string name;           // kGlobal: the global's name
@@ -312,6 +321,68 @@ class CORE_EXPORT MerseyScriptRunner final
   }
   NativeObject* ObjectFor(int64_t handle);
   int64_t AllocObject(NativeObject obj);
+
+  // ---- reflection ---------------------------------------------------------
+  //
+  // The typed kinds above are a hand-written allowlist: fast, but a constructor
+  // or global missing from it was a hard error (`unknown constructor`), which
+  // is why whole workloads had no result on this fork while the ones with a
+  // reflective bridge ran them all. These reach V8 the way Ladybird's C++ host
+  // reaches LibJS — by name, on the real global — so anything the platform
+  // exposes works, at the reflective tier's price.
+  ScriptState* MainWorldScriptStateOrNull();
+  // Wrap a JS value in a handle (kind kJs). The value is held strongly until
+  // the engine releases the handle; the slot's freelist clears it.
+  int64_t AllocJsValue(v8::Isolate* isolate, v8::Local<v8::Value> value);
+  // The JS value behind a handle, or an empty Local if it is not a kJs handle.
+  v8::Local<v8::Value> JsValueFor(v8::Isolate* isolate, int64_t handle);
+  // A JS value as a `{"ok":…}` reply: scalars by value, anything else by handle.
+  const std::string* ReplyFromV8(v8::Isolate* isolate,
+                                 v8::Local<v8::Context> context,
+                                 v8::Local<v8::Value> value);
+  // One engine argument as a JS value. Understands the bridge's two wrappers,
+  // `{"__ref__":h}` (a host object) and `{"__cb__":id}` (a Mersey closure).
+  v8::Local<v8::Value> V8FromJson(v8::Isolate* isolate,
+                                  v8::Local<v8::Context> context,
+                                  JSONValue* value);
+  // A Mersey closure as a callable: invoking it re-enters the engine with the
+  // call's arguments, each handed over as a handle.
+  v8::Local<v8::Value> V8Callback(v8::Isolate* isolate,
+                                  v8::Local<v8::Context> context,
+                                  uint32_t callback_id);
+  static void JsCallbackTrampoline(const v8::FunctionCallbackInfo<v8::Value>&);
+  // Reflective property read / write / call / construct. Each returns nullptr
+  // when V8 is unreachable (no frame, no context), so the caller can fall
+  // through to its own answer.
+  const std::string* ReflectGet(int64_t target, std::string_view name);
+  const std::string* ReflectSet(int64_t target,
+                                std::string_view name,
+                                JSONValue* value);
+  const std::string* ReflectCall(int64_t target,
+                                 std::string_view method,
+                                 JSONArray* args);
+  const std::string* ReflectNew(std::string_view ctor, JSONArray* args);
+  // A global by name, as a handle, when nothing typed backs it.
+  int64_t ReflectGlobal(std::string_view name);
+  // The interned fast tiers speak ids, not names, and they answer *before* the
+  // JSON path — so a read of an interned name (`length`, `body`, `pathname`) on
+  // a reflective object was being answered null by a tier that had never heard
+  // of it. These give that tier the same fallback, and return false when the
+  // target is not reflective so the typed code keeps its fast path.
+  static const char* NameForWebId(uint32_t id, std::string& scratch);
+  bool IsReflective(int64_t handle);
+  void FillFromV8(msy_reply* out,
+                  v8::Isolate* isolate,
+                  v8::Local<v8::Context> context,
+                  v8::Local<v8::Value> value);
+  v8::Local<v8::Value> V8FromArg16(v8::Isolate* isolate,
+                                   v8::Local<v8::Context> context,
+                                   const msy_arg16& arg);
+  bool ReflectGetU16(int64_t target, uint32_t id, msy_reply* out);
+  bool ReflectSetU16(int64_t target, uint32_t id, const msy_arg16& value,
+                     msy_reply* out);
+  bool ReflectCallU16(int64_t target, uint32_t id, const msy_arg16* args,
+                      size_t argc, msy_reply* out);
   // Oilpan DOM node handles (document, elements) live in a traced table with
   // *non-negative* handles (handle = index + 1). This matters for `document`:
   // the engine reads `web_global("document") < 0` as "unavailable" and falls
@@ -339,6 +410,12 @@ class CORE_EXPORT MerseyScriptRunner final
       ALLOW_DISCOURAGED_TYPE("engine handle table; NativeObject is not GC-traced");
   std::vector<uint32_t> native_free_
       ALLOW_DISCOURAGED_TYPE("freelist of raw slot indices");
+  // The JS value behind each kJs slot, parallel to `native_objects_`. It is a
+  // side table rather than a field of NativeObject so that struct stays
+  // copyable — a `v8::Global` is move-only, and NativeObject is passed by value
+  // all over this file. Cleared by the same freelist that recycles the slot.
+  std::vector<v8::Global<v8::Value>> js_values_
+      ALLOW_DISCOURAGED_TYPE("JS values held by engine handle; not GC-traced");
   // The Oilpan node handle table (traced) and its freelist.
   HeapVector<Member<Node>> node_handles_;
   std::vector<uint32_t> node_free_

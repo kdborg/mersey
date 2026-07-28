@@ -97,21 +97,12 @@ const WL = Object.keys(DATA).sort((a, b) => {
 // error it printed, not inferred from the missing row. A rule with no `wls`
 // matches every gap in that leg. Rules are tried in order; the catch-all at the
 // end is deliberately an admission, not an excuse.
-const CHROMIUM_BRIDGE =
-  "The Chromium fork constructs host objects in C++ from a hand-written allowlist " +
-  "(<code>TextEncoder</code>, <code>TextDecoder</code>, <code>DOMMatrix</code>, " +
-  "<code>Blob</code>, <code>URL</code>); anything else throws " +
-  "<code>unknown constructor</code>. The Firefox fork reaches the same interfaces " +
-  "through the reflective bridge, which is why its column is complete.";
-const CHROMIUM_GLOBALS =
-  "The Chromium fork does not expose these globals to Mersey: the page throws " +
-  "<code>`fetch` is not defined</code>, <code>`indexedDB` is not defined</code>, " +
-  "<code>`navigator` is not defined</code>, <code>`location` is not defined</code>. " +
-  "Same root as the row above — a hand-written native surface rather than reflection.";
 const CHROMIUM_BUG =
-  "A fork bug, distinct from the two gaps above: the workload throws " +
-  "<code>no member `length` on null</code>, so a bridge call returns null where the " +
-  "workload expects a list.";
+  "A fork bug: the workload throws <code>no member `length` on null</code>, so a " +
+  "bridge call returns null where it expects a list. The rest of the Chromium " +
+  "column used to be missing for two other reasons — a hand-written constructor " +
+  "allowlist and unexposed globals — and both are gone now that the fork " +
+  "resolves names through V8.";
 const PAUSED = (who) =>
   `Not investigated — ${who} support is paused, so these were left as measured.`;
 const RUNNER_LIST = (who) =>
@@ -119,8 +110,6 @@ const RUNNER_LIST = (who) =>
   "compute kernels; they are not attempted, rather than attempted and failed.";
 
 const WHY_RULES = [
-  { leg: "msy·cr", wls: ["bchannel", "compression", "msgchannel", "sse", "streams", "urlpattern", "worker", "xhr"], why: CHROMIUM_BRIDGE },
-  { leg: "msy·cr", wls: ["fetch", "idb", "locks", "websocket"], why: CHROMIUM_GLOBALS },
   { leg: "msy·cr", wls: ["frameworkui"], why: CHROMIUM_BUG },
   { leg: "js·sv", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Servo") },
   { leg: "js·lb", wls: ["calls", "fcompute", "mathk"], why: RUNNER_LIST("Ladybird") },

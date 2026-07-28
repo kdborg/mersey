@@ -210,72 +210,132 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "bchannel",
+    "ms": 182.98299998044968,
+    "rss": -2688,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "blob",
+    "ms": 2175.8700000047684,
+    "rss": 273104,
+    "checksum": 198890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "calls",
+    "ms": 24.578000009059906,
+    "rss": -2784,
+    "checksum": 452320592,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 5.419000029563904,
+    "rss": -2784,
+    "checksum": 20000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "compression",
-    "ms": null,
-    "platform": "macos"
+    "ms": 111.29000002145767,
+    "rss": -2480,
+    "checksum": 8690,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "compute",
+    "ms": 95.97500002384186,
+    "rss": -2672,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "crypto",
+    "ms": 9.05400002002716,
+    "rss": -2064,
+    "checksum": 320000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "cssom",
+    "ms": 54.214000046253204,
+    "rss": -2880,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "dom",
+    "ms": 18.36599999666214,
+    "rss": 15056,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "encoding",
+    "ms": 20.472000002861023,
+    "rss": -400,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "events",
+    "ms": 20.51399999856949,
+    "rss": -400,
+    "checksum": 10000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "fcompute",
+    "ms": 113.3740000128746,
+    "rss": -2096,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "fetch",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "idb",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "locks",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "msgchannel",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "sse",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "streams",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "websocket",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "worker",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "xhr",
-    "ms": null,
-    "platform": "macos"
+    "ms": 110.17699998617172,
+    "rss": -2816,
+    "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
   },
   {
     "browser": "chromium-fork",
@@ -287,123 +347,9 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
-    "wl": "urlpattern",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "bchannel",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "blob",
-    "ms": 2257.839000046253,
-    "rss": 276560,
-    "checksum": 198890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "calls",
-    "ms": 24.544000029563904,
-    "rss": 416,
-    "checksum": 452320592,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "canvas",
-    "ms": 6.081000030040741,
-    "rss": 640,
-    "checksum": 20000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "compute",
-    "ms": 93.33699995279312,
-    "rss": 432,
-    "checksum": 1765835917,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "crypto",
-    "ms": 9.253000020980835,
-    "rss": -256,
-    "checksum": 320000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "cssom",
-    "ms": 61.33100003004074,
-    "rss": 1616,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "dom",
-    "ms": 17.401000022888184,
-    "rss": 17696,
-    "checksum": 10000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "encoding",
-    "ms": 20.192999958992004,
-    "rss": -288,
-    "checksum": 437780,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "events",
-    "ms": 21.237999975681305,
-    "rss": -160,
-    "checksum": 10000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "fcompute",
-    "ms": 109.09099996089935,
-    "rss": 784,
-    "checksum": "true",
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
     "wl": "frameworkui2",
-    "ms": 72.52300000190735,
-    "rss": 1616,
+    "ms": 71.33499997854233,
+    "rss": -2000,
     "checksum": -413913408,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -412,8 +358,8 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "geometry",
-    "ms": 82.26399999856949,
-    "rss": -352,
+    "ms": 81.89300000667572,
+    "rss": -2672,
     "checksum": 95000,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -421,9 +367,19 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "idb",
+    "ms": 202.9679999947548,
+    "rss": 2000,
+    "checksum": 4390,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "json",
-    "ms": 6.0329999923706055,
-    "rss": 896,
+    "ms": 5.925000011920929,
+    "rss": -2128,
     "checksum": 848890,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -431,9 +387,19 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "locks",
+    "ms": 172.6040000319481,
+    "rss": -560,
+    "checksum": 5500,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "mathk",
-    "ms": 17.742999970912933,
-    "rss": -144,
+    "ms": 17.70799994468689,
+    "rss": -2864,
     "checksum": "true",
     "platform": "macos",
     "mem_metric": "footprint"
@@ -441,9 +407,19 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "msgchannel",
+    "ms": 55.69199997186661,
+    "rss": -2976,
+    "checksum": 5890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "query",
-    "ms": 11.090999960899353,
-    "rss": 2368,
+    "ms": 9.50600004196167,
+    "rss": -2432,
     "checksum": 214900,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -451,9 +427,19 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "sse",
+    "ms": 42.57799994945526,
+    "rss": -1952,
+    "checksum": 14890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "storage",
-    "ms": 150.77100002765656,
-    "rss": -448,
+    "ms": 147.43099999427795,
+    "rss": -2992,
     "checksum": 208890,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -461,9 +447,19 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
+    "wl": "streams",
+    "ms": 98.48600000143051,
+    "rss": -2704,
+    "checksum": 18890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
     "wl": "timers",
-    "ms": 51.907999992370605,
-    "rss": 384,
+    "ms": 47.33899998664856,
+    "rss": -2864,
     "checksum": 20000,
     "platform": "macos",
     "mem_metric": "footprint"
@@ -472,9 +468,49 @@
     "browser": "chromium-fork",
     "impl": "native",
     "wl": "url",
-    "ms": 52.03200000524521,
-    "rss": 464,
+    "ms": 47.13100004196167,
+    "rss": -2224,
     "checksum": 537780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "urlpattern",
+    "ms": 246.47799998521805,
+    "rss": -2704,
+    "checksum": 88890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "websocket",
+    "ms": 44.8639999628067,
+    "rss": -1952,
+    "checksum": 1290,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "worker",
+    "ms": 79.12099999189377,
+    "rss": -784,
+    "checksum": 7890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "xhr",
+    "ms": 99.58499997854233,
+    "rss": 240,
+    "checksum": 20990,
     "platform": "macos",
     "mem_metric": "footprint"
   }

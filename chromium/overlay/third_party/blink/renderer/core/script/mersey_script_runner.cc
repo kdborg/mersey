@@ -28,6 +28,9 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -1045,7 +1048,11 @@ int64_t MerseyScriptRunner::HostWebGlobal(std::string_view name) {
     obj.name = std::string(name);
     return AllocObject(std::move(obj));
   }
-  return -1;
+  // Nothing typed backs it — but the page may still have it. `fetch`,
+  // `navigator`, `location`, `indexedDB` and the rest reach the engine this
+  // way. Still -1 when the global is genuinely absent, so an unbacked name
+  // fails loudly rather than silently no-op'ing.
+  return ReflectGlobal(name);
 }
 
 const std::string* MerseyScriptRunner::HostWebNew(std::string_view ctor,
@@ -1117,6 +1124,15 @@ const std::string* MerseyScriptRunner::HostWebNew(std::string_view ctor,
     return ReplyOkRef(AllocObject(std::move(obj)));
   }
   if (ctor != "URL") {
+    // Not one of the typed constructors above — ask the platform. This is the
+    // difference between "this fork supports five constructors" and "this fork
+    // supports the web platform"; only a name the global genuinely does not
+    // have is still an error.
+    std::unique_ptr<JSONValue> parsed = ParseJSON(String::FromUtf8(args_json));
+    JSONArray* args = JSONArray::Cast(parsed.get());
+    if (const std::string* reply = ReflectNew(ctor, args)) {
+      return reply;
+    }
     return ReplyErr(String::FromUtf8("unknown constructor"));
   }
   // args_json is a JSON array; its first element is the URL string.
@@ -1185,6 +1201,11 @@ const std::string* MerseyScriptRunner::HostWebGet(int64_t target,
       return ReplyOkInt(static_cast<int64_t>(obj->blob->size()));
     }
   }
+  // A reflective object (an event, a channel, anything constructed by name):
+  // read the property off the real thing.
+  if (const std::string* reply = ReflectGet(target, prop)) {
+    return reply;
+  }
   return ReplyOkNull();
 }
 
@@ -1205,6 +1226,13 @@ const std::string* MerseyScriptRunner::HostWebSet(int64_t target,
       }
     } else {
       node->setTextContent(value);
+    }
+    return ReplyOkNull();
+  }
+  {
+    std::unique_ptr<JSONValue> parsed = ParseJSON(String::FromUtf8(value_json));
+    if (const std::string* reply = ReflectSet(target, prop, parsed.get())) {
+      return reply;
     }
   }
   return ReplyOkNull();
@@ -1339,10 +1367,18 @@ const std::string* MerseyScriptRunner::HostWebCall(int64_t target,
         return v.IsNull() ? ReplyOkNull() : ReplyOkString(v);
       }
     }
+    // Not a kind this block knows: a reflective object goes to V8 rather than
+    // being answered with a silent null.
+    if (const std::string* reply = ReflectCall(target, method, args)) {
+      return reply;
+    }
     return ReplyOkNull();
   }
   Node* node = NodeFor(target);
   if (!node) {
+    if (const std::string* reply = ReflectCall(target, method, args)) {
+      return reply;
+    }
     return ReplyOkNull();
   }
   if (method == "getElementById") {
@@ -1406,6 +1442,13 @@ const std::string* MerseyScriptRunner::HostWebCall(int64_t target,
       node->appendChild(child);
     }
     return ReplyOkNull();
+  }
+  // A method on a reflective object — `channel.postMessage(...)`,
+  // `channel.addEventListener("message", cb)`, `stream.getReader()`. A Mersey
+  // closure in the arguments becomes a real JS function (see V8Callback), which
+  // is what lets a listener registered from Mersey fire at all.
+  if (const std::string* reply = ReflectCall(target, method, args)) {
+    return reply;
   }
   return ReplyOkNull();
 }
@@ -1510,6 +1553,9 @@ void MerseyScriptRunner::FillStr16(msy_reply* out, const String& value) {
 void MerseyScriptRunner::HostWebGetU16(int64_t target,
                                        uint32_t id,
                                        msy_reply* out) {
+  if (ReflectGetU16(target, id, out)) {
+    return;
+  }
   // Indexed access on a NodeList: `nodes[i]` crosses as the digit-only name i.
   if (id >= kIndexBase) {
     if (NativeObject* o = ObjectFor(target);
@@ -1595,6 +1641,9 @@ void MerseyScriptRunner::HostWebSetU16(int64_t target,
                                        uint32_t id,
                                        const msy_arg16* value,
                                        msy_reply* out) {
+  if (value && ReflectSetU16(target, id, *value, out)) {
+    return;
+  }
   if (id == kTextContent) {
     if (Node* node = NodeFor(target)) {
       String text;
@@ -1631,6 +1680,9 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
                                         const msy_arg16* args,
                                         size_t argc,
                                         msy_reply* out) {
+  if (ReflectCallU16(target, id, args, argc, out)) {
+    return;
+  }
   switch (id) {
     case kCreateElement: {
       String tag;
@@ -2030,10 +2082,591 @@ size_t MerseyScriptRunner::HostWebApply(const int32_t* ops,
   return created;
 }
 
+// ---- reflection: the whole platform, by name -------------------------------
+//
+// Everything above this line is a typed fast path the fork wrote by hand. What
+// follows is the fallback that makes the *rest* of the web platform reachable:
+// resolve the name on the real global and go through V8. It is the same shape
+// Ladybird's C++ host uses against LibJS, and it is why the forks with a
+// reflective bridge could run workloads this one reported as
+// `unknown constructor`.
+
+ScriptState* MerseyScriptRunner::MainWorldScriptStateOrNull() {
+  Document* document = GetSupplementable();
+  if (!document) {
+    return nullptr;
+  }
+  LocalFrame* frame = document->GetFrame();
+  return frame ? ToScriptStateForMainWorld(frame) : nullptr;
+}
+
+int64_t MerseyScriptRunner::AllocJsValue(v8::Isolate* isolate,
+                                         v8::Local<v8::Value> value) {
+  NativeObject obj;
+  obj.kind = NativeObject::Kind::kJs;
+  int64_t handle = AllocObject(std::move(obj));
+  uint32_t slot = SlotForHandle(handle);
+  if (js_values_.size() <= slot) {
+    js_values_.resize(slot + 1);
+  }
+  js_values_[slot].Reset(isolate, value);
+  return handle;
+}
+
+v8::Local<v8::Value> MerseyScriptRunner::JsValueFor(v8::Isolate* isolate,
+                                                   int64_t handle) {
+  NativeObject* obj = ObjectFor(handle);
+  if (!obj || obj->kind != NativeObject::Kind::kJs) {
+    return v8::Local<v8::Value>();
+  }
+  uint32_t slot = SlotForHandle(handle);
+  if (slot >= js_values_.size() || js_values_[slot].IsEmpty()) {
+    return v8::Local<v8::Value>();
+  }
+  return js_values_[slot].Get(isolate);
+}
+
+const std::string* MerseyScriptRunner::ReplyFromV8(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> context,
+    v8::Local<v8::Value> value) {
+  if (value.IsEmpty() || value->IsNullOrUndefined()) {
+    return ReplyOkNull();
+  }
+  if (value->IsBoolean()) {
+    auto ok = std::make_unique<JSONObject>();
+    ok->SetBoolean("ok", value->IsTrue());
+    return StashReply(ok->ToJSONString());
+  }
+  if (value->IsNumber()) {
+    return ReplyOkDouble(value.As<v8::Number>()->Value());
+  }
+  if (value->IsString()) {
+    return ReplyOkString(ToBlinkString<String>(isolate, value.As<v8::String>(),
+                                               kExternalize));
+  }
+  // Anything else — an object, an array, a function — crosses as a handle the
+  // engine can read back through this same path.
+  return ReplyOkRef(AllocJsValue(isolate, value));
+}
+
+void MerseyScriptRunner::JsCallbackTrampoline(
+    const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  if (context.IsEmpty()) {
+    return;
+  }
+  // The callback id rides in the function's data; the runner is found the way
+  // Blink finds any supplement — through the context's document. A raw pointer
+  // in a `v8::External` would be the obvious alternative, but this V8 tags
+  // external pointers, and a supplement lookup cannot dangle.
+  uint32_t cb = info.Data()->Uint32Value(context).FromMaybe(0);
+  auto* window = DynamicTo<LocalDOMWindow>(ToExecutionContext(context));
+  Document* document = window ? window->document() : nullptr;
+  if (!document) {
+    return;
+  }
+  MerseyScriptRunner* runner = &MerseyScriptRunner::From(*document);
+  if (!runner->context_) {
+    return;
+  }
+  // Scalars cross as themselves and everything else as a handle. Wrapping a
+  // resolved string in a handle would hand Mersey an object where it expects a
+  // string — `text.length` would then be a property read on a JS string, which
+  // the reflective read has to special-case for no reason.
+  auto arr = std::make_unique<JSONArray>();
+  for (int i = 0; i < info.Length(); ++i) {
+    v8::Local<v8::Value> a = info[i];
+    if (a.IsEmpty() || a->IsNullOrUndefined()) {
+      arr->PushValue(JSONValue::Null());
+    } else if (a->IsBoolean()) {
+      arr->PushBoolean(a->IsTrue());
+    } else if (a->IsNumber()) {
+      arr->PushDouble(a.As<v8::Number>()->Value());
+    } else if (a->IsString()) {
+      arr->PushString(
+          ToBlinkString<String>(isolate, a.As<v8::String>(), kExternalize));
+    } else {
+      auto ref = std::make_unique<JSONObject>();
+      ref->SetDouble("__ref__",
+                     static_cast<double>(runner->AllocJsValue(isolate, a)));
+      arr->PushObject(std::move(ref));
+    }
+  }
+  std::string args = arr->ToJSONString().Utf8();
+  msy_context_invoke_args(runner->context_, cb, args.data(), args.size());
+}
+
+v8::Local<v8::Value> MerseyScriptRunner::V8Callback(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> context,
+    uint32_t callback_id) {
+  v8::Local<v8::Function> fn;
+  if (!v8::Function::New(context, &JsCallbackTrampoline,
+                         v8::Integer::NewFromUnsigned(isolate, callback_id))
+           .ToLocal(&fn)) {
+    return v8::Null(isolate);
+  }
+  return fn;
+}
+
+v8::Local<v8::Value> MerseyScriptRunner::V8FromJson(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> context,
+    JSONValue* value) {
+  if (!value) {
+    return v8::Null(isolate);
+  }
+  if (JSONObject* obj = JSONObject::Cast(value)) {
+    // The bridge's two wrappers. A handle first: a reflective object round-trips
+    // as itself, so `rx.postMessage(blobHandle)` reaches the real object.
+    double ref = 0;
+    if (obj->GetDouble("__ref__", &ref)) {
+      v8::Local<v8::Value> held =
+          JsValueFor(isolate, static_cast<int64_t>(ref));
+      if (!held.IsEmpty()) {
+        return held;
+      }
+      if (Node* node = NodeFor(static_cast<int64_t>(ref))) {
+        return ToV8Traits<Node>::ToV8(ScriptState::From(isolate, context), node);
+      }
+      return v8::Null(isolate);
+    }
+    double cb = 0;
+    if (obj->GetDouble("__cb__", &cb)) {
+      return V8Callback(isolate, context, static_cast<uint32_t>(cb));
+    }
+    v8::Local<v8::Object> out = v8::Object::New(isolate);
+    for (wtf_size_t i = 0; i < obj->size(); ++i) {
+      JSONObject::Entry entry = obj->at(i);
+      v8::Local<v8::String> key =
+          V8String(isolate, entry.first);
+      std::ignore = out->Set(context, key, V8FromJson(isolate, context, entry.second));
+    }
+    return out;
+  }
+  if (JSONArray* arr = JSONArray::Cast(value)) {
+    v8::Local<v8::Array> out = v8::Array::New(isolate, arr->size());
+    for (wtf_size_t i = 0; i < arr->size(); ++i) {
+      std::ignore = out->Set(context, i, V8FromJson(isolate, context, arr->at(i)));
+    }
+    return out;
+  }
+  bool b = false;
+  if (value->AsBoolean(&b)) {
+    return v8::Boolean::New(isolate, b);
+  }
+  double d = 0;
+  if (value->AsDouble(&d)) {
+    return v8::Number::New(isolate, d);
+  }
+  String str;
+  if (value->AsString(&str)) {
+    return V8String(isolate, str);
+  }
+  return v8::Null(isolate);
+}
+
+const std::string* MerseyScriptRunner::ReflectGet(int64_t target,
+                                                  std::string_view name) {
+  ScriptState* script_state = MainWorldScriptStateOrNull();
+  if (!script_state) {
+    return nullptr;
+  }
+  ScriptState::Scope scope(script_state);
+  // Entering V8 from the host needs a microtask scope; without one this trips a
+  // debug check on the queue's depth. `kDoNotRunMicrotasks`: the engine is
+  // mid-execution here, and the page's own event loop drains the queue.
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty()) {
+    return nullptr;
+  }
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::Object> recv_obj;
+  if (!recv->ToObject(context).ToLocal(&recv_obj)) {
+    return nullptr;
+  }
+  v8::Local<v8::Value> out;
+  if (!recv_obj->Get(context, V8String(isolate, String::FromUtf8(name)))
+           .ToLocal(&out)) {
+    return ReplyErr("property read threw");
+  }
+  return ReplyFromV8(isolate, context, out);
+}
+
+const std::string* MerseyScriptRunner::ReflectSet(int64_t target,
+                                                  std::string_view name,
+                                                  JSONValue* value) {
+  ScriptState* script_state = MainWorldScriptStateOrNull();
+  if (!script_state) {
+    return nullptr;
+  }
+  ScriptState::Scope scope(script_state);
+  // Entering V8 from the host needs a microtask scope; without one this trips a
+  // debug check on the queue's depth. `kDoNotRunMicrotasks`: the engine is
+  // mid-execution here, and the page's own event loop drains the queue.
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty() || !recv->IsObject()) {
+    return nullptr;
+  }
+  v8::TryCatch try_catch(isolate);
+  std::ignore = recv.As<v8::Object>()->Set(
+      context, V8String(isolate, String::FromUtf8(name)),
+      V8FromJson(isolate, context, value));
+  return ReplyOkNull();
+}
+
+const std::string* MerseyScriptRunner::ReflectCall(int64_t target,
+                                                   std::string_view method,
+                                                   JSONArray* args) {
+  ScriptState* script_state = MainWorldScriptStateOrNull();
+  if (!script_state) {
+    return nullptr;
+  }
+  ScriptState::Scope scope(script_state);
+  // Entering V8 from the host needs a microtask scope; without one this trips a
+  // debug check on the queue's depth. `kDoNotRunMicrotasks`: the engine is
+  // mid-execution here, and the page's own event loop drains the queue.
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty()) {
+    return nullptr;
+  }
+  v8::TryCatch try_catch(isolate);
+  // An empty method name means the handle is itself callable (an imported
+  // `fetch(url)`), the same convention the interned tier uses.
+  v8::Local<v8::Value> fn_value = recv;
+  v8::Local<v8::Value> this_value = v8::Undefined(isolate).As<v8::Value>();
+  if (!method.empty()) {
+    if (!recv->IsObject()) {
+      return nullptr;
+    }
+    this_value = recv;
+    if (!recv.As<v8::Object>()
+             ->Get(context, V8String(isolate, String::FromUtf8(method)))
+             .ToLocal(&fn_value)) {
+      return ReplyErr("method lookup threw");
+    }
+  }
+  if (!fn_value->IsFunction()) {
+    return ReplyErr(String::FromUtf8(method) + " is not a function");
+  }
+  Vector<v8::Local<v8::Value>> argv;
+  if (args) {
+    for (wtf_size_t i = 0; i < args->size(); ++i) {
+      argv.push_back(V8FromJson(isolate, context, args->at(i)));
+    }
+  }
+  v8::Local<v8::Value> out;
+  if (!fn_value.As<v8::Function>()
+           ->Call(context, this_value, static_cast<int>(argv.size()),
+                  argv.data())
+           .ToLocal(&out)) {
+    return ReplyErr(String::FromUtf8(method) + " threw");
+  }
+  return ReplyFromV8(isolate, context, out);
+}
+
+const std::string* MerseyScriptRunner::ReflectNew(std::string_view ctor,
+                                                  JSONArray* args) {
+  ScriptState* script_state = MainWorldScriptStateOrNull();
+  if (!script_state) {
+    return nullptr;
+  }
+  ScriptState::Scope scope(script_state);
+  // Entering V8 from the host needs a microtask scope; without one this trips a
+  // debug check on the queue's depth. `kDoNotRunMicrotasks`: the engine is
+  // mid-execution here, and the page's own event loop drains the queue.
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::Value> ctor_value;
+  if (!context->Global()
+           ->Get(context, V8String(isolate, String::FromUtf8(ctor)))
+           .ToLocal(&ctor_value) ||
+      !ctor_value->IsFunction()) {
+    return nullptr;  // genuinely unknown: let the caller say so
+  }
+  Vector<v8::Local<v8::Value>> argv;
+  if (args) {
+    for (wtf_size_t i = 0; i < args->size(); ++i) {
+      argv.push_back(V8FromJson(isolate, context, args->at(i)));
+    }
+  }
+  v8::Local<v8::Object> out;
+  if (!ctor_value.As<v8::Function>()
+           ->NewInstance(context, static_cast<int>(argv.size()), argv.data())
+           .ToLocal(&out)) {
+    return ReplyErr(String::FromUtf8(ctor) + " threw");
+  }
+  return ReplyOkRef(AllocJsValue(isolate, out));
+}
+
+int64_t MerseyScriptRunner::ReflectGlobal(std::string_view name) {
+  ScriptState* script_state = MainWorldScriptStateOrNull();
+  if (!script_state) {
+    return -1;
+  }
+  ScriptState::Scope scope(script_state);
+  // Entering V8 from the host needs a microtask scope; without one this trips a
+  // debug check on the queue's depth. `kDoNotRunMicrotasks`: the engine is
+  // mid-execution here, and the page's own event loop drains the queue.
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::Value> value;
+  if (!context->Global()
+           ->Get(context, V8String(isolate, String::FromUtf8(name)))
+           .ToLocal(&value) ||
+      value->IsNullOrUndefined()) {
+    return -1;  // absent, and the engine should hear so
+  }
+  return AllocJsValue(isolate, value);
+}
+
+const char* MerseyScriptRunner::NameForWebId(uint32_t id, std::string& scratch) {
+  // An indexed access crosses as the digit-only name; everything else is one of
+  // the interned ids, whose spelling this turns back into a property name.
+  if (id >= kIndexBase) {
+    scratch = std::to_string(id - kIndexBase);
+    return scratch.c_str();
+  }
+  switch (id) {
+    case kPathname: return "pathname";
+    case kSearch: return "search";
+    case kBody: return "body";
+    case kTextContent: return "textContent";
+    case kLength: return "length";
+    case kCreateElement: return "createElement";
+    case kAppendChild: return "appendChild";
+    case kGetRandomValues: return "getRandomValues";
+    case kSetItem: return "setItem";
+    case kGetItem: return "getItem";
+    case kGetContext: return "getContext";
+    case kFillRect: return "fillRect";
+    case kWidth: return "width";
+    case kHeight: return "height";
+    case kClassName: return "className";
+    case kClassList: return "classList";
+    case kContains: return "contains";
+    case kStyle: return "style";
+    case kSetProperty: return "setProperty";
+    case kGetPropertyValue: return "getPropertyValue";
+    case kQuerySelectorAll: return "querySelectorAll";
+    case kDispatchEvent: return "dispatchEvent";
+    case kEncode: return "encode";
+    case kDecode: return "decode";
+    case kSelfCall: return "";
+    default: return nullptr;  // a constructor id: not a property name
+  }
+}
+
+bool MerseyScriptRunner::IsReflective(int64_t handle) {
+  NativeObject* obj = ObjectFor(handle);
+  return obj && obj->kind == NativeObject::Kind::kJs;
+}
+
+void MerseyScriptRunner::FillFromV8(msy_reply* out,
+                                    v8::Isolate* isolate,
+                                    v8::Local<v8::Context> context,
+                                    v8::Local<v8::Value> value) {
+  if (value.IsEmpty() || value->IsNullOrUndefined()) {
+    FillNull(out);
+  } else if (value->IsBoolean()) {
+    FillBool(out, value->IsTrue());
+  } else if (value->IsNumber()) {
+    FillNum(out, value.As<v8::Number>()->Value());
+  } else if (value->IsString()) {
+    FillStr16(out, ToBlinkString<String>(isolate, value.As<v8::String>(),
+                                         kExternalize));
+  } else {
+    FillRef(out, AllocJsValue(isolate, value));
+  }
+  std::ignore = context;
+}
+
+v8::Local<v8::Value> MerseyScriptRunner::V8FromArg16(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> context,
+    const msy_arg16& arg) {
+  switch (arg.kind) {
+    case 0:
+      return V8String(isolate, Str16ToString(arg.str16, arg.str16_len));
+    case 1:
+      return v8::Number::New(isolate, arg.num);
+    case 2: {
+      v8::Local<v8::Value> held =
+          JsValueFor(isolate, static_cast<int64_t>(arg.num));
+      return held.IsEmpty() ? v8::Null(isolate).As<v8::Value>() : held;
+    }
+    case 3:
+      return v8::Boolean::New(isolate, arg.num != 0);
+    case 5:
+      return V8Callback(isolate, context, static_cast<uint32_t>(arg.num));
+    default:
+      return v8::Null(isolate);
+  }
+}
+
+bool MerseyScriptRunner::ReflectGetU16(int64_t target,
+                                       uint32_t id,
+                                       msy_reply* out) {
+  if (!IsReflective(target)) {
+    return false;
+  }
+  std::string scratch;
+  const char* name = NameForWebId(id, scratch);
+  ScriptState* script_state = name ? MainWorldScriptStateOrNull() : nullptr;
+  if (!script_state) {
+    return false;
+  }
+  ScriptState::Scope scope(script_state);
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty()) {
+    return false;
+  }
+  v8::TryCatch try_catch(isolate);
+  // `"abc".length` is a read on a primitive: box it the way JS does rather
+  // than declining and letting the typed tier answer null.
+  v8::Local<v8::Object> recv_obj;
+  if (!recv->ToObject(context).ToLocal(&recv_obj)) {
+    return false;
+  }
+  v8::Local<v8::Value> value;
+  if (!recv_obj->Get(context, V8String(isolate, String::FromUtf8(name)))
+           .ToLocal(&value)) {
+    FillNull(out);
+    return true;
+  }
+  FillFromV8(out, isolate, context, value);
+  return true;
+}
+
+bool MerseyScriptRunner::ReflectSetU16(int64_t target,
+                                       uint32_t id,
+                                       const msy_arg16& value,
+                                       msy_reply* out) {
+  if (!IsReflective(target)) {
+    return false;
+  }
+  std::string scratch;
+  const char* name = NameForWebId(id, scratch);
+  ScriptState* script_state = name ? MainWorldScriptStateOrNull() : nullptr;
+  if (!script_state) {
+    return false;
+  }
+  ScriptState::Scope scope(script_state);
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty() || !recv->IsObject()) {
+    return false;
+  }
+  v8::TryCatch try_catch(isolate);
+  std::ignore = recv.As<v8::Object>()->Set(
+      context, V8String(isolate, String::FromUtf8(name)),
+      V8FromArg16(isolate, context, value));
+  FillNull(out);
+  return true;
+}
+
+bool MerseyScriptRunner::ReflectCallU16(int64_t target,
+                                        uint32_t id,
+                                        const msy_arg16* args,
+                                        size_t argc,
+                                        msy_reply* out) {
+  if (!IsReflective(target)) {
+    return false;
+  }
+  std::string scratch;
+  const char* name = NameForWebId(id, scratch);
+  ScriptState* script_state = name ? MainWorldScriptStateOrNull() : nullptr;
+  if (!script_state) {
+    return false;
+  }
+  ScriptState::Scope scope(script_state);
+  v8::MicrotasksScope microtasks(script_state->GetIsolate(),
+                                 ToMicrotaskQueue(script_state),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  v8::Isolate* isolate = script_state->GetIsolate();
+  v8::Local<v8::Context> context = script_state->GetContext();
+  v8::Local<v8::Value> recv = JsValueFor(isolate, target);
+  if (recv.IsEmpty()) {
+    return false;
+  }
+  v8::TryCatch try_catch(isolate);
+  // The empty interned name means the handle is itself callable.
+  v8::Local<v8::Value> fn_value = recv;
+  v8::Local<v8::Value> this_value = v8::Undefined(isolate).As<v8::Value>();
+  if (*name) {
+    if (!recv->IsObject()) {
+      return false;
+    }
+    this_value = recv;
+    if (!recv.As<v8::Object>()
+             ->Get(context, V8String(isolate, String::FromUtf8(name)))
+             .ToLocal(&fn_value)) {
+      FillNull(out);
+      return true;
+    }
+  }
+  if (!fn_value->IsFunction()) {
+    return false;  // not a method here; let the typed tier answer
+  }
+  Vector<v8::Local<v8::Value>> argv;
+  for (size_t i = 0; i < argc; ++i) {
+    argv.push_back(V8FromArg16(isolate, context, args[i]));
+  }
+  v8::Local<v8::Value> result;
+  if (!fn_value.As<v8::Function>()
+           ->Call(context, this_value, static_cast<int>(argv.size()),
+                  argv.data())
+           .ToLocal(&result)) {
+    FillNull(out);
+    return true;
+  }
+  FillFromV8(out, isolate, context, result);
+  return true;
+}
+
 void MerseyScriptRunner::HostWebRelease(int64_t target) {
   // A value handle (>= kValueBase) — check first, since these are also >= 1.
   if (target >= kValueBase) {
     uint32_t slot = SlotForHandle(target);
+    // Drop the JS root with the slot: a kJs handle holds its value strongly,
+    // so a page that churns reflective objects would otherwise never let go.
+    if (slot < js_values_.size()) {
+      js_values_[slot].Reset();
+    }
     if (slot < native_objects_.size() &&
         native_objects_[slot].kind != NativeObject::Kind::kEmpty) {
       native_objects_[slot] = NativeObject{};
