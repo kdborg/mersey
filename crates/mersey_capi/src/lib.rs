@@ -724,6 +724,11 @@ pub struct MsyContext {
     debug: Rc<RefCell<DebugState>>,
 }
 
+/// The engine's evaluate-in-frame closure, lifetime-erased. It borrows the
+/// interpreter and the paused frames, so it is only valid for the duration of
+/// the blocking on-paused callout (see `CDebugHook::on_stmt`).
+type DebugEvalFn<'a> = dyn FnMut(usize, &str) -> Result<String, String> + 'a;
+
 /// Breakpoint/step policy plus the depth of the pause being serviced.
 #[derive(Default)]
 struct DebugState {
@@ -732,6 +737,12 @@ struct DebugState {
     /// what lets `msy_context_debug_step_over/out` take no depth argument —
     /// the engine knows it, so no host has to.
     depth: usize,
+    /// A raw pointer to the engine's evaluate-in-frame closure, valid ONLY while
+    /// blocked inside the on-paused callback (null otherwise). `msy_context_debug_evaluate`
+    /// reads it. Sound because pausing is blocking and single-threaded: the
+    /// closure on the engine's stack outlives every call made from the callout.
+    /// `None` when running (a fat pointer has no cheap null, hence the Option).
+    eval_ptr: Option<*mut DebugEvalFn<'static>>,
 }
 
 /// The C-ABI debugger hook: decide with the shared controller, then hand the
@@ -747,6 +758,7 @@ impl DebugHook for CDebugHook {
         &mut self,
         pause: &DebugPause,
         locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+        eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
     ) {
         // Borrow, decide, release — the callback below re-enters through the
         // context and must find the RefCell free.
@@ -760,11 +772,20 @@ impl DebugHook for CDebugHook {
             // A host that inspects and returns without choosing gets a plain
             // resume; anything else it wants, it sets from inside the call.
             st.ctl.resume();
+            // Publish the evaluator for msy_context_debug_evaluate; it is valid
+            // only until on_paused returns (cleared below). Lifetime-erased —
+            // sound because the callout blocks on this thread.
+            let e: *mut DebugEvalFn = eval;
+            st.eval_ptr = Some(unsafe {
+                std::mem::transmute::<*mut DebugEvalFn, *mut DebugEvalFn<'static>>(e)
+            });
         }
         // Blocks for as long as the host keeps the engine paused.
         let (p, l) = as_parts(&json);
         (self.on_paused)(self.data, p, l);
-        self.state.borrow_mut().depth = 0;
+        let mut st = self.state.borrow_mut();
+        st.eval_ptr = None;
+        st.depth = 0;
     }
 }
 
@@ -1160,6 +1181,50 @@ pub unsafe extern "C" fn msy_context_debug_step_out(ctx: *mut MsyContext) {
         let depth = st.depth;
         st.ctl.step_out(depth);
     }
+}
+
+/// Evaluate an expression against a paused frame's live scope — the debug
+/// console's evaluate-in-frame. Only meaningful while the engine is paused
+/// (called from inside the on-paused callback); it returns `!not paused`
+/// otherwise. `frame` is 0 for the innermost (paused) frame, counting outward.
+/// The reply is the display result on success, or an error prefixed with `!`
+/// (a parse error, a runtime throw, an unbound name, or "not paused"). Runs
+/// with runtime semantics, no static re-check. Same reply lifetime as every
+/// other string: valid until the next call on this context.
+///
+/// # Safety
+/// `ctx` valid; `expr` points at `expr_len` readable bytes (may be NULL when
+/// `expr_len` is 0); `out_len` is written.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_debug_evaluate(
+    ctx: *mut MsyContext,
+    frame: u32,
+    expr: *const c_char,
+    expr_len: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    let ctx = &*ctx;
+    let expr_str = if expr.is_null() || expr_len == 0 {
+        String::new()
+    } else {
+        String::from_utf8_lossy(std::slice::from_raw_parts(expr as *const u8, expr_len))
+            .into_owned()
+    };
+    // Copy the pointer out and drop the borrow before the call: the evaluator
+    // re-enters the interpreter, and the RefCell must be free (same discipline
+    // as every other paused-callout re-entry).
+    let ptr = ctx.debug.borrow().eval_ptr;
+    let text = match ptr {
+        None => "!not paused".to_string(),
+        Some(p) => match (&mut *p)(frame as usize, &expr_str) {
+            Ok(v) => v,
+            Err(e) => format!("!{e}"),
+        },
+    };
+    let scratch = &mut *ctx.scratch.get();
+    *scratch = text;
+    *out_len = scratch.len();
+    scratch.as_ptr() as *const c_char
 }
 
 /// # Safety

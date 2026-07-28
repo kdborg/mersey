@@ -210,6 +210,7 @@ impl DebugHook for DapDebugger {
         &mut self,
         pause: &DebugPause,
         locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+        eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
     ) {
         while let Ok(req) = self.rx.try_recv() {
             self.handle_running(&req);
@@ -341,6 +342,25 @@ impl DebugHook for DapDebugger {
                     )])),
                 ),
                 "pause" => respond(&req, None), // already paused
+                // Watch expressions and the debug console evaluate against the
+                // SELECTED frame's live scope (frameId is the stackTrace id,
+                // top-first — the engine's `from_top`). Errors come back as a
+                // failed response so the client shows them inline.
+                "evaluate" => {
+                    let args = get(&req, "arguments");
+                    let expr = args.and_then(|a| get_str(a, "expression")).unwrap_or("");
+                    let frame_id = args.and_then(|a| get_num(a, "frameId")).unwrap_or(0.0) as usize;
+                    match eval(frame_id, expr) {
+                        Ok(value) => respond(
+                            &req,
+                            Some(obj(vec![
+                                ("result", s(&value)),
+                                ("variablesReference", n(0.0)),
+                            ])),
+                        ),
+                        Err(e) => respond_err(&req, &e),
+                    }
+                }
                 "disconnect" => {
                     respond(&req, None);
                     std::process::exit(0);
@@ -375,10 +395,13 @@ pub fn serve() -> ExitCode {
                 "initialize" => {
                     respond(
                         &req,
-                        Some(obj(vec![(
-                            "supportsConfigurationDoneRequest",
-                            Json::Bool(true),
-                        )])),
+                        Some(obj(vec![
+                            ("supportsConfigurationDoneRequest", Json::Bool(true)),
+                            // Evaluate-in-frame is wired: watch expressions, the
+                            // debug console, and hovers evaluate against the
+                            // selected paused frame's scope.
+                            ("supportsEvaluateForHovers", Json::Bool(true)),
+                        ])),
                     );
                     event("initialized", None);
                 }

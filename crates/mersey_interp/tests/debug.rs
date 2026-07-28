@@ -44,6 +44,7 @@ impl DebugHook for Recorder {
         &mut self,
         pause: &DebugPause,
         locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+        _eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
     ) {
         self.lines.borrow_mut().push(pause.pos.line);
         if pause.pos.line == self.break_line {
@@ -150,6 +151,7 @@ fn passive_hook_changes_nothing() {
             &mut self,
             _pause: &DebugPause,
             _locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+            _eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
         ) {
         }
     }
@@ -196,4 +198,71 @@ console.log(\"done\");
         flat.iter().any(|(k, v)| k == "a" && v == "1"),
         "slot local a=1 visible in the async frame: {flat:?}"
     );
+}
+
+// Evaluate-in-paused-frame: an expression typed at the debug console resolves
+// against the PAUSED frame's live scope, not the module top level. PROGRAM
+// pauses on `return twice;` inside `double(x)` on each of the three calls;
+// there `x` and `twice` are in scope and nothing else is.
+#[test]
+fn evaluate_in_paused_frame() {
+    #[allow(clippy::type_complexity)]
+    struct Evaluator {
+        break_line: u32,
+        rows: Rc<RefCell<Vec<Vec<Result<String, String>>>>>,
+    }
+    impl DebugHook for Evaluator {
+        fn on_stmt(
+            &mut self,
+            pause: &DebugPause,
+            _locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+            eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
+        ) {
+            if pause.pos.line == self.break_line {
+                let exprs = ["x", "twice", "x + twice", "x * 10", "nope"];
+                self.rows
+                    .borrow_mut()
+                    .push(exprs.iter().map(|e| eval(0, e)).collect());
+            }
+        }
+    }
+
+    let src = source::decode("dbg-eval.mersey", PROGRAM.as_bytes()).expect("decodes");
+    let parsed = parser::parse(&src);
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
+    assert!(bind::bind(module).diagnostics.is_empty());
+    assert!(check::check(module).diagnostics.is_empty());
+
+    let buffer = Rc::new(RefCell::new(String::new()));
+    let mut interp = new_interp(Box::new(TestHost {
+        out: buffer.clone(),
+    }));
+    let rows = Rc::new(RefCell::new(Vec::new()));
+    interp.set_debug_hook(Box::new(Evaluator {
+        break_line: 5,
+        rows: rows.clone(),
+    }));
+    assert!(interp.run_module(module).is_ok(), "program runs");
+
+    let rows = rows.borrow();
+    assert_eq!(rows.len(), 3, "double() is called three times");
+    // First call: x = 0, twice = 0.
+    assert_eq!(rows[0][0], Ok("0".to_string()), "x on call 1");
+    assert_eq!(rows[0][1], Ok("0".to_string()), "twice on call 1");
+    // Third call: x = 2, twice = 4 — evaluated against THAT frame's scope.
+    assert_eq!(rows[2][0], Ok("2".to_string()), "x on call 3");
+    assert_eq!(rows[2][1], Ok("4".to_string()), "twice on call 3");
+    assert_eq!(rows[2][2], Ok("6".to_string()), "x + twice on call 3");
+    assert_eq!(rows[2][3], Ok("20".to_string()), "x * 10 on call 3");
+    assert!(
+        rows[2][4].is_err(),
+        "an unbound name is an error, not a panic"
+    );
+    // The evaluation must not perturb the program's own output.
+    assert_eq!(*buffer.borrow(), "total 6\n");
 }

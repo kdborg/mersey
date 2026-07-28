@@ -499,6 +499,7 @@ fn diagnostics_cross_as_errors() {
 // loop follows — just without the loop.
 thread_local! {
     static PAUSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static EVALS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Field of the first object in `frames`, etc. — enough JSON reach for the
@@ -541,8 +542,22 @@ extern "C" fn h_paused(data: *mut c_void, json: *const c_char, len: usize) {
     });
     let ctx = data as *mut mersey_capi::MsyContext;
     unsafe {
-        // First stop: step over, to see the assignment's effect. Then run.
+        // First stop: exercise evaluate-in-frame against the paused `add` frame
+        // (a=2, b=3, scaled=20), then step over to see the assignment's effect.
         if nth == 1 {
+            let mut recorded = Vec::new();
+            for expr in ["scaled", "a", "a + b", "scaled + b", "nope"] {
+                let mut out_len = 0usize;
+                let ptr = mersey_capi::msy_context_debug_evaluate(
+                    ctx,
+                    0,
+                    expr.as_ptr() as *const c_char,
+                    expr.len(),
+                    &mut out_len,
+                );
+                recorded.push(s(ptr, out_len));
+            }
+            EVALS.with(|e| *e.borrow_mut() = recorded);
             mersey_capi::msy_context_debug_step_over(ctx);
         } else {
             mersey_capi::msy_context_debug_resume(ctx);
@@ -634,6 +649,21 @@ fn a_breakpoint_pauses_steps_and_resumes() {
     assert!(
         vars2.contains(&("sum".to_string(), "23".to_string())),
         "stepping ran the assignment: {vars2:?}"
+    );
+
+    // Evaluate-in-frame at the first pause: each expression resolved against the
+    // paused `add` frame's live scope (a=2, b=3, scaled=20), NOT the module top
+    // level — and an unbound name is a '!'-prefixed error, not a crash.
+    let evals = EVALS.with(|e| e.borrow().clone());
+    assert_eq!(evals.len(), 5, "five expressions evaluated: {evals:?}");
+    assert_eq!(evals[0], "20", "scaled");
+    assert_eq!(evals[1], "2", "a");
+    assert_eq!(evals[2], "5", "a + b");
+    assert_eq!(evals[3], "23", "scaled + b");
+    assert!(
+        evals[4].starts_with('!'),
+        "an unbound name is a '!'-prefixed error: {:?}",
+        evals[4]
     );
 
     unsafe { msy_context_free(ctx) };

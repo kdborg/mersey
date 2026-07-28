@@ -364,6 +364,20 @@ void msy_context_debug_step_over(msy_context *ctx);
 void msy_context_debug_step_in(msy_context *ctx);
 void msy_context_debug_step_out(msy_context *ctx);
 
+/* Evaluate-in-frame: run `expr` (UTF-8, `expr_len` bytes) against a PAUSED
+ * frame's live scope — the debug console's "evaluate in the selected frame".
+ * `frame` is 0 for the innermost (paused) frame, counting outward. Call only
+ * from inside the paused callback; outside a pause it returns "!not paused".
+ * The reply is the value's display text, or an error prefixed with '!' (parse
+ * error, runtime throw, unbound name, or not-paused). Runtime semantics, no
+ * static re-check. `*out_len` is set; the reply borrows the same per-context
+ * scratch as every other string (valid until the next call on `ctx`). This is
+ * an additive engine entry point — it does not change the host table, so the
+ * ABI version is unchanged. */
+const char *msy_context_debug_evaluate(msy_context *ctx, uint32_t frame,
+                                       const char *expr, size_t expr_len,
+                                       size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

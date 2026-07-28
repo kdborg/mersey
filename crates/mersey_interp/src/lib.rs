@@ -942,6 +942,7 @@ struct PendingGraph {
 }
 
 /// One entry of the diagnostic call stack.
+#[derive(Clone)]
 pub struct Frame_ {
     /// Shared, not owned. A call used to allocate *two Strings* — the function's
     /// name and its module — purely so that a stack trace could be printed if one
@@ -973,10 +974,19 @@ pub trait DebugHook {
     /// `locals(i)` snapshots frame `i` counted from the TOP of the stack:
     /// 0 is the paused statement's own scope chain; deeper frames serve the
     /// environment they were entered with. Out of range → empty.
+    ///
+    /// `eval(i, expr)` evaluates an expression string against frame `i`'s live
+    /// scope — the debug console's evaluate-in-frame. It runs with runtime
+    /// semantics (names resolve by name against the paused scope chain; no
+    /// static re-check, since the frame's type context is not reconstructed),
+    /// and returns the display result or an error message. The engine's own
+    /// debug hook is suspended for the call, so an evaluated call that would
+    /// hit a breakpoint does not re-pause. Out-of-range frame → error.
     fn on_stmt(
         &mut self,
         pause: &DebugPause,
         locals: &mut dyn FnMut(usize) -> Vec<Vec<(String, String)>>,
+        eval: &mut dyn FnMut(usize, &str) -> Result<String, String>,
     );
 }
 
@@ -1053,6 +1063,21 @@ fn snapshot_scopes(env: &Env) -> Vec<Vec<(String, String)>> {
         cur = s.parent.clone();
     }
     out
+}
+
+/// The scope-chain root of each frame, indexed by `from_top` (0 = the innermost,
+/// paused frame). Mirrors the `locals(i)` mapping in `debug_stmt`: frame 0 is the
+/// current `env`; deeper frames are the environments they were entered with,
+/// stored outermost-first in `debug_envs`.
+fn frame_env_chain(env: &Env, debug_envs: &[Env]) -> Vec<Env> {
+    let mut v = vec![env.clone()];
+    let dl = debug_envs.len();
+    let mut ft = 1usize;
+    while let Some(e) = dl.checked_sub(ft + 1).and_then(|i| debug_envs.get(i)) {
+        v.push(e.clone());
+        ft += 1;
+    }
+    v
 }
 
 /// A suspended async function: the VM's whole state is data, so `await`
@@ -3422,28 +3447,67 @@ impl Interp {
         let Some(mut hook) = self.debug_hook.take() else {
             return;
         };
-        let envs = &self.debug_envs;
-        hook.on_stmt(
-            &DebugPause {
+        // Own the pause data before the callout. Evaluate-in-frame borrows
+        // `&mut self` and can push frames (an evaluated call), which would
+        // dangle a borrow of `self.frames`/`self.debug_envs`; clone the frame
+        // list and the scope-chain roots (Rc handles — cheap) so `self` is free.
+        let frames_owned: Vec<Frame_> = self.frames.clone();
+        let frame_envs: Vec<Env> = frame_env_chain(env, &self.debug_envs);
+        {
+            let pause = DebugPause {
                 pos,
-                frames: &self.frames,
-            },
-            &mut |from_top| {
-                if from_top == 0 {
-                    snapshot_scopes(env)
-                } else {
-                    match envs
-                        .len()
-                        .checked_sub(from_top + 1)
-                        .and_then(|i| envs.get(i))
-                    {
-                        Some(e) => snapshot_scopes(e),
-                        None => Vec::new(),
-                    }
+                frames: &frames_owned,
+            };
+            let mut do_locals = |from_top: usize| -> Vec<Vec<(String, String)>> {
+                frame_envs
+                    .get(from_top)
+                    .map(snapshot_scopes)
+                    .unwrap_or_default()
+            };
+            let mut do_eval = |from_top: usize, expr: &str| -> Result<String, String> {
+                match frame_envs.get(from_top) {
+                    Some(e) => self.eval_in_frame(&e.clone(), expr),
+                    None => Err("no such frame".to_string()),
                 }
-            },
-        );
+            };
+            hook.on_stmt(&pause, &mut do_locals, &mut do_eval);
+        }
         self.debug_hook = Some(hook);
+    }
+
+    /// Evaluate an expression against a paused frame's live scope — the debug
+    /// console's evaluate-in-frame. Runtime semantics: names resolve by name
+    /// against `env`'s scope chain, there is no static re-check, and the engine's
+    /// own debug hook is already taken out so an evaluated call cannot re-pause.
+    /// Returns the display result, or a parse/runtime error message.
+    fn eval_in_frame(&mut self, env: &Env, expr: &str) -> Result<String, String> {
+        let trimmed = expr.trim().trim_end_matches(';').trim();
+        if trimmed.is_empty() {
+            return Err("empty expression".to_string());
+        }
+        let text = format!("{trimmed};\n");
+        let src = mersey_front::source::decode("<debug-eval>", text.as_bytes())
+            .map_err(|_| "could not decode expression".to_string())?;
+        let parsed = mersey_front::parser::parse(&src);
+        if !parsed.diagnostics.is_empty() {
+            return Err(parsed
+                .diagnostics
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("; "));
+        }
+        // Leaked to `'static` like a REPL turn; a debug evaluation is human-paced
+        // and rare, so the small leak is acceptable (same trade the REPL makes).
+        let module: &'static Module = Box::leak(Box::new(parsed.module));
+        let expr_ast = match module.items.first() {
+            Some(Item::Stmt(Stmt::Expr(e))) => e,
+            _ => return Err("expected a single expression".to_string()),
+        };
+        match self.eval(expr_ast, env) {
+            Ok(v) => Ok(to_display(&v)),
+            Err(Thrown(v)) => Err(format!("uncaught: {}", to_display(&v))),
+        }
     }
 
     /// Whether a debugger is attached (the VM loop's per-op gate).
@@ -3498,6 +3562,12 @@ impl Interp {
                         None => Vec::new(),
                     }
                 }
+            },
+            // Evaluate-in-frame is not supported for VM (async/generator) frames:
+            // the paused state lives in slots, not a re-enterable scope chain —
+            // the same reason those bodies are not stepped (a recorded v1 limit).
+            &mut |_from_top, _expr| {
+                Err("evaluate-in-frame is not available in async/generator frames".to_string())
             },
         );
         self.debug_hook = Some(hook);
