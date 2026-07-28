@@ -634,6 +634,19 @@ const $rt = (() => {
         return Number.isNaN(v) ? null : v;
       },
       bool: (s) => (s === "true" ? true : s === "false" ? false : null),
+      // The pieces of an absolute URL, in the order the engine's `parse.url`
+      // returns them. Transpiled code runs in a browser, so the platform's own
+      // WHATWG parser IS the engine's parser here — same answers, no bytes
+      // shipped to reimplement it.
+      url: (s) => {
+        let u;
+        try {
+          u = new URL(String(s).trim());
+        } catch {
+          return null;
+        }
+        return [u.href, u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash];
+      },
     },
   };
   const std_json = {

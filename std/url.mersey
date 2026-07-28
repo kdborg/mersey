@@ -5,14 +5,17 @@
 //
 // The browser has its own `URL` (import it from `browser:dom`), and that one is a
 // *host* object: it is what you hand to an API that demands one. This one is
-// written in Mersey and is pure computation, so it works in every host — the
-// standalone engine, a worker, an embedder with no web platform at all.
+// part of the standard library, so it works in every host — the standalone
+// engine, a worker, an embedder with no web platform at all.
 //
-// It handles the URLs a program actually writes: scheme, host, port, path, query
-// and fragment. It is not a WHATWG-conformant parser, and does not pretend to be
-// one — no IDNA, no percent-decoding of the host, no relative-URL resolution.
+// Parsing is the engine's `parse.url`, which is the WHATWG URL parser the
+// browsers themselves use — so this `URL` and the browser's agree about what a
+// string means, including IDNA and normalization. Relative-URL resolution is
+// still out: a relative reference is not a URL until you say what it is relative
+// *to*, and this class does not take a base.
 
 import { bytes } from "std:bytes";
+import { parse } from "std:parse";
 
 /// One `key=value` pair from a query string.
 class Pair {
@@ -141,49 +144,21 @@ export class URL {
     /// Throws on a URL with no scheme — a relative URL is not a URL until you
     /// say what it is relative *to*, and this class does not do that.
     public constructor(input: string) {
-        const text = input.trim();
-        const scheme = text.indexOf("://");
-        if (scheme <= 0) {
+        // The parse itself is the engine's (`parse.url`, the WHATWG parser the
+        // browsers use). Doing it here in Mersey meant a dozen string scans and
+        // slices per URL — ~7x the cost, and a second definition of "URL" to
+        // keep in step with the one the browser applies to the same string.
+        const parts = parse.url(input);
+        if (parts == null) {
             throw new Error(`not an absolute URL: "${input}"`);
         }
-        this.href = text;
-        this.protocol = `${text.slice(0, scheme)}:`;
-
-        let rest = text.slice(scheme + 3);
-
-        // The fragment first: it may contain anything, including `?` and `/`.
-        const hashAt = rest.indexOf("#");
-        if (hashAt >= 0) {
-            this.hash = rest.slice(hashAt);
-            rest = rest.slice(0, hashAt);
-        }
-
-        const queryAt = rest.indexOf("?");
-        if (queryAt >= 0) {
-            this.search = rest.slice(queryAt);
-            rest = rest.slice(0, queryAt);
-        }
-
-        const slash = rest.indexOf("/");
-        let authority = rest;
-        if (slash >= 0) {
-            authority = rest.slice(0, slash);
-            this.pathname = rest.slice(slash);
-        }
-
-        // `user:pass@host:port` — credentials are dropped, not parsed: a URL
-        // carrying a password is a mistake we decline to make convenient.
-        const at = authority.lastIndexOf("@");
-        if (at >= 0) {
-            authority = authority.slice(at + 1);
-        }
-        const colon = authority.lastIndexOf(":");
-        if (colon >= 0) {
-            this.hostname = authority.slice(0, colon);
-            this.port = authority.slice(colon + 1);
-        } else {
-            this.hostname = authority;
-        }
+        this.href = parts[0];
+        this.protocol = parts[1];
+        this.hostname = parts[2];
+        this.port = parts[3];
+        this.pathname = parts[4];
+        this.search = parts[5];
+        this.hash = parts[6];
     }
 
     /// The query, parsed into key/value pairs.

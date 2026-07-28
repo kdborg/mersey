@@ -13,6 +13,11 @@ mersey_front = { path = "../mersey_front" }
 # so the tiers disagreed on deep recursion. `maybe_grow` lets the tree-walker
 # reach the same depth limit. No-ops on targets that cannot grow the stack.
 stacker = "0.1"
+# WHATWG URL parsing for `parse.url` (std:url's engine half). The one place the
+# engine takes a parser it did not write: URL syntax is a living standard with
+# IDNA and percent-encoding rules, and matching a browser's `new URL` by hand is
+# a maintenance bill, not a feature. Same crate Servo and Firefox use.
+url = "2"
 
 [lints]
 workspace = true

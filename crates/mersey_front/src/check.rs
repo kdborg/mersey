@@ -843,7 +843,9 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::Hash => &["sha256", "sha1", "hmacSha256", "hmacSha1"],
         Ns::Gc => &["collect", "stats"],
         Ns::Regex => &["compile"],
-        Ns::Parse => &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
+        Ns::Parse => &[
+            "int32", "int64", "float64", "bigint", "bigdec", "bool", "url",
+        ],
         Ns::Bytes => &[
             "alloc",
             "fill",
@@ -6764,6 +6766,11 @@ impl Checker {
                     // Only "true"/"false", and null for anything else — no
                     // truthiness games, and no sentinel (§1.3).
                     "bool" => f(vec![s], nullable(Type::Bool)),
+                    // The pieces of an absolute URL, WHATWG-normalized:
+                    // [href, protocol, hostname, port, pathname, search, hash].
+                    // Null when the text is not an absolute URL — `std:url`'s
+                    // `URL` turns that into the throw its contract promises.
+                    "url" => f(vec![s], nullable(Type::Array(Rc::new(Type::Str)))),
                     _ => self.no_member("parse", name, pos),
                 }
             }

@@ -2916,7 +2916,9 @@ impl Interp {
                 } else {
                     (
                         "parse",
-                        &["int32", "int64", "float64", "bigint", "bigdec", "bool"],
+                        &[
+                            "int32", "int64", "float64", "bigint", "bigdec", "bool", "url",
+                        ],
                     )
                 };
                 let mut entries = HashMap::new();
@@ -5511,6 +5513,24 @@ impl Interp {
                     Ok(re) => Ok(Value::RegexV(Rc::new(re))),
                     Err(msg) => Err(self.throw("Error", format!("bad regex: {msg}"))),
                 }
+            }
+            "parse.url" => {
+                let text = self.want_string(args.first())?;
+                // Absolute URLs only: a relative reference is not a URL until
+                // you say what it is relative to, which this does not do.
+                let Ok(u) = url::Url::parse(text.trim()) else {
+                    return Ok(Value::Null);
+                };
+                let str_val = |t: &str| Value::Str(Rc::new(utf16(t)));
+                Ok(new_array(vec![
+                    str_val(u.as_str()),
+                    str_val(&format!("{}:", u.scheme())),
+                    str_val(u.host_str().unwrap_or("")),
+                    str_val(&u.port().map(|p| p.to_string()).unwrap_or_default()),
+                    str_val(u.path()),
+                    str_val(&u.query().map(|q| format!("?{q}")).unwrap_or_default()),
+                    str_val(&u.fragment().map(|f| format!("#{f}")).unwrap_or_default()),
+                ]))
             }
             "parse.bool" => {
                 let text = self.want_string(args.first())?;
