@@ -30,7 +30,7 @@ const repo = join(here, "..", "..");
 const HOME = process.env.HOME;
 const REPEATS = Number(process.env.REPEATS ?? 5);
 
-const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk", "url"]);
+const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk", "url", "encoding", "crypto"]);
 
 // Resolve each runtime; skip any that isn't installed rather than aborting.
 const first = (...cands) => cands.find((p) => p && existsSync(p));
@@ -44,7 +44,9 @@ const RUNTIMES = [
     // Prefer a CLI-specific twin (bench/cli/mersey/<wl>.mersey) — the web twins
     // import from browser:dom, which the backend has no bridge for; the CLI twin
     // uses the std-library equivalent (e.g. std:url) with the same checksum.
-    argv: (_js, wl) => ["run", first(join(repo, "bench/cli/mersey", `${wl}.mersey`),
+    // --allow-random is harmless for the workloads that don't use it and lets
+    // the crypto twin reach std:random; other std caps can be added the same way.
+    argv: (_js, wl) => ["run", "--allow-random", first(join(repo, "bench/cli/mersey", `${wl}.mersey`),
       join(repo, "bench/web/mersey", `${wl}.mersey`))],
     isMersey: true,
   },

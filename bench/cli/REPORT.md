@@ -6,11 +6,13 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 89.16 | 97.34 | 96.92 | 88.83 |
-| calls | 121.59 | 31.01 | 28.36 | 22.02 |
-| fcompute | 103.63 | 104.35 | 105.56 | 103.37 |
-| mathk | 13.69 | 14.03 | 13.42 | 15.62 |
-| url | 8.82 | 7.54 | 11.19 | 427.22 |
+| compute | 87.7 | 96.44 | 96.1 | 88.56 |
+| calls | 123.97 | 31.22 | 28.11 | 21.94 |
+| fcompute | 103.95 | 103.81 | 102.63 | 103.3 |
+| mathk | 13.41 | 13.98 | 13.23 | 15.62 |
+| url | 8.82 | 7.34 | 10.94 | 413.08 |
+| encoding | 4.43 | 1.61 | 4.1 | 7.22 |
+| crypto | 18.73 | 0.48 | 1.55 | 21.14 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
@@ -20,14 +22,18 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 | calls | 150 | 40 | 30 | 20 |
 | fcompute | 130 | 110 | 110 | 100 |
 | mathk | 40 | 20 | 20 | 10 |
-| url | 30 | 10 | 20 | 450 |
+| url | 30 | 10 | 20 | 430 |
+| encoding | 30 | 10 | 10 | 10 |
+| crypto | 40 | 10 | 10 | 20 |
 
 ## Peak RSS (MiB)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.7 | 29 | 34.7 | 5.9 |
-| calls | 38.8 | 31.2 | 34.7 | 5.9 |
-| fcompute | 40.4 | 29 | 36.6 | 5.5 |
-| mathk | 39.8 | 30.7 | 36.8 | 5.6 |
-| url | 43.3 | 38.2 | 41.6 | 6.7 |
+| compute | 38.6 | 29 | 34.8 | 5.9 |
+| calls | 38.8 | 31.1 | 34.9 | 5.9 |
+| fcompute | 40.5 | 29 | 36.8 | 5.5 |
+| mathk | 39.8 | 30.7 | 36.7 | 5.6 |
+| url | 43.2 | 38.1 | 41.6 | 6.7 |
+| encoding | 41.8 | 30.7 | 38.2 | 3.9 |
+| crypto | 48.2 | 26.9 | 35.2 | 3.8 |
