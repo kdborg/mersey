@@ -205,7 +205,22 @@ use_remoteexec = false
 EOF
   say "chromium: gn gen $CHROMIUM_OUT && autoninja chrome (-j$JOBS)"
   if ( cd "$CHROMIUM_SRC" && gn gen "$CHROMIUM_OUT" && autoninja -j"$JOBS" -C "$CHROMIUM_OUT" chrome ); then
-    done_ chromium "app -> $outdir/Chromium.app (bench runner expects '$CHROMIUM_OUT/chrome'; symlink if needed)"
+    # gn produces the branded "Mersey Blink (Experimental).app". Give the bench
+    # runners the stable `chrome` entry point they fall back to — but NOT a bare
+    # symlink: dyld resolves @executable_path to the symlink's own directory, so
+    # the app can't find its Frameworks ("Chromium Framework" dlopen failure).
+    # A tiny exec-wrapper launches the real in-bundle binary, which resolves its
+    # Frameworks and @rpath'd libmersey_capi.dylib correctly. (A stale pre-reorg
+    # Chromium.app may also linger here with an out-of-date @rpath; it is not a
+    # current gn product — remove it rather than trust it.)
+    local app_bin="$outdir/Mersey Blink (Experimental).app/Contents/MacOS/Mersey Blink (Experimental)"
+    if [ -x "$app_bin" ]; then
+      rm -f "$outdir/chrome"
+      printf '#!/bin/sh\nexec "%s" "$@"\n' "$app_bin" > "$outdir/chrome" && chmod +x "$outdir/chrome"
+      done_ chromium "app -> Mersey Blink (Experimental).app ('$CHROMIUM_OUT/chrome' wrapper execs it)"
+    else
+      done_ chromium "built (product app under $outdir; no branded binary to alias as chrome)"
+    fi
   else
     fail chromium "gn/autoninja build failed"
   fi
