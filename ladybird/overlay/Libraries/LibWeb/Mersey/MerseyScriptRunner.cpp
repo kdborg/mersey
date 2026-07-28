@@ -151,7 +151,20 @@ struct Runner {
     int64_t canvas_handle { INT64_MIN };
     GC::Ptr<Web::HTML::CanvasRenderingContext2D> canvas_ctx;
     MonotonicTime start { MonotonicTime::now() };
+    // Debugger (trace): JSON pause snapshots recorded by the on-paused hook.
+    Vector<ByteString> debug_hits;
 };
+
+// The debugger's paused hook (msy_context_debug_enable). It blocks the engine
+// until it returns; this trace build records the snapshot and resumes.
+static void mersey_debug_paused(void* data, char const* json, size_t len)
+{
+    auto* runner = static_cast<Runner*>(data);
+    if (!runner || !runner->ctx)
+        return;
+    runner->debug_hits.append(ByteString { StringView { json, len } });
+    msy_context_debug_resume(runner->ctx);
+}
 
 static thread_local Runner* s_runner { nullptr };
 
@@ -186,6 +199,36 @@ static void reset_handles(Runner* runner, JS::Realm& realm)
         return JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8(text)));
     }, 1);
     (void)global.create_data_property(JS::PropertyKey { "mersey"_utf16_fly_string }, JS::Value(repl.ptr()));
+
+    // `__merseyDebugSetBreakpoints(source, "l1,l2")` — arm breakpoints on a
+    // Mersey source and enable the debugger (trace: pauses land in debug_hits).
+    auto dbg_set = JS::NativeFunction::create(realm, [runner](JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+        if (!runner->ctx || vm.argument_count() < 2)
+            return JS::js_undefined();
+        auto source = TRY(vm.argument(0).to_utf16_string(vm)).to_byte_string();
+        auto csv = TRY(vm.argument(1).to_utf16_string(vm)).to_byte_string();
+        Vector<u32> lines;
+        for (auto const& part : csv.split(','))
+            if (auto n = part.to_number<u32>(); n.has_value())
+                lines.append(n.value());
+        msy_context_debug_enable(runner->ctx, mersey_debug_paused, runner);
+        msy_context_debug_set_breakpoints(runner->ctx, source.characters(), source.length(), lines.data(), lines.size());
+        return JS::js_undefined();
+    }, 2);
+    (void)global.create_data_property(JS::PropertyKey { "__merseyDebugSetBreakpoints"_utf16_fly_string }, JS::Value(dbg_set.ptr()));
+
+    // `__merseyDebugLog()` — drain and return the recorded pause snapshots.
+    auto dbg_log = JS::NativeFunction::create(realm, [runner](JS::VM&) -> JS::ThrowCompletionOr<JS::Value> {
+        StringBuilder sb;
+        for (size_t i = 0; i < runner->debug_hits.size(); ++i) {
+            if (i)
+                sb.append('\n');
+            sb.append(runner->debug_hits[i]);
+        }
+        runner->debug_hits.clear();
+        return JS::Value(JS::PrimitiveString::create(runner->realm->vm(), Utf16String::from_utf8(sb.to_byte_string())));
+    }, 0);
+    (void)global.create_data_property(JS::PropertyKey { "__merseyDebugLog"_utf16_fly_string }, JS::Value(dbg_log.ptr()));
     // Warn in the page console, once per realm, that this is an experimental build.
     {
         auto& notice_vm = realm.vm();
