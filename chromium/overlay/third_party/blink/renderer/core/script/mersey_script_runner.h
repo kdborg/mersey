@@ -416,6 +416,31 @@ class CORE_EXPORT MerseyScriptRunner final
   // all over this file. Cleared by the same freelist that recycles the slot.
   std::vector<v8::Global<v8::Value>> js_values_
       ALLOW_DISCOURAGED_TYPE("JS values held by engine handle; not GC-traced");
+  // `el.style` and `el.classList` name the SAME object every time they are
+  // asked for, but each ask used to mint a fresh handle — and with it an Oilpan
+  // `Persistent`. `web_release` is explicit (the engine never releases on drop),
+  // so a loop that touches `el.style` per iteration leaked one persistent per
+  // iteration and paid to create it: 20,000 of them in the cssom benchmark.
+  // Keyed by (owning handle, interned id).
+  std::map<std::pair<int64_t, uint32_t>, int64_t> derived_handles_
+      ALLOW_DISCOURAGED_TYPE("memo for derived host objects; keyed by handle");
+  // One wrapper function per callback id, which is what the ABI asks for:
+  // callback ids are stable per Mersey closure, so a fresh `v8::Function` per
+  // crossing is a fresh JS object for a callable the page already has. A host
+  // that calls `msy_context_release_callback` must evict here — this one never
+  // does, so the map lives as long as the runner.
+  std::map<uint32_t, v8::Global<v8::Function>> callback_wrappers_
+      ALLOW_DISCOURAGED_TYPE("cached JS wrappers for engine callback ids");
+  // `id => (...args) => invoke(id, ...args)`, compiled once. Making a wrapper
+  // with `v8::Function::New` instantiates a whole API function template — it
+  // was the single hottest thing in the compression benchmark, whose promise
+  // chain hands over a fresh Mersey closure per iteration, so the per-id cache
+  // above never hits. Calling a JS factory allocates an ordinary closure
+  // instead.
+  v8::Global<v8::Function> callback_factory_;
+  // The memo above hands the same handle out twice, so a release has to clear
+  // it or the next lookup returns a recycled slot.
+  void ForgetDerived(int64_t handle);
   // The Oilpan node handle table (traced) and its freelist.
   HeapVector<Member<Node>> node_handles_;
   std::vector<uint32_t> node_free_

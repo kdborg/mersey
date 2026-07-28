@@ -1605,20 +1605,36 @@ void MerseyScriptRunner::HostWebGetU16(int64_t target,
       break;
     case kClassList:
       if (Element* element = DynamicTo<Element>(NodeFor(target))) {
+        // Same list every time — hand back the same handle (see the memo's
+        // note on the persistent this used to allocate per access).
+        auto key = std::make_pair(target, id);
+        if (auto it = derived_handles_.find(key); it != derived_handles_.end()) {
+          FillRef(out, it->second);
+          return;
+        }
         NativeObject obj;
         obj.kind = NativeObject::Kind::kTokenList;
         obj.token_list = &element->classList();
-        FillRef(out, AllocObject(std::move(obj)));
+        int64_t handle = AllocObject(std::move(obj));
+        derived_handles_[key] = handle;
+        FillRef(out, handle);
         return;
       }
       break;
     case kStyle:
       if (Element* element = DynamicTo<Element>(NodeFor(target))) {
+        auto key = std::make_pair(target, id);
+        if (auto it = derived_handles_.find(key); it != derived_handles_.end()) {
+          FillRef(out, it->second);
+          return;
+        }
         if (CSSStyleDeclaration* style = element->style()) {
           NativeObject obj;
           obj.kind = NativeObject::Kind::kStyle;
           obj.style = style;
-          FillRef(out, AllocObject(std::move(obj)));
+          int64_t handle = AllocObject(std::move(obj));
+          derived_handles_[key] = handle;
+          FillRef(out, handle);
           return;
         }
       }
@@ -2100,6 +2116,16 @@ ScriptState* MerseyScriptRunner::MainWorldScriptStateOrNull() {
   return frame ? ToScriptStateForMainWorld(frame) : nullptr;
 }
 
+void MerseyScriptRunner::ForgetDerived(int64_t handle) {
+  // Linear, and that is fine: a release is explicit and rare, while the lookup
+  // it protects is on the hot path.
+  for (auto it = derived_handles_.begin(); it != derived_handles_.end();) {
+    it = (it->second == handle || it->first.first == handle)
+             ? derived_handles_.erase(it)
+             : std::next(it);
+  }
+}
+
 int64_t MerseyScriptRunner::AllocJsValue(v8::Isolate* isolate,
                                          v8::Local<v8::Value> value) {
   NativeObject obj;
@@ -2157,11 +2183,15 @@ void MerseyScriptRunner::JsCallbackTrampoline(
   if (context.IsEmpty()) {
     return;
   }
-  // The callback id rides in the function's data; the runner is found the way
-  // Blink finds any supplement — through the context's document. A raw pointer
-  // in a `v8::External` would be the obvious alternative, but this V8 tags
-  // external pointers, and a supplement lookup cannot dangle.
-  uint32_t cb = info.Data()->Uint32Value(context).FromMaybe(0);
+  // The callback id is the first argument — the JS factory closes over it and
+  // passes it through — and the callback's own arguments follow. The runner is
+  // found the way Blink finds any supplement, through the context's document; a
+  // raw pointer in a `v8::External` would be the obvious alternative, but this
+  // V8 tags external pointers, and a supplement lookup cannot dangle.
+  if (info.Length() < 1) {
+    return;
+  }
+  uint32_t cb = info[0]->Uint32Value(context).FromMaybe(0);
   auto* window = DynamicTo<LocalDOMWindow>(ToExecutionContext(context));
   Document* document = window ? window->document() : nullptr;
   if (!document) {
@@ -2176,7 +2206,7 @@ void MerseyScriptRunner::JsCallbackTrampoline(
   // string — `text.length` would then be a property read on a JS string, which
   // the reflective read has to special-case for no reason.
   auto arr = std::make_unique<JSONArray>();
-  for (int i = 0; i < info.Length(); ++i) {
+  for (int i = 1; i < info.Length(); ++i) {
     v8::Local<v8::Value> a = info[i];
     if (a.IsEmpty() || a->IsNullOrUndefined()) {
       arr->PushValue(JSONValue::Null());
@@ -2202,13 +2232,49 @@ v8::Local<v8::Value> MerseyScriptRunner::V8Callback(
     v8::Isolate* isolate,
     v8::Local<v8::Context> context,
     uint32_t callback_id) {
-  v8::Local<v8::Function> fn;
-  if (!v8::Function::New(context, &JsCallbackTrampoline,
-                         v8::Integer::NewFromUnsigned(isolate, callback_id))
-           .ToLocal(&fn)) {
+  // One wrapper per id, as the ABI asks. The id is stable per Mersey closure,
+  // so a new function per crossing would hand the page a different object for
+  // the same callable — and `removeEventListener` would never match.
+  if (auto it = callback_wrappers_.find(callback_id);
+      it != callback_wrappers_.end()) {
+    return it->second.Get(isolate);
+  }
+  // The factory, built once: a single API function (the trampoline) wrapped in
+  // a JS arrow that closes over the id. Every wrapper after the first is then
+  // an ordinary closure allocation rather than an API function template.
+  if (callback_factory_.IsEmpty()) {
+    v8::Local<v8::Function> trampoline;
+    if (!v8::Function::New(context, &JsCallbackTrampoline).ToLocal(&trampoline)) {
+      return v8::Null(isolate);
+    }
+    v8::Local<v8::String> source =
+        V8String(isolate, String("(invoke) => (id) => (...args) => invoke(id, ...args)"));
+    v8::Local<v8::Script> script;
+    v8::Local<v8::Value> maker;
+    v8::Local<v8::Value> factory;
+    if (!v8::Script::Compile(context, source).ToLocal(&script) ||
+        !script->Run(context).ToLocal(&maker) || !maker->IsFunction()) {
+      return v8::Null(isolate);
+    }
+    v8::Local<v8::Value> argv[] = {trampoline};
+    if (!maker.As<v8::Function>()
+             ->Call(context, v8::Undefined(isolate), 1, argv)
+             .ToLocal(&factory) ||
+        !factory->IsFunction()) {
+      return v8::Null(isolate);
+    }
+    callback_factory_.Reset(isolate, factory.As<v8::Function>());
+  }
+  v8::Local<v8::Value> id_arg = v8::Integer::NewFromUnsigned(isolate, callback_id);
+  v8::Local<v8::Value> wrapper;
+  if (!callback_factory_.Get(isolate)
+           ->Call(context, v8::Undefined(isolate), 1, &id_arg)
+           .ToLocal(&wrapper) ||
+      !wrapper->IsFunction()) {
     return v8::Null(isolate);
   }
-  return fn;
+  callback_wrappers_[callback_id].Reset(isolate, wrapper.As<v8::Function>());
+  return wrapper;
 }
 
 v8::Local<v8::Value> MerseyScriptRunner::V8FromJson(
@@ -2667,6 +2733,7 @@ void MerseyScriptRunner::HostWebRelease(int64_t target) {
     if (slot < js_values_.size()) {
       js_values_[slot].Reset();
     }
+    ForgetDerived(target);
     if (slot < native_objects_.size() &&
         native_objects_[slot].kind != NativeObject::Kind::kEmpty) {
       native_objects_[slot] = NativeObject{};
