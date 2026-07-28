@@ -1,0 +1,31 @@
+// An absolute URL, already parsed.
+//
+// `parse.url` hands back a `Url`, or `null` when the text is not an absolute
+// URL — a relative reference is not a URL until you say what it is relative
+// *to*. The parse is WHATWG, the same one a browser applies to the same string,
+// so the parts come back normalized: the scheme lower-cased, the host in its
+// canonical form, a default port dropped.
+//
+// The parts are cut from the parse on demand. Reading one costs one string;
+// reading none costs nothing. `std:url`'s `URL` is the fuller class built on
+// this one — it adds `searchParams`, `origin()` and `host()`.
+import { console } from "std:console";
+import { parse } from "std:parse";
+
+const u = parse.url("HTTPS://Example.COM:443/a/../b?q=1#frag");
+if (u != null) {
+    // Normalized: the scheme is lower-case, the default port is gone, and the
+    // `..` has been resolved away.
+    console.log(u.href);
+    console.log(u.protocol, u.hostname, u.port);
+    console.log(u.pathname, u.search, u.hash);
+}
+
+// A port that is not the scheme's default survives.
+const svc = parse.url("http://localhost:8080/health");
+if (svc != null) {
+    console.log(svc.hostname, svc.port, svc.pathname);
+}
+
+// Not an absolute URL: no scheme, so no answer.
+console.log(parse.url("/just/a/path") == null);

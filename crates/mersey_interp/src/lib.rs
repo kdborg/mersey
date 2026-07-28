@@ -777,6 +777,11 @@ pub enum Value {
     /// bytes on every clone, every stack push, every frame slot, every field of
     /// every object. A reference *to* the string is a thin pointer.
     Native(&'static &'static str) = 30,
+    /// An absolute URL, already parsed (`parse.url`). Holds the host's parse so
+    /// the seven WHATWG parts can be cut on demand: building them all up front
+    /// cost more than the parse itself. `Rc` keeps this a thin pointer, so the
+    /// enum is still 16 bytes.
+    UrlV(Rc<url::Url>) = 31,
 }
 
 /// The layout of a [`Value`], as Tier 1's compiled code sees it.
@@ -1763,6 +1768,11 @@ pub trait JitEnv {
     /// **directly** — which needs `cls` to be the last word on what `m` means. See
     /// `Interp::overridden_below`.
     fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
+    /// The body behind `o.name` when `name` is a getter. A getter is a call
+    /// wearing a field's clothes, so Tier-1 compiles it as the zero-argument
+    /// method it is; without this the whole enclosing function fell back to the
+    /// interpreter the moment it read one.
+    fn getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
 
     /// How many classes exist. Compiled code's dispatch is only static as long as
     /// the hierarchy it was compiled against is the whole hierarchy — and a
@@ -1888,6 +1898,9 @@ impl JitEnv for InterpEnv<'_> {
     }
     fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_method(cls, name)
+    }
+    fn getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        self.i.direct_getter(cls, name)
     }
     fn n_classes(&self) -> usize {
         self.i.all_classes.len()
@@ -2315,6 +2328,25 @@ impl ClassDef {
             c = k.parent.as_deref();
         }
         None
+    }
+
+    /// The getter body for `name`, walking the chain like `lookup_method`.
+    pub fn lookup_getter(&self, name: &str) -> Option<Rc<FnData>> {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if let Some(g) = k.getters.get(name) {
+                return Some(g.clone());
+            }
+            c = k.parent.as_deref();
+        }
+        None
+    }
+
+    /// Does this class declare a getter or setter for `name` itself? A subclass
+    /// that re-declares either one takes over what `o.name` means, so a direct
+    /// call compiled against the base would run the wrong body.
+    pub fn declares_accessor(&self, name: &str) -> bool {
+        self.getters.contains_key(name) || self.setters.contains_key(name)
     }
 
     /// Does this class declare `name` itself (as opposed to inheriting it)?
@@ -3303,7 +3335,13 @@ impl Interp {
                         }
                     }
                 }
-                ClassMember::Getter { name, body, .. } => {
+                ClassMember::Getter {
+                    name, ret, body, ..
+                } => {
+                    // The declared return type, kept for the same reason a
+                    // method's is: a getter is compiled now. Without it Tier-1
+                    // reads the body as returning nothing, sees a `Return` with
+                    // a value on the stack, and gives up on the whole group.
                     getters.insert(
                         name.clone(),
                         Rc::new(FnData::new(
@@ -3311,7 +3349,7 @@ impl Interp {
                             false,
                             &[],
                             FnBody::Block(body),
-                            None,
+                            Some(ret),
                         )),
                     );
                 }
@@ -5064,6 +5102,53 @@ impl Interp {
         })
     }
 
+    /// The getter `name` on a receiver of class `cls`, if reading it can be
+    /// compiled into a *direct* call.
+    ///
+    /// `o.x` on a getter is a call, and Tier-1 used to give up on the whole
+    /// enclosing function when it met one — a getter cost ~200ns where the
+    /// equivalent method call cost under 2ns, because one accessor read sent
+    /// every other instruction in that function back to the interpreter. The
+    /// getter's body is an ordinary zero-argument method body, so it compiles
+    /// like one; the conditions are `direct_method`'s, plus the same
+    /// no-one-below-overrides-it rule applied to accessors.
+    fn direct_getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        if cls.is_host_backed() {
+            return None;
+        }
+        // A field of this name shadows nothing — the load path already handles
+        // it — and a getter that only exists further down the hierarchy is not
+        // this receiver's to call.
+        if cls.field_slot(name).is_some() {
+            return None;
+        }
+        let data = cls.lookup_getter(name)?;
+        if data.is_async {
+            return None;
+        }
+        if self
+            .all_classes
+            .iter()
+            .any(|k| !Rc::ptr_eq(k, cls) && k.descends_from(cls) && k.declares_accessor(name))
+        {
+            return None;
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(JitFn {
+            params: vec![],
+            param_tys: vec![],
+            chunk,
+            this: Some(cls.clone()),
+            ret: data.ret_num,
+            ret_bool: data.ret_bool,
+            ret_obj: self.ret_class(&data),
+            bind: None, // a class's accessor set cannot change (§4.1)
+        })
+    }
+
     /// The class a function is declared to return, when it returns an object.
     pub(crate) fn ret_class(&self, data: &FnData) -> Option<Rc<ClassDef>> {
         match resolve_field_ty(data.ret_ty?, &self.globals) {
@@ -5566,16 +5651,7 @@ impl Interp {
                 let Ok(u) = url::Url::parse(text.trim()) else {
                     return Ok(Value::Null);
                 };
-                let str_val = |t: &str| Value::Str(Rc::new(utf16(t)));
-                Ok(new_array(vec![
-                    str_val(u.as_str()),
-                    str_val(&format!("{}:", u.scheme())),
-                    str_val(u.host_str().unwrap_or("")),
-                    str_val(&u.port().map(|p| p.to_string()).unwrap_or_default()),
-                    str_val(u.path()),
-                    str_val(&u.query().map(|q| format!("?{q}")).unwrap_or_default()),
-                    str_val(&u.fragment().map(|f| format!("#{f}")).unwrap_or_default()),
-                ]))
+                Ok(Value::UrlV(Rc::new(u)))
             }
             "parse.bool" => {
                 let text = self.want_string(args.first())?;
@@ -5906,6 +5982,21 @@ impl Interp {
                 "length" => Some(Value::I32(b.borrow().len() as i32)),
                 _ => None,
             }),
+            // Cut on demand, which is the whole point of holding the parse: a
+            // caller that wants the path should not pay to build the fragment.
+            Value::UrlV(u) => {
+                let s = |t: &str| Some(Value::Str(Rc::new(utf16(t))));
+                Ok(match name {
+                    "href" => s(u.as_str()),
+                    "protocol" => s(&format!("{}:", u.scheme())),
+                    "hostname" => s(u.host_str().unwrap_or("")),
+                    "port" => s(&u.port().map(|p| p.to_string()).unwrap_or_default()),
+                    "pathname" => s(u.path()),
+                    "search" => s(&u.query().map(|q| format!("?{q}")).unwrap_or_default()),
+                    "hash" => s(&u.fragment().map(|f| format!("#{f}")).unwrap_or_default()),
+                    _ => None,
+                })
+            }
             Value::MapV(m) => Ok(match name {
                 "size" => Some(Value::I32(m.borrow().len() as i32)),
                 _ => None,
@@ -9483,6 +9574,7 @@ fn kind_of(v: &Value) -> &'static str {
         Value::JsRef(_) => "web object",
         Value::Bytes(_) => "Bytes",
         Value::RegexV(_) => "Regex",
+        Value::UrlV(_) => "Url",
         Value::IterV(_) => "Iter",
         Value::PromiseV(_) => "Promise",
         Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {
@@ -9538,6 +9630,7 @@ pub fn to_display(v: &Value) -> String {
         Value::JsRef(h) => format!("<web:{h}>"),
         Value::Bytes(b) => format!("<Bytes[{}]>", b.borrow().len()),
         Value::RegexV(_) => "<Regex>".to_string(),
+        Value::UrlV(u) => u.as_str().to_string(),
         Value::IterV(_) => "<Iter>".to_string(),
         Value::PromiseV(_) => "<Promise>".to_string(),
         Value::Resolve(..) | Value::Reject(..) | Value::AllSlot(..) | Value::PromiseExec(..) => {

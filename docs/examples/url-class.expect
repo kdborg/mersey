@@ -1,0 +1,5 @@
+https://example.com/b?q=1#frag
+https: example.com 
+/b ?q=1 #frag
+localhost 8080 /health
+true

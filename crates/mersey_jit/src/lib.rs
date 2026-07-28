@@ -57,7 +57,7 @@
 
 mod heap;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -432,6 +432,11 @@ struct Plan {
     /// Bytecode position → the method it calls. Keyed by position, not by name: the
     /// same name at two sites can have two receivers.
     method_at: HashMap<usize, usize>,
+    /// Program counters where a `GetMember` is really a getter call. Codegen
+    /// rewrites the op to `CallMethod(name, 0)` and the ordinary call path
+    /// emits it — a getter *is* a zero-argument method, so it needs no
+    /// machinery of its own. The target function lives in `method_at`.
+    getter_pc: HashSet<usize>,
     /// Bytecode position → (field offset, what it holds).
     field_at: HashMap<usize, (u32, Ty)>,
     /// Bytecode position of a `new` → (class, constructor in the group).
@@ -703,6 +708,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let depths = analyze(&chunk).ok()?;
     let mut callee: HashMap<u16, usize> = HashMap::new();
     let mut method_at: HashMap<usize, usize> = HashMap::new();
+    let mut getter_pc: HashSet<usize> = HashSet::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
     let mut clone_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -996,9 +1002,24 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 match tval(base)? {
                     Ty::Obj(ci) => {
                         let cls = g.classes[ci as usize].clone();
-                        // A getter is a *call*, not a load. So is a member of a
-                        // host-backed object. Neither is this instruction.
-                        if cls.is_accessor(name) || cls.is_host_backed() {
+                        // A getter is a *call*, not a load — so compile the call.
+                        // Bailing here is what made one accessor read drop the
+                        // whole function back to the interpreter.
+                        if cls.is_accessor(name) && !cls.is_host_backed() {
+                            let f = g.env.getter(&cls, name)?;
+                            let idx = g.add(f)?;
+                            let sig = g.sigs[idx].clone();
+                            if !sig.params.is_empty() {
+                                return None;
+                            }
+                            method_at.insert(pc, idx);
+                            getter_pc.insert(pc);
+                            stack.push(TSlot::Val(sig.ret, Prov::Stable));
+                            continue;
+                        }
+                        // A member of a host-backed object is not this
+                        // instruction either.
+                        if cls.is_host_backed() {
                             return None;
                         }
                         let slot = cls.field_slot(name)?;
@@ -1412,6 +1433,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         entry_live,
         callee,
         method_at,
+        getter_pc,
         field_at,
         new_at,
         clone_at,
@@ -2243,6 +2265,13 @@ fn translate(
         if p.folded.contains(&pc) {
             continue;
         }
+        // A getter read, restated as the zero-argument method call it is, so the
+        // ordinary call path below emits it. Analysis put the target in
+        // `method_at`, which is where that path looks.
+        let op = &match (*op, p.getter_pc.contains(&pc)) {
+            (Op::GetMember(ni, _), true) => Op::CallMethod(ni, 0),
+            (other, _) => other,
+        };
         if let Some(&blk) = blocks.get(&pc) {
             if reachable {
                 let args = flatten(&stack)?;

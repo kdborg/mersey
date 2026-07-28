@@ -41,6 +41,7 @@ const PRELUDE_CLASSES: &[&str] = &[
     "Element",
     "Bytes",
     "Regex",
+    "Url",
     "Iter",
     "AsyncIter",
     // The protocols a class can opt into (§3): what JavaScript spells with

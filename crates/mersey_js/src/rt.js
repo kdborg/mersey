@@ -634,10 +634,9 @@ const $rt = (() => {
         return Number.isNaN(v) ? null : v;
       },
       bool: (s) => (s === "true" ? true : s === "false" ? false : null),
-      // The pieces of an absolute URL, in the order the engine's `parse.url`
-      // returns them. Transpiled code runs in a browser, so the platform's own
-      // WHATWG parser IS the engine's parser here — same answers, no bytes
-      // shipped to reimplement it.
+      // An absolute URL, parsed. Transpiled code runs in a browser, so the
+      // platform's own WHATWG parser IS the engine's parser here — same
+      // answers, no bytes shipped to reimplement it.
       url: (s) => {
         let u;
         try {
@@ -645,7 +644,10 @@ const $rt = (() => {
         } catch {
           return null;
         }
-        return [u.href, u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash];
+        // A `Url` — the engine's parsed-URL primitive. The platform's own URL
+        // object already spells the seven parts with exactly these names, so it
+        // *is* the primitive here; nothing needs copying out of it.
+        return u;
       },
     },
   };

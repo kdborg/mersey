@@ -131,13 +131,13 @@ export class URLSearchParams {
 /// The pieces are read-only: a URL you can half-edit is a URL that can be
 /// half-invalid. Build a new one from the string you want.
 export class URL {
-    public readonly href: string = "";
-    public readonly protocol: string = "";
-    public readonly hostname: string = "";
-    public readonly port: string = "";
-    public readonly pathname: string = "/";
-    public readonly search: string = "";
-    public readonly hash: string = "";
+    /// The engine's parse, held rather than copied out of.
+    ///
+    /// The seven parts used to be eager fields. Building them cost more than
+    /// the WHATWG parse itself — seven UTF-16 strings per URL, when the caller
+    /// typically reads one or two — so they are cut from this handle on demand
+    /// instead. `Url` is an engine primitive, the sibling of `Regex`.
+    private u: Url;
     /// Backing store for `searchParams`, built on first access — see below.
     private params: URLSearchParams? = null;
 
@@ -148,18 +148,20 @@ export class URL {
         // browsers use). Doing it here in Mersey meant a dozen string scans and
         // slices per URL — ~7x the cost, and a second definition of "URL" to
         // keep in step with the one the browser applies to the same string.
-        const parts = parse.url(input);
-        if (parts == null) {
+        const parsed = parse.url(input);
+        if (parsed == null) {
             throw new Error(`not an absolute URL: "${input}"`);
         }
-        this.href = parts[0];
-        this.protocol = parts[1];
-        this.hostname = parts[2];
-        this.port = parts[3];
-        this.pathname = parts[4];
-        this.search = parts[5];
-        this.hash = parts[6];
+        this.u = parsed;
     }
+
+    public get href(): string { return this.u.href; }
+    public get protocol(): string { return this.u.protocol; }
+    public get hostname(): string { return this.u.hostname; }
+    public get port(): string { return this.u.port; }
+    public get pathname(): string { return this.u.pathname; }
+    public get search(): string { return this.u.search; }
+    public get hash(): string { return this.u.hash; }
 
     /// The query, parsed into key/value pairs.
     ///

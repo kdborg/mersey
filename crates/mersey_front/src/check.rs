@@ -780,7 +780,7 @@ pub fn api_reference() -> Vec<ApiGroup> {
     });
 
     // Generic builtin classes (Map, Set, Iter, Regex, bytes, …).
-    for name in ["Map", "Set", "Iter", "AsyncIter", "Regex", "bytes"] {
+    for name in ["Map", "Set", "Iter", "AsyncIter", "Regex", "Url", "bytes"] {
         if let Some(TypeDef::Class(id)) = c.type_defs.get(name).cloned() {
             let args: Vec<Type> = c.classes[id]
                 .tparams
@@ -1548,6 +1548,7 @@ struct Checker {
     promise_id: Option<IfaceId>,
     bytes_id: Option<ClassId>,
     regex_id: Option<ClassId>,
+    url_id: Option<ClassId>,
     iter_id: Option<ClassId>,
     numeric_id: Option<IfaceId>,
     iterable_id: Option<IfaceId>,
@@ -1627,6 +1628,7 @@ impl Checker {
             promise_id: None,
             bytes_id: None,
             regex_id: None,
+            url_id: None,
             iter_id: None,
             numeric_id: None,
             iterable_id: None,
@@ -1805,6 +1807,7 @@ impl Checker {
         self.install_collections();
         self.install_bytes();
         self.install_regex();
+        self.install_url();
         self.install_numeric();
         self.install_iter();
         self.install_async_iter();
@@ -2201,6 +2204,46 @@ impl Checker {
         });
         self.type_defs.insert("Regex".into(), TypeDef::Class(id));
         self.regex_id = Some(id);
+    }
+
+    /// `Url`: an absolute URL, already parsed.
+    ///
+    /// The engine-side sibling of `Regex` — a primitive you get from a `parse`
+    /// call rather than construct, holding a parse the host did once. Its parts
+    /// are readonly *fields* rather than getters because that is how `Bytes`
+    /// spells `length`, and because the engine materializes each one on demand:
+    /// building the seven strings up front cost more than the WHATWG parse
+    /// itself, and most callers read one or two of them.
+    fn install_url(&mut self) {
+        let field = |name: &str| FieldInfo {
+            name: name.into(),
+            ty: Type::Str,
+            access: Access::Public,
+            is_static: false,
+            readonly: true,
+        };
+        let id = self.classes.len();
+        self.classes.push(ClassInfo {
+            name: "Url".into(),
+            tparams: vec![],
+            parent: None,
+            host_parent: None,
+            ifaces: vec![],
+            fields: [
+                "href", "protocol", "hostname", "port", "pathname", "search", "hash",
+            ]
+            .iter()
+            .map(|n| field(n))
+            .collect(),
+            methods: vec![],
+            getters: vec![],
+            setters: vec![],
+            ctor: None,
+            is_abstract: false,
+            is_final: true,
+        });
+        self.type_defs.insert("Url".into(), TypeDef::Class(id));
+        self.url_id = Some(id);
     }
 
     /// `Bytes`: packed byte buffer with O(1) element access (spec §3.8-ish;
@@ -6766,11 +6809,16 @@ impl Checker {
                     // Only "true"/"false", and null for anything else — no
                     // truthiness games, and no sentinel (§1.3).
                     "bool" => f(vec![s], nullable(Type::Bool)),
-                    // The pieces of an absolute URL, WHATWG-normalized:
-                    // [href, protocol, hostname, port, pathname, search, hash].
-                    // Null when the text is not an absolute URL — `std:url`'s
-                    // `URL` turns that into the throw its contract promises.
-                    "url" => f(vec![s], nullable(Type::Array(Rc::new(Type::Str)))),
+                    // An absolute URL, WHATWG-normalized. Null when the text is
+                    // not an absolute URL — `std:url`'s `URL` turns that into
+                    // the throw its contract promises.
+                    "url" => f(
+                        vec![s],
+                        nullable(match self.url_id {
+                            Some(id) => Type::Class(id, Rc::new(vec![])),
+                            None => Type::Err,
+                        }),
+                    ),
                     _ => self.no_member("parse", name, pos),
                 }
             }
