@@ -14,6 +14,14 @@ mod repl;
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
+use rand::RngCore;
+
+/// See the note on the dependency: the engine allocates a box per value, so the
+/// allocator *is* the inner loop. This is the `mersey` binary's own choice and
+/// affects nothing that embeds the engine.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use mersey_front::{
     astdump, bind, check as tycheck, fmt as mfmt, graph, lexer, parser, source, sourcemap,
 };
@@ -360,17 +368,22 @@ impl interp::Host for CliHost {
         }
     }
 
-    /// The OS CSPRNG, and only with the capability. `getrandom(2)` on Linux,
-    /// `getentropy` on macOS/BSD, `BCryptGenRandom` on Windows — the OS entropy
-    /// syscall on each platform, no userspace PRNG, no seeding, nothing to get
-    /// wrong. (The `getrandom` crate is a thin wrapper over exactly those.)
+    /// A CSPRNG, and only with the capability.
+    ///
+    /// The obvious implementation — one `getrandom(2)`/`getentropy`/
+    /// `BCryptGenRandom` per call — is a syscall per call, ~1.1us even for 16
+    /// bytes, and it made `random.bytes` the single worst number in the
+    /// command-line benchmark. Every serious crypto library answers this the
+    /// same way, so this does too: `rand::ThreadRng` is a ChaCha12 DRBG seeded
+    /// from that same OS entropy, reseeded every 64 KiB, and reseeded again in
+    /// the child after `fork()` (without which two processes would draw the
+    /// identical stream — the one way this construction goes wrong).
     fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
         if !self.caps.iter().any(|c| c == "random") {
             return Err("no `random` capability (run with --allow-random)".into());
         }
         let mut buf = vec![0u8; n];
-        getrandom::getrandom(&mut buf)
-            .map_err(|e| format!("cannot read the system CSPRNG: {e}"))?;
+        rand::rngs::ThreadRng::default().fill_bytes(&mut buf);
         Ok(buf)
     }
     fn env_var(&mut self, name: &str) -> Option<String> {
@@ -418,15 +431,15 @@ impl interp::Host for CliHost {
 /// Load the whole module graph from disk (spec §4.5: closed before
 /// execution). Returns modules in dependency-first order.
 fn load_graph(entry: &str) -> Result<Graph, ExitCode> {
-    use std::collections::HashMap;
+    use mersey_front::HashMap;
     // Module specifiers are '/'-separated (that is what `graph::resolve` splits
     // on to resolve a relative import against its referrer). A filesystem entry
     // path on Windows uses '\', which would make that split land on the wrong
     // separator; normalize it here (std::fs accepts '/' on Windows).
     let entry = &entry.replace('\\', "/");
-    let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::new();
-    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
-    let mut dyn_deps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut sources: HashMap<String, &'static mersey_front::ast::Module> = HashMap::default();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::default();
+    let mut dyn_deps: HashMap<String, Vec<String>> = HashMap::default();
     let mut queue = vec![entry.to_string()];
     let mut failed = false;
 

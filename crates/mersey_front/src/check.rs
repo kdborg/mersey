@@ -14,8 +14,8 @@
 //! - Generic inference at call sites is one-pass unification of parameter
 //!   types against argument types; explicit type arguments always win.
 
+use crate::HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{self, *};
@@ -86,7 +86,7 @@ thread_local! {
     /// The default an *uninitialized* binding or field starts with, keyed by the
     /// address of its declared `TypeExpr`. See [`DefaultVal`].
     static DEFAULTS: RefCell<std::collections::HashMap<usize, DefaultVal>> =
-        RefCell::new(std::collections::HashMap::new());
+        RefCell::new(std::collections::HashMap::default());
     /// Call nodes the checker proved are `<the JSON global>.stringify(...)` —
     /// the receiver's static type is [`Type::Namespace(Ns::Json)`], so this is
     /// the real `JSON`, not a value that happens to be spelled `JSON`. Keyed by
@@ -94,13 +94,13 @@ thread_local! {
     /// bytecode compiler reads this to fuse a stringify of an object literal into
     /// a template, soundly: a shadowed `JSON` never lands here.
     static JSON_STRINGIFY: RefCell<std::collections::HashSet<usize>> =
-        RefCell::new(std::collections::HashSet::new());
+        RefCell::new(std::collections::HashSet::default());
     /// Record-field value expressions the checker proved are `int32`/`int64`,
     /// inside a fusable `JSON.stringify({literal})`. Their decimal template
     /// rendering is byte-identical to `JSON`'s, so the compiler may emit them as
     /// dynamic template parts. Keyed by the value expression's address.
     static JSON_DYN_INT: RefCell<std::collections::HashSet<usize>> =
-        RefCell::new(std::collections::HashSet::new());
+        RefCell::new(std::collections::HashSet::default());
 }
 
 /// Record that this callee is a genuine `JSON.stringify` (receiver typed
@@ -1060,7 +1060,7 @@ fn check_graph_indexed_with(
 
     let base_types = c.type_defs.clone();
     let base_scope = c.scopes[0].clone();
-    let mut exports: HashMap<String, ModuleExports> = HashMap::new();
+    let mut exports: HashMap<String, ModuleExports> = HashMap::default();
     let mut results = Vec::new();
     let mut index = IndexData::default();
 
@@ -1068,7 +1068,7 @@ fn check_graph_indexed_with(
     for (i, (spec, module)) in modules.iter().enumerate() {
         c.diags.clear();
         c.type_defs = base_types.clone();
-        c.scopes = vec![base_scope.clone(), HashMap::new()];
+        c.scopes = vec![base_scope.clone(), HashMap::default()];
         c.module_spec = spec.clone();
         c.imported.clear();
         // Only the file the editor is asking about is indexed; its
@@ -1601,21 +1601,21 @@ impl Checker {
             index: None,
             want_marker: false,
             marker_recv: None,
-            module_exports: HashMap::new(),
-            tv_bounds: HashMap::new(),
+            module_exports: HashMap::default(),
+            tv_bounds: HashMap::default(),
             coercions: Coercions::new(),
             result_coercions: Coercions::new(),
             op_types: Coercions::new(),
             local_types: Coercions::new(),
-            defaults: std::collections::HashMap::new(),
+            defaults: std::collections::HashMap::default(),
             classes: Vec::new(),
             ifaces: Vec::new(),
             enums: Vec::new(),
             aliases: Vec::new(),
-            type_defs: HashMap::new(),
+            type_defs: HashMap::default(),
             tv_count: 0,
             tv_names: Vec::new(),
-            scopes: vec![HashMap::new()],
+            scopes: vec![HashMap::default()],
             narrows: Vec::new(),
             tp_scopes: Vec::new(),
             current_class: None,
@@ -1635,7 +1635,7 @@ impl Checker {
             async_iter_id: None,
             yield_ty: None,
             module_spec: String::new(),
-            imported: std::collections::HashSet::new(),
+            imported: std::collections::HashSet::default(),
         };
         c.install_builtins();
         c
@@ -2454,7 +2454,7 @@ impl Checker {
     // ---- scopes ---------------------------------------------------------------
 
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashMap::default());
     }
 
     fn pop_scope(&mut self) {
@@ -2814,7 +2814,7 @@ impl Checker {
     }
 
     fn push_tp_scope(&mut self, tps: &[TypeParam], tvs: &[TvId]) {
-        let mut scope = HashMap::new();
+        let mut scope = HashMap::default();
         for (tp, tv) in tps.iter().zip(tvs) {
             scope.insert(tp.name.text.clone(), *tv);
         }
@@ -2830,7 +2830,7 @@ impl Checker {
     }
 
     fn bind_tparams(&mut self, tps: &[TypeParam]) -> Vec<TvId> {
-        let mut scope = HashMap::new();
+        let mut scope = HashMap::default();
         let mut ids = Vec::new();
         for tp in tps {
             let id = self.fresh_tv(&tp.name.text);
@@ -3522,7 +3522,7 @@ impl Checker {
     }
 
     fn check_fn_body(&mut self, tps: &[TypeParam], params: &[Param], sig: &FnType, body: &[Stmt]) {
-        let mut scope = HashMap::new();
+        let mut scope = HashMap::default();
         for (tp, tv) in tps.iter().zip(&sig.tparams) {
             scope.insert(tp.name.text.clone(), *tv);
         }
@@ -3560,7 +3560,7 @@ impl Checker {
         let TypeDef::Class(id) = self.type_defs[&c.name.text] else {
             return;
         };
-        let mut scope = HashMap::new();
+        let mut scope = HashMap::default();
         let tvs = self.classes[id].tparams.clone();
         for (tp, tv) in c.type_params.iter().zip(&tvs) {
             scope.insert(tp.name.text.clone(), *tv);
@@ -4557,8 +4557,8 @@ impl Checker {
 
     /// `(then, else)` narrowing maps from a condition.
     fn narrow_from(&mut self, cond: &Expr) -> (HashMap<String, Type>, HashMap<String, Type>) {
-        let mut then = HashMap::new();
-        let mut els = HashMap::new();
+        let mut then = HashMap::default();
+        let mut els = HashMap::default();
         if let Expr::Paren(inner) = cond {
             return self.narrow_from(inner);
         }
@@ -5866,7 +5866,7 @@ impl Checker {
         args: &[ArrayElem],
         pos: Pos,
     ) -> Type {
-        let mut map: HashMap<TvId, Type> = HashMap::new();
+        let mut map: HashMap<TvId, Type> = HashMap::default();
         if !type_args.is_empty() {
             if type_args.len() != f.tparams.len() {
                 self.error(
@@ -6055,7 +6055,7 @@ impl Checker {
 
     fn field_info(&self, id: ClassId, name: &str) -> Option<(Type, Access, bool, ClassId)> {
         let mut cur = Some((id, Vec::new()));
-        let mut acc_map: HashMap<TvId, Type> = HashMap::new();
+        let mut acc_map: HashMap<TvId, Type> = HashMap::default();
         while let Some((cid, _)) = cur {
             if let Some(f) = self.classes[cid].fields.iter().find(|f| f.name == name) {
                 return Some((subst(&f.ty, &acc_map), f.access, f.readonly, cid));
@@ -6080,7 +6080,7 @@ impl Checker {
         setter: bool,
     ) -> Option<(Type, Access, ClassId)> {
         let mut cur = Some(id);
-        let mut acc_map: HashMap<TvId, Type> = HashMap::new();
+        let mut acc_map: HashMap<TvId, Type> = HashMap::default();
         while let Some(cid) = cur {
             let list = if setter {
                 &self.classes[cid].setters
@@ -6104,7 +6104,7 @@ impl Checker {
 
     fn method_sig(&self, id: ClassId, name: &str, want_static: bool) -> Option<FnType> {
         let mut cur = Some(id);
-        let mut acc_map: HashMap<TvId, Type> = HashMap::new();
+        let mut acc_map: HashMap<TvId, Type> = HashMap::default();
         while let Some(cid) = cur {
             if let Some(m) = self.classes[cid]
                 .methods

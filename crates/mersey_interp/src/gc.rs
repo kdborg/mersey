@@ -47,8 +47,8 @@
 //! by the very cycle we are breaking): it *clears* an unreachable object's
 //! contents, which drops the edges, which drops the refcounts to zero.
 
+use crate::{HashMap, HashSet};
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use crate::{ClassDef, Coro, Env, GenState, Instance, PromiseState, Scope, Value};
@@ -341,10 +341,10 @@ thread_local! {
     /// The old generation: objects that have survived a collection, keyed by
     /// the identity a minor trace stops at. Kept exact by `GcCell::drop`, so
     /// a minor collection never walks it — which is the whole pause bound.
-    static OLD: RefCell<HashMap<usize, GcObj>> = RefCell::new(HashMap::new());
+    static OLD: RefCell<HashMap<usize, GcObj>> = RefCell::new(HashMap::default());
     /// Old objects written to since the last collection: the extra roots that
     /// make a young-only trace sound.
-    static REMEMBERED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static REMEMBERED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
     /// Every class ever defined (weakly). Classes are never swept and they
     /// hold statics, so they are scanned in full on every collection — which
     /// is also why statics need no write barrier.
@@ -660,7 +660,7 @@ fn mark(roots: &Roots, minor: bool) -> HashSet<usize> {
             let old = old.borrow();
             let remembered = remembered.borrow();
             let mut m = Marker {
-                marked: HashSet::new(),
+                marked: HashSet::default(),
                 envs: Vec::new(),
                 proms: Vec::new(),
                 minor,
@@ -1321,7 +1321,7 @@ pub(crate) fn verify_cycles(roots: &Roots) -> Result<(), String> {
 fn analyse() -> (Vec<Node>, HashMap<usize, usize>, Vec<bool>) {
     // 1. Every tracked object, held strongly for the duration.
     let mut nodes: Vec<Node> = Vec::new();
-    let mut index: HashMap<usize, usize> = HashMap::new();
+    let mut index: HashMap<usize, usize> = HashMap::default();
     let add = |n: Node, nodes: &mut Vec<Node>, index: &mut HashMap<usize, usize>| {
         let p = n.ptr();
         if let std::collections::hash_map::Entry::Vacant(e) = index.entry(p) {

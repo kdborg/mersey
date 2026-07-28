@@ -104,7 +104,7 @@ pub fn is_global(name: &str) -> bool {
 /// else, so a program that names no web type never forces the (large) surface
 /// to parse. A hash set makes the per-miss lookup cheap for web programs.
 pub fn is_web_type(name: &str) -> bool {
-    use std::collections::HashSet;
+    use crate::HashSet;
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| webapi().type_names.iter().map(String::as_str).collect())
         .contains(name)

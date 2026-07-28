@@ -15,7 +15,21 @@ mersey_js = { path = "../mersey_js" }
 mersey_interp = { path = "../mersey_interp" }
 mersey_jit = { path = "../mersey_jit" }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-getrandom = "0.2"
+# A buffered CSPRNG for `random.*`. One `getentropy` syscall per call costs
+# ~1.1us, which made 16 random bytes 45x dearer than Bun's; `ThreadRng` is a
+# ChaCha12 DRBG seeded from the OS, reseeded every 64 KiB, and re-seeded again
+# after `fork()` — the same construction OpenSSL/BoringSSL and Go's crypto/rand
+# use, and the reason they are fast without being weak.
+rand = "0.9"
+# The allocator. A profile of the `url` benchmark spends more time in
+# libmalloc's `xzm_free`/`malloc_zone_malloc` than in the WHATWG parser, the
+# UTF-16 conversions and the hash lookups combined: a Mersey `Value` is a
+# reference-counted box, so the engine's real hot loop is small-object churn,
+# which is the case general-purpose system allocators are worst at and mimalloc
+# is built for. Every JS runtime we benchmark against bundles one for the same
+# reason. Binary only — a `#[global_allocator]` belongs to the program, never to
+# a library the browser forks link into their own heap.
+mimalloc = { version = "0.1", default-features = false }
 socket2 = { version = "0.5", features = ["all"] }
 
 [lints]

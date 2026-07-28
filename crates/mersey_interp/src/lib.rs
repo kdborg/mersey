@@ -21,7 +21,21 @@
 //! module per program (bounded, lives for the process/page lifetime).
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+/// The engine's own maps, hashed with FxHash rather than SipHash.
+///
+/// Every key in here is *program text* — a variable name, a member name, a
+/// module path, an interned id, a pointer — and never anything a running
+/// program supplies: Mersey's `Map<K,V>` is an insertion-ordered `Vec`, so no
+/// user-controlled key ever reaches a hash table in the engine. SipHash's job
+/// is to stop an attacker from colliding a table on purpose; with no such key
+/// there is nothing to defend, and it is not free — `sip::Hasher::write` landed
+/// in the top ten of a `url` benchmark profile, called from variable lookup and
+/// namespace member lookup. FxHash is what rustc uses for exactly this case.
+///
+/// If a map keyed by runtime data is ever added here, give *that* map a
+/// DoS-resistant hasher explicitly; do not widen this alias.
+pub(crate) type HashMap<K, V> = std::collections::HashMap<K, V, rustc_hash::FxBuildHasher>;
+pub(crate) type HashSet<K> = std::collections::HashSet<K, rustc_hash::FxBuildHasher>;
 use std::rc::Rc;
 
 use mersey_front::ast::*;
@@ -603,8 +617,25 @@ pub trait Host {
 type Str = Rc<Vec<u16>>;
 
 /// A Rust string as the engine's UTF-16 form.
+///
+/// Sized up front rather than `collect()`ed: `EncodeUtf16`'s lower size hint is
+/// `len/3` (it must assume every character is three bytes), so collecting a
+/// mostly-ASCII string reallocates two or three times on the way. `len` code
+/// units is the exact answer for ASCII and never an under-estimate for anything
+/// else — one allocation, always. Every string a native returns comes through
+/// here.
 pub(crate) fn utf16(s: &str) -> Vec<u16> {
-    s.encode_utf16().collect()
+    // ASCII widens byte-for-byte, and saying so in a form the compiler can see
+    // is worth a lot: `Vec::extend` over `EncodeUtf16` re-checks capacity on
+    // every unit (the iterator cannot promise its length), while mapping over
+    // the bytes is exact-sized — one allocation and a vectorizable widening
+    // loop. `is_ascii` is itself a word-at-a-time scan.
+    if s.is_ascii() {
+        return s.as_bytes().iter().map(|&b| u16::from(b)).collect();
+    }
+    let mut out = Vec::with_capacity(s.len());
+    out.extend(s.encode_utf16());
+    out
 }
 
 /// Append a decimal integer to a UTF-16 buffer, exactly as the bytecode VM's
@@ -618,7 +649,21 @@ pub fn append_int_utf16(out: &mut Vec<u16>, v: i64) {
 /// (U+FFFD), which affects display and UTF-8 marshalling but not the raw units
 /// that cross to a UTF-16 host.
 pub(crate) fn utf16_to_string(s: &[u16]) -> String {
-    String::from_utf16_lossy(s)
+    // ASCII is the overwhelming majority of what crosses here — URLs, JSON
+    // keys, identifiers, format strings — and for ASCII the answer is the low
+    // byte of each unit. `from_utf16_lossy` cannot know that: it decodes
+    // surrogate pairs one char at a time into a `String` sized from an iterator
+    // hint of `len/2`, so it re-allocates on the way. The scan below is a
+    // vectorizable pass that buys a single exact allocation.
+    if s.iter().any(|&u| u >= 0x80) {
+        return String::from_utf16_lossy(s);
+    }
+    // Narrowing the other way, exact-sized for the same reason. The `from_utf8`
+    // re-validation is a vectorized scan over bytes already known to be ASCII —
+    // cheaper than the per-`char` capacity check a `push` loop would pay, and it
+    // keeps the function free of `unsafe`.
+    let narrowed: Vec<u8> = s.iter().map(|&u| u as u8).collect();
+    String::from_utf8(narrowed).unwrap_or_else(|_| String::from_utf16_lossy(s))
 }
 
 /// One `char` (a Unicode scalar) as a UTF-16 string (1 or 2 code units).
@@ -1328,7 +1373,7 @@ pub(crate) struct Scope {
 
 fn child_env(parent: &Env) -> Env {
     let e = Rc::new(GcCell::new(Scope {
-        vars: HashMap::new(),
+        vars: HashMap::default(),
         parent: Some(parent.clone()),
     }));
     gc::track_env(&e);
@@ -1470,7 +1515,7 @@ pub struct Interp {
     current_module: String,
     /// Mersey classes declared in the module being defined but not yet
     /// created, so `extends` can tell a late Mersey base from a host one.
-    pending_class_names: std::collections::HashSet<String>,
+    pending_class_names: HashSet<String>,
     /// A `gc.collect()` request from Mersey: honoured at the next safe point.
     gc_pending: bool,
     /// Tier 1: optional JIT backend (native builds register Cranelift).
@@ -2137,11 +2182,11 @@ pub const JIT_DEPTH_LIMIT: i64 = MAX_CALL_DEPTH as i64;
 
 pub fn new_interp(host: Box<dyn Host>) -> Interp {
     let root = Rc::new(GcCell::new(Scope {
-        vars: HashMap::new(),
+        vars: HashMap::default(),
         parent: None,
     }));
     let globals = child_env(&root);
-    let mut error_classes = HashMap::new();
+    let mut error_classes = HashMap::default();
     let base = Rc::new(builtin_error_class("Error", None));
     for name in ["RangeError", "TypeError"] {
         error_classes.insert(name, Rc::new(builtin_error_class(name, Some(base.clone()))));
@@ -2153,7 +2198,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
     Interp {
         host,
         free_callbacks: Vec::new(),
-        callback_ids: HashMap::new(),
+        callback_ids: HashMap::default(),
         root,
         globals,
         callbacks: Vec::new(),
@@ -2167,22 +2212,22 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         frames: Vec::new(),
         depth: 0,
         pending_graph: None,
-        lazy_modules: HashMap::new(),
-        absent_globals: HashSet::new(),
+        lazy_modules: HashMap::default(),
+        absent_globals: HashSet::default(),
         use_vm: true,
         tasks: std::collections::VecDeque::new(),
         all_cells: Vec::new(),
-        interned: HashMap::new(),
+        interned: HashMap::default(),
         json_handle: -1,
-        modules: HashMap::new(),
+        modules: HashMap::default(),
         current_module: String::new(),
-        pending_class_names: std::collections::HashSet::new(),
+        pending_class_names: HashSet::default(),
         gc_pending: false,
         jit: None,
         jit_arena: Arena::default(),
         jit_host_error: None,
-        jit_cache: HashMap::new(),
-        call_counts: HashMap::new(),
+        jit_cache: HashMap::default(),
+        call_counts: HashMap::default(),
     }
 }
 
@@ -2364,12 +2409,12 @@ fn builtin_error_class(name: &'static str, parent: Option<Rc<ClassDef>>) -> Clas
         dynamic_inits,
         container_inits,
         fields,
-        methods: HashMap::new(),
-        getters: HashMap::new(),
-        setters: HashMap::new(),
+        methods: HashMap::default(),
+        getters: HashMap::default(),
+        setters: HashMap::default(),
         ctor: None,
-        statics: GcCell::new(HashMap::new()),
-        static_methods: HashMap::new(),
+        statics: GcCell::new(HashMap::default()),
+        static_methods: HashMap::default(),
         is_builtin_error: true,
         host_iface: None,
         env: None,
@@ -2491,7 +2536,7 @@ impl Interp {
             let result = self.run_module_inner(module);
             let exports = match &result {
                 Ok(ModuleFlow::Done) => collect_exports(module, &env),
-                _ => HashMap::new(),
+                _ => HashMap::default(),
             };
             self.globals = saved_globals;
             self.current_module = saved_spec;
@@ -2571,7 +2616,7 @@ impl Interp {
             let result = self.run_module_inner(module);
             let exports = match &result {
                 Ok(ModuleFlow::Done) => collect_exports(module, &env),
-                _ => HashMap::new(),
+                _ => HashMap::default(),
             };
             self.globals = saved_globals;
             self.current_module = saved_spec;
@@ -2896,7 +2941,7 @@ impl Interp {
         };
         match im.from.as_str() {
             "std:console" => {
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for level in ["log", "warn", "error", "info", "debug"] {
                     let id: &'static str = Box::leak(format!("console.{level}").into_boxed_str());
                     entries.insert(level.to_string(), Value::Native(Box::leak(Box::new(id))));
@@ -2921,7 +2966,7 @@ impl Interp {
                         ],
                     )
                 };
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in natives {
                     let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
@@ -2936,7 +2981,7 @@ impl Interp {
                 Ok(())
             }
             "std:gc" => {
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in ["collect", "stats"] {
                     let id: &'static str = Box::leak(format!("gc.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
@@ -2951,7 +2996,7 @@ impl Interp {
                 Ok(())
             }
             "std:time" => {
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in ["now", "monotonic", "parts", "fromParts", "format", "parse"] {
                     let id: &'static str = Box::leak(format!("time.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
@@ -2966,7 +3011,7 @@ impl Interp {
                 Ok(())
             }
             "std:bytes" => {
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in [
                     "alloc",
                     "fromHost",
@@ -2988,7 +3033,7 @@ impl Interp {
                 Ok(())
             }
             "std:async" => {
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in ["resolve", "reject", "all"] {
                     let id: &'static str = Box::leak(format!("promise.{n}").into_boxed_str());
                     entries.insert(n.to_string(), Value::Native(Box::leak(Box::new(id))));
@@ -3007,7 +3052,7 @@ impl Interp {
                 // `const` slice, so this namespace gets its own arm). `version` is
                 // the engine's own package version; `abiVersion` is the single
                 // source of truth shared with the C header and `mersey_capi`.
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 entries.insert(
                     "version".to_string(),
                     Value::Str(Rc::new(utf16(env!("CARGO_PKG_VERSION")))),
@@ -3049,7 +3094,7 @@ impl Interp {
                         "std:env" => ("env", &["get"], &[]),
                         _ => ("caps", &["has", "list", "drop"], &[]),
                     };
-                let mut entries = HashMap::new();
+                let mut entries = HashMap::default();
                 for n in natives {
                     // Native ids are `<ns>.<method>`, leaked once per import.
                     let id: &'static str = Box::leak(format!("{ns_name}.{n}").into_boxed_str());
@@ -3084,7 +3129,7 @@ impl Interp {
                     // Fast path: the hand-written DOM surface (kept because
                     // the Stage A demos and goldens pin it).
                     if n.text == "document" && self.host.web_global("document") < 0 {
-                        let mut entries = HashMap::new();
+                        let mut entries = HashMap::default();
                         entries.insert(
                             "getElementById".to_string(),
                             Value::Native(&"dom.getElementById"),
@@ -3200,12 +3245,12 @@ impl Interp {
             fields.extend(p.fields.iter().map(|(n, e)| (n.clone(), *e)));
             field_tyexprs.extend(p.field_tyexprs.iter().copied());
         }
-        let mut methods = HashMap::new();
-        let mut getters = HashMap::new();
-        let mut setters = HashMap::new();
-        let mut static_methods = HashMap::new();
+        let mut methods = HashMap::default();
+        let mut getters = HashMap::default();
+        let mut setters = HashMap::default();
+        let mut static_methods = HashMap::default();
         let mut ctor = None;
-        let statics: GcCell<HashMap<String, Value>> = GcCell::new(HashMap::new());
+        let statics: GcCell<HashMap<String, Value>> = GcCell::new(HashMap::default());
 
         for m in &c.members {
             match m {
@@ -3331,7 +3376,7 @@ impl Interp {
     }
 
     fn define_enum(&mut self, e: &'static EnumDecl) -> Result<(), Thrown> {
-        let mut entries = HashMap::new();
+        let mut entries = HashMap::default();
         let mut next: i64 = 0;
         for (name, init) in &e.members {
             let v = match init {
@@ -5692,8 +5737,13 @@ impl Interp {
                 };
                 // Invalid UTF-8 is `null`, not U+FFFD: a decode that quietly
                 // succeeds on garbage is how corrupt data travels.
-                Ok(match String::from_utf8(b.borrow().clone()) {
-                    Ok(text) => Value::Str(Rc::new(utf16(&(text)))),
+                //
+                // Validated in place. `String::from_utf8(b.borrow().clone())`
+                // copied the whole buffer first only to hand the copy back for
+                // re-encoding — a payload-sized allocation and memcpy for
+                // nothing.
+                Ok(match std::str::from_utf8(&b.borrow()) {
+                    Ok(text) => Value::Str(Rc::new(utf16(text))),
                     Err(_) => Value::Null,
                 })
             }
@@ -9074,7 +9124,7 @@ fn walk_pattern<'a>(p: &'a Pattern, out: &mut Vec<&'a str>) {
 
 /// Values a module exports, read out of its scope after evaluation.
 fn collect_exports(module: &'static Module, env: &Env) -> HashMap<String, Value> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     let mut take = |name: &str, exported: &str| {
         if let Some(v) = env_get(env, name) {
             out.insert(exported.to_string(), v);

@@ -4,7 +4,7 @@
 //! Module graph: specifier scanning, topological ordering, and whole-graph
 //! type checking (spec §4.5 — the module graph is closed before execution).
 
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 
 use crate::ast::{Item, Module};
 use crate::diag::{Code, Diagnostic, Pos};
@@ -131,7 +131,7 @@ pub fn topo_order(
     deps: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, Diagnostic> {
     let mut out = Vec::new();
-    let mut done = HashSet::new();
+    let mut done = HashSet::default();
     let mut path = Vec::new();
     visit(entry, deps, &mut out, &mut done, &mut path)?;
     Ok(out)

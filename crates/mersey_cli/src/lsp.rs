@@ -398,8 +398,9 @@ fn uri_to_path(uri: &str) -> String {
 /// the compiler would see.
 fn graph_for(uri: &str, text: &str) -> Option<Vec<(String, mersey_front::ast::Module)>> {
     let entry = uri_to_path(uri);
-    let mut sources: HashMap<String, mersey_front::ast::Module> = HashMap::new();
-    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut sources: mersey_front::HashMap<String, mersey_front::ast::Module> =
+        mersey_front::HashMap::default();
+    let mut deps: mersey_front::HashMap<String, Vec<String>> = mersey_front::HashMap::default();
     let mut queue = vec![entry.clone()];
 
     while let Some(spec) = queue.pop() {

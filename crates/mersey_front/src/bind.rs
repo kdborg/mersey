@@ -19,7 +19,7 @@
 //! Imports are bound as opaque symbols; cross-module validation arrives
 //! with the module-graph loader.
 
-use std::collections::HashMap;
+use crate::HashMap;
 
 use crate::ast::*;
 use crate::diag::{Code, Diagnostic, Pos};
@@ -490,7 +490,7 @@ impl Binder {
                         self.error(Code::UnknownTypeName, msg, b.pos);
                     }
                 }
-                let mut seen: HashMap<&str, Pos> = HashMap::new();
+                let mut seen: HashMap<&str, Pos> = HashMap::default();
                 for (n, init) in &e.members {
                     if let Some(prev) = seen.get(n.text.as_str()) {
                         let msg = format!(
@@ -542,7 +542,7 @@ impl Binder {
             class: ClassCtx::InClass { has_super, in_ctor },
         };
 
-        let mut fields: HashMap<&str, Pos> = HashMap::new();
+        let mut fields: HashMap<&str, Pos> = HashMap::default();
         for m in &c.members {
             if let ClassMember::Field { name, .. } = m {
                 // Field positions aren't tracked (member names are plain
