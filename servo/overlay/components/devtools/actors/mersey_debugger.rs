@@ -18,7 +18,7 @@ use devtools_traits::{DevtoolScriptControlMsg, MerseyDebugAction};
 use malloc_size_of_derive::MallocSizeOf;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use servo_base::generic_channel::GenericSender;
+use servo_base::generic_channel::{channel, GenericSender};
 
 use crate::actor::{Actor, ActorError, ActorRegistry, new_actor_name};
 use crate::protocol::ClientRequest;
@@ -32,6 +32,15 @@ pub(crate) struct MerseyPausedMsg {
     #[serde(rename = "type")]
     pub type_: String,
     pub snapshot: String,
+}
+
+/// Reply to `evaluateInFrame`: the value's display text, and whether it errored.
+#[derive(Serialize)]
+struct EvaluateReplyMsg {
+    from: String,
+    result: String,
+    #[serde(rename = "isError")]
+    is_error: bool,
 }
 
 #[derive(MallocSizeOf)]
@@ -115,6 +124,40 @@ impl Actor for MerseyDebuggerActor {
                 }
                 request.reply_final(&EmptyReplyMsg {
                     from: self.name().into(),
+                })?
+            },
+            "evaluateInFrame" => {
+                let frame = msg.get("frame").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let expression = msg
+                    .get("expression")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                // Send the request through the stored pause sender (cloned, so the
+                // pause stays open) and wait for the engine's reply. The engine is
+                // blocked in its on-paused loop, which serves the Evaluate action.
+                let sender = self.resume.borrow().as_ref().cloned();
+                let raw = match sender.and_then(|tx| channel::<String>().map(|c| (tx, c))) {
+                    Some((tx, (rtx, rrx))) => {
+                        if tx
+                            .send(MerseyDebugAction::Evaluate(frame, expression, rtx))
+                            .is_ok()
+                        {
+                            rrx.recv().unwrap_or_else(|_| "!evaluate failed".to_owned())
+                        } else {
+                            "!not paused".to_owned()
+                        }
+                    },
+                    None => "!not paused".to_owned(),
+                };
+                let (result, is_error) = match raw.strip_prefix('!') {
+                    Some(rest) => (rest.to_owned(), true),
+                    None => (raw, false),
+                };
+                request.reply_final(&EvaluateReplyMsg {
+                    from: self.name().into(),
+                    result,
+                    is_error,
                 })?
             },
             _ => return Err(ActorError::UnrecognizedPacketType),

@@ -46,8 +46,9 @@ use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 
 use mersey_capi::{
-    msy_context_debug_enable, msy_context_debug_resume, msy_context_debug_set_breakpoints,
-    msy_context_debug_step_in, msy_context_debug_step_out, msy_context_debug_step_over,
+    msy_context_debug_enable, msy_context_debug_evaluate, msy_context_debug_resume,
+    msy_context_debug_set_breakpoints, msy_context_debug_step_in, msy_context_debug_step_out,
+    msy_context_debug_step_over,
     msy_context_invoke_args, msy_context_new, msy_context_repl_turn, msy_context_run, MsyArg16,
     MsyContext, MsyHostTable,
     MsyReply, MsyScalar, MsyStr16,
@@ -723,12 +724,46 @@ extern "C" fn on_mersey_paused(data: *mut c_void, json: *const c_char, len: usiz
             snapshot,
             tx,
         ));
-        let action = rx.recv().unwrap_or(MerseyDebugAction::Resume);
-        match action {
-            MerseyDebugAction::Resume => msy_context_debug_resume((*r).ctx),
-            MerseyDebugAction::StepOver => msy_context_debug_step_over((*r).ctx),
-            MerseyDebugAction::StepIn => msy_context_debug_step_in((*r).ctx),
-            MerseyDebugAction::StepOut => msy_context_debug_step_out((*r).ctx),
+        // Serve evaluate-in-frame requests (which reply and keep the pause) until
+        // a resume/step action arrives and ends the pause. The engine is blocked
+        // here mid-statement, so the evaluator (msy_context_debug_evaluate) is live.
+        loop {
+            let action = rx.recv().unwrap_or(MerseyDebugAction::Resume);
+            match action {
+                MerseyDebugAction::Evaluate(frame, expr, reply) => {
+                    let mut out_len = 0usize;
+                    let ptr = msy_context_debug_evaluate(
+                        (*r).ctx,
+                        frame,
+                        expr.as_ptr() as *const c_char,
+                        expr.len(),
+                        &mut out_len,
+                    );
+                    let result = if ptr.is_null() {
+                        String::new()
+                    } else {
+                        str_from(ptr, out_len).to_string()
+                    };
+                    let _ = reply.send(result);
+                    // The pause continues; wait for the next action.
+                },
+                MerseyDebugAction::Resume => {
+                    msy_context_debug_resume((*r).ctx);
+                    break;
+                },
+                MerseyDebugAction::StepOver => {
+                    msy_context_debug_step_over((*r).ctx);
+                    break;
+                },
+                MerseyDebugAction::StepIn => {
+                    msy_context_debug_step_in((*r).ctx);
+                    break;
+                },
+                MerseyDebugAction::StepOut => {
+                    msy_context_debug_step_out((*r).ctx);
+                    break;
+                },
+            }
         }
     }
 }

@@ -502,12 +502,16 @@ pub enum BlackboxCoverage {
 }
 
 /// What the debugger front-end asks a paused Mersey engine to do next.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum MerseyDebugAction {
     Resume,
     StepOver,
     StepIn,
     StepOut,
+    /// Evaluate `expr` against paused frame `frame` (0 = innermost) and send the
+    /// display result (or an error prefixed with `!`) back over the sender. The
+    /// pause CONTINUES afterwards, waiting for the next action.
+    Evaluate(u32, String, GenericSender<String>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf)]
