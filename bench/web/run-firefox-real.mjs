@@ -50,7 +50,7 @@ const FIREFOX =
   (process.platform === "darwin"
     ? "/Applications/Firefox.app/Contents/MacOS/firefox"
     : "/usr/bin/firefox");
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 120000);
 
 const WORKLOADS = process.env.WL

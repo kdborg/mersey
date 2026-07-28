@@ -35,7 +35,7 @@ const LADYBIRD_SRC = process.env.LADYBIRD_SRC || join(process.env.HOME, "ladybir
 const TEST_WEB = process.env.TEST_WEB || join(LADYBIRD_SRC, "Build", "release", "bin", "test-web");
 const BUILD_BIN = dirname(TEST_WEB);
 const PYTHON = process.env.PYTHON || "python3";
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 // Linux-only cadence: /proc reads are cheap. On macOS each sample costs a
 // ~100ms footprint call, so let the sampler choose a rate it can sustain.
 const POLL_MS = PLATFORM === "linux" ? 40 : undefined;

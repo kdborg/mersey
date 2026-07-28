@@ -36,7 +36,7 @@ const LADYBIRD_SRC = process.env.LADYBIRD_SRC || join(here, "../../../browsers/l
 const TEST_WEB = process.env.TEST_WEB ||
   `${LADYBIRD_SRC}/Build/release/bin/test-web`;
 const PYTHON = process.env.PYTHON || "python3";
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 const PER_TEST_TIMEOUT = 20; // seconds; a fallback — tests complete in well under 1s
 // worker excluded: file:// pages can't load a cross-origin (absolute-http)
 // worker script. Everything else runs — the C++ glue re-enters the engine

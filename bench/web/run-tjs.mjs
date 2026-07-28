@@ -39,7 +39,7 @@ const WORKLOADS = (await readdir(join(here, "mersey")))
   .map((f) => f.replace(/\.mersey$/, ""))
   .sort();
 
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 const PAGE_SIZE = 4096;
 
 // Sum PSS (KiB) over every process whose command line names this browser's

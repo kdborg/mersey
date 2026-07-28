@@ -50,7 +50,7 @@ const medianRss = (samples) => {
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
   join(here, "../../../browsers/servo/target/release/servoshell");
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 // idb + locks excluded: Servo implements neither IndexedDB nor Web Locks
 // (the stock legs prove both absences).
 const WEB_WORKLOADS = ["bchannel", "blob", "canvas", "compression", "crypto", "cssom", "dom", "encoding", "events", "fetch", "frameworkui", "frameworkui2", "geometry", "json", "msgchannel", "query", "sse", "storage", "streams", "timers", "url", "urlpattern", "websocket", "worker", "xhr"];

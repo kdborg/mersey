@@ -52,7 +52,12 @@ const FORK =
   process.platform === "darwin"
     ? `${CHROMIUM_SRC}/out/mersey-arm64/Mersey Blink (Experimental).app/Contents/MacOS/Mersey Blink (Experimental)`
     : `${CHROMIUM_SRC}/out/mersey-arm64/chrome`;
-const REPEATS = 3;
+// Repeats per workload. Three is enough to reject a single bad launch but not
+// to resolve a change smaller than the machine's own drift — a browser leg on a
+// busy laptop moved 33% between sweeps with no code touching it. `REPEATS=15`
+// (or more) is what an overnight run should use; the runner takes the median of
+// each metric independently, so more samples buy resolution directly.
+const REPEATS = Number(process.env.REPEATS ?? 3);
 
 const WORKLOADS = process.env.WL
   ? process.env.WL.split(",")

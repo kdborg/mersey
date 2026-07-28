@@ -55,7 +55,7 @@ const FORK =
     ? `${FORK_DIR}/dist/Mersey Gecko (Experimental).app/Contents/MacOS/firefox`
     : `${FORK_DIR}/dist/bin/firefox`;
 const PAGE_SIZE = 4096;
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 
 const WORKLOADS = process.env.WL
   ? process.env.WL.split(",")

@@ -47,7 +47,7 @@ const medianRss = (samples) => {
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVO = process.env.SERVO_BIN ||
   join(here, "../../../browsers/servo-src/target/release/servoshell");
-const REPEATS = 3;
+const REPEATS = Number(process.env.REPEATS ?? 3);
 const IMPLS = ["js", "poly", "tjs"];
 
 // Stock legs compare against plain JS, so measure only the workloads that have
