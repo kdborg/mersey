@@ -88,6 +88,7 @@ mod actors {
     pub mod stylesheets;
     pub mod symbol_iterator;
     pub mod tab;
+    pub mod mersey_debugger;
     pub mod thread;
     pub mod timeline;
     pub mod watcher;
@@ -378,11 +379,34 @@ impl DevtoolsInstance {
                     _snapshot,
                     resume,
                 )) => {
-                    // TODO(phase6): route to a merseyDebugger actor that emits an
-                    // RDP `paused` event and resumes on the client's command. For
-                    // now, acknowledge the off-thread pause round-trip and resume,
-                    // so the cross-thread mechanism is exercised without a client.
-                    let _ = resume.send(MerseyDebugAction::Resume);
+                    // A Mersey breakpoint paused the engine: hand the reply sender
+                    // to the merseyDebugger actor and emit a `merseyPaused` event to
+                    // the connected clients, which resume/step through the actor.
+                    if let Some(bc_name) = self
+                        .pipelines
+                        .get(&_pipeline_id)
+                        .and_then(|id| self.browsing_contexts.get(id))
+                        .cloned()
+                    {
+                        let bc = self.registry.find::<BrowsingContextActor>(&bc_name);
+                        let dbg = self
+                            .registry
+                            .find::<crate::actors::mersey_debugger::MerseyDebuggerActor>(
+                                &bc.mersey_debugger_name,
+                            );
+                        dbg.store_resume(resume);
+                        let paused = crate::actors::mersey_debugger::MerseyPausedMsg {
+                            from: dbg.name().to_owned(),
+                            type_: "merseyPaused".to_owned(),
+                            snapshot: _snapshot,
+                        };
+                        for conn in self.connections.lock().unwrap().values() {
+                            let mut c = conn.clone();
+                            let _ = c.write_json_packet(&paused);
+                        }
+                    } else {
+                        let _ = resume.send(MerseyDebugAction::Resume);
+                    }
                 },
                 DevtoolsControlMsg::FromScript(ScriptToDevtoolsControlMsg::CreateFrameActor(
                     result_sender,
