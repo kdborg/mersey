@@ -172,6 +172,12 @@ public:
     // The console's Mersey mode. Separate entry point, separate engine,
     // no shared bindings — see mersey/docs/architecture/devtools.md.
     virtual void evaluate_mersey(TabDescription const&, String const&, OnScriptEvaluationComplete) const { }
+    // The Mersey interactive debugger: arm breakpoints, resume/step, and listen
+    // for engine pauses. See mersey/docs/architecture/devtools.md.
+    virtual void mersey_debug_set_breakpoints(TabDescription const&, String const&, Vector<u32> const&) const { }
+    virtual void mersey_debug_resume(TabDescription const&, u8) const { }
+    using OnMerseyPause = Function<void(String)>;
+    virtual void listen_for_mersey_pause(TabDescription const&, OnMerseyPause) const { }
 
     using OnConsoleMessage = Function<void(WebView::ConsoleOutput)>;
     virtual void listen_for_console_messages(TabDescription const&, OnConsoleMessage) const { }

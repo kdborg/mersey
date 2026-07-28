@@ -2459,6 +2459,24 @@ void ConnectionFromClient::mersey_console_input(u64 page_id, String source)
     page->mersey_console_input(source);
 }
 
+void ConnectionFromClient::mersey_debug_set_breakpoints(u64 page_id, String source, Vector<u32> lines)
+{
+    auto page = this->page(page_id);
+    if (!page.has_value())
+        return;
+
+    page->mersey_debug_set_breakpoints(source, lines);
+}
+
+void ConnectionFromClient::mersey_debug_resume(u64 page_id, u8 action)
+{
+    auto page = this->page(page_id);
+    if (!page.has_value())
+        return;
+
+    page->mersey_debug_resume(action);
+}
+
 void ConnectionFromClient::run_javascript(u64 page_id, String js_source)
 {
     if (auto page = this->page(page_id); page.has_value())

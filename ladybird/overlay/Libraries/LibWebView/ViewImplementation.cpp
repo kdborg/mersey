@@ -1188,6 +1188,16 @@ void ViewImplementation::mersey_console_input(String const& source)
     client().async_mersey_console_input(page_id(), source);
 }
 
+void ViewImplementation::mersey_debug_set_breakpoints(String const& source, Vector<u32> const& lines)
+{
+    client().async_mersey_debug_set_breakpoints(page_id(), source, lines);
+}
+
+void ViewImplementation::mersey_debug_resume(u8 action)
+{
+    client().async_mersey_debug_resume(page_id(), action);
+}
+
 void ViewImplementation::exit_fullscreen()
 {
     client().async_exit_fullscreen(page_id());

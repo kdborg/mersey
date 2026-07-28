@@ -61,6 +61,7 @@
 #include <LibWeb/HTML/Storage.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/Namespace.h>
 #include <LibWeb/WebIDL/Buffers.h>
 #include <LibWeb/WebIDL/CallbackType.h>
@@ -153,15 +154,42 @@ struct Runner {
     MonotonicTime start { MonotonicTime::now() };
     // Debugger (trace): JSON pause snapshots recorded by the on-paused hook.
     Vector<ByteString> debug_hits;
+    // Debugger (interactive): route pauses to the page client, which blocks
+    // WebContent (pumping IPC) until DevTools resumes/steps, instead of the log.
+    bool debug_interactive { false };
 };
 
-// The debugger's paused hook (msy_context_debug_enable). It blocks the engine
-// until it returns; this trace build records the snapshot and resumes.
+// The debugger's paused hook (msy_context_debug_enable). It BLOCKS the engine
+// until it returns. Trace mode records the snapshot and resumes at once;
+// interactive mode hands the snapshot to the page client, which blocks this
+// thread on a nested event loop until DevTools resumes or steps.
 static void mersey_debug_paused(void* data, char const* json, size_t len)
 {
     auto* runner = static_cast<Runner*>(data);
     if (!runner || !runner->ctx)
         return;
+    if (runner->debug_interactive && runner->realm) {
+        auto& global = runner->realm->global_object();
+        if (is<Web::HTML::Window>(global)) {
+            auto snapshot = MUST(String::from_utf8(StringView { json, len }));
+            u8 action = as<Web::HTML::Window>(global).page().client().mersey_debug_pause(snapshot);
+            switch (action) {
+            case 1:
+                msy_context_debug_step_over(runner->ctx);
+                break;
+            case 2:
+                msy_context_debug_step_in(runner->ctx);
+                break;
+            case 3:
+                msy_context_debug_step_out(runner->ctx);
+                break;
+            default:
+                msy_context_debug_resume(runner->ctx);
+                break;
+            }
+            return;
+        }
+    }
     runner->debug_hits.append(ByteString { StringView { json, len } });
     msy_context_debug_resume(runner->ctx);
 }
@@ -1769,6 +1797,17 @@ void run_mersey_script(JS::Realm& realm, String const& source)
 
     auto source_view = source.bytes_as_string_view();
     msy_context_run(runner->ctx, source_view.characters_without_null_termination(), source_view.length());
+}
+
+void debug_arm_interactive(JS::Realm& realm, String const& source, Vector<u32> const& lines)
+{
+    auto* runner = ensure_runner(realm);
+    if (!runner->ctx)
+        return;
+    runner->debug_interactive = true;
+    msy_context_debug_enable(runner->ctx, mersey_debug_paused, runner);
+    auto src = source.to_byte_string();
+    msy_context_debug_set_breakpoints(runner->ctx, src.characters(), src.length(), lines.data(), lines.size());
 }
 
 // ---- the DevTools console, Mersey mode -------------------------------------

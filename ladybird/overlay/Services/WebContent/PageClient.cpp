@@ -44,6 +44,7 @@
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/Mersey/MerseyScriptRunner.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibCore/EventLoop.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/InvalidateDisplayList.h>
@@ -1480,6 +1481,38 @@ void PageClient::mersey_console_input(StringView source)
     }
 
     did_execute_js_console_input(JsonValue { result.value });
+}
+
+void PageClient::mersey_debug_set_breakpoints(String const& source, Vector<u32> const& lines)
+{
+    auto* document = page().top_level_browsing_context().active_document();
+    if (!document)
+        return;
+    Web::Mersey::debug_arm_interactive(document->realm(), source, lines);
+}
+
+u8 PageClient::mersey_debug_pause(String const& snapshot)
+{
+    // Announce the pause to the UI/DevTools, then block this process on a nested
+    // event loop that keeps IPC flowing; the resume/step message quits it.
+    did_mersey_pause(snapshot);
+    Core::EventLoop loop;
+    m_mersey_pause_loop = &loop;
+    loop.exec();
+    m_mersey_pause_loop = nullptr;
+    return m_mersey_resume_action;
+}
+
+void PageClient::mersey_debug_resume(u8 action)
+{
+    m_mersey_resume_action = action;
+    if (m_mersey_pause_loop)
+        m_mersey_pause_loop->quit(0);
+}
+
+void PageClient::did_mersey_pause(String const& snapshot)
+{
+    client().async_did_mersey_pause(m_id, snapshot);
 }
 
 void PageClient::run_javascript(StringView js_source)

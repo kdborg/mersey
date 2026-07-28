@@ -117,6 +117,10 @@ public:
     void js_console_input(StringView js_source);
     void mersey_console_input(StringView source);
     void did_execute_js_console_input(JsonValue const&);
+    void mersey_debug_set_breakpoints(String const& source, Vector<u32> const& lines);
+    void mersey_debug_resume(u8 action);
+    virtual u8 mersey_debug_pause(String const& snapshot) override;
+    void did_mersey_pause(String const& snapshot);
     void run_javascript(StringView js_source);
     void did_output_js_console_message(WebView::ConsoleOutput);
     void console_peer_did_misbehave(char const* reason);
@@ -298,6 +302,11 @@ private:
     double m_zoom_level { 1.0 };
     double m_maximum_frames_per_second { 60.0 };
     u64 m_id { 0 };
+
+    // Mersey interactive debugger: the nested loop a breakpoint pause spins, and
+    // the action the resume/step message leaves behind for the paused engine.
+    Core::EventLoop* m_mersey_pause_loop { nullptr };
+    u8 m_mersey_resume_action { 0 };
     u64 m_next_delete_all_cookies_request_id { 1 };
     HashMap<u64, GC::Ref<Web::WebIDL::Promise>> m_pending_delete_all_cookies_promises;
     HashMap<u64, GC::Ref<Web::Fetch::Infrastructure::FetchController>> m_download_controllers;

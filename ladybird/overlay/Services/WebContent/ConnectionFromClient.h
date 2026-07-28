@@ -178,6 +178,8 @@ private:
 
     virtual void js_console_input(u64 page_id, String) override;
     virtual void mersey_console_input(u64 page_id, String) override;
+    virtual void mersey_debug_set_breakpoints(u64 page_id, String, Vector<u32>) override;
+    virtual void mersey_debug_resume(u64 page_id, u8) override;
     virtual void run_javascript(u64 page_id, String) override;
 
     virtual void alert_closed(u64 page_id) override;

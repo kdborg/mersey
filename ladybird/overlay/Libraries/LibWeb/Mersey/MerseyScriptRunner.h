@@ -57,6 +57,11 @@ namespace Web::Mersey {
 // engine never unwinds across the ABI.
 void run_mersey_script(JS::Realm&, String const& source);
 
+// Arm interactive breakpoints: pauses on `source`'s lines route to the page
+// client (which blocks WebContent for a DevTools resume/step) rather than the
+// trace log. Driven by the WebContent-side `merseyDebugger` actor path.
+WEB_API void debug_arm_interactive(JS::Realm&, String const& source, Vector<u32> const& lines);
+
 // ---- the DevTools console, Mersey mode -------------------------------------
 //
 // The console's language dropdown evaluates here instead of in LibJS. The

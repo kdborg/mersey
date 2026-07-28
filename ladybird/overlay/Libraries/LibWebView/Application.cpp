@@ -2934,6 +2934,32 @@ void Application::evaluate_mersey(DevTools::TabDescription const& description, S
     view->mersey_console_input(source);
 }
 
+void Application::mersey_debug_set_breakpoints(DevTools::TabDescription const& description, String const& source, Vector<u32> const& lines) const
+{
+    auto view = ViewImplementation::find_view_by_id(description.id);
+    if (!view.has_value())
+        return;
+    view->mersey_debug_set_breakpoints(source, lines);
+}
+
+void Application::mersey_debug_resume(DevTools::TabDescription const& description, u8 action) const
+{
+    auto view = ViewImplementation::find_view_by_id(description.id);
+    if (!view.has_value())
+        return;
+    view->mersey_debug_resume(action);
+}
+
+void Application::listen_for_mersey_pause(DevTools::TabDescription const& description, OnMerseyPause on_pause) const
+{
+    auto view = ViewImplementation::find_view_by_id(description.id);
+    if (!view.has_value())
+        return;
+    view->on_mersey_paused = [on_pause = move(on_pause)](String snapshot) {
+        on_pause(move(snapshot));
+    };
+}
+
 void Application::listen_for_console_messages(DevTools::TabDescription const& description, OnConsoleMessage on_console_message) const
 {
     auto view = ViewImplementation::find_view_by_id(description.id);

@@ -110,6 +110,8 @@ endpoint WebContentServer
 
     js_console_input(u64 page_id, String js_source) =|
     mersey_console_input(u64 page_id, String source) =|
+    mersey_debug_set_breakpoints(u64 page_id, String source, Vector<u32> lines) =|
+    mersey_debug_resume(u64 page_id, u8 action) =|
     run_javascript(u64 page_id, String js_source) =|
 
     list_style_sheets(u64 page_id) =|

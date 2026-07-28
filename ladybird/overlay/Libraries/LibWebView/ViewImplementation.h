@@ -234,6 +234,8 @@ public:
     void run_javascript(String const&);
     void js_console_input(String const&);
     void mersey_console_input(String const&);
+    void mersey_debug_set_breakpoints(String const& source, Vector<u32> const& lines);
+    void mersey_debug_resume(u8 action);
     void exit_fullscreen();
 
     void set_is_fullscreen(Web::ViewportIsFullscreen is_fullscreen);
@@ -362,6 +364,7 @@ public:
     HashMap<u64, DevTools::DevToolsDelegate::OnResolvedURLReceived> on_resolved_dom_node_url;
     Function<void(Web::HTML::ScriptRegistry::Description)> on_devtools_source_available;
     Function<void(JsonValue)> on_received_js_console_result;
+    Function<void(String)> on_mersey_paused;
     Function<void(ConsoleOutput)> on_console_message;
     Function<void(u64 request_id, URL::URL const&, ByteString const&, Vector<HTTP::Header> const&, ByteBuffer, Optional<String>, String, bool, Web::Fetch::Infrastructure::Request::Priority)> on_network_request_started;
     Function<void(u64 request_id, u32 status_code, Optional<String> const&, Vector<HTTP::Header> const&, Requests::CameFromCache)> on_network_response_headers_received;

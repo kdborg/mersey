@@ -385,6 +385,9 @@ private:
     virtual void resolve_dom_node_url(DevTools::TabDescription const&, Optional<Web::UniqueNodeID>, String const&, OnResolvedURLReceived) const override;
     virtual void evaluate_javascript(DevTools::TabDescription const&, String const&, OnScriptEvaluationComplete) const override;
     virtual void evaluate_mersey(DevTools::TabDescription const&, String const&, OnScriptEvaluationComplete) const override;
+    virtual void mersey_debug_set_breakpoints(DevTools::TabDescription const&, String const&, Vector<u32> const&) const override;
+    virtual void mersey_debug_resume(DevTools::TabDescription const&, u8) const override;
+    virtual void listen_for_mersey_pause(DevTools::TabDescription const&, OnMerseyPause) const override;
     virtual void listen_for_console_messages(DevTools::TabDescription const&, OnConsoleMessage) const override;
     virtual void stop_listening_for_console_messages(DevTools::TabDescription const&) const override;
     virtual void listen_for_network_events(DevTools::TabDescription const&, OnNetworkRequestStarted, OnNetworkResponseHeadersReceived, OnNetworkResponseBodyReceived, OnNetworkRequestFinished) const override;
