@@ -23,8 +23,10 @@ const load = async (f) => {
 
 // ---- browser arena: js vs fork-native, per browser ----------------------------
 const browserRows = [
-  ...(await load("results.stock.json")),
-  ...(await load("results.native.json")),
+  ...(await load("results.stock.json")),     // chromium + firefox JS
+  ...(await load("results.servo.json")),     // servo JS
+  ...(await load("results.ladybird.json")),  // ladybird JS
+  ...(await load("results.native.json")),    // firefox fork native
   ...(await load("results.native.servo.json")),
   ...(await load("results.native.ladybird.json")),
   ...(await load("results.native.chromium.json")),
@@ -89,21 +91,21 @@ const logPct = (v) =>
 const fmtMs = (v) => v >= 1000 ? (v / 1000).toFixed(1) + " s" : v;
 const fmtMi = (v) => v == null ? "" : (v < 0.05 ? "≈0" : v.toFixed(1));
 
-// One bar. `cls` sets the colour (js | native | node | bun | deno | mersey).
-const bar = (lab, v, pct, txt, cls) => v == null
-  ? `<div class="bar-row"><div class="bar-lab">${lab}</div><div class="track">
-       <div class="bar ${cls}" style="width:2%;opacity:.28">
-         <span class="val out" style="color:var(--ink-faint)">n/a</span></div></div></div>`
-  : `<div class="bar-row"><div class="bar-lab">${lab}</div><div class="track">
-       <div class="bar ${cls}" style="width:${pct.toFixed(1)}%">
-         <span class="val${pct < 30 ? " out" : ""}">${txt}</span></div></div></div>`;
+// One measured bar. `cls` sets the colour (js | native | node | bun | deno | mersey).
+const bar = (lab, pct, txt, cls) =>
+  `<div class="bar-row"><div class="bar-lab">${lab}</div><div class="track">
+     <div class="bar ${cls}" style="width:${pct.toFixed(1)}%">
+       <span class="val${pct < 30 ? " out" : ""}">${txt}</span></div></div></div>`;
 
-// A stack of bars for one arena; `get(cell)` picks time or memory.
+// A stack of bars for one arena; `get(cell)` picks time or memory. Rows with no
+// value are OMITTED, not drawn as n/a — the grid stays the comparison. Returns
+// "" when the arena has nothing to show, so the caller can drop it entirely.
 function arena(title, entries, get, pctFn, fmtV) {
-  const bars = entries.map(({ lab, cell, cls }) => {
-    const v = cell ? get(cell) : null;
-    return bar(lab, v, v == null ? 0 : pctFn(v), v == null ? "" : fmtV(v), cls);
-  }).join("");
+  const withVal = entries
+    .map((e) => ({ ...e, v: e.cell ? get(e.cell) : null }))
+    .filter((e) => e.v != null);
+  if (!withVal.length) return "";
+  const bars = withVal.map(({ lab, v, cls }) => bar(lab, pctFn(v), fmtV(v), cls)).join("");
   return `<div class="ar"><div class="ar-t">${title}</div><div class="bars">${bars}</div></div>`;
 }
 
@@ -126,23 +128,21 @@ const panels = WL.map((w) => {
   const cMemMax = cliEntries ? Math.max(1, ...cliEntries.map((e) => e.cell?.m).filter((v) => v != null)) : 1;
   const memPct = (max) => (v) => Math.max(2, v / max * 100);
 
-  const browserBlock = `
-    <div class="arena-grid">
-      ${arena("browser · time (ms, log)", bEntries, (c) => c.t, logPct, fmtMs)}
-      ${arena("browser · memory (MiB)", bEntries, (c) => c.m, memPct(bMemMax), fmtMi)}
-    </div>`;
-  const cliBlock = cliEntries ? `
-    <div class="arena-grid cli">
-      ${arena("command line · time (ms, log)", cliEntries, (c) => c.t, logPct, fmtMs)}
-      ${arena("command line · memory (MiB)", cliEntries, (c) => c.m, memPct(cMemMax), fmtMi)}
-    </div>` : "";
+  const bTime = arena("browser · time (ms, log)", bEntries, (c) => c.t, logPct, fmtMs);
+  const bMem = arena("browser · memory (MiB)", bEntries, (c) => c.m, memPct(bMemMax), fmtMi);
+  const browserBlock = (bTime || bMem) ? `<div class="arena-grid">${bTime}${bMem}</div>` : "";
 
-  const tag = COMPUTE.has(w) ? "browser + command line" : "browser only";
+  const cTime = cliEntries ? arena("command line · time (ms, log)", cliEntries, (c) => c.t, logPct, fmtMs) : "";
+  const cMem = cliEntries ? arena("command line · memory (MiB)", cliEntries, (c) => c.m, memPct(cMemMax), fmtMi) : "";
+  const cliBlock = (cTime || cMem) ? `<div class="arena-grid cli">${cTime}${cMem}</div>` : "";
+
+  if (!browserBlock && !cliBlock) return "";
+  const tag = [browserBlock && "browser", cliBlock && "command line"].filter(Boolean).join(" + ");
   return `<details class="pt" id="wl-${w}"${COMPUTE.has(w) ? " open" : ""}>
     <summary class="wl-name"><span class="chev"></span><b>${w}</b><em>${tag}</em></summary>
     ${browserBlock}${cliBlock}
   </details>`;
-}).join("\n");
+}).filter(Boolean).join("\n");
 
 const toc = `<nav class="toc">${WL.map((w) => `<a href="#wl-${w}">${w}</a>`).join("\n    ")}</nav>`;
 
@@ -214,9 +214,10 @@ const html = `<!doctype html>
     <b>Command line</b> — Node, Bun and Deno running the JS twin vs the Mersey CLI running the Mersey
     twin (compute workloads only — Node has no DOM). Time is the self-timed workload loop
     (median, <b>log scale</b>, same checksum on every bar); memory is the process's peak/PSS delta.
-    Platform: <b>${platform}</b>. A dimmed <i>n/a</i> row is honest absence (a fork that can't run
-    that workload). This is report-pertech's js-vs-native cut, so there is no transpiled or WASM
-    row to leave empty.</p>
+    Platform: <b>${platform}</b>. Rows appear only where measured: a fork that can't run a workload,
+    or a compute kernel with no in-browser JS twin (<code>calls</code>, <code>fcompute</code>,
+    <code>mathk</code> — those live in the command-line arena), simply has no bar. The grid is the
+    comparison, not a field of n/a.</p>
 ${toc}
   <div class="legend">
     <span><i class="sw js"></i> plain JS (browser engine)</span>
