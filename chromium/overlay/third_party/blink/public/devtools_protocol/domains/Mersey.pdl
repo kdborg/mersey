@@ -114,6 +114,19 @@ experimental domain Mersey
   command stepInto
   command stepOut
 
+  # Evaluate an expression against a PAUSED call frame's live scope — the
+  # Sources panel's "evaluate in the selected frame", a watch, or a console
+  # turn while paused. `callFrameIndex` is 0 for the innermost frame (indexing
+  # `paused.callFrames`). Only meaningful while paused; otherwise isError.
+  command evaluateOnCallFrame
+    parameters
+      integer callFrameIndex
+      string expression
+    returns
+      # The value's display text, or the error text when isError is true.
+      string result
+      boolean isError
+
   # The engine stopped. The renderer is blocked until a resume-family command.
   event paused
     parameters

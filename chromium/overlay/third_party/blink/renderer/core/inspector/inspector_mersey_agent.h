@@ -48,6 +48,10 @@ class CORE_EXPORT InspectorMerseyAgent final
   protocol::Response stepOver() override;
   protocol::Response stepInto() override;
   protocol::Response stepOut() override;
+  protocol::Response evaluateOnCallFrame(int call_frame_index,
+                                         const String& expression,
+                                         String* result,
+                                         bool* is_error) override;
 
   // Invoked from inside the engine's pause callout. BLOCKS: it emits
   // Mersey.paused and then runs a nested message loop, so the renderer keeps

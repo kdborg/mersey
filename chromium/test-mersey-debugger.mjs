@@ -94,12 +94,17 @@ try {
   watchdog.unref?.();
 
   let paused = null;
-  eventHandlers.set("Mersey.paused", (p) => {
+  const evals = [];
+  eventHandlers.set("Mersey.paused", async (p) => {
     log("<< Mersey.paused", p.reason);
     if (!paused) paused = p; // keep the first pause for the assertion
+    // Evaluate-in-frame against the paused frame (0 = innermost) BEFORE
+    // resuming — the engine is blocked in its nested loop, so the callout
+    // window is live. `aa` resolves only once its `let` has run.
+    evals.push(await send("Mersey.evaluateOnCallFrame", { callFrameIndex: 0, expression: "aa" }));
     // Pausing is blocking, and a multi-line turn hits a breakpoint per line —
     // resume EVERY pause so Mersey.evaluate can run to completion.
-    send("Mersey.resume").then(() => log("resume ack"));
+    await send("Mersey.resume").then(() => log("resume ack"));
   });
   eventHandlers.set("Mersey.resumed", () => log("<< Mersey.resumed"));
 
@@ -109,15 +114,24 @@ try {
   // This blocks in the engine's nested loop when the breakpoint fires; the
   // paused handler above resumes it. Awaits the completed turn.
   log(">> evaluate");
-  await send("Mersey.evaluate", { expression: "const q = 1;\nconst w = q + 1;\nw" });
+  await send("Mersey.evaluate", { expression: "let aa = 10;\nlet bb = aa + 5;\nbb" });
   log("<< evaluate returned");
   clearTimeout(watchdog);
 
   const reason = paused && paused.reason;
   const frames = paused && paused.callFrames;
   console.log("paused reason:", reason, "frames:", frames ? frames.length : 0);
-  const ok = reason === "breakpoint";
-  finish(ok, ok ? "interactive Mersey pause + resume over CDP" : "no breakpoint pause received");
+  // Once `let aa = 10` has run, evaluate-in-frame against the paused frame sees
+  // it (result "10", not an error); on the earliest pause it is not yet bound.
+  const sawAa = evals.some((e) => e && e.result === "10" && e.isError === false);
+  console.log("evaluateOnCallFrame results:", JSON.stringify(evals));
+  const ok = reason === "breakpoint" && sawAa;
+  finish(
+    ok,
+    ok
+      ? "interactive Mersey pause + resume + evaluate-in-frame over CDP"
+      : `pause=${reason} sawAa=${sawAa}`,
+  );
 } catch (e) {
   finish(false, e.message);
 }

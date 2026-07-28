@@ -313,10 +313,13 @@ want() {
   return 1
 }
 
-# staticlib is a prerequisite for chromium+ladybird; build it if it's wanted,
-# or if a fork that links it is requested and it isn't present yet.
+# staticlib is a prerequisite for chromium+ladybird; (re)build it whenever one
+# of those forks is requested. cargo is incremental, so this is a near-no-op
+# when the engine hasn't changed — but a stale prebuilt .a/.dylib is worse than
+# a rebuild: the fork links it and fails with `undefined symbol` on any new C
+# ABI entry point (e.g. an added msy_context_debug_* function).
 needs_staticlib=false
-if want staticlib || ( ( want chromium || want ladybird ) && [ ! -f "$STATICLIB" ] ); then
+if want staticlib || want chromium || want ladybird; then
   needs_staticlib=true
 fi
 $needs_staticlib && build_staticlib

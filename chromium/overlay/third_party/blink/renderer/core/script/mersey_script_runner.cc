@@ -771,6 +771,17 @@ void MerseyScriptRunner::DebugStepOut() {
   }
 }
 
+String MerseyScriptRunner::DebugEvaluate(uint32_t frame, const String& expr) {
+  if (!context_) {
+    return String();
+  }
+  std::string utf8 = expr.Utf8();
+  size_t out_len = 0;
+  const char* reply = msy_context_debug_evaluate(context_, frame, utf8.data(),
+                                                 utf8.size(), &out_len);
+  return reply ? String::FromUtf8(std::string_view(reply, out_len)) : String("");
+}
+
 String MerseyScriptRunner::ReplTurn(const String& source) {
   if (!context_) {
     return String();

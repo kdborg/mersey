@@ -125,6 +125,9 @@ class CORE_EXPORT MerseyScriptRunner final
   void DebugStepOver();
   void DebugStepInto();
   void DebugStepOut();
+  // Evaluate `expr` against paused frame `frame` (0 = innermost). Reply is the
+  // value's display text, or an error prefixed with '!'. Empty if not running.
+  String DebugEvaluate(uint32_t frame, const String& expr);
 
  private:
   // The C-ABI shim: bounces to the runner through `data`.

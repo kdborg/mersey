@@ -83,6 +83,32 @@ protocol::Response InspectorMerseyAgent::evaluate(const String& expression,
   return protocol::Response::Success();
 }
 
+protocol::Response InspectorMerseyAgent::evaluateOnCallFrame(
+    int call_frame_index,
+    const String& expression,
+    String* result,
+    bool* is_error) {
+  *result = String("");
+  *is_error = false;
+  MerseyScriptRunner* runner = RunnerFor(inspected_frames_);
+  if (!runner) {
+    return protocol::Response::ServerError("No Mersey engine for this frame");
+  }
+  // The engine evaluates against the paused frame's scope; the callout window
+  // is held open by the nested loop, so the evaluator is live. '!' prefix =
+  // error (parse, runtime throw, unbound name, or not-paused).
+  const std::string reply =
+      runner->DebugEvaluate(static_cast<uint32_t>(call_frame_index), expression)
+          .Utf8();
+  if (!reply.empty() && reply.front() == '!') {
+    *result = String::FromUtf8(std::string_view(reply).substr(1));
+    *is_error = true;
+    return protocol::Response::Success();
+  }
+  *result = String::FromUtf8(reply);
+  return protocol::Response::Success();
+}
+
 protocol::Response InspectorMerseyAgent::getScripts(
     std::unique_ptr<protocol::Array<protocol::Mersey::Script>>* scripts) {
   *scripts = std::make_unique<protocol::Array<protocol::Mersey::Script>>();
