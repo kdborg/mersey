@@ -30,7 +30,7 @@ const repo = join(here, "..", "..");
 const HOME = process.env.HOME;
 const REPEATS = Number(process.env.REPEATS ?? 5);
 
-const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk"]);
+const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk", "url"]);
 
 // Resolve each runtime; skip any that isn't installed rather than aborting.
 const first = (...cands) => cands.find((p) => p && existsSync(p));
@@ -41,7 +41,11 @@ const RUNTIMES = [
   {
     key: "mersey", label: "Mersey CLI",
     bin: join(repo, "target/release/mersey"),
-    argv: (_js, wl) => ["run", join(repo, "bench/web/mersey", `${wl}.mersey`)],
+    // Prefer a CLI-specific twin (bench/cli/mersey/<wl>.mersey) — the web twins
+    // import from browser:dom, which the backend has no bridge for; the CLI twin
+    // uses the std-library equivalent (e.g. std:url) with the same checksum.
+    argv: (_js, wl) => ["run", first(join(repo, "bench/cli/mersey", `${wl}.mersey`),
+      join(repo, "bench/web/mersey", `${wl}.mersey`))],
     isMersey: true,
   },
 ].filter((r) => r.bin);
