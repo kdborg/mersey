@@ -135,7 +135,8 @@ export class URL {
     public readonly pathname: string = "/";
     public readonly search: string = "";
     public readonly hash: string = "";
-    public readonly searchParams: URLSearchParams;
+    /// Backing store for `searchParams`, built on first access — see below.
+    private params: URLSearchParams? = null;
 
     /// Throws on a URL with no scheme — a relative URL is not a URL until you
     /// say what it is relative *to*, and this class does not do that.
@@ -183,8 +184,22 @@ export class URL {
         } else {
             this.hostname = authority;
         }
+    }
 
-        this.searchParams = new URLSearchParams(this.search);
+    /// The query, parsed into key/value pairs.
+    ///
+    /// Built on first access and then cached: parsing a query means percent-
+    /// decoding every pair, and most code that constructs a URL only wants its
+    /// path or host. Doing it eagerly made constructing a URL with a query cost
+    /// ~6x one without — for work the caller usually never asked for.
+    public get searchParams(): URLSearchParams {
+        const cached = this.params;
+        if (cached != null) {
+            return cached;
+        }
+        const built = new URLSearchParams(this.search);
+        this.params = built;
+        return built;
     }
 
     /// `https://example.com:8443` — scheme, host and port, and nothing else.
@@ -253,6 +268,13 @@ function encode(s: string): string {
 /// `%XX` on its own would break every multi-byte character. Invalid UTF-8 gives
 /// the input back unchanged rather than a string of replacement characters.
 function decode(s: string): string {
+    // Nothing escaped: the string already *is* its decoding. Worth a scan to
+    // find out, because the slow path below builds a byte array one element per
+    // character and re-decodes it as UTF-8 — and most query values (a word, a
+    // number, an id) contain neither `%` nor `+`.
+    if (s.indexOf("%") < 0 && s.indexOf("+") < 0) {
+        return s;
+    }
     const raw: int32[] = [];
     let i: int32 = 0;
     while (i < s.length) {

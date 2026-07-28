@@ -6847,6 +6847,77 @@ impl Interp {
                 }
             }
             Value::Str(s) => {
+                // Methods that read only the UTF-16 code units answer here,
+                // BEFORE the UTF-8 transcode below. `utf16_to_string` copies the
+                // whole receiver, so doing it up front charged every string method
+                // the price of the most expensive one: a `slice` or a `charAt` cost
+                // as much as a `toUpperCase`. Measured on a 46-char string, that is
+                // ~250ns a call — which is most of what URL parsing spends.
+                let units_only: Option<VResult> = match name {
+                    "toString" => Some(Ok(Value::Str(s.clone()))),
+                    "substring" => Some({
+                        let len = s.len() as i64;
+                        let norm = |v: i64| v.clamp(0, len) as usize;
+                        let a = norm(args.first().and_then(as_i64).unwrap_or(0));
+                        let b = norm(args.get(1).and_then(as_i64).unwrap_or(len));
+                        // Bounds the wrong way round are swapped, not empty —
+                        // this is what distinguishes it from `slice`.
+                        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                        Ok(Value::Str(Rc::new(s[start..end].to_vec())))
+                    }),
+                    "concat" => Some({
+                        let mut out: Vec<u16> = s.to_vec();
+                        for a in &args {
+                            match a {
+                                Value::Str(other) => out.extend(other.iter()),
+                                other => out.extend(utf16(&to_display(other))),
+                            }
+                        }
+                        Ok(Value::Str(Rc::new(out)))
+                    }),
+                    "charAt" => Some({
+                        // The i-th UTF-16 code unit as a 1-unit string (JS).
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        let out: Vec<u16> = resolve_at(i, s.len())
+                            .and_then(|i| s.get(i).copied())
+                            .into_iter()
+                            .collect();
+                        Ok(Value::Str(Rc::new(out)))
+                    }),
+                    "codePointAt" => Some({
+                        // The code point starting at code-unit i (JS: combines a
+                        // surrogate pair).
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(resolve_at(i, s.len())
+                            .and_then(|i| code_point_at(s, i))
+                            .map(|c| Value::I32(c as i32))
+                            .unwrap_or(Value::Null))
+                    }),
+                    "at" => Some({
+                        // Char-returning: the code point at code-unit i.
+                        let i = args.first().and_then(as_i64).unwrap_or(0);
+                        Ok(resolve_at(i, s.len())
+                            .and_then(|i| code_point_at(s, i))
+                            .map(Value::Char)
+                            .unwrap_or(Value::Null))
+                    }),
+                    "slice" => Some({
+                        let len = s.len() as i64;
+                        let norm = |v: i64| v.clamp(0, len) as usize;
+                        let start = norm(args.first().and_then(as_i64).unwrap_or(0));
+                        let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
+                        let out: Vec<u16> = if start < end {
+                            s[start..end].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        Ok(Value::Str(Rc::new(out)))
+                    }),
+                    _ => None,
+                };
+                if let Some(r) = units_only {
+                    return r;
+                }
                 let text: String = utf16_to_string(s);
                 let arg0 = || -> String {
                     match args.first() {
@@ -6856,7 +6927,6 @@ impl Interp {
                     }
                 };
                 match name {
-                    "toString" => Ok(Value::Str(s.clone())),
                     "indexOf" => {
                         let needle = arg0();
                         // Code-point index, not byte index (§3.4).
@@ -6876,69 +6946,11 @@ impl Interp {
                     }
                     "trimStart" => Ok(Value::Str(Rc::new(utf16(text.trim_start())))),
                     "trimEnd" => Ok(Value::Str(Rc::new(utf16(text.trim_end())))),
-                    "substring" => {
-                        let len = s.len() as i64;
-                        let norm = |v: i64| v.clamp(0, len) as usize;
-                        let a = norm(args.first().and_then(as_i64).unwrap_or(0));
-                        let b = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        // Bounds the wrong way round are swapped, not empty —
-                        // this is what distinguishes it from `slice`.
-                        let (start, end) = if a <= b { (a, b) } else { (b, a) };
-                        Ok(Value::Str(Rc::new(s[start..end].to_vec())))
-                    }
-                    "concat" => {
-                        let mut out: Vec<u16> = s.to_vec();
-                        for a in &args {
-                            match a {
-                                Value::Str(other) => out.extend(other.iter()),
-                                other => out.extend(utf16(&to_display(other))),
-                            }
-                        }
-                        Ok(Value::Str(Rc::new(out)))
-                    }
-                    "charAt" => {
-                        // The i-th UTF-16 code unit as a 1-unit string (JS).
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        let out: Vec<u16> = resolve_at(i, s.len())
-                            .and_then(|i| s.get(i).copied())
-                            .into_iter()
-                            .collect();
-                        Ok(Value::Str(Rc::new(out)))
-                    }
-                    "codePointAt" => {
-                        // The code point starting at code-unit i (JS: combines a
-                        // surrogate pair).
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        Ok(resolve_at(i, s.len())
-                            .and_then(|i| code_point_at(s, i))
-                            .map(|c| Value::I32(c as i32))
-                            .unwrap_or(Value::Null))
-                    }
-                    "at" => {
-                        // Char-returning: the code point at code-unit i.
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        Ok(resolve_at(i, s.len())
-                            .and_then(|i| code_point_at(s, i))
-                            .map(Value::Char)
-                            .unwrap_or(Value::Null))
-                    }
                     "startsWith" => Ok(Value::Bool(text.starts_with(&arg0()))),
                     "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
                     "toUpperCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_uppercase()))))),
                     "toLowerCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_lowercase()))))),
                     "trim" => Ok(Value::Str(Rc::new(utf16(text.trim())))),
-                    "slice" => {
-                        let len = s.len() as i64;
-                        let norm = |v: i64| v.clamp(0, len) as usize;
-                        let start = norm(args.first().and_then(as_i64).unwrap_or(0));
-                        let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        let out: Vec<u16> = if start < end {
-                            s[start..end].to_vec()
-                        } else {
-                            Vec::new()
-                        };
-                        Ok(Value::Str(Rc::new(out)))
-                    }
                     "replace" | "replaceAll" => {
                         let needle = arg0();
                         let with = match args.get(1) {
