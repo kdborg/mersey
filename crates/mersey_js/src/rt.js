@@ -795,6 +795,10 @@ const $rt = (() => {
         crypto.getRandomValues(u);
         return l + (u[0] % span);
       },
+      fill: (b) => {
+        needCap("random");
+        crypto.getRandomValues(b);
+      },
       bytes: (n) => {
         needCap("random");
         const b = new Uint8Array(n);

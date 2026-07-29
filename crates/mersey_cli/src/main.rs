@@ -379,12 +379,17 @@ impl interp::Host for CliHost {
     /// the child after `fork()` (without which two processes would draw the
     /// identical stream — the one way this construction goes wrong).
     fn random_bytes(&mut self, n: usize) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; n];
+        self.random_fill(&mut buf)?;
+        Ok(buf)
+    }
+    /// Straight into the caller's slice: no allocation, no copy.
+    fn random_fill(&mut self, buf: &mut [u8]) -> Result<(), String> {
         if !self.caps.iter().any(|c| c == "random") {
             return Err("no `random` capability (run with --allow-random)".into());
         }
-        let mut buf = vec![0u8; n];
-        rand::rngs::ThreadRng::default().fill_bytes(&mut buf);
-        Ok(buf)
+        rand::rngs::ThreadRng::default().fill_bytes(buf);
+        Ok(())
     }
     fn env_var(&mut self, name: &str) -> Option<String> {
         if self.caps.iter().any(|c| c == "env") {

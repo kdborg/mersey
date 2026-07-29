@@ -836,7 +836,7 @@ pub fn namespace_members(ns: Ns) -> &'static [&'static str] {
         Ns::Env => &["get"],
         Ns::Caps => &["has", "list", "drop"],
         Ns::Json => &["stringify", "parse"],
-        Ns::Random => &["float", "int", "bytes"],
+        Ns::Random => &["float", "int", "bytes", "fill"],
         Ns::PromiseNs => &["resolve", "reject", "all"],
         Ns::Time => &["now", "monotonic", "parts", "fromParts", "format", "parse"],
         Ns::Mersey => &["version", "abiVersion"],
@@ -7154,8 +7154,17 @@ impl Checker {
                     })),
                     "bytes" => Type::Fn(Rc::new(FnType {
                         tparams: vec![],
-                        params: vec![p(i32t)],
-                        ret: bytes_ty,
+                        params: vec![p(i32t.clone())],
+                        ret: bytes_ty.clone(),
+                    })),
+                    // Fill a buffer the caller already has, which is what
+                    // `crypto.getRandomValues` does and what a loop wants:
+                    // `bytes` has to allocate, and a per-iteration allocation
+                    // dwarfs the randomness it carries.
+                    "fill" => Type::Fn(Rc::new(FnType {
+                        tparams: vec![],
+                        params: vec![p(bytes_ty)],
+                        ret: Type::Void,
                     })),
                     _ => self.no_member("random", name, pos),
                 }

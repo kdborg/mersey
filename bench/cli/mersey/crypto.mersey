@@ -2,18 +2,26 @@
 // browser's crypto.getRandomValues — both reach a CSPRNG. The checksum is only
 // the buffer length summed (the random bytes never enter it), so it is identical
 // to the browser crypto leg (320000). Requires the `random` capability.
+//
+// The buffer is hoisted and filled in place, which is what the JS twin does with
+// `crypto.getRandomValues(buf)` and what the browser Mersey twin already did.
+// This one used to call `random.bytes(16)` inside the loop — allocating a fresh
+// buffer per iteration where the twin allocated none — so it was measuring an
+// allocation the other side never made.
 import { console } from "std:console";
 import { time } from "std:time";
+import { bytes } from "std:bytes";
 import { random } from "std:random";
 
 const N: int32 = 20000;
+const buf = bytes.alloc(16);
 
 function work(n: int32): int32 {
     let sum = 0;
     let i = 0;
     while (i < n) {
-        const b = random.bytes(16);
-        sum = sum + b.length;
+        random.fill(buf);
+        sum = sum + buf.length;
         i += 1;
     }
     return sum;

@@ -454,6 +454,15 @@ pub trait Host {
     /// observable side channel — a program that can ask for it can fingerprint,
     /// and one that can only ask through the host can be given a deterministic
     /// stream for a reproducible test run.
+    /// Fill a buffer the caller already has. The default routes through
+    /// `random_bytes`, which allocates and copies; a host that can write
+    /// straight into the slice should say so — that allocation is the whole
+    /// point of having this hook.
+    fn random_fill(&mut self, buf: &mut [u8]) -> Result<(), String> {
+        let fresh = self.random_bytes(buf.len())?;
+        buf.copy_from_slice(&fresh);
+        Ok(())
+    }
     fn random_bytes(&mut self, _n: usize) -> Result<Vec<u8>, String> {
         Err("no `random` capability (run with --allow-random)".into())
     }
@@ -3107,7 +3116,7 @@ impl Interp {
                         "std:hash" => ("hash", &["sha256", "sha1", "hmacSha256", "hmacSha1"], &[]),
                         "std:net" => ("net", &["serve"], &[]),
                         "std:dom" => ("dom", &["apply"], &[]),
-                        "std:random" => ("random", &["float", "int", "bytes"], &[]),
+                        "std:random" => ("random", &["float", "int", "bytes", "fill"], &[]),
                         "std:math" => (
                             "math",
                             &[
@@ -5440,6 +5449,26 @@ impl Interp {
                 match self.host.random_bytes(n as usize) {
                     Ok(b) => Ok(Value::Bytes(Rc::new(RefCell::new(b)))),
                     Err(msg) => Err(self.throw("Error", msg)),
+                }
+            }
+            // Fill a caller's buffer in place — the primitive `bytes` is built
+            // on, and the one a loop should use: allocating a fresh buffer per
+            // call costs more than generating the randomness that goes in it.
+            "random.fill" => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("random.fill needs a Bytes buffer");
+                };
+                let b = b.clone();
+                let mut slot = b.borrow_mut();
+                match self.host.random_fill(&mut slot) {
+                    Ok(()) => {
+                        drop(slot);
+                        Ok(Value::Null)
+                    }
+                    Err(msg) => {
+                        drop(slot);
+                        Err(self.throw("Error", msg))
+                    }
                 }
             }
             "random.float" => {
