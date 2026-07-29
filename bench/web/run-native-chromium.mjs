@@ -113,6 +113,15 @@ async function runPage(pageUrl, profileDir, expectResult = true) {
         "--disable-breakpad",
         "--disable-sync",
         "--metrics-recording-only",
+        // OSCrypt otherwise asks the login keychain for "Chromium Safe Storage"
+        // — the key that decrypts the *real* browser's saved passwords and
+        // cookies. A locally built binary is not in that item's ACL, so macOS
+        // raises a consent dialog; headless runs got `errSecInteractionNotAllowed`
+        // and logged "Encryption is not available", but an interactive one blocks
+        // on a modal, which would stall an overnight run and perturb what it did
+        // measure. The mock keychain is what ChromeDriver uses for the same
+        // reason, and nothing here stores a secret worth encrypting.
+        "--use-mock-keychain",
         "--no-first-run",
         "--no-default-browser-check",
         `--user-data-dir=${profileDir}`,
