@@ -27,6 +27,15 @@ rustc-hash = "2"
 # IndexMap keeps the insertion order the language promises and adds the hash
 # index it was missing.
 indexmap = "2"
+# UTF-16 <-> UTF-8 conversion. `String::from_utf16_lossy` decodes a `char` at a
+# time into a `String` sized from an iterator hint, and `encode_utf16` re-checks
+# capacity per unit; both are the engine's single busiest boundary (82 call sites
+# — every host string, every JSON key, every URL part). `encoding_rs::mem` is one
+# SIMD pass per direction with ASCII-run acceleration, and it is Gecko's own, so
+# it agrees with a browser about unpaired surrogates: U+FFFD, as `from_utf16_lossy`
+# had it. Only the `mem` module is used, and it is pure Rust — the wasm build is
+# unaffected.
+encoding_rs = "0.8"
 
 [lints]
 workspace = true

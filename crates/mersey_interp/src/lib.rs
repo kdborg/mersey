@@ -734,8 +734,13 @@ pub(crate) fn utf16(s: &str) -> Vec<u16> {
     if s.is_ascii() {
         return s.as_bytes().iter().map(|&b| u16::from(b)).collect();
     }
-    let mut out = Vec::with_capacity(s.len());
-    out.extend(s.encode_utf16());
+    // One SIMD pass, one allocation. UTF-8 never yields more UTF-16 units than it
+    // has bytes, so `s.len()` is an exact upper bound — where `extend` over
+    // `EncodeUtf16` had to re-check capacity per unit, because the iterator
+    // cannot promise its length.
+    let mut out = vec![0u16; s.len()];
+    let n = encoding_rs::mem::convert_str_to_utf16(s, &mut out);
+    out.truncate(n);
     out
 }
 
@@ -749,6 +754,26 @@ pub fn append_int_utf16(out: &mut Vec<u16>, v: i64) {
 /// The engine's UTF-16 string as a Rust `String`. Lossy only on lone surrogates
 /// (U+FFFD), which affects display and UTF-8 marshalling but not the raw units
 /// that cross to a UTF-16 host.
+/// The engine's UTF-16 string as UTF-8 *bytes*.
+///
+/// Split out from `utf16_to_string` because `bytes.encodeUtf8` wants exactly this
+/// and was going the long way: build a `String` (which validates), then
+/// `into_bytes()` (which throws the validation away).
+pub(crate) fn utf16_to_utf8_bytes(s: &[u16]) -> Vec<u8> {
+    // ASCII narrows byte-for-byte, and knowing that buys an exactly-sized
+    // allocation rather than the conversion's worst-case three-per-unit.
+    if !s.iter().any(|&u| u >= 0x80) {
+        return s.iter().map(|&u| u as u8).collect();
+    }
+    // One SIMD pass. Unpaired surrogates become U+FFFD, exactly as
+    // `String::from_utf16_lossy` had them — and as a browser does, this being
+    // Gecko's own converter.
+    let mut out = vec![0u8; s.len() * 3];
+    let n = encoding_rs::mem::convert_utf16_to_utf8(s, &mut out);
+    out.truncate(n);
+    out
+}
+
 pub(crate) fn utf16_to_string(s: &[u16]) -> String {
     // ASCII is the overwhelming majority of what crosses here — URLs, JSON
     // keys, identifiers, format strings — and for ASCII the answer is the low
@@ -756,15 +781,11 @@ pub(crate) fn utf16_to_string(s: &[u16]) -> String {
     // surrogate pairs one char at a time into a `String` sized from an iterator
     // hint of `len/2`, so it re-allocates on the way. The scan below is a
     // vectorizable pass that buys a single exact allocation.
-    if s.iter().any(|&u| u >= 0x80) {
-        return String::from_utf16_lossy(s);
-    }
-    // Narrowing the other way, exact-sized for the same reason. The `from_utf8`
-    // re-validation is a vectorized scan over bytes already known to be ASCII —
-    // cheaper than the per-`char` capacity check a `push` loop would pay, and it
-    // keeps the function free of `unsafe`.
-    let narrowed: Vec<u8> = s.iter().map(|&u| u as u8).collect();
-    String::from_utf8(narrowed).unwrap_or_else(|_| String::from_utf16_lossy(s))
+    // The bytes, then one vectorized validation of them. That scan is what keeps
+    // this function free of `unsafe`; the converter's output is valid UTF-8 by
+    // construction, so it never fails.
+    let bytes = utf16_to_utf8_bytes(s);
+    String::from_utf8(bytes).unwrap_or_else(|_| String::from_utf16_lossy(s))
 }
 
 /// One `char` (a Unicode scalar) as a UTF-16 string (1 or 2 code units).
@@ -6180,8 +6201,12 @@ impl Interp {
                 Ok(Value::Bytes(Rc::new(RefCell::new(mac))))
             }
             "bytes.encodeUtf8" => {
-                let text = self.want_string(args.first())?;
-                Ok(Value::Bytes(Rc::new(RefCell::new(text.into_bytes()))))
+                let Some(Value::Str(s)) = args.first() else {
+                    return self.type_error("bytes.encodeUtf8 needs a string");
+                };
+                // No intermediate `String`: that one was allocated, validated,
+                // and then had its validation discarded by `into_bytes`.
+                Ok(Value::Bytes(Rc::new(RefCell::new(utf16_to_utf8_bytes(s)))))
             }
             "bytes.decodeUtf8" => {
                 let Some(Value::Bytes(b)) = args.first() else {
