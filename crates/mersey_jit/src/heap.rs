@@ -361,6 +361,21 @@ pub(crate) unsafe extern "C" fn host_time(arena: *mut Arena, epoch: i64) -> f64 
     }
 }
 
+/// `random.fill(buf)` from compiled code: the buffer's arena handle in, 0 or 1
+/// (threw) out. See `Interp::jit_random_fill` for why this bypasses the general
+/// native path entirely.
+///
+/// # Safety
+/// As `host_time`.
+pub(crate) unsafe extern "C" fn random_fill(arena: *mut Arena, handle: u64) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_random_fill(handle),
+            None => 1,
+        }
+    }
+}
+
 /// The current handle of a top-level web global (`ctx`, `body`), read live.
 ///
 /// # Safety

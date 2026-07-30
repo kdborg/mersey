@@ -500,6 +500,9 @@ struct Plan {
     opaque_globals: HashMap<u16, &'static str>,
     /// `CallMethod` sites that are a native call, and the full member name.
     native_at: HashMap<usize, (&'static str, u32)>,
+    /// `random.fill(buf)` sites, lowered to a direct shim rather than the general
+    /// native path — see `Interp::jit_random_fill`.
+    rand_fill_at: HashSet<usize>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -786,6 +789,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
+    let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -1277,6 +1281,16 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }) {
                         return None;
                     }
+                    // `random.fill(buf)`: one opaque argument, no result, and the
+                    // tightest loop a native appears in. It gets a direct shim.
+                    if ns == "random" && name == "fill" && arg_slots.len() == 1 {
+                        if tval(arg_slots[0]) != Some(Ty::Val) {
+                            return None;
+                        }
+                        rand_fill_at.insert(pc);
+                        stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                        continue;
+                    }
                     let full: &'static str = Box::leak(format!("{ns}.{name}").into_boxed_str());
                     native_at.insert(pc, (full, mersey_interp::Interp::native_fast_id(full)));
                     stack.push(TSlot::Val(Ty::Val, Prov::Stable));
@@ -1577,6 +1591,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         std_ns_names,
         opaque_globals,
         native_at,
+        rand_fill_at,
         val_prop_at,
         field_at,
         new_at,
@@ -1668,6 +1683,7 @@ struct Shims {
     web_call_num: FuncId,
     global_val: FuncId,
     native_call: FuncId,
+    random_fill: FuncId,
     val_len: FuncId,
     box_str: FuncId,
     box_num: FuncId,
@@ -1729,6 +1745,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
+    builder.symbol("msy_random_fill", heap::random_fill as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
     builder.symbol("msy_box_num", heap::box_num as *const u8);
@@ -2026,6 +2043,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         global_val: one("msy_global_val", Some(types::I64), 3)?,
         // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
         native_call: one("msy_native_call", Some(types::I64), 6)?,
+        // (arena, handle) -> 0 ok / 1 threw
+        random_fill: one("msy_random_fill", Some(types::I64), 2)?,
         // (arena, handle) -> the length, or -1
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
@@ -2366,6 +2385,7 @@ fn translate(
         web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
+        random_fill: module.declare_func_in_func(shims.random_fill, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         box_num: module.declare_func_in_func(shims.box_num, b.func),
@@ -3029,6 +3049,24 @@ fn translate(
                 let ms = b.inst_results(call)[0];
                 stack.push(SlotV::Val(ms, Ty::F64));
             }
+            // `random.fill(buf)`: the buffer's handle straight to a shim. No name,
+            // no argument array, no lend/give-back, no `Result` to unwrap.
+            Op::CallMethod(_, _) if p.rand_fill_at.contains(&pc) => {
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                let SlotV::StdNs = stack.pop()? else {
+                    return None;
+                };
+                let call = b.ins().call(shim.random_fill, &[arena_ptr, h]);
+                let status = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                // `fill` returns nothing; the call's value is the null a `Pop`
+                // will discard, and it owns no handle.
+                let zero = b.ins().iconst(types::I64, 0);
+                stack.push(SlotV::ValRef(zero, zero));
+            }
             // A `std:` native. Arguments go out as an array of arena handles;
             // the result comes back as one. `u64::MAX` means it threw — the
             // interpreter stashed the error and this traps so `after_jit` can
@@ -3661,6 +3699,7 @@ struct ShimRefs {
     web_call_num: cranelift_codegen::ir::FuncRef,
     global_val: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
+    random_fill: cranelift_codegen::ir::FuncRef,
     val_len: cranelift_codegen::ir::FuncRef,
     box_str: cranelift_codegen::ir::FuncRef,
     box_num: cranelift_codegen::ir::FuncRef,

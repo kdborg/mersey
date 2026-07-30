@@ -4563,6 +4563,38 @@ impl Interp {
         }
     }
 
+    /// `random.fill(buf)` straight from compiled code.
+    ///
+    /// The general native path is name (or id) plus an argument array plus a
+    /// lend/give-back plus a `Result<Value, _>` — 18% of a compiled iteration of
+    /// this call, against 66% for the ChaCha it exists to run. None of that is
+    /// needed here: one opaque argument, no result. This is the same "typed bind"
+    /// idea the web tier uses for `fillRect`, applied to the one native a
+    /// compiled loop can sit on this tightly.
+    ///
+    /// The arena is read while the host is written, which the borrow checker
+    /// allows because they are disjoint *fields* of `Interp` — the reason the
+    /// general path has to move the value out instead of borrowing it.
+    /// Returns 0 on success, 1 if it threw (the error is stashed as usual).
+    pub fn jit_random_fill(&mut self, handle: u64) -> i64 {
+        let Some(Value::Bytes(b)) = self.jit_arena.get(handle) else {
+            let t = self.throw("TypeError", "random.fill needs a Bytes buffer");
+            self.jit_host_error = Some(t);
+            return 1;
+        };
+        let mut slot = b.borrow_mut();
+        let r = self.host.random_fill(&mut slot);
+        drop(slot);
+        match r {
+            Ok(()) => 0,
+            Err(msg) => {
+                let t = self.throw("Error", msg);
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
     /// One of `NATIVE_FAST`, by id, with its arguments *borrowed*. `call_native`
     /// has to own its `Vec` (some natives consume their arguments); these four do
     /// not, which is what lets a compiled call avoid the allocation entirely.
