@@ -22,6 +22,11 @@ url = "2"
 # why SipHash's collision resistance buys nothing here. Pure Rust, no_std, so it
 # costs the wasm build essentially nothing.
 rustc-hash = "2"
+# `Map`/`Set` were an insertion-ordered `Vec` scanned linearly: 172 ns per lookup
+# at 10 entries, 2931 ns at 800 — O(n), in a language that offers a `Map`.
+# IndexMap keeps the insertion order the language promises and adds the hash
+# index it was missing.
+indexmap = "2"
 
 [lints]
 workspace = true

@@ -32,12 +32,22 @@ fn the_mersey_test_suite_passes() {
     );
     // Non-vacuous: the run must contain passing cases and report zero failures,
     // so a wrong path (which would find no files) cannot make this pass silently.
+    //
+    // Parsed, not matched as a substring. `!stdout.contains("0 passed, 0 failed")`
+    // was the obvious way to write "it ran something" and it is wrong for every
+    // total ending in a zero — the suite reaching 90 cases made a green run fail.
+    let (passed, failed) = stdout
+        .lines()
+        .rev()
+        .find_map(|l| {
+            let (p, rest) = l.trim().split_once(" passed, ")?;
+            let f = rest.strip_suffix(" failed")?;
+            Some((p.parse::<u32>().ok()?, f.parse::<u32>().ok()?))
+        })
+        .unwrap_or_else(|| panic!("no `N passed, M failed` summary in:\n{stdout}"));
+    assert_eq!(failed, 0, "the suite reported failures:\n{stdout}");
     assert!(
-        stdout.contains(" passed, 0 failed"),
-        "expected `N passed, 0 failed`, got:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("0 passed, 0 failed"),
+        passed > 0,
         "the suite ran no cases — check the path {}:\n{stdout}",
         dir.display()
     );

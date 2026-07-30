@@ -625,6 +625,98 @@ pub trait Host {
 // `string-representation` project note.
 type Str = Rc<Vec<u16>>;
 
+/// A `Map` key or `Set` member, hashed and compared the way the language's `==`
+/// compares it — which is what lets those collections be hash tables instead of
+/// the linear scans they used to be.
+///
+/// `values_equal` is the semantics being matched: value equality for the
+/// scalars and strings, *identity* for everything with an `Rc` behind it. It
+/// differs in one place, deliberately. `values_equal` throws when asked to
+/// compare two types that have no comparison — so a lookup in a map holding a
+/// key of some other type used to fail with a `TypeError` that depended on what
+/// else was in the map. Here such a pair is simply not equal, which is the
+/// answer the caller was asking for.
+#[derive(Clone)]
+pub struct Key(pub Value);
+
+/// Numbers compare across their representations (`1` and `1.0` are the same
+/// key), so they must hash across them too: an integral value hashes as its
+/// integer whatever type it arrived as.
+fn num_key(v: &Value) -> Option<(bool, i64, u64)> {
+    let f = as_num(v)?;
+    if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        Some((true, f as i64, 0))
+    } else {
+        // -0.0 already hashed as integral 0; a NaN hashes consistently but is
+        // equal to nothing, exactly as `==` says.
+        Some((false, 0, f.to_bits()))
+    }
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::BigIntV(a), Value::BigIntV(b)) => a.cmp(b) == std::cmp::Ordering::Equal,
+            (Value::BigDecV(a), Value::BigDecV(b)) => a.cmp(b) == std::cmp::Ordering::Equal,
+            (Value::JsRef(a), Value::JsRef(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b),
+            (Value::MapV(a), Value::MapV(b)) => Rc::ptr_eq(a, b),
+            (Value::SetV(a), Value::SetV(b)) => Rc::ptr_eq(a, b),
+            (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
+            (Value::Record(a), Value::Record(b)) => Rc::ptr_eq(a, b),
+            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            (Value::Closure(a), Value::Closure(b)) => Rc::ptr_eq(a, b),
+            (a, b) => match (num_key(a), num_key(b)) {
+                // NaN is equal to nothing, including itself (`==` says so).
+                (Some((true, x, _)), Some((true, y, _))) => x == y,
+                (Some((false, _, x)), Some((false, _, y))) => x == y && !f64::from_bits(x).is_nan(),
+                _ => false,
+            },
+        }
+    }
+}
+impl Eq for Key {}
+
+impl std::hash::Hash for Key {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        // The tag keeps two different kinds from colliding by accident; every
+        // numeric kind shares one tag because they compare across kinds.
+        match &self.0 {
+            Value::Null => 0u8.hash(h),
+            Value::Bool(b) => (1u8, b).hash(h),
+            Value::Char(c) => (2u8, c).hash(h),
+            Value::Str(s) => (3u8, s.as_slice()).hash(h),
+            Value::BigIntV(b) => (4u8, b.to_decimal()).hash(h),
+            Value::BigDecV(d) => (5u8, d.to_decimal()).hash(h),
+            Value::JsRef(r) => (6u8, r).hash(h),
+            Value::Bytes(b) => (7u8, Rc::as_ptr(b) as usize).hash(h),
+            Value::MapV(m) => (7u8, Rc::as_ptr(m) as usize).hash(h),
+            Value::SetV(s) => (7u8, Rc::as_ptr(s) as usize).hash(h),
+            Value::Array(a) => (7u8, Rc::as_ptr(a) as usize).hash(h),
+            Value::Record(r) => (7u8, Rc::as_ptr(r) as usize).hash(h),
+            Value::Instance(i) => (7u8, Rc::as_ptr(i) as usize).hash(h),
+            Value::Closure(c) => (7u8, Rc::as_ptr(c) as usize).hash(h),
+            other => match num_key(other) {
+                Some((true, i, _)) => (8u8, i).hash(h),
+                Some((false, _, bits)) => (8u8, bits).hash(h),
+                None => 9u8.hash(h),
+            },
+        }
+    }
+}
+
+/// `Map` and `Set` storage.
+///
+/// `RandomState` — SipHash — and *not* the FxHash the engine's own tables use:
+/// these are the one kind of table whose keys a running program chooses, so
+/// this is exactly the case the alias above warns against widening.
+pub type MapData = indexmap::IndexMap<Key, Value, std::collections::hash_map::RandomState>;
+pub type SetData = indexmap::IndexSet<Key, std::collections::hash_map::RandomState>;
+
 /// A Rust string as the engine's UTF-16 form.
 ///
 /// Sized up front rather than `collect()`ed: `EncodeUtf16`'s lower size hint is
@@ -742,8 +834,8 @@ pub enum Value {
     BigDecV(Rc<BigDec>) = 11,
     Array(Rc<GcCell<Vec<Value>>>) = 12,
     /// Insertion-ordered map; key equality is `values_equal` (O(n) MVP).
-    MapV(Rc<GcCell<Vec<(Value, Value)>>>) = 13,
-    SetV(Rc<GcCell<Vec<Value>>>) = 14,
+    MapV(Rc<GcCell<MapData>>) = 13,
+    SetV(Rc<GcCell<SetData>>) = 14,
     /// Insertion-ordered fields: a record's field order is part of its
     /// observable behaviour (it survives `JSON.stringify` across the bridge).
     Record(Rc<GcCell<Vec<(String, Value)>>>) = 15,
@@ -6841,45 +6933,33 @@ impl Interp {
                             args.first().cloned().unwrap_or(Value::Null),
                             args.get(1).cloned().unwrap_or(Value::Null),
                         );
-                        let idx = self.map_find(&m, &k)?;
-                        match idx {
-                            Some(i) => m.borrow_mut()[i].1 = v,
-                            None => m.borrow_mut().push((k, v)),
-                        }
+                        // `insert` on an existing key keeps its original
+                        // position, which is the insertion order the language
+                        // promises: re-setting a key does not move it.
+                        m.borrow_mut().insert(Key(k), v);
                         Ok(Value::Null)
                     }
                     "get" => {
                         let k = args.first().cloned().unwrap_or(Value::Null);
-                        Ok(match self.map_find(&m, &k)? {
-                            Some(i) => m.borrow()[i].1.clone(),
-                            None => Value::Null,
-                        })
+                        Ok(m.borrow().get(&Key(k)).cloned().unwrap_or(Value::Null))
                     }
                     "has" => {
                         let k = args.first().cloned().unwrap_or(Value::Null);
-                        Ok(Value::Bool(self.map_find(&m, &k)?.is_some()))
+                        Ok(Value::Bool(m.borrow().contains_key(&Key(k))))
                     }
                     "remove" => {
                         let k = args.first().cloned().unwrap_or(Value::Null);
-                        Ok(match self.map_find(&m, &k)? {
-                            Some(i) => {
-                                m.borrow_mut().remove(i);
-                                Value::Bool(true)
-                            }
-                            None => Value::Bool(false),
-                        })
+                        // `shift_remove`, not `swap_remove`: order survives a
+                        // removal. It is O(n), and removal is the rare op.
+                        Ok(Value::Bool(m.borrow_mut().shift_remove(&Key(k)).is_some()))
                     }
-                    "keys" => Ok(new_array(
-                        m.borrow().iter().map(|(k, _)| k.clone()).collect(),
-                    )),
-                    "values" => Ok(new_array(
-                        m.borrow().iter().map(|(_, v)| v.clone()).collect(),
-                    )),
+                    "keys" => Ok(new_array(m.borrow().keys().map(|k| k.0.clone()).collect())),
+                    "values" => Ok(new_array(m.borrow().values().cloned().collect())),
                     "entries" => {
                         let pairs: Vec<Value> = m
                             .borrow()
                             .iter()
-                            .map(|(k, v)| new_array(vec![k.clone(), v.clone()]))
+                            .map(|(k, v)| new_array(vec![k.0.clone(), v.clone()]))
                             .collect();
                         Ok(new_array(pairs))
                     }
@@ -6896,26 +6976,19 @@ impl Interp {
                 match name {
                     "add" => {
                         let v = args.first().cloned().unwrap_or(Value::Null);
-                        if self.set_find(&m, &v)?.is_none() {
-                            m.borrow_mut().push(v);
-                        }
+                        m.borrow_mut().insert(Key(v));
                         Ok(Value::Null)
                     }
                     "has" => {
                         let v = args.first().cloned().unwrap_or(Value::Null);
-                        Ok(Value::Bool(self.set_find(&m, &v)?.is_some()))
+                        Ok(Value::Bool(m.borrow().contains(&Key(v))))
                     }
                     "remove" => {
                         let v = args.first().cloned().unwrap_or(Value::Null);
-                        Ok(match self.set_find(&m, &v)? {
-                            Some(i) => {
-                                m.borrow_mut().remove(i);
-                                Value::Bool(true)
-                            }
-                            None => Value::Bool(false),
-                        })
+                        // Order survives a removal — see the Map note.
+                        Ok(Value::Bool(m.borrow_mut().shift_remove(&Key(v))))
                     }
-                    "values" => Ok(new_array(m.borrow().clone())),
+                    "values" => Ok(new_array(m.borrow().iter().map(|k| k.0.clone()).collect())),
                     "clear" => {
                         m.borrow_mut().clear();
                         Ok(Value::Null)
@@ -8309,30 +8382,6 @@ impl Interp {
         Ok(out)
     }
 
-    fn map_find(
-        &self,
-        m: &Rc<GcCell<Vec<(Value, Value)>>>,
-        k: &Value,
-    ) -> Result<Option<usize>, Thrown> {
-        let items = m.borrow();
-        for (i, (key, _)) in items.iter().enumerate() {
-            if self.values_equal(key, k)? {
-                return Ok(Some(i));
-            }
-        }
-        Ok(None)
-    }
-
-    fn set_find(&self, m: &Rc<GcCell<Vec<Value>>>, v: &Value) -> Result<Option<usize>, Thrown> {
-        let items = m.borrow();
-        for (i, item) in items.iter().enumerate() {
-            if self.values_equal(item, v)? {
-                return Ok(Some(i));
-            }
-        }
-        Ok(None)
-    }
-
     fn current_class(&self) -> Result<Rc<ClassDef>, Thrown> {
         self.class_stack
             .last()
@@ -8593,7 +8642,18 @@ impl Interp {
                     other => Ok(to_display(&other)),
                 }
             }
-            Value::Array(a) | Value::SetV(a) => {
+            Value::SetV(sv) => {
+                let items: Vec<Value> = sv.borrow().iter().map(|k| k.0.clone()).collect();
+                let mut parts = Vec::with_capacity(items.len());
+                for it in &items {
+                    parts.push(self.display(it)?);
+                }
+                // `[…]`, as before: this arm used to be shared with Array.
+                // (`to_display` spells a Set `Set{…}` — they already disagreed,
+                // and reconciling them is a separate decision.)
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            Value::Array(a) => {
                 let items = a.borrow().clone();
                 let mut parts = Vec::with_capacity(items.len());
                 for it in &items {
@@ -9399,13 +9459,21 @@ pub(crate) fn new_record(fields: Vec<(String, Value)>) -> Value {
 }
 
 pub(crate) fn new_map(entries: Vec<(Value, Value)>) -> Value {
-    let m = Rc::new(GcCell::new(entries));
+    let mut data = MapData::default();
+    for (k, v) in entries {
+        data.insert(Key(k), v);
+    }
+    let m = Rc::new(GcCell::new(data));
     gc::track_map(&m);
     Value::MapV(m)
 }
 
 pub(crate) fn new_set(items: Vec<Value>) -> Value {
-    let sset = Rc::new(GcCell::new(items));
+    let mut data = SetData::default();
+    for v in items {
+        data.insert(Key(v));
+    }
+    let sset = Rc::new(GcCell::new(data));
     gc::track_set(&sset);
     Value::SetV(sset)
 }
@@ -9631,12 +9699,12 @@ pub fn to_display(v: &Value) -> String {
             let items: Vec<String> = m
                 .borrow()
                 .iter()
-                .map(|(k, v)| format!("{} => {}", to_display(k), to_display(v)))
+                .map(|(k, v)| format!("{} => {}", to_display(&k.0), to_display(v)))
                 .collect();
             format!("Map{{{}}}", items.join(", "))
         }
         Value::SetV(m) => {
-            let items: Vec<String> = m.borrow().iter().map(to_display).collect();
+            let items: Vec<String> = m.borrow().iter().map(|k| to_display(&k.0)).collect();
             format!("Set{{{}}}", items.join(", "))
         }
         Value::Array(a) => {

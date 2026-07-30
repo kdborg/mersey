@@ -1,0 +1,128 @@
+// `Map` and `Set`, tested in themselves.
+//
+// These were an insertion-ordered `Vec` scanned linearly and had no tests at
+// all. They are hash-indexed now, so the two properties that could quietly
+// break are exactly the ones the old representation gave away for free:
+// *insertion order*, and *what counts as the same key*. Both are pinned here.
+
+import { test, assert, refute } from "std:test";
+
+test("Map keeps insertion order, and re-setting a key does not move it", () => {
+    const m = new Map<string, int32>();
+    m.set("c", 1);
+    m.set("a", 2);
+    m.set("b", 3);
+    assert(m.keys().join(",") == "c,a,b", "keys come back in insertion order");
+    assert(m.values().join(",") == "1,2,3", "values follow their keys");
+    // Overwriting an existing key updates it in place: a `set` is not a
+    // re-insertion, so the key keeps the position it first took.
+    m.set("c", 9);
+    assert(m.keys().join(",") == "c,a,b", "overwrite left the order alone");
+    assert(m.get("c") == 9, "overwrite took");
+    assert(m.size == 3, "overwrite did not add an entry");
+});
+
+test("Map removal preserves the order of what is left", () => {
+    const m = new Map<string, int32>();
+    m.set("a", 1);
+    m.set("b", 2);
+    m.set("c", 3);
+    m.set("d", 4);
+    assert(m.remove("b"), "remove reports it removed something");
+    refute(m.remove("b"), "removing it twice does not");
+    assert(m.keys().join(",") == "a,c,d", "the survivors kept their order");
+    assert(m.size == 3, "size followed");
+});
+
+test("Map lookups: present, absent, and re-added", () => {
+    const m = new Map<int32, string>();
+    m.set(1, "one");
+    m.set(2, "two");
+    assert(m.has(1), "has finds a key");
+    refute(m.has(3), "has does not invent one");
+    assert(m.get(2) == "two", "get returns the value");
+    assert(m.get(3) == null, "a missing key reads as null");
+    // Removed then re-added: the key goes to the BACK, because that is when it
+    // was inserted. This is the one case where order is not first-seen order.
+    m.remove(1);
+    m.set(1, "uno");
+    assert(m.keys().join(",") == "2,1", "a re-added key is newly inserted");
+    assert(m.get(1) == "uno", "and carries its new value");
+});
+
+test("Map entries pair each key with its own value", () => {
+    const m = new Map<string, int32>();
+    m.set("x", 10);
+    m.set("y", 20);
+    let seen = "";
+    for (const [k, v] of m.entries()) {
+        seen = `${seen}${k}=${v};`;
+    }
+    assert(seen == "x=10;y=20;", "entries walk in order, paired correctly");
+});
+
+test("Map keys with a reference type are the same key only if the same object", () => {
+    const a: int32[] = [1, 2];
+    const b: int32[] = [1, 2];
+    const m = new Map<int32[], string>();
+    m.set(a, "first");
+    m.set(b, "second");
+    // Equal contents, different objects: `==` on a reference type is identity,
+    // so these are two keys, not one.
+    assert(m.size == 2, "two distinct objects are two keys");
+    assert(m.get(a) == "first", "each finds its own value");
+    assert(m.get(b) == "second", "and not the other's");
+});
+
+test("Map clear empties it", () => {
+    const m = new Map<string, int32>();
+    m.set("a", 1);
+    m.set("b", 2);
+    m.clear();
+    assert(m.size == 0, "size is zero");
+    refute(m.has("a"), "and the keys are gone");
+});
+
+test("Set dedupes, keeps insertion order, and preserves order on removal", () => {
+    const s = new Set<string>();
+    s.add("c");
+    s.add("a");
+    s.add("c"); // already there
+    s.add("b");
+    assert(s.size == 3, "adding a member twice adds it once");
+    assert(s.values().join(",") == "c,a,b", "insertion order, first-add wins");
+    assert(s.has("a"), "has finds a member");
+    refute(s.has("z"), "and does not invent one");
+    assert(s.remove("a"), "remove reports success");
+    refute(s.remove("a"), "removing twice does not");
+    assert(s.values().join(",") == "c,b", "the survivors kept their order");
+});
+
+test("Set members with a reference type are identity, like Map keys", () => {
+    const a: int32[] = [1];
+    const b: int32[] = [1];
+    const s = new Set<int32[]>();
+    s.add(a);
+    s.add(b);
+    assert(s.size == 2, "equal contents, different objects, two members");
+    s.add(a);
+    assert(s.size == 2, "the same object really is the same member");
+});
+
+test("a Map grown past any small-size threshold still behaves", () => {
+    // The old implementation was a linear scan, so nothing about it depended on
+    // size. A hash table has buckets, growth and rehashing — so check that a
+    // map which has grown still finds what it holds, in order.
+    const m = new Map<int32, int32>();
+    let i = 0;
+    while (i < 500) {
+        m.set(i, i * 3);
+        i += 1;
+    }
+    assert(m.size == 500, "everything went in");
+    assert(m.get(0) == 0, "the first key survived the growth");
+    assert(m.get(499) == 1497, "so did the last");
+    refute(m.has(500), "and nothing extra appeared");
+    const keys = m.keys();
+    assert(keys[0] == 0 && keys[499] == 499, "order held across rehashes");
+});

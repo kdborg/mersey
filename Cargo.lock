@@ -516,6 +516,7 @@ dependencies = [
 name = "mersey_interp"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "mersey_front",
  "rustc-hash",
  "stacker",

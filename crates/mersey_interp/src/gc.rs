@@ -51,7 +51,9 @@ use crate::{HashMap, HashSet};
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::{Rc, Weak};
 
-use crate::{ClassDef, Coro, Env, GenState, Instance, PromiseState, Scope, Value};
+use crate::{
+    ClassDef, Coro, Env, GenState, Instance, MapData, PromiseState, Scope, SetData, Value,
+};
 
 /// A `RefCell` whose `borrow_mut` **is** the generational write barrier.
 ///
@@ -178,12 +180,18 @@ impl GcContents for Vec<(String, Value)> {
     }
 }
 
-impl GcContents for Vec<(Value, Value)> {
+impl GcContents for MapData {
     fn take_children(&mut self, out: &mut Vec<Value>) {
         for (k, v) in std::mem::take(self) {
-            out.push(k);
+            out.push(k.0);
             out.push(v);
         }
+    }
+}
+
+impl GcContents for SetData {
+    fn take_children(&mut self, out: &mut Vec<Value>) {
+        out.extend(std::mem::take(self).into_iter().map(|k| k.0));
     }
 }
 
@@ -238,8 +246,8 @@ pub(crate) enum GcObj {
     Inst(Weak<GcCell<Instance>>),
     Arr(Weak<GcCell<Vec<Value>>>),
     Rec(Weak<GcCell<Vec<(String, Value)>>>),
-    MapV(Weak<GcCell<Vec<(Value, Value)>>>),
-    SetV(Weak<GcCell<Vec<Value>>>),
+    MapV(Weak<GcCell<MapData>>),
+    SetV(Weak<GcCell<SetData>>),
     Prom(Weak<GcCell<PromiseState>>),
     Gen(Weak<GcCell<GenState>>),
 }
@@ -253,7 +261,8 @@ impl GcObj {
         match self {
             GcObj::Env(w) => p(w),
             GcObj::Inst(w) => p(w),
-            GcObj::Arr(w) | GcObj::SetV(w) => p(w),
+            GcObj::Arr(w) => p(w),
+            GcObj::SetV(w) => p(w),
             GcObj::Rec(w) => p(w),
             GcObj::MapV(w) => p(w),
             GcObj::Prom(w) => p(w),
@@ -282,7 +291,8 @@ impl GcObj {
         Some(match self {
             GcObj::Env(w) => Node::Env(w.upgrade()?),
             GcObj::Inst(w) => Node::Inst(w.upgrade()?),
-            GcObj::Arr(w) | GcObj::SetV(w) => Node::Arr(w.upgrade()?),
+            GcObj::Arr(w) => Node::Arr(w.upgrade()?),
+            GcObj::SetV(w) => Node::SetV(w.upgrade()?),
             GcObj::Rec(w) => Node::Rec(w.upgrade()?),
             GcObj::MapV(w) => Node::MapV(w.upgrade()?),
             GcObj::Prom(w) => Node::Prom(w.upgrade()?),
@@ -306,7 +316,12 @@ impl GcObj {
                     rc.borrow_mut().slots.clear();
                 }
             }
-            GcObj::Arr(w) | GcObj::SetV(w) => {
+            GcObj::Arr(w) => {
+                if let Some(rc) = w.upgrade() {
+                    rc.borrow_mut().clear();
+                }
+            }
+            GcObj::SetV(w) => {
                 if let Some(rc) = w.upgrade() {
                     rc.borrow_mut().clear();
                 }
@@ -461,10 +476,10 @@ pub(crate) fn track_array(a: &Rc<GcCell<Vec<Value>>>) {
 pub(crate) fn track_record(r: &Rc<GcCell<Vec<(String, Value)>>>) {
     register(GcObj::Rec(Rc::downgrade(r)));
 }
-pub(crate) fn track_map(m: &Rc<GcCell<Vec<(Value, Value)>>>) {
+pub(crate) fn track_map(m: &Rc<GcCell<MapData>>) {
     register(GcObj::MapV(Rc::downgrade(m)));
 }
-pub(crate) fn track_set(s: &Rc<GcCell<Vec<Value>>>) {
+pub(crate) fn track_set(s: &Rc<GcCell<SetData>>) {
     register(GcObj::SetV(Rc::downgrade(s)));
 }
 pub(crate) fn track_promise(p: &Rc<GcCell<PromiseState>>) {
@@ -788,9 +803,17 @@ impl Marker<'_> {
                     self.class(&class);
                 }
             }
-            GcObj::Arr(w) | GcObj::SetV(w) => {
+            GcObj::Arr(w) => {
                 if let Some(rc) = w.upgrade() {
                     let items = rc.borrow().clone();
+                    for v in &items {
+                        self.value(v);
+                    }
+                }
+            }
+            GcObj::SetV(w) => {
+                if let Some(rc) = w.upgrade() {
+                    let items: Vec<Value> = rc.borrow().iter().map(|k| k.0.clone()).collect();
                     for v in &items {
                         self.value(v);
                     }
@@ -806,7 +829,11 @@ impl Marker<'_> {
             }
             GcObj::MapV(w) => {
                 if let Some(rc) = w.upgrade() {
-                    let items = rc.borrow().clone();
+                    let items: Vec<(Value, Value)> = rc
+                        .borrow()
+                        .iter()
+                        .map(|(k, v)| (k.0.clone(), v.clone()))
+                        .collect();
                     for (k, v) in &items {
                         self.value(k);
                         self.value(v);
@@ -962,9 +989,14 @@ impl Marker<'_> {
     /// Mark `v` itself and push its children onto `work`.
     fn value_step(&mut self, v: &Value, work: &mut Vec<Value>) {
         match v {
-            Value::Array(a) | Value::SetV(a) => {
+            Value::Array(a) => {
                 if self.enter(Rc::as_ptr(a) as usize) {
                     work.extend(a.borrow().iter().cloned());
+                }
+            }
+            Value::SetV(sv) => {
+                if self.enter(Rc::as_ptr(sv) as usize) {
+                    work.extend(sv.borrow().iter().map(|k| k.0.clone()));
                 }
             }
             Value::Record(r) => {
@@ -975,7 +1007,7 @@ impl Marker<'_> {
             Value::MapV(m) => {
                 if self.enter(Rc::as_ptr(m) as usize) {
                     for (k, val) in m.borrow().iter() {
-                        work.push(k.clone());
+                        work.push(k.0.clone());
                         work.push(val.clone());
                     }
                 }
@@ -1060,10 +1092,12 @@ impl Marker<'_> {
 enum Node {
     Env(Env),
     Inst(Rc<GcCell<Instance>>),
-    /// Arrays and sets: the same representation.
     Arr(Rc<GcCell<Vec<Value>>>),
     Rec(Rc<GcCell<Vec<(String, Value)>>>),
-    MapV(Rc<GcCell<Vec<(Value, Value)>>>),
+    MapV(Rc<GcCell<MapData>>),
+    /// A set is its own representation now that it is hash-indexed; it used to
+    /// share `Arr`'s.
+    SetV(Rc<GcCell<SetData>>),
     Prom(Rc<GcCell<PromiseState>>),
     Gen(Rc<GcCell<GenState>>),
     /// A closure is immutable and never swept, but it *must* be a node: it holds
@@ -1081,6 +1115,7 @@ impl Node {
             Node::Env(e) => Rc::as_ptr(e) as usize,
             Node::Inst(i) => Rc::as_ptr(i) as usize,
             Node::Arr(a) => Rc::as_ptr(a) as usize,
+            Node::SetV(s) => Rc::as_ptr(s) as usize,
             Node::Rec(r) => Rc::as_ptr(r) as usize,
             Node::MapV(m) => Rc::as_ptr(m) as usize,
             Node::Prom(p) => Rc::as_ptr(p) as usize,
@@ -1095,6 +1130,7 @@ impl Node {
             Node::Env(e) => Rc::strong_count(e),
             Node::Inst(i) => Rc::strong_count(i),
             Node::Arr(a) => Rc::strong_count(a),
+            Node::SetV(s) => Rc::strong_count(s),
             Node::Rec(r) => Rc::strong_count(r),
             Node::MapV(m) => Rc::strong_count(m),
             Node::Prom(p) => Rc::strong_count(p),
@@ -1132,6 +1168,11 @@ impl Node {
                     value_edge(v, out);
                 }
             }
+            Node::SetV(sv) => {
+                for k in sv.try_borrow()?.iter() {
+                    value_edge(&k.0, out);
+                }
+            }
             Node::Rec(r) => {
                 for (_, v) in r.try_borrow()?.iter() {
                     value_edge(v, out);
@@ -1139,7 +1180,7 @@ impl Node {
             }
             Node::MapV(m) => {
                 for (k, v) in m.try_borrow()?.iter() {
-                    value_edge(k, out);
+                    value_edge(&k.0, out);
                     value_edge(v, out);
                 }
             }
@@ -1206,6 +1247,11 @@ impl Node {
                     b.clear();
                 }
             }
+            Node::SetV(sv) => {
+                if let Some(mut b) = sv.try_borrow_mut() {
+                    b.clear();
+                }
+            }
             Node::Rec(r) => {
                 if let Some(mut b) = r.try_borrow_mut() {
                     b.clear();
@@ -1237,7 +1283,8 @@ impl Node {
 /// and following them would let one object's references be charged to another.
 fn value_edge(v: &Value, out: &mut Vec<usize>) {
     match v {
-        Value::Array(a) | Value::SetV(a) => out.push(Rc::as_ptr(a) as usize),
+        Value::Array(a) => out.push(Rc::as_ptr(a) as usize),
+        Value::SetV(sv) => out.push(Rc::as_ptr(sv) as usize),
         Value::Record(r) => out.push(Rc::as_ptr(r) as usize),
         Value::MapV(m) => out.push(Rc::as_ptr(m) as usize),
         Value::Instance(i) => out.push(Rc::as_ptr(i) as usize),
@@ -1443,9 +1490,14 @@ fn node_values(n: &Node, out: &mut Vec<Value>) {
         Node::MapV(m) => {
             if let Some(b) = m.try_borrow() {
                 for (k, v) in b.iter() {
-                    out.push(k.clone());
+                    out.push(k.0.clone());
                     out.push(v.clone());
                 }
+            }
+        }
+        Node::SetV(sv) => {
+            if let Some(b) = sv.try_borrow() {
+                out.extend(b.iter().map(|k| k.0.clone()));
             }
         }
         Node::Prom(p) => {
