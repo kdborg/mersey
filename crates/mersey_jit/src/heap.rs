@@ -183,7 +183,21 @@ pub(crate) unsafe extern "C" fn str_join(
     out: *mut u64,
 ) {
     let parts = unsafe { std::slice::from_raw_parts(parts, n) };
-    let mut buf: Vec<u16> = Vec::new();
+    // Sized once, from the parts. `Vec::new()` starts empty and grew as they
+    // arrived, so a template of a literal, a number and another literal cost two
+    // or three reallocations and as many memmoves — on every evaluation.
+    // `RawVecInner::finish_grow` was 8% of a compiled `encoding` iteration.
+    // An integer part is counted at its widest (an i64 in decimal, sign
+    // included), which over-reserves a few units rather than ever growing.
+    let cap: usize = parts
+        .iter()
+        .map(|p| match p.kind {
+            0 => p.b as usize,
+            1 => 20,
+            _ => 0,
+        })
+        .sum();
+    let mut buf: Vec<u16> = Vec::with_capacity(cap);
     for p in parts {
         match p.kind {
             0 => {

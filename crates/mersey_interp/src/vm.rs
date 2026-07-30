@@ -3069,10 +3069,25 @@ fn exec(
             }
             Op::TemplateJoin(n) => {
                 let n = n as usize;
-                let at = stack.len() - n;
                 // One output buffer; the common part kinds append in place with
-                // no intermediate String and no per-part allocation.
-                let mut out: Vec<u16> = Vec::new();
+                // no intermediate String and no per-part allocation — and it is
+                // *sized* before they do, because starting empty meant two or
+                // three reallocations and as many memmoves for a template as
+                // ordinary as `` `a ${i} b` ``. The estimate counts a string at
+                // its length and a number at an i64's widest decimal form; a part
+                // that has to go through `display` is unmeasurable here, so it is
+                // left to grow the buffer as before.
+                let at = stack.len() - n;
+                let cap: usize = stack[at..]
+                    .iter()
+                    .map(|v| match v {
+                        Value::Str(s) => s.len(),
+                        Value::I32(_) | Value::I64(_) => 20,
+                        Value::Char(_) => 2,
+                        _ => 8,
+                    })
+                    .sum();
+                let mut out: Vec<u16> = Vec::with_capacity(cap);
                 let mut failed: Option<Thrown> = None;
                 for k in 0..n {
                     match &stack[at + k] {
