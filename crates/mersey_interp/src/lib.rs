@@ -4744,31 +4744,6 @@ impl Interp {
         }
     }
 
-    /// `length` on an opaque — the one property of one this tier reads.
-    ///
-    /// Only `length`, and only as an `int32`, because the *type* has to match
-    /// what the checker decided at the use site: `buf.length + n` is integer
-    /// arithmetic, and handing the adder an `f64` makes it refuse the whole
-    /// function. A general numeric-property shim needs the checker's type for
-    /// each property, which this tier does not have. -1 means "not an integer
-    /// length here" and the caller bails.
-    pub fn jit_val_len(&self, handle: u64) -> i64 {
-        // Answered from the borrowed arena entry. This used to *clone* the value
-        // (an `Rc` bump and a later drop) and ask `get_member`, which matches the
-        // property name as a string against every kind and wraps the answer in a
-        // `Value` that compiled code immediately unwraps. Together that was ~16%
-        // of a compiled loop doing `random.fill(buf); sum + buf.length` — for
-        // three machine words of work. The three arms below are exactly what
-        // `get_member` answers `"length"` with; anything else returns -1 and the
-        // caller bails to the interpreter, as before.
-        match self.jit_arena.get(handle) {
-            Some(Value::Bytes(b)) => b.borrow().len() as i64,
-            Some(Value::Str(s)) => s.len() as i64,
-            Some(Value::Array(a)) => a.borrow().len() as i64,
-            _ => -1,
-        }
-    }
-
     /// The handle a top-level web global currently holds (0 if it is somehow not
     /// a host object — impossible for a `JsRef`-typed binding, but the web call
     /// on handle 0 would simply fail and be raised like any host error).

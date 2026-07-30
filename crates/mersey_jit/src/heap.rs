@@ -504,11 +504,16 @@ pub(crate) unsafe extern "C" fn box_num(arena: *mut Arena, kind: i64, bits: i64)
 /// # Safety
 /// As `global_val`.
 pub(crate) unsafe extern "C" fn val_len(arena: *mut Arena, handle: u64) -> i64 {
-    unsafe {
-        match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_val_len(handle),
-            None => -1,
-        }
+    // Straight off the arena. Measuring a buffer does not need the interpreter,
+    // and the hop through `interp_ptr` into `Interp::jit_val_len` was half of what
+    // a `.length` cost in a compiled loop. These are the same three kinds
+    // `get_member` answers `"length"` for; anything else is -1 and the caller
+    // bails, as before.
+    match unsafe { (*arena).get(handle) } {
+        Some(Value::Bytes(b)) => b.borrow().len() as i64,
+        Some(Value::Str(s)) => s.len() as i64,
+        Some(Value::Array(a)) => a.borrow().len() as i64,
+        _ => -1,
     }
 }
 
