@@ -1,7 +1,7 @@
 #!/bin/sh
 
-#REPEATS=15 node run.mjs                 # stock Chromium + Firefox (js, poly)
-#REPEATS=15 node run-native.mjs          # Firefox fork (native)
+REPEATS=15 node run.mjs                 # stock Chromium + Firefox (js, poly)
+REPEATS=15 node run-native.mjs          # Firefox fork (native)
 REPEATS=15 node run-native-chromium.mjs # Chromium fork (native)
 REPEATS=15 node run-engine.mjs          # wasm engine over the Node stub realm
 
