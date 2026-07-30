@@ -87,3 +87,20 @@ fn an_unset_field_starts_at_its_types_zero_on_both_tiers() {
         "two instances share one default container:\n{out}"
     );
 }
+
+/// Strings and opaques crossing the tier boundary. A `string` parameter had no
+/// register shape at all, so any function taking one was refused outright; an
+/// opaque (a native's `Bytes`) could not survive an OSR entry, be compared
+/// against null, or be passed to a native. Each of those is an ownership
+/// question as much as a representation one — a handle lives in exactly one
+/// place — and getting one wrong loses a value rather than crashing, which is
+/// why the two tiers are compared rather than the timings.
+#[test]
+fn strings_and_opaques_agree_across_the_tier_boundary() {
+    check("string-params-and-opaques.mersey");
+    let out = run("string-params-and-opaques.mersey", true);
+    // "payload" is 7 units, and `i % 7` over 200000 iterations sums to 599994.
+    assert!(out.contains("score     1999994"), "{out}");
+    // 4 units when present, 1 when null — so the null branch must be taken.
+    assert!(out.contains("widthOf   800000 200000"), "{out}");
+}

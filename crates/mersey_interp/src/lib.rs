@@ -1357,8 +1357,11 @@ pub enum FieldTy {
     /// layout begins with its base's (§4.1), so this class's offsets stay right.
     Obj(Rc<ClassDef>),
     Arr(Rc<FieldTy>),
-    /// A string, a record, a function, a generic — something Tier 1 has no
-    /// register for. Reading one is not a bug; it is a reason to interpret.
+    /// A UTF-16 string, or null. Tier 1 has a register shape for one — three,
+    /// in fact: data pointer, length, and the arena handle if it owns it.
+    Str,
+    /// A record, a function, a generic — something Tier 1 has no register for.
+    /// Reading one is not a bug; it is a reason to interpret.
     Opaque,
 }
 
@@ -2554,6 +2557,9 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
             if let Some(n) = num_of_name(name) {
                 return FieldTy::Num(n);
             }
+            if name == "string" {
+                return FieldTy::Str;
+            }
             match env_get(env, name) {
                 Some(Value::Class(c)) => FieldTy::Obj(c),
                 _ => FieldTy::Opaque,
@@ -2569,6 +2575,9 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
         TypeExpr::Nullable(e) => match resolve_field_ty(e, env) {
             FieldTy::Obj(c) => FieldTy::Obj(c),
             FieldTy::Arr(e) => FieldTy::Arr(e),
+            // `string?` is the same three registers as `string`: a null string is
+            // a null data pointer, which compiled code already checks for.
+            FieldTy::Str => FieldTy::Str,
             _ => FieldTy::Opaque,
         },
         _ => FieldTy::Opaque,
@@ -5318,6 +5327,7 @@ impl Interp {
                     FieldTy::Bool => Some(JitSlot::I32),
                     FieldTy::Obj(c) => Some(JitSlot::Obj(c)),
                     FieldTy::Arr(e) => Some(JitSlot::Arr(e)),
+                    FieldTy::Str => Some(JitSlot::Str),
                     _ => None,
                 }
             })

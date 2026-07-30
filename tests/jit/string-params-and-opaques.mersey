@@ -1,0 +1,63 @@
+// Shapes Tier 1 learned to take, each in a loop hot enough that it does.
+//
+// Every one of these ran wholly interpreted before, and the reason each was
+// refused is a different missing piece of the same boundary — so the risk they
+// share is not "slow" but "different answer": a string arrives as three
+// registers, an opaque as an arena handle, and a null as a zero, and getting the
+// ownership of any of them wrong is how a value goes missing quietly. What this
+// pins is that both tiers print the same numbers.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// A `string` parameter. `param_types` had no register shape for `string`, so
+/// the *signature* was unrepresentable and the whole function stayed in Tier 0.
+function score(s: string, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + s.length + (i % 7);
+        i += 1;
+    }
+    return acc;
+}
+
+/// `string?` is the same three registers — a null string is a null data
+/// pointer — so this compiles too, and must agree about which branch it took.
+function widthOf(s: string?, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        if (s != null) {
+            acc = acc + s.length;
+        } else {
+            acc = acc + 1;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+/// An opaque as a live local. `bytes.encodeUtf8` hands back a `Bytes` that
+/// compiled code holds only by arena handle; the string argument is boxed (and
+/// a *built* one is reused rather than copied); `decodeUtf8` may hand back null,
+/// which is handle 0. The payload is deliberately not pure ASCII, so the
+/// conversions take their general path rather than their fast one.
+function roundTrip(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        const b = bytes.encodeUtf8(`p${i}·x`);
+        sum = sum + b.length;
+        const s = bytes.decodeUtf8(b);
+        if (s != null) {
+            sum = sum + s.length;
+        }
+        i += 1;
+    }
+    return sum;
+}
+
+console.log(`score     ${score("payload", 200000)}`);
+console.log(`widthOf   ${widthOf("abcd", 200000)} ${widthOf(null, 200000)}`);
+console.log(`roundTrip ${roundTrip(200000)}`);
