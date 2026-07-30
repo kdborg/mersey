@@ -96,6 +96,14 @@ pub struct Chunk {
     /// call to decide whether to compile something is a strange thing to pay for
     /// on every call forever.
     pub hot: std::cell::Cell<u32>,
+    /// Tier 1's verdict, for the same reason `hot` lives here: the receiver's
+    /// class id if this chunk was *refused* for it, `None` if the question is
+    /// still open. Tier 1 refuses a whole function for one op it cannot type, so
+    /// for most code the answer is "no" forever — and reaching the compile
+    /// cache to be told so costs a receiver `Rc` clone and a hash of the key.
+    /// A method chunk sees one class in all but pathological cases, so a single
+    /// id is memo enough; anything else falls through to the cache as before.
+    pub jit_refused: std::cell::Cell<Option<u64>>,
     /// Parameters that live in slots: (name index, slot). They arrive bound in
     /// the environment — `bind_params` handles defaults, rest and destructuring,
     /// and the tree-walker reads them from there — so the frame is filled from it
@@ -932,6 +940,7 @@ impl C {
             simple_params: self.simple_params,
             this_slot: self.this_slot,
             hot: std::cell::Cell::new(0),
+            jit_refused: std::cell::Cell::new(None),
             param_slots: std::mem::take(&mut self.param_slots),
             code: self.code,
             consts: self.consts,
@@ -2547,7 +2556,12 @@ pub(crate) struct OsrCtx {
     pub params: &'static [mersey_front::ast::Param],
     pub ret: Option<Num>,
     pub ret_bool: bool,
-    pub ret_obj: Option<Rc<crate::ClassDef>>,
+    /// The declared return type, *unresolved*. Turning it into a class means a
+    /// lookup by name through the scope chain, and this context is built on
+    /// every inlined call while it is read only when a loop actually reaches the
+    /// OSR threshold — which almost none do. So it is carried as written and
+    /// resolved at the one place that needs it.
+    pub ret_ty: Option<&'static mersey_front::ast::TypeExpr>,
     pub this: Option<Rc<crate::ClassDef>>,
 }
 
@@ -2730,7 +2744,7 @@ fn exec(
                     params: c.data.params,
                     ret: c.data.ret_num,
                     ret_bool: c.data.ret_bool,
-                    ret_obj: i.ret_class(&c.data),
+                    ret_ty: c.data.ret_ty(),
                     this: match &c.this {
                         Some(Value::Instance(inst)) => Some(inst.borrow().class.clone()),
                         _ => None,
@@ -2852,7 +2866,7 @@ fn exec(
                             ctx.params,
                             ctx.ret,
                             ctx.ret_bool,
-                            ctx.ret_obj,
+                            i.ret_class_of(ctx.ret_ty),
                             ctx.this,
                             $t,
                             slots,

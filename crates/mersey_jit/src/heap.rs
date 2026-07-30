@@ -418,6 +418,52 @@ pub(crate) unsafe extern "C" fn native_call(
     }
 }
 
+/// Park a compiled string in the arena as a `Value::Str`, so a native can take
+/// it as an argument. `have` is the handle the string already owns (0 for a
+/// constant or a borrow); see `Interp::jit_box_str` for why that is worth
+/// passing. Returns the handle to hand the native.
+///
+/// # Safety
+/// As `global_val`; `ptr`/`len` name a valid UTF-16 slice that outlives the call.
+pub(crate) unsafe extern "C" fn box_str(
+    arena: *mut Arena,
+    ptr: *const u16,
+    len: usize,
+    have: u64,
+) -> u64 {
+    unsafe {
+        let units = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(ptr, len)
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_box_str(units, have),
+            None => 0,
+        }
+    }
+}
+
+/// The same for a number: `kind` 0 is an `int32` (the low 32 bits of `bits`),
+/// 1 is a `float64` (`bits` as an IEEE pattern).
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn box_num(arena: *mut Arena, kind: i64, bits: i64) -> u64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => {
+                if kind == 0 {
+                    (*ip).jit_box_i32(bits as i32)
+                } else {
+                    (*ip).jit_box_f64(f64::from_bits(bits as u64))
+                }
+            }
+            None => 0,
+        }
+    }
+}
+
 /// `length` on an opaque. -1 means there is no integer length here and the
 /// caller bails to the interpreter.
 ///

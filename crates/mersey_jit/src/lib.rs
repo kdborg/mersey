@@ -60,6 +60,7 @@ mod heap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Value as ClValue};
@@ -261,8 +262,40 @@ const SLOT_BYTES: usize = 8;
 const GROUP_MAX: usize = 48;
 
 /// The hook the interpreter calls: compile a call graph, or refuse it.
+/// `MERSEY_JIT_TRACE=1` — print every opcode the two passes accept.
+///
+/// Tier-1 refuses a *function* for one op it cannot type, and `None` carries no
+/// word about which one, so a workload that mysteriously runs at interpreted
+/// speed gives nothing to go on. Both passes log each op as they take it, which
+/// makes the bail the instruction *after* the last line printed. `MERSEY_JIT=0`
+/// says whether a function is compiled; this says where it stopped being
+/// compilable. Note both passes must be watched: the analysis can pass
+/// end-to-end and codegen still decline.
+static TRACE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("MERSEY_JIT_TRACE").is_ok_and(|v| v != "0"));
+
 pub fn hook(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
-    compile_group(env, root)
+    let code = compile_group(env, root);
+    if *TRACE {
+        // Neither a chunk nor a `JitFn` carries a name, so say what can be
+        // said: the global binding for a plain function, and for a method only
+        // that it is one (a `ClassDef`'s name is private to the interpreter).
+        let who = match (&root.bind, &root.this) {
+            (Some((n, _)), _) => n.clone(),
+            (None, Some(_)) => "<method>".to_string(),
+            (None, None) => "<anonymous>".to_string(),
+        };
+        eprintln!(
+            "jit: {} {who} ({} ops)",
+            if code.is_some() {
+                "COMPILED"
+            } else {
+                "refused"
+            },
+            root.chunk.code.len()
+        );
+    }
+    code
 }
 
 // ---- the group ---------------------------------------------------------------
@@ -790,6 +823,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut stack: Vec<TSlot> = Vec::new();
     let mut reachable = true;
     for (pc, op) in chunk.code.iter().enumerate() {
+        if *TRACE {
+            eprintln!("jit: analyze {pc} {op:?}");
+        }
         // Folded into the previous op (a `.length` a web-string read absorbed).
         if folded.contains(&pc) {
             continue;
@@ -821,7 +857,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // A reference loaded from a slot the body stores into is the one
                 // borrow that can dangle — see `Prov`.
                 let pv = match t {
-                    Ty::Obj(_) | Ty::Arr(_) if stored[s as usize] => Prov::FromSlot(s),
+                    Ty::Obj(_) | Ty::Arr(_) | Ty::Val if stored[s as usize] => Prov::FromSlot(s),
                     _ => Prov::Stable,
                 };
                 stack.push(TSlot::Val(t, pv));
@@ -852,6 +888,11 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         // has nowhere to live in three registers), so this rare
                         // shape is interpreted rather than risked.
                         Ty::Arr(_) => return None,
+                        // Nor an opaque: there is no `clone_val` shim, and a
+                        // borrow whose owning slot is overwritten would be left
+                        // pointing at a released arena entry. Slot-to-slot copies
+                        // of a native's result are rare; correctness is not.
+                        Ty::Val => return None,
                         _ => {
                             let _ = src;
                         }
@@ -988,7 +1029,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let l = stack.pop()?;
                 match (l, r) {
                     (TSlot::Null, TSlot::Val(t, _)) | (TSlot::Val(t, _), TSlot::Null) => {
-                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str)
+                        // `Ty::Val` joins the reference types here: a native
+                        // that returned null parked handle 0, so the comparison
+                        // is the same handle-is-zero test.
+                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val)
                             || !matches!(op, BinOp::Eq | BinOp::Ne)
                         {
                             return None;
@@ -1206,10 +1250,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // value this tier can turn into one is allowed; the result
                     // comes back opaque, which is what makes the *rest* of the
                     // function compilable rather than the call itself fast.
-                    // Opaque arguments only. A number would have to be boxed
-                    // into the arena to become a handle, and that shim does not
-                    // exist yet — such a call stays interpreted.
-                    if !arg_slots.iter().all(|a| tval(*a) == Some(Ty::Val)) {
+                    // An argument has to become an arena handle. An opaque
+                    // already is one; a string or a number is boxed into one at
+                    // the call site. Anything else — an object, an array — stays
+                    // interpreted.
+                    if !arg_slots.iter().all(|a| {
+                        matches!(tval(*a), Some(Ty::Val | Ty::Str))
+                            || tval(*a).is_some_and(|t| t.is_num())
+                    }) {
                         return None;
                     }
                     let full: &'static str = Box::leak(format!("{ns}.{name}").into_boxed_str());
@@ -1604,6 +1652,8 @@ struct Shims {
     global_val: FuncId,
     native_call: FuncId,
     val_len: FuncId,
+    box_str: FuncId,
+    box_num: FuncId,
     str_join: FuncId,
     str_vec_parts: FuncId,
     web_get_num: FuncId,
@@ -1663,6 +1713,8 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
+    builder.symbol("msy_box_str", heap::box_str as *const u8);
+    builder.symbol("msy_box_num", heap::box_num as *const u8);
     builder.symbol("msy_web_bind_call", heap::web_bind_call as *const u8);
     builder.symbol("msy_str_join", heap::str_join as *const u8);
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
@@ -1948,6 +2000,10 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         native_call: one("msy_native_call", Some(types::I64), 5)?,
         // (arena, handle) -> the length, or -1
         val_len: one("msy_val_len", Some(types::I64), 2)?,
+        // (arena, ptr, len) -> handle of a Value::Str
+        box_str: one("msy_box_str", Some(types::I64), 4)?,
+        // (arena, kind, bits) -> handle of a Value::I32 / Value::F64
+        box_num: one("msy_box_num", Some(types::I64), 3)?,
         // (arena, target, bind_id, name_ptr, name_len, args_ptr, argc) -> 0/1
         web_bind_call: one("msy_web_bind_call", Some(types::I64), 7)?,
         // (arena, parts_ptr, n, out) -> writes (ptr, len, handle)
@@ -2189,6 +2245,9 @@ impl SlotV {
             // A string's data pointer is 0 exactly when the string is null, so it
             // is what a `str != null` compares.
             SlotV::Str(p, _, _) => Some(p),
+            // An opaque's arena handle, which `jit_native_call` leaves 0 for a
+            // native that returned null — the same "0 is null" convention.
+            SlotV::ValRef(v, _) => Some(v),
             _ => None,
         }
     }
@@ -2267,6 +2326,8 @@ fn translate(
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
+        box_str: module.declare_func_in_func(shims.box_str, b.func),
+        box_num: module.declare_func_in_func(shims.box_num, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
         str_join: module.declare_func_in_func(shims.str_join, b.func),
         web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
@@ -2384,6 +2445,9 @@ fn translate(
         if p.folded.contains(&pc) {
             continue;
         }
+        if *TRACE {
+            eprintln!("jit: emit {pc} {:?}", chunk.code[pc]);
+        }
         // A getter read, restated as the zero-argument method call it is, so the
         // ordinary call path below emits it. Analysis put the target in
         // `method_at`, which is where that path looks.
@@ -2450,6 +2514,13 @@ fn translate(
                         let zero = b.ins().iconst(types::I64, 0);
                         SlotV::Str(ptr, len, zero)
                     }
+                    // A borrow, as for a string: the arena handle, and 0 for
+                    // the copy's own — the slot keeps the one reference.
+                    Ty::Val => {
+                        let val = v(0, b);
+                        let zero = b.ins().iconst(types::I64, 0);
+                        SlotV::ValRef(val, zero)
+                    }
                     t => SlotV::Val(v(0, b), t),
                 });
             }
@@ -2479,6 +2550,12 @@ fn translate(
                     let old = b.use_var(Variable::from_u32(p.var_at[s as usize] + 2));
                     release_if_owned(b, shim.release, arena_ptr, old);
                     v = SlotV::Str(ptr, len, h);
+                }
+                if matches!(v, SlotV::ValRef(..)) {
+                    // As for a string, but an opaque is two registers wide, so
+                    // its owned handle is the *second* one.
+                    let old = b.use_var(Variable::from_u32(p.var_at[s as usize] + 1));
+                    release_if_owned(b, shim.release, arena_ptr, old);
                 }
                 for (j, part) in v.parts().into_iter().enumerate() {
                     b.def_var(Variable::from_u32(at + j as u32), part);
@@ -2917,12 +2994,45 @@ fn translate(
             // raise it where it happened.
             Op::CallMethod(_, n) if p.native_at.contains_key(&pc) => {
                 let name = *p.native_at.get(&pc)?;
+                // Each argument becomes an arena handle. A handle we *made*
+                // here is ours to release the moment the call returns — the
+                // native has taken what it needs by then.
                 let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
+                let mut boxed: Vec<ClValue> = Vec::new();
                 for _ in 0..n {
-                    match stack.pop()? {
-                        SlotV::ValRef(v, _) => handles.push(v),
+                    let h = match stack.pop()? {
+                        SlotV::ValRef(v, _) => v,
+                        SlotV::Str(ptr, len, have) => {
+                            // A built string already owns an arena entry holding
+                            // exactly this `Value::Str`, and `box_str` hands that
+                            // same handle back rather than copying. It is then
+                            // *not* ours to release — the string still owns it —
+                            // so what goes on the release list is the handle only
+                            // when the shim made a new one.
+                            let c = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, have]);
+                            let h = b.inst_results(c)[0];
+                            let reused = b.ins().icmp(IntCC::Equal, h, have);
+                            let zero = b.ins().iconst(types::I64, 0);
+                            boxed.push(b.ins().select(reused, zero, h));
+                            h
+                        }
+                        SlotV::Val(v, t) if t.is_num() => {
+                            let (kind, bits) = if t == Ty::F64 {
+                                (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
+                            } else if t == Ty::I64 {
+                                (0i64, v)
+                            } else {
+                                (0i64, b.ins().sextend(types::I64, v))
+                            };
+                            let k = b.ins().iconst(types::I64, kind);
+                            let c = b.ins().call(shim.box_num, &[arena_ptr, k, bits]);
+                            let h = b.inst_results(c)[0];
+                            boxed.push(h);
+                            h
+                        }
                         _ => return None,
-                    }
+                    };
+                    handles.push(h);
                 }
                 handles.reverse();
                 let SlotV::StdNs = stack.pop()? else {
@@ -2946,6 +3056,9 @@ fn translate(
                 let out = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
                 guard(b, ctx, threw, R_HOST, pc, None);
+                for h in boxed {
+                    b.ins().call(shim.release, &[arena_ptr, h]);
+                }
                 // The result is this value's to release.
                 stack.push(SlotV::ValRef(out, out));
             }
@@ -3506,6 +3619,8 @@ struct ShimRefs {
     global_val: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     val_len: cranelift_codegen::ir::FuncRef,
+    box_str: cranelift_codegen::ir::FuncRef,
+    box_num: cranelift_codegen::ir::FuncRef,
     web_bind_call: cranelift_codegen::ir::FuncRef,
     str_join: cranelift_codegen::ir::FuncRef,
     web_get_num: cranelift_codegen::ir::FuncRef,

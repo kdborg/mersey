@@ -1308,6 +1308,12 @@ pub struct FnData {
 }
 
 impl FnData {
+    /// The declared return type as written. `vm`'s OSR context carries this
+    /// rather than the class it resolves to — see `vm::OsrCtx::ret_ty`.
+    pub(crate) fn ret_ty(&self) -> Option<&'static TypeExpr> {
+        self.ret_ty
+    }
+
     fn new(
         name: Rc<str>,
         is_async: bool,
@@ -4305,7 +4311,7 @@ impl Interp {
                             c.data.params,
                             c.data.ret_num,
                             c.data.ret_bool,
-                            self.ret_class(&c.data),
+                            c.data.ret_ty(),
                             c.this.as_ref(),
                             &args,
                         )? {
@@ -4321,7 +4327,7 @@ impl Interp {
                         params: c.data.params,
                         ret: c.data.ret_num,
                         ret_bool: c.data.ret_bool,
-                        ret_obj: self.ret_class(&c.data),
+                        ret_ty: c.data.ret_ty(),
                         this: match &c.this {
                             Some(Value::Instance(i)) => Some(i.borrow().class.clone()),
                             _ => None,
@@ -4438,7 +4444,7 @@ impl Interp {
             c.data.params,
             c.data.ret_num,
             c.data.ret_bool,
-            self.ret_class(&c.data),
+            c.data.ret_ty(),
             c.this.as_ref(),
             args,
         )
@@ -4466,6 +4472,31 @@ impl Interp {
             }
             _ => 0,
         }
+    }
+
+    /// Park a compiled string in the arena so a native can take it as an
+    /// argument. Compiled code holds a string as a pointer and a length; a
+    /// native wants a `Value`, and the arena is where the two meet.
+    /// `have` is the handle the compiled string already owns, or 0 if it owns
+    /// none (a constant, or a borrow). A *built* string is already parked here as
+    /// a `Value::Str` — the very thing a native wants — so reusing that entry
+    /// saves an `Rc` allocation and a payload-sized copy per call. Returns the
+    /// handle to pass; the caller releases it only if it differs from `have`.
+    pub fn jit_box_str(&mut self, units: &[u16], have: u64) -> u64 {
+        if have != 0 && matches!(self.jit_arena.get(have), Some(Value::Str(_))) {
+            return have;
+        }
+        self.jit_arena.keep(Value::Str(Rc::new(units.to_vec())))
+    }
+
+    /// The same for a number. `int32` and `float64` are separate because the
+    /// language's `parse`/`bytes` members distinguish them, and a native handed
+    /// the wrong one would silently do the wrong arithmetic.
+    pub fn jit_box_i32(&mut self, n: i32) -> u64 {
+        self.jit_arena.keep(Value::I32(n))
+    }
+    pub fn jit_box_f64(&mut self, n: f64) -> u64 {
+        self.jit_arena.keep(Value::F64(n))
     }
 
     /// Call `ns.member(args)` — the general `std:` native path, the one thing
@@ -4868,7 +4899,7 @@ impl Interp {
                 c.data.params,
                 c.data.ret_num,
                 c.data.ret_bool,
-                self.ret_class(&c.data),
+                c.data.ret_ty(),
                 c.this.as_ref(),
                 &args,
             )? {
@@ -4880,7 +4911,7 @@ impl Interp {
                 params: c.data.params,
                 ret: c.data.ret_num,
                 ret_bool: c.data.ret_bool,
-                ret_obj: self.ret_class(&c.data),
+                ret_ty: c.data.ret_ty(),
                 this: match &c.this {
                     Some(Value::Instance(i)) => Some(i.borrow().class.clone()),
                     _ => None,
@@ -4910,11 +4941,32 @@ impl Interp {
         params: &'static [Param],
         ret_num: Option<mersey_front::check::Num>,
         ret_bool: bool,
-        ret_obj: Option<Rc<ClassDef>>,
+        // The declared return type, *unresolved* — resolving it is a lookup by
+        // name through the scope chain, and only the compile path below needs
+        // the answer. See `vm::OsrCtx::ret_ty`.
+        ret_ty: Option<&'static TypeExpr>,
         this: Option<&Value>,
         args: &[Value],
     ) -> Result<Option<Value>, Thrown> {
         if !self.count_call(chunk) {
+            return Ok(None);
+        }
+        // The receiver's class *id*, not the class: on the path this function
+        // takes most often — a chunk Tier 1 has already refused — the id is all
+        // that is wanted, and cloning the `Rc` to get it is pure cost.
+        let cls_id = match this {
+            Some(Value::Instance(i)) => i.borrow().class.id,
+            Some(_) => return Ok(None),
+            None => 0,
+        };
+        // The refusal, remembered on the chunk itself: a `Cell` read and one
+        // comparison. The `jit_cache` below answers the same question, but
+        // getting there costs a receiver `Rc` clone and a hash of the key —
+        // affordable once, not on every call of every function this tier will
+        // never take. Tier 1 refuses whole functions for a single unsupported
+        // op, so "refused" is the normal state for most code, and this is the
+        // path that must be free.
+        if chunk.jit_refused.get() == Some(cls_id) {
             return Ok(None);
         }
         let cls = match this {
@@ -4922,14 +4974,47 @@ impl Interp {
             Some(_) => return Ok(None),
             None => None,
         };
-        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls) else {
-            return Ok(None);
-        };
-        let Some(compiled) = self.jit_compile(chunk, &root) else {
-            return Ok(None);
+        // Ask the cache *before* building a `JitFn`. The key is the chunk and the
+        // receiver's class — nothing from the signature — so a decision already
+        // taken needs none of the work that describing the signature costs:
+        // `root_fn` clones every parameter name into a fresh `Vec<String>` and
+        // resolves every declared type through the scope chain by name. For a
+        // function this tier has *refused*, all of that is repaid on every call
+        // for the life of the program, and the refusal is the common case in any
+        // code the tier cannot take. Measured on `bench/cli/mersey/url.mersey`,
+        // whose three hot functions are all refused: 23.2 ms with the JIT
+        // enabled against 19.6 ms with `MERSEY_JIT=0` — an 18% tax for compiled
+        // code that does not exist.
+        let key = (Rc::as_ptr(chunk) as usize, cls_id);
+        let compiled = match self.jit_cache.get(&key).cloned() {
+            Some(Some(c)) => c,
+            Some(None) => {
+                chunk.jit_refused.set(Some(cls_id));
+                return Ok(None);
+            }
+            None => {
+                let ret_obj = self.ret_class_of(ret_ty);
+                let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls)
+                else {
+                    // Not a signature this tier can even describe. That is a
+                    // property of the function, not of this call, so record it —
+                    // otherwise the attempt repeats forever, uncached.
+                    self.jit_cache.insert(key, None);
+                    chunk.jit_refused.set(Some(cls_id));
+                    return Ok(None);
+                };
+                let Some(c) = self.jit_compile(chunk, &root) else {
+                    chunk.jit_refused.set(Some(cls_id));
+                    return Ok(None);
+                };
+                c
+            }
         };
         if !self.assumptions_hold(&compiled) {
-            self.jit_cache.remove(&self.jit_key(chunk, &root));
+            self.jit_cache.remove(&key);
+            // Not a refusal — the code is discarded so it can be *rebuilt* on a
+            // later call, so the memo must not say "never".
+            chunk.jit_refused.set(None);
             return Ok(None);
         }
         // The entry guard, per slot: the frame is not one type, so each argument
@@ -5353,7 +5438,13 @@ impl Interp {
 
     /// The class a function is declared to return, when it returns an object.
     pub(crate) fn ret_class(&self, data: &FnData) -> Option<Rc<ClassDef>> {
-        match resolve_field_ty(data.ret_ty?, &self.globals) {
+        self.ret_class_of(data.ret_ty)
+    }
+
+    /// The same, from a return type already in hand — see `vm::OsrCtx::ret_ty`
+    /// for why the two are separate.
+    pub(crate) fn ret_class_of(&self, ret_ty: Option<&'static TypeExpr>) -> Option<Rc<ClassDef>> {
+        match resolve_field_ty(ret_ty?, &self.globals) {
             FieldTy::Obj(c) => Some(c),
             _ => None,
         }
