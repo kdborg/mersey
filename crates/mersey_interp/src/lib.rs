@@ -5845,14 +5845,15 @@ impl Interp {
                 // answer depend on argument order (`math.max(NaN, 5)` was 5 but
                 // `math.max(5, NaN)` was NaN) and disagreed with Tier 1, whose
                 // lowering propagates. Argument order must not change the answer.
-                if args
-                    .iter()
-                    .any(|a| matches!(a, Value::F64(f) if f.is_nan()))
-                {
-                    return Ok(Value::F64(f64::NAN));
-                }
                 let mut best: Option<Value> = None;
                 for a in args {
+                    // Checked as the fold goes rather than in a pass of its own:
+                    // NaN wins whatever else is in the list, so the first one seen
+                    // is the answer. The tiers with no JIT (the wasm engine, every
+                    // browser leg) take this path for every `math.max` they make.
+                    if matches!(&a, Value::F64(f) if f.is_nan()) {
+                        return Ok(Value::F64(f64::NAN));
+                    }
                     best = Some(match best {
                         None => a,
                         Some(b) => {
