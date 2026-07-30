@@ -366,6 +366,72 @@ pub(crate) unsafe extern "C" fn global_web(
     }
 }
 
+/// The arena handle for a top-level binding holding an opaque engine value (a
+/// `Bytes`, a `Url`) — how a compiled body gets hold of one it did not make.
+/// 0 means the binding does not hold one, and the caller bails.
+///
+/// # Safety
+/// As `global_web`.
+pub(crate) unsafe extern "C" fn global_val(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> u64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_global_val(name),
+            None => 0,
+        }
+    }
+}
+
+/// A `std:` native call — `random.fill`, `bytes.encodeUtf8`, `parse.url`.
+///
+/// The name arrives already joined ("random.fill"), because the compiler knows
+/// it and a shim that formatted one per call would spend more on the string
+/// than the call saves. Arguments and the result cross as arena handles: it is
+/// the one representation that fits every `Value` without this tier having to
+/// model it. Returns the result handle, 0 for a null/void result, or
+/// `u64::MAX` if it threw (stashed for `after_jit`, as every host shim does).
+///
+/// # Safety
+/// As `global_val`; `args_ptr`/`argc` name a valid `u64` slice of handles.
+pub(crate) unsafe extern "C" fn native_call(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const u64,
+    argc: usize,
+) -> u64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = if argc == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc)
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_native_call(name, args),
+            None => u64::MAX,
+        }
+    }
+}
+
+/// `length` on an opaque. -1 means there is no integer length here and the
+/// caller bails to the interpreter.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn val_len(arena: *mut Arena, handle: u64) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_val_len(handle),
+            None => -1,
+        }
+    }
+}
+
 /// A numeric-argument web method call whose result is discarded
 /// (`ctx.fillRect(x, y, w, h)`). Returns 0 on success, 1 if it threw (the
 /// interpreter stashed the error and the compiled body then traps).

@@ -1719,6 +1719,15 @@ impl Arena {
         }
     }
 
+    /// Borrow what a handle names, for a shim that reads an argument without
+    /// taking ownership of it.
+    pub fn get(&self, h: u64) -> Option<&Value> {
+        if h == 0 {
+            return None;
+        }
+        self.slots.get((h - 1) as usize)?.as_ref()
+    }
+
     /// Take the value out, keeping it alive: how a compiled result crosses back
     /// to the interpreter as an owned `Value`.
     pub fn take(&mut self, h: u64) -> Option<Value> {
@@ -1820,6 +1829,12 @@ pub enum JitSlot {
     Str,
     /// A host-object handle (`JsRef`): one word, the handle id.
     Web,
+    /// Any other engine value, carried opaquely by arena handle — a `Bytes`, a
+    /// `Url`, whatever a `std:` native hands back. Compiled code never looks
+    /// inside one; it passes it to a shim, which is enough to keep a loop
+    /// containing a native call in compiled code instead of surrendering the
+    /// whole function to the interpreter.
+    Val,
 }
 
 /// One function in a compiled group: its bytecode, and everything about its
@@ -1889,6 +1904,18 @@ pub trait JitEnv {
     /// A class's constructor as a compilable function, `None` if it has none
     /// (then `new` takes no arguments and only the field defaults run).
     fn ctor(&self, cls: &Rc<ClassDef>) -> Option<Option<JitFn>>;
+
+    /// The `std:` namespace `name` binds at the top level, if it is one whose
+    /// members compiled code can call through `native_call` — the general
+    /// escape hatch, as opposed to `std:math`/`std:time`, which lower to
+    /// instructions and a numeric shim respectively.
+    fn std_ns(&self, name: &str) -> Option<&'static str>;
+
+    /// True if the top-level `name` holds an engine value compiled code can
+    /// carry opaquely (`Ty::Val`) — a `Bytes`, a `Url`, anything a native
+    /// returns. Excludes everything the tier models properly, which it would
+    /// rather keep in registers.
+    fn is_opaque_global(&self, name: &str) -> bool;
 
     /// True if `name` binds the `std:time` namespace at the top level. Its
     /// `now()`/`monotonic()` are zero-argument numeric host calls, which
@@ -2017,6 +2044,20 @@ impl JitEnv for InterpEnv<'_> {
             return None;
         }
         Some(cls)
+    }
+    fn std_ns(&self, name: &str) -> Option<&'static str> {
+        let Some(Value::Namespace(ns)) = env_get(&self.i.globals, name) else {
+            return None;
+        };
+        // `math` and `time` have their own lowerings; everything else goes
+        // through the general native shim.
+        Interp::NATIVE_NS.iter().copied().find(|n| *n == ns.name)
+    }
+    fn is_opaque_global(&self, name: &str) -> bool {
+        matches!(
+            env_get(&self.i.globals, name),
+            Some(Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_))
+        )
     }
     fn is_time_ns(&self, name: &str) -> bool {
         matches!(env_get(&self.i.globals, name),
@@ -4404,8 +4445,68 @@ impl Interp {
     }
 
     /// `time.now()` / `time.monotonic()` from compiled code.
+    /// The `std:` namespaces whose members compiled code may call through the
+    /// native shim. `math` and `time` are absent on purpose: they have their own
+    /// lowerings (instructions, and a numeric shim) that are strictly better
+    /// than a general call. Everything here goes through the interpreter's own
+    /// `call_native`, so behaviour is the interpreter's by construction.
+    pub const NATIVE_NS: &[&str] = &["random", "bytes", "parse", "json", "hash"];
+
     pub fn jit_time_ms(&mut self, epoch: bool) -> f64 {
         self.host.time_ms(epoch)
+    }
+
+    /// A top-level binding whose value compiled code carries opaquely, parked in
+    /// the arena so a handle names it. Handle 0 means "not one of those", and
+    /// the caller bails.
+    pub fn jit_global_val(&mut self, name: &str) -> u64 {
+        match env_get(&self.globals, name) {
+            Some(v @ (Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_))) => {
+                self.jit_arena.keep(v)
+            }
+            _ => 0,
+        }
+    }
+
+    /// Call `ns.member(args)` — the general `std:` native path, the one thing
+    /// that used to send a whole function back to the interpreter.
+    ///
+    /// Arguments and the result cross as arena handles, because that is the one
+    /// representation that fits every `Value` without the tier having to model
+    /// it. Returns the result's handle, or 0 for a void/null result; on a throw
+    /// it stashes the error for `after_jit` and returns `u64::MAX`, since a shim
+    /// cannot unwind through native frames.
+    pub fn jit_native_call(&mut self, name: &str, args: &[u64]) -> u64 {
+        let argv: Vec<Value> = args
+            .iter()
+            .map(|h| self.jit_arena.get(*h).cloned().unwrap_or(Value::Null))
+            .collect();
+        match self.call_native(name, None, argv) {
+            Ok(Value::Null) => 0,
+            Ok(v) => self.jit_arena.keep(v),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
+        }
+    }
+
+    /// `length` on an opaque — the one property of one this tier reads.
+    ///
+    /// Only `length`, and only as an `int32`, because the *type* has to match
+    /// what the checker decided at the use site: `buf.length + n` is integer
+    /// arithmetic, and handing the adder an `f64` makes it refuse the whole
+    /// function. A general numeric-property shim needs the checker's type for
+    /// each property, which this tier does not have. -1 means "not an integer
+    /// length here" and the caller bails.
+    pub fn jit_val_len(&mut self, handle: u64) -> i64 {
+        let Some(v) = self.jit_arena.get(handle).cloned() else {
+            return -1;
+        };
+        match self.get_member(&v, "length") {
+            Ok(Some(Value::I32(n))) => n as i64,
+            _ => -1,
+        }
     }
 
     /// The handle a top-level web global currently holds (0 if it is somehow not

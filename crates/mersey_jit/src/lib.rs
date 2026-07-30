@@ -100,6 +100,12 @@ enum Ty {
     /// or property access on that local uses as its receiver. The host owns the
     /// object; the handle is just an id, so no arena ownership.
     Web,
+    /// An engine value the tier does not model — a `Bytes`, a `Url`, anything a
+    /// `std:` native returns. Two words: the arena handle that names it, and the
+    /// handle this value *owns* (zero when borrowed). Same discipline as `Str`
+    /// and `Obj`: a handle lives in exactly one place, so releasing it is never
+    /// a double free.
+    Val,
 }
 
 /// What an array holds. Not `Ty`, because `Ty` would have to box itself: an array
@@ -132,7 +138,7 @@ impl Ty {
             Ty::I32 | Ty::Bool => types::I32,
             Ty::I64 => types::I64,
             Ty::F64 => types::F64,
-            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web => types::I64,
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web | Ty::Val => types::I64,
         }
     }
 
@@ -156,6 +162,7 @@ impl Ty {
     fn width(self) -> usize {
         match self {
             Ty::Obj(_) | Ty::Arr(_) | Ty::Str => 3,
+            Ty::Val => 2,
             _ => 1,
         }
     }
@@ -164,6 +171,7 @@ impl Ty {
     fn parts(self) -> Vec<types::Type> {
         match self {
             Ty::Obj(_) | Ty::Arr(_) | Ty::Str => vec![types::I64, types::I64, types::I64],
+            Ty::Val => vec![types::I64, types::I64],
             t => vec![t.cl()],
         }
     }
@@ -192,6 +200,12 @@ impl Ty {
             Ty::Arr(_) => repr::TAG_ARRAY,
             Ty::Str => repr::TAG_STRING,
             Ty::Web => repr::TAG_JSREF,
+            // Unreachable: an opaque is only ever a temporary, a local or a
+            // shim argument — never the contents of a heap cell, so nothing
+            // ever tag-checks one. `TAG_NULL` is the fail-closed answer if that
+            // ever stops being true: no cell carries it, so the guard bails to
+            // the interpreter instead of reading the cell as something it isn't.
+            Ty::Val => repr::TAG_NULL,
         }
     }
 }
@@ -312,6 +326,7 @@ impl Group<'_> {
             JitSlot::Arr(e) => Ty::Arr(self.elem_of(e)?),
             JitSlot::Str => Ty::Str,
             JitSlot::Web => Ty::Web,
+            JitSlot::Val => Ty::Val,
         })
     }
 
@@ -437,6 +452,18 @@ struct Plan {
     /// emits it — a getter *is* a zero-argument method, so it needs no
     /// machinery of its own. The target function lives in `method_at`.
     getter_pc: HashSet<usize>,
+    /// `LoadName` sites that name a `std:` namespace routed through the native
+    /// shim, and the namespace's name.
+    std_ns_names: HashMap<u16, &'static str>,
+    /// `LoadName` sites naming a top-level binding held opaquely (`Ty::Val`).
+    /// Read once at entry, like a web global: the binding cannot be reassigned
+    /// from compiled code, and each read would otherwise park another handle in
+    /// the arena.
+    opaque_globals: HashMap<u16, &'static str>,
+    /// `CallMethod` sites that are a native call, and the full member name.
+    native_at: HashMap<usize, &'static str>,
+    /// `GetMember` sites reading a numeric property off an opaque.
+    val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
     field_at: HashMap<usize, (u32, Ty)>,
     /// Bytecode position of a `new` → (class, constructor in the group).
@@ -559,12 +586,20 @@ enum TSlot {
     /// The `std:math` namespace: a receiver whose numeric methods lower to
     /// machine instructions, not calls.
     MathNs,
+    /// A `std:` namespace whose members go through the native shim. Carries the
+    /// namespace name so the call site can name the member in full.
+    StdNs(&'static str),
 }
 
 fn tval(s: TSlot) -> Option<Ty> {
     match s {
         TSlot::Val(t, _) => Some(t),
-        TSlot::Null | TSlot::Callee(_) | TSlot::TimeNs | TSlot::Web(_) | TSlot::MathNs => None,
+        TSlot::Null
+        | TSlot::Callee(_)
+        | TSlot::TimeNs
+        | TSlot::Web(_)
+        | TSlot::MathNs
+        | TSlot::StdNs(_) => None,
     }
 }
 
@@ -709,6 +744,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut callee: HashMap<u16, usize> = HashMap::new();
     let mut method_at: HashMap<usize, usize> = HashMap::new();
     let mut getter_pc: HashSet<usize> = HashSet::new();
+    let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
+    let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
+    let mut native_at: HashMap<usize, &'static str> = HashMap::new();
+    let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
     let mut clone_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -832,6 +871,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 } else if g.env.is_math_ns(name) {
                     math_ns_names.insert(ni);
                     stack.push(TSlot::MathNs); // an intrinsic receiver, not a value
+                } else if let Some(ns) = g.env.std_ns(name) {
+                    std_ns_names.insert(ni, ns);
+                    stack.push(TSlot::StdNs(ns)); // a native-call receiver
+                } else if g.env.is_opaque_global(name) {
+                    opaque_globals
+                        .entry(ni)
+                        .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
+                    stack.push(TSlot::Val(Ty::Val, Prov::Stable));
                 } else if g.env.is_web_global(name) {
                     web_globals
                         .entry(ni)
@@ -999,6 +1046,18 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                     return None;
                 }
+                if tval(base) == Some(Ty::Val) {
+                    // `length`, and only `length`: its type is `int32`, and the
+                    // type has to be right or the arithmetic around it refuses
+                    // the function. Anything else about an opaque stays
+                    // interpreted — this tier knows nothing about what it holds.
+                    if name != "length" {
+                        return None;
+                    }
+                    val_prop_at.insert(pc, "length");
+                    stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                    continue;
+                }
                 match tval(base)? {
                     Ty::Obj(ci) => {
                         let cls = g.classes[ci as usize].clone();
@@ -1140,6 +1199,22 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                     time_at.insert(pc, name == "now");
                     stack.push(TSlot::Val(Ty::F64, Prov::Stable));
+                    continue;
+                }
+                if let TSlot::StdNs(ns) = recv {
+                    // A `std:` native. Arguments cross as arena handles, so any
+                    // value this tier can turn into one is allowed; the result
+                    // comes back opaque, which is what makes the *rest* of the
+                    // function compilable rather than the call itself fast.
+                    // Opaque arguments only. A number would have to be boxed
+                    // into the arena to become a handle, and that shim does not
+                    // exist yet — such a call stays interpreted.
+                    if !arg_slots.iter().all(|a| tval(*a) == Some(Ty::Val)) {
+                        return None;
+                    }
+                    let full: &'static str = Box::leak(format!("{ns}.{name}").into_boxed_str());
+                    native_at.insert(pc, full);
+                    stack.push(TSlot::Val(Ty::Val, Prov::Stable));
                     continue;
                 }
                 if recv == TSlot::MathNs {
@@ -1434,6 +1509,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         callee,
         method_at,
         getter_pc,
+        std_ns_names,
+        opaque_globals,
+        native_at,
+        val_prop_at,
         field_at,
         new_at,
         clone_at,
@@ -1522,6 +1601,9 @@ struct Shims {
     host_time: FuncId,
     global_web: FuncId,
     web_call_num: FuncId,
+    global_val: FuncId,
+    native_call: FuncId,
+    val_len: FuncId,
     str_join: FuncId,
     str_vec_parts: FuncId,
     web_get_num: FuncId,
@@ -1578,6 +1660,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_host_time", heap::host_time as *const u8);
     builder.symbol("msy_global_web", heap::global_web as *const u8);
     builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
+    builder.symbol("msy_global_val", heap::global_val as *const u8);
+    builder.symbol("msy_native_call", heap::native_call as *const u8);
+    builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_web_bind_call", heap::web_bind_call as *const u8);
     builder.symbol("msy_str_join", heap::str_join as *const u8);
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
@@ -1822,6 +1907,7 @@ fn boundary(t: Ty, classes: &[Rc<ClassDef>]) -> JitSlot {
         Ty::Arr(_) => JitSlot::Arr(Rc::new(FieldTy::Opaque)),
         Ty::Str => JitSlot::Str,
         Ty::Web => JitSlot::Web,
+        Ty::Val => JitSlot::Val,
         _ => JitSlot::I32,
     }
 }
@@ -1856,6 +1942,12 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         global_web: one("msy_global_web", Some(types::I64), 3)?,
         // (arena, target, name_ptr, name_len, args_ptr, argc) -> 0 ok / 1 threw
         web_call_num: one("msy_web_call_num", Some(types::I64), 6)?,
+        // (arena, name_ptr, name_len) -> arena handle, 0 if not an opaque
+        global_val: one("msy_global_val", Some(types::I64), 3)?,
+        // (arena, name_ptr, name_len, args_ptr, argc) -> handle / 0 / u64::MAX
+        native_call: one("msy_native_call", Some(types::I64), 5)?,
+        // (arena, handle) -> the length, or -1
+        val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, target, bind_id, name_ptr, name_len, args_ptr, argc) -> 0/1
         web_bind_call: one("msy_web_bind_call", Some(types::I64), 7)?,
         // (arena, parts_ptr, n, out) -> writes (ptr, len, handle)
@@ -2059,9 +2151,16 @@ enum SlotV {
     Web(ClValue),
     /// The `std:math` namespace receiver (see `TSlot::MathNs`): no registers.
     MathNs,
+    /// A `std:` namespace receiver (see `TSlot::StdNs`): no registers, and no
+    /// name either — codegen looks the member up by program counter, so by the
+    /// time it sees this the marker only has to *be* one.
+    StdNs,
     /// A UTF-16 string: data pointer, length, and arena handle (nonzero only for
     /// a built string this value owns). See `Ty::Str`.
     Str(ClValue, ClValue, ClValue),
+    /// An opaque engine value: the arena handle naming it, and the handle this
+    /// value owns (zero when borrowed). See `Ty::Val`.
+    ValRef(ClValue, ClValue),
 }
 
 impl SlotV {
@@ -2072,9 +2171,13 @@ impl SlotV {
             SlotV::Obj(p, b, h) => vec![p, b, h],
             SlotV::Arr(p, d, l, _) => vec![p, d, l],
             SlotV::Str(p, l, h) => vec![p, l, h],
-            SlotV::Null | SlotV::Callee(_) | SlotV::TimeNs | SlotV::Web(_) | SlotV::MathNs => {
-                Vec::new()
-            }
+            SlotV::ValRef(v, h) => vec![v, h],
+            SlotV::Null
+            | SlotV::Callee(_)
+            | SlotV::TimeNs
+            | SlotV::Web(_)
+            | SlotV::MathNs
+            | SlotV::StdNs => Vec::new(),
         }
     }
 
@@ -2161,6 +2264,9 @@ fn translate(
         host_time: module.declare_func_in_func(shims.host_time, b.func),
         global_web: module.declare_func_in_func(shims.global_web, b.func),
         web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
+        global_val: module.declare_func_in_func(shims.global_val, b.func),
+        native_call: module.declare_func_in_func(shims.native_call, b.func),
+        val_len: module.declare_func_in_func(shims.val_len, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
         str_join: module.declare_func_in_func(shims.str_join, b.func),
         web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
@@ -2212,6 +2318,19 @@ fn translate(
         .map(|(&ni, name)| {
             let (nptr, nlen) = str_const(b, name);
             let call = b.ins().call(shim.global_web, &[arena_ptr, nptr, nlen]);
+            (ni, b.inst_results(call)[0])
+        })
+        .collect();
+
+    // The same reasoning as the web-global hoist above, and a stronger reason:
+    // `global_val` parks the value in the arena, so reading it per iteration
+    // would leak a handle per iteration.
+    let opaque_handles: HashMap<u16, ClValue> = p
+        .opaque_globals
+        .iter()
+        .map(|(&ni, name)| {
+            let (nptr, nlen) = str_const(b, name);
+            let call = b.ins().call(shim.global_val, &[arena_ptr, nptr, nlen]);
             (ni, b.inst_results(call)[0])
         })
         .collect();
@@ -2371,6 +2490,13 @@ fn translate(
                     stack.push(SlotV::TimeNs);
                 } else if p.math_ns_names.contains(&ni) {
                     stack.push(SlotV::MathNs);
+                } else if p.std_ns_names.contains_key(&ni) {
+                    stack.push(SlotV::StdNs);
+                } else if let Some(&h) = opaque_handles.get(&ni) {
+                    // Borrowed: the global owns it, so this value's own handle
+                    // is 0 and nothing here releases it.
+                    let zero = b.ins().iconst(types::I64, 0);
+                    stack.push(SlotV::ValRef(h, zero));
                 } else if let Some(&h) = web_handles.get(&ni) {
                     // The handle was read once at entry (see the hoist above);
                     // reuse it rather than calling the shim each iteration.
@@ -2528,6 +2654,20 @@ fn translate(
                 let slen = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
                 let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
                 stack.push(SlotV::Str(sptr, slen, sh));
+            }
+            // `length` on an opaque. This has to precede the generic
+            // `GetMember` arm below, which matches every remaining member read
+            // and would otherwise take this one and fail on it.
+            Op::GetMember(_, _) if p.val_prop_at.contains_key(&pc) => {
+                let SlotV::ValRef(v, _) = stack.pop()? else {
+                    return None;
+                };
+                let call = b.ins().call(shim.val_len, &[arena_ptr, v]);
+                let out = b.inst_results(call)[0];
+                let bad = b.ins().icmp_imm(IntCC::SignedLessThan, out, 0);
+                guard(b, ctx, bad, R_HOST, pc, None);
+                let narrowed = b.ins().ireduce(types::I32, out);
+                stack.push(SlotV::Val(narrowed, Ty::I32));
             }
             Op::GetMember(_, _) if p.length_at.contains(&pc) => {
                 let len = match stack.pop()? {
@@ -2770,6 +2910,44 @@ fn translate(
                 let call = b.ins().call(shim.host_time, &[arena_ptr, epoch]);
                 let ms = b.inst_results(call)[0];
                 stack.push(SlotV::Val(ms, Ty::F64));
+            }
+            // A `std:` native. Arguments go out as an array of arena handles;
+            // the result comes back as one. `u64::MAX` means it threw — the
+            // interpreter stashed the error and this traps so `after_jit` can
+            // raise it where it happened.
+            Op::CallMethod(_, n) if p.native_at.contains_key(&pc) => {
+                let name = *p.native_at.get(&pc)?;
+                let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    match stack.pop()? {
+                        SlotV::ValRef(v, _) => handles.push(v),
+                        _ => return None,
+                    }
+                }
+                handles.reverse();
+                let SlotV::StdNs = stack.pop()? else {
+                    return None;
+                };
+                let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (handles.len().max(1) * 8) as u32,
+                    3,
+                ));
+                let args_ptr = b.ins().stack_addr(types::I64, slot, 0);
+                for (k, h) in handles.iter().enumerate() {
+                    b.ins()
+                        .store(MemFlags::trusted(), *h, args_ptr, (k * 8) as i32);
+                }
+                let (nptr, nlen) = str_const(b, name);
+                let argc = b.ins().iconst(types::I64, handles.len() as i64);
+                let call = b
+                    .ins()
+                    .call(shim.native_call, &[arena_ptr, nptr, nlen, args_ptr, argc]);
+                let out = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
+                guard(b, ctx, threw, R_HOST, pc, None);
+                // The result is this value's to release.
+                stack.push(SlotV::ValRef(out, out));
             }
             // A `std:math` intrinsic: lowered to instructions, no call. The
             // receiver is the math-namespace marker (no registers).
@@ -3325,6 +3503,9 @@ struct ShimRefs {
     host_time: cranelift_codegen::ir::FuncRef,
     global_web: cranelift_codegen::ir::FuncRef,
     web_call_num: cranelift_codegen::ir::FuncRef,
+    global_val: cranelift_codegen::ir::FuncRef,
+    native_call: cranelift_codegen::ir::FuncRef,
+    val_len: cranelift_codegen::ir::FuncRef,
     web_bind_call: cranelift_codegen::ir::FuncRef,
     str_join: cranelift_codegen::ir::FuncRef,
     web_get_num: cranelift_codegen::ir::FuncRef,
