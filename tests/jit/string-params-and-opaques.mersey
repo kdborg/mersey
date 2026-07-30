@@ -105,7 +105,23 @@ function tally(n: int32): int32 {
     return acc;
 }
 
+/// An opaque as a *parameter*. `Bytes` is a prelude class with no Mersey layout —
+/// there is nothing to look inside — so it crosses as an arena handle, the same
+/// shape a native's result takes. Before, the signature was undescribable and the
+/// function was refused whole, which is what kept `std:hex`'s `encode(data: Bytes)`
+/// and its like in the interpreter.
+function span(b: Bytes, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + b.length;
+        i += 1;
+    }
+    return acc;
+}
+
 console.log(`score     ${score("payload", 200000)}`);
+console.log(`span      ${span(bytes.alloc(24), 200000)}`);
 console.log(`tally     ${tally(200000)}`);
 console.log(`widthOf   ${widthOf("abcd", 200000)} ${widthOf(null, 200000)}`);
 console.log(`roundTrip ${roundTrip(200000)}`);

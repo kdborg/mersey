@@ -383,11 +383,11 @@ impl Group<'_> {
             FieldTy::Bool => Ty::Bool,
             FieldTy::Obj(c) => Ty::Obj(self.class_idx(c)),
             FieldTy::Arr(e) => Ty::Arr(self.elem_of(e)?),
-            // A string *field* still interprets: reading one means pulling three
-            // registers out of a `Value` cell, and `load_cell` has no case for
-            // that yet. A string *parameter* is a different matter — it arrives
-            // already in registers (see `param_types`).
-            FieldTy::Str => return None,
+            // A string or opaque *field* still interprets: reading one means
+            // pulling it out of a `Value` cell, and `load_cell` has no case for
+            // either yet. A *parameter* is a different matter — it arrives already
+            // in registers, or as a handle (see `param_types`).
+            FieldTy::Str | FieldTy::Val => return None,
             FieldTy::Opaque => return None,
         })
     }

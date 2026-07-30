@@ -1381,6 +1381,9 @@ pub enum FieldTy {
     /// A UTF-16 string, or null. Tier 1 has a register shape for one — three,
     /// in fact: data pointer, length, and the arena handle if it owns it.
     Str,
+    /// An engine primitive Tier 1 can carry without looking inside: a `Bytes`, a
+    /// `Url`, a `Regex`. One arena handle, the same shape a native's result takes.
+    Val,
     /// A record, a function, a generic — something Tier 1 has no register for.
     /// Reading one is not a bug; it is a reason to interpret.
     Opaque,
@@ -2631,6 +2634,13 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
             if name == "string" {
                 return FieldTy::Str;
             }
+            // The engine primitives compiled code carries opaquely. They are
+            // prelude *classes* to the binder, but they have no Mersey layout —
+            // there is nothing to look inside — so an arena handle is the whole
+            // representation, exactly as for a native's result.
+            if matches!(name.as_str(), "Bytes" | "Url" | "Regex") {
+                return FieldTy::Val;
+            }
             match env_get(env, name) {
                 Some(Value::Class(c)) => FieldTy::Obj(c),
                 _ => FieldTy::Opaque,
@@ -2649,6 +2659,8 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
             // `string?` is the same three registers as `string`: a null string is
             // a null data pointer, which compiled code already checks for.
             FieldTy::Str => FieldTy::Str,
+            // …and `Bytes?` the same handle, with 0 for null.
+            FieldTy::Val => FieldTy::Val,
             _ => FieldTy::Opaque,
         },
         _ => FieldTy::Opaque,
@@ -5235,6 +5247,17 @@ impl Interp {
         // slot the compiler gave it — which is *after* the parameters, not before.
         let mut jargs = Vec::with_capacity(args.len() + 1);
         for (i, v) in args.iter().enumerate() {
+            // An opaque parameter (`data: Bytes`) is parked in the arena and
+            // crosses as its handle — `jit_arg` cannot do it, having no arena to
+            // park it in. The compiled body owns that reference and releases it,
+            // the same discipline an OSR entry uses.
+            if matches!(compiled.code.slot_kinds.get(i), Some(JitSlot::Val)) {
+                jargs.push(match v {
+                    Value::Null => JitArg::Val(0),
+                    other => JitArg::Val(self.jit_arena.keep(other.clone())),
+                });
+                continue;
+            }
             match compiled.code.slot_kinds.get(i).and_then(|k| jit_arg(v, k)) {
                 Some(a) => jargs.push(a),
                 None => return Ok(None), // interpret instead
@@ -5541,6 +5564,7 @@ impl Interp {
                     FieldTy::Obj(c) => Some(JitSlot::Obj(c)),
                     FieldTy::Arr(e) => Some(JitSlot::Arr(e)),
                     FieldTy::Str => Some(JitSlot::Str),
+                    FieldTy::Val => Some(JitSlot::Val),
                     _ => None,
                 }
             })
