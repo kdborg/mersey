@@ -443,11 +443,13 @@ impl Group<'_> {
         // A method whose body never says `this` has no slot for it, and does not
         // need one.
         let this_slot = f.chunk.this_slot.map(|s| s as usize);
-        let void = f.ret.is_none() && !f.ret_bool && f.ret_obj.is_none();
+        let void = f.ret.is_none() && !f.ret_bool && f.ret_obj.is_none() && !f.ret_str;
         let ret = if void {
             Ty::I32 // a placeholder: nothing reads it
         } else if let Some(c) = &f.ret_obj {
             Ty::Obj(self.class_idx(c))
+        } else if f.ret_str {
+            Ty::Str
         } else if f.ret_bool {
             Ty::Bool
         } else {
@@ -1512,7 +1514,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 // `return null` from an object-returning function.
                 if matches!(top, TSlot::Null) {
-                    if !matches!(ret, Some(Ty::Obj(_))) {
+                    // `string?` is a null data pointer, the same as a null object.
+                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str)) {
                         return None;
                     }
                     reachable = false;
@@ -1529,6 +1532,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             return None;
                         }
                     }
+                    // A string leaves owned, exactly as an object does.
+                    (Some(Ty::Str), Ty::Str) => {}
                     (Some(k), t) if t.is_num() => {
                         if k != t && !(k.is_int() && t.is_int() && k.cl() == t.cl()) {
                             return None;
@@ -1902,7 +1907,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 // (a borrowed one is cloned at the return site), so its handle
                 // names an arena slot holding the real `Rc` — take it out before
                 // the arena is cleared.
-                Ty::Obj(_) => {
+                // Both come back by the handle of the arena slot that owns them;
+                // a null one has handle 0, which `take` reports as absent.
+                Ty::Obj(_) | Ty::Str => {
                     let h = u64::from_ne_bytes(out[8..16].try_into().expect("8"));
                     match arena.take(h) {
                         Some(v) => JitResult::Val(v),
@@ -2217,8 +2224,9 @@ fn wrapper(
             .ins()
             .load(types::I64, MemFlags::trusted(), state_ptr, ST_STATUS);
         match root.ret {
-            // An object result: its address, and the handle that owns it.
-            Ty::Obj(_) => {
+            // An object or a string result: its address, and the handle that owns
+            // it — the third register in both cases (ptr, fields|len, handle).
+            Ty::Obj(_) | Ty::Str => {
                 let rp = b.inst_results(call)[0];
                 let rh = b.inst_results(call)[2];
                 b.ins().store(MemFlags::trusted(), rp, out_ptr, 0);
@@ -3313,6 +3321,10 @@ fn translate(
                     // An object comes back owned: the callee cloned or allocated
                     // it, and its handle is now this frame's to spend.
                     Ty::Obj(_) => stack.push(SlotV::Obj(results[0], results[1], results[2])),
+                    // Three registers, as an object's: data, length, and the
+                    // handle that owns it. Taking only the first left the length
+                    // behind, so `f(x).length` could not be emitted.
+                    Ty::Str => stack.push(SlotV::Str(results[0], results[1], results[2])),
                     t => stack.push(SlotV::Val(results[0], t)),
                 }
             }
@@ -3607,7 +3619,30 @@ fn translate(
                     b.ins().return_(&[ptr, fields, h]);
                     reachable = false;
                 }
-                SlotV::Null if matches!(p.ret, Ty::Obj(_)) => {
+                // As for an object: a built string hands over its arena handle,
+                // a borrowed one (a constant, or a field's) is parked first — the
+                // caller cannot be given something it has no way to keep.
+                SlotV::Str(ptr, len, h) if matches!(p.ret, Ty::Str) => {
+                    let no_handle = b.ins().icmp_imm(IntCC::Equal, h, 0);
+                    let is_real = b.ins().icmp_imm(IntCC::NotEqual, ptr, 0);
+                    let promote = b.ins().band(no_handle, is_real);
+                    let borrow = b.create_block();
+                    let done = b.create_block();
+                    b.append_block_param(done, types::I64);
+                    b.ins().brif(promote, borrow, &[], done, &[h]);
+                    b.switch_to_block(borrow);
+                    b.seal_block(borrow);
+                    let zero = b.ins().iconst(types::I64, 0);
+                    let cl = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, zero]);
+                    let boxed = b.inst_results(cl)[0];
+                    b.ins().jump(done, &[boxed]);
+                    b.switch_to_block(done);
+                    b.seal_block(done);
+                    let h = b.block_params(done)[0];
+                    b.ins().return_(&[ptr, len, h]);
+                    reachable = false;
+                }
+                SlotV::Null if matches!(p.ret, Ty::Obj(_) | Ty::Str) => {
                     let z = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[z, z, z]);
                     reachable = false;

@@ -89,12 +89,13 @@ fn an_unset_field_starts_at_its_types_zero_on_both_tiers() {
 }
 
 /// Strings and opaques crossing the tier boundary. A `string` parameter had no
-/// register shape at all, so any function taking one was refused outright; an
-/// opaque (a native's `Bytes`) could not survive an OSR entry, be compared
-/// against null, or be passed to a native. Each of those is an ownership
-/// question as much as a representation one — a handle lives in exactly one
-/// place — and getting one wrong loses a value rather than crashing, which is
-/// why the two tiers are compared rather than the timings.
+/// register shape at all, so any function taking one was refused outright; a
+/// string *return* had none either, so `Sig` called it `void` and refused the
+/// function and every caller of it; and an opaque (a native's `Bytes`) could not
+/// survive an OSR entry, be compared against null, or be passed to a native. Each
+/// of those is an ownership question as much as a representation one — a handle
+/// lives in exactly one place — and getting one wrong loses a value rather than
+/// crashing, which is why the two tiers are compared rather than the timings.
 #[test]
 fn strings_and_opaques_agree_across_the_tier_boundary() {
     check("string-params-and-opaques.mersey");
@@ -103,6 +104,9 @@ fn strings_and_opaques_agree_across_the_tier_boundary() {
     assert!(out.contains("score     1999994"), "{out}");
     // 4 units when present, 1 when null — so the null branch must be taken.
     assert!(out.contains("widthOf   800000 200000"), "{out}");
+    // Three string-returning calls per iteration, one of them nullable, one
+    // returning a *built* string that has to hand over the handle it owns.
+    assert!(out.contains("tally     2795557"), "{out}");
 }
 
 /// `math.max`/`math.min` with a NaN argument. The interpreter's fold compared with

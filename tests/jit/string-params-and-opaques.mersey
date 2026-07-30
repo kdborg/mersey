@@ -58,6 +58,54 @@ function roundTrip(n: int32): int32 {
     return sum;
 }
 
+/// A string *return*. `Sig` could describe a number, a bool or a class coming
+/// back and nothing else, so `void` meant "not one of those" and any
+/// string-returning function was refused. Its callers were refused with it: the
+/// result is three registers (data, length, owning handle) and the call site took
+/// only the first, so even `label(i).length` could not be emitted.
+function label(i: int32): string {
+    if (i % 3 == 0) {
+        return "zero";
+    }
+    if (i % 3 == 1) {
+        return "one";
+    }
+    return "two";
+}
+
+/// `string?` again, this time coming back — a null return is handle 0, which the
+/// caller reads as absent.
+function maybe(i: int32): string? {
+    if (i % 5 == 0) {
+        return null;
+    }
+    return "some";
+}
+
+/// A built string returned from a *compiled* function is the case that has to own
+/// its arena entry: a constant is borrowed and gets parked on the way out, but
+/// this one already holds a handle and must hand over that one rather than a copy.
+function joined(i: int32): string {
+    return `n=${i}`;
+}
+
+/// The caller: three string-returning calls, a null check on one, and `.length`
+/// on all of them.
+function tally(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + label(i).length + joined(i).length;
+        const m = maybe(i);
+        if (m != null) {
+            acc = acc + m.length;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
 console.log(`score     ${score("payload", 200000)}`);
+console.log(`tally     ${tally(200000)}`);
 console.log(`widthOf   ${widthOf("abcd", 200000)} ${widthOf(null, 200000)}`);
 console.log(`roundTrip ${roundTrip(200000)}`);

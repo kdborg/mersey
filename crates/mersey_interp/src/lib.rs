@@ -1955,6 +1955,10 @@ pub struct JitFn {
     pub ret_bool: bool,
     /// …or an instance of this class (or a subclass, or null).
     pub ret_obj: Option<Rc<ClassDef>>,
+    /// …or a string (or null). A string leaves the way an object does, by the
+    /// handle of the arena slot that owns it — see the `Ty::Str` arm of the call
+    /// wrapper's result marshalling.
+    pub ret_str: bool,
     /// The global binding this came from, if it came from one. Compiled code
     /// calls the function a name meant *when it was compiled*; if the name is
     /// later repointed (`f = g`), the code is discarded. A method has no binding:
@@ -2195,6 +2199,7 @@ impl JitEnv for InterpEnv<'_> {
             ret: None,
             ret_bool: false,
             ret_obj: None,
+            ret_str: false,
             bind: None,
             scope,
         }))
@@ -5200,9 +5205,10 @@ impl Interp {
             }
             None => {
                 let ret_obj = self.ret_class_of(ret_ty);
-                let Some(root) =
-                    self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls, scope)
-                else {
+                let ret_str = self.ret_is_str(ret_ty);
+                let Some(root) = self.root_fn(
+                    chunk, params, ret_num, ret_bool, ret_obj, ret_str, cls, scope,
+                ) else {
                     // Not a signature this tier can even describe. That is a
                     // property of the function, not of this call, so record it —
                     // otherwise the attempt repeats forever, uncached.
@@ -5336,13 +5342,15 @@ impl Interp {
         ret_num: Option<mersey_front::check::Num>,
         ret_bool: bool,
         ret_obj: Option<Rc<ClassDef>>,
+        ret_str: bool,
         this: Option<Rc<ClassDef>>,
         target: usize,
         frame: &[Value],
         scope: Option<Env>,
     ) -> Result<Option<Value>, Thrown> {
-        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, this, scope)
-        else {
+        let Some(root) = self.root_fn(
+            chunk, params, ret_num, ret_bool, ret_obj, ret_str, this, scope,
+        ) else {
             return Ok(None);
         };
         let Some(compiled) = self.jit_compile(chunk, &root) else {
@@ -5492,6 +5500,7 @@ impl Interp {
         ret: Option<mersey_front::check::Num>,
         ret_bool: bool,
         ret_obj: Option<Rc<ClassDef>>,
+        ret_str: bool,
         this: Option<Rc<ClassDef>>,
         // Where the *hot* function's free names resolve. Its callees carry their
         // own (a method's is its class's); this is the one the group starts from,
@@ -5507,6 +5516,7 @@ impl Interp {
             ret,
             ret_bool,
             ret_obj,
+            ret_str,
             bind: None,
             scope: scope.map(DefScope),
         })
@@ -5583,6 +5593,7 @@ impl Interp {
             ret: c.data.ret_num,
             ret_bool: c.data.ret_bool,
             ret_obj: self.ret_class(&c.data),
+            ret_str: self.ret_is_str(c.data.ret_ty()),
             bind: Some((name.to_string(), c.clone())),
             scope: Some(DefScope(c.env.clone())),
         })
@@ -5619,6 +5630,7 @@ impl Interp {
             ret: data.ret_num,
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
+            ret_str: self.ret_is_str(data.ret_ty()),
             bind: None, // a class's method set cannot change (§4.1)
             scope,
         })
@@ -5669,6 +5681,7 @@ impl Interp {
             ret: data.ret_num,
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
+            ret_str: self.ret_is_str(data.ret_ty()),
             bind: None, // a class's accessor set cannot change (§4.1)
             scope,
         })
@@ -5677,6 +5690,16 @@ impl Interp {
     /// The class a function is declared to return, when it returns an object.
     pub(crate) fn ret_class(&self, data: &FnData) -> Option<Rc<ClassDef>> {
         self.ret_class_of(data.ret_ty)
+    }
+
+    /// Does this return type resolve to `string`? Kept beside `ret_class_of`
+    /// because they answer the same question about the same `TypeExpr`, and both
+    /// are asked only on the compile path.
+    pub(crate) fn ret_is_str(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
+        match ret_ty {
+            Some(t) => matches!(resolve_field_ty(t, &self.globals), FieldTy::Str),
+            None => false,
+        }
     }
 
     /// The same, from a return type already in hand — see `vm::OsrCtx::ret_ty`
