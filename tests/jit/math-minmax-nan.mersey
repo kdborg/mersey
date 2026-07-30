@@ -1,0 +1,50 @@
+// `math.max`/`math.min` at their awkward inputs, on both tiers.
+//
+// These disagreed. The interpreter folded with `<`, and an ordered comparison is
+// false whichever side a NaN is on, so it returned the *other* operand — making
+// `math.max(NaN, 5)` come out 5 while `math.max(5, NaN)` came out NaN. Argument
+// order changed the answer. Tier 1's lowering propagated NaN, so the two tiers
+// printed different numbers for the same expression, which is the one kind of bug
+// that arrives quietly.
+//
+// Both propagate now, which is also what JS's `Math.max`/`Math.min` do. The
+// functions are called in a loop first so that the second call goes through
+// compiled code — asking the question once would only ever ask the interpreter.
+
+import { console } from "std:console";
+import { math } from "std:math";
+
+function mx(a: float64, b: float64, n: int32): float64 {
+    let acc = 0.0;
+    let i = 0;
+    while (i < n) {
+        acc = math.max(a, b);
+        i += 1;
+    }
+    return acc;
+}
+
+function mn(a: float64, b: float64, n: int32): float64 {
+    let acc = 0.0;
+    let i = 0;
+    while (i < n) {
+        acc = math.min(a, b);
+        i += 1;
+    }
+    return acc;
+}
+
+// Hot enough that the tier takes them.
+mx(1.0, 2.0, 300000);
+mn(1.0, 2.0, 300000);
+
+const nan = math.sqrt(0.0 - 1.0);
+
+// NaN either side, of both, is NaN.
+console.log(`max nan  ${mx(nan, 5.0, 1)} ${mx(5.0, nan, 1)}`);
+console.log(`min nan  ${mn(nan, 5.0, 1)} ${mn(5.0, nan, 1)}`);
+// And ordinary arguments do not care which way round they came.
+console.log(`max      ${mx(3.0, 7.0, 1)} ${mx(7.0, 3.0, 1)}`);
+console.log(`min      ${mn(3.0, 7.0, 1)} ${mn(7.0, 3.0, 1)}`);
+// Variadic and integer forms go through the same fold.
+console.log(`many     ${math.max(1, 9, 4)} ${math.min(1, 9, 4)}`);

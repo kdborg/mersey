@@ -3178,13 +3178,19 @@ fn translate(
                     // (cset/uxtb/subs), landing three integer ops and two
                     // domain crossings on the loop-carried path; selecting on
                     // `lt` directly lowers to a single `fcmp`+`fcsel`.
+                    // One instruction. `fmax`/`fmin` lower to arm64 `FMAX`/`FMIN`,
+                    // which propagate NaN — the same answers this pair already
+                    // gave through `fcmp`+`select`, and the same JS gives — but
+                    // off the loop-carried dependency path by a whole
+                    // instruction. `mathk`, whose kernel is
+                    // `math.max(acc * 0.0, …)` and is latency-bound on exactly
+                    // that chain, goes 15.5 -> 12.4 ms.
                     MathOp::Min | MathOp::Max => {
                         let (a0, a1) = (fargs[0], fargs[1]);
-                        let lt = b.ins().fcmp(FloatCC::LessThan, a1, a0);
                         if op == MathOp::Min {
-                            b.ins().select(lt, a1, a0) // (a1 < a0) ? a1 : a0
+                            b.ins().fmin(a0, a1)
                         } else {
-                            b.ins().select(lt, a0, a1) // (a1 < a0) ? a0 : a1
+                            b.ins().fmax(a0, a1)
                         }
                     }
                 };

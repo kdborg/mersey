@@ -5863,6 +5863,19 @@ impl Interp {
                 v => Value::F64(v.and_then(as_num).unwrap_or(f64::NAN).abs()),
             }),
             "math.min" | "math.max" => {
+                // NaN propagates, as in JS: `Math.max(NaN, 5)` and
+                // `Math.max(5, NaN)` are both NaN. The fold below compares with
+                // `<`, and an ordered comparison is false whichever side the NaN
+                // is on — so it returned the *other* operand, which made the
+                // answer depend on argument order (`math.max(NaN, 5)` was 5 but
+                // `math.max(5, NaN)` was NaN) and disagreed with Tier 1, whose
+                // lowering propagates. Argument order must not change the answer.
+                if args
+                    .iter()
+                    .any(|a| matches!(a, Value::F64(f) if f.is_nan()))
+                {
+                    return Ok(Value::F64(f64::NAN));
+                }
                 let mut best: Option<Value> = None;
                 for a in args {
                     best = Some(match best {

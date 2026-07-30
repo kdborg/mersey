@@ -104,3 +104,19 @@ fn strings_and_opaques_agree_across_the_tier_boundary() {
     // 4 units when present, 1 when null — so the null branch must be taken.
     assert!(out.contains("widthOf   800000 200000"), "{out}");
 }
+
+/// `math.max`/`math.min` with a NaN argument. The interpreter's fold compared with
+/// `<`, which is false whichever side the NaN is on, so it returned the other
+/// operand — `math.max(NaN, 5)` was 5 while `math.max(5, NaN)` was NaN, and Tier 1
+/// disagreed with both by propagating. Argument order must not change the answer,
+/// and the two tiers must not print different ones.
+#[test]
+fn min_and_max_propagate_nan_on_both_tiers() {
+    check("math-minmax-nan.mersey");
+    let out = run("math-minmax-nan.mersey", true);
+    assert!(out.contains("max nan  NaN NaN"), "{out}");
+    assert!(out.contains("min nan  NaN NaN"), "{out}");
+    // Symmetric on ordinary arguments too, which is the property NaN broke.
+    assert!(out.contains("max      7 7"), "{out}");
+    assert!(out.contains("min      3 3"), "{out}");
+}
