@@ -334,6 +334,15 @@ fn decode_utf16(rest: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Result<String, S
 struct CliHost {
     dom: std::collections::HashMap<String, String>,
     caps: Vec<String>,
+    /// `caps` holds strings and the check was a linear scan comparing each one —
+    /// per `random.fill`, which a compiled loop makes millions of times. The
+    /// answer only changes when a capability is dropped, so it is cached here and
+    /// `drop_cap` refreshes it. `caps` stays the source of truth.
+    allow_random: bool,
+    /// The CSPRNG itself, held rather than fetched. `ThreadRng::default()` is a
+    /// thread-local lookup, and it was being paid on every call for a generator
+    /// that never changes.
+    rng: rand::rngs::ThreadRng,
     /// (port, callback id) recorded by a `net.serve` call, consumed by the
     /// driver's accept loop after top-level completes.
     pending_server: Option<(u16, u32)>,
@@ -385,10 +394,10 @@ impl interp::Host for CliHost {
     }
     /// Straight into the caller's slice: no allocation, no copy.
     fn random_fill(&mut self, buf: &mut [u8]) -> Result<(), String> {
-        if !self.caps.iter().any(|c| c == "random") {
+        if !self.allow_random {
             return Err("no `random` capability (run with --allow-random)".into());
         }
-        rand::rngs::ThreadRng::default().fill_bytes(buf);
+        self.rng.fill_bytes(buf);
         Ok(())
     }
     fn env_var(&mut self, name: &str) -> Option<String> {
@@ -403,6 +412,7 @@ impl interp::Host for CliHost {
     }
     fn drop_cap(&mut self, cap: &str) {
         self.caps.retain(|c| c != cap);
+        self.allow_random = self.caps.iter().any(|c| c == "random");
     }
     fn request_serve(&mut self, port: u16, cb_id: u32) -> Result<(), String> {
         if !self.caps.iter().any(|c| c == "net") {
@@ -618,7 +628,9 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     }
     let host = CliHost {
         dom: std::collections::HashMap::new(),
+        allow_random: caps.iter().any(|c| c == "random"),
         caps,
+        rng: rand::rngs::ThreadRng::default(),
         pending_server: None,
     };
     let mut interp = interp::new_interp(Box::new(host));

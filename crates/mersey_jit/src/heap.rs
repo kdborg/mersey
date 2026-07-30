@@ -403,6 +403,11 @@ pub(crate) unsafe extern "C" fn native_call(
     name_len: usize,
     args_ptr: *const u64,
     argc: usize,
+    // `Interp::NATIVE_FAST`'s index for this native, resolved once at compile
+    // time, or `u32::MAX`. Pointer-width because that is what the shim
+    // declaration gives every argument; the name is still carried for the
+    // general path.
+    id: usize,
 ) -> u64 {
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
@@ -412,7 +417,7 @@ pub(crate) unsafe extern "C" fn native_call(
             std::slice::from_raw_parts(args_ptr, argc)
         };
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_native_call(name, args),
+            Some(ip) => (*ip).jit_native_call(name, id as u32, args),
             None => u64::MAX,
         }
     }

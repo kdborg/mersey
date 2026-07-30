@@ -1777,6 +1777,38 @@ impl Arena {
         v
     }
 
+    /// Lend the value out for the duration of one call, keeping the slot.
+    ///
+    /// A native that only *reads* its argument does not need a clone, and a clone
+    /// of a reference-counted `Value` is an increment now and a trip through
+    /// `Value`'s drop glue — a jump table over thirty-odd variants — at the end:
+    /// together ~12% of a compiled `random.fill(buf)` iteration, for a value that
+    /// was never going to outlive the call. Moving it out and back is two 16-byte
+    /// copies and no reference counting.
+    ///
+    /// The slot is left holding `Value::Null` and is **not** freed, so the handle
+    /// stays valid. Nothing may read that handle before `give_back` — which holds
+    /// for `Interp::NATIVE_FAST`, whose members touch no arena.
+    pub fn lend(&mut self, h: u64) -> Option<Value> {
+        if h == 0 {
+            return None;
+        }
+        let slot = self.slots.get_mut((h - 1) as usize)?;
+        // Only a live slot is lent; a freed one stays freed rather than being
+        // resurrected holding `null`.
+        slot.is_some().then(|| slot.replace(Value::Null))?
+    }
+
+    /// Put back what `lend` moved out.
+    pub fn give_back(&mut self, h: u64, v: Value) {
+        if h == 0 {
+            return;
+        }
+        if let Some(slot) = self.slots.get_mut((h - 1) as usize) {
+            *slot = Some(v);
+        }
+    }
+
     /// The end of a compiled call, on every path: drop whatever it never let go.
     pub fn clear(&mut self) {
         self.slots.clear();
@@ -4508,6 +4540,90 @@ impl Interp {
     /// `call_native`, so behaviour is the interpreter's by construction.
     pub const NATIVE_NS: &[&str] = &["random", "bytes", "parse", "json", "hash"];
 
+    /// The natives a *compiled* loop sits on, in id order.
+    ///
+    /// `call_native` dispatches on the name, and that match is a decision tree
+    /// over forty-odd string literals — affordable once, not on every iteration
+    /// of a compiled loop, where it measured 20% of `random.fill(buf)`. Tier 1
+    /// resolves the name to one of these ids at compile time (`native_fast_id`)
+    /// and the shim switches on the integer. There is one implementation of each
+    /// native, here: `call_native`'s arms delegate to it.
+    pub const NATIVE_FAST: &[&str] = &[
+        "random.fill",
+        "bytes.encodeUtf8",
+        "bytes.decodeUtf8",
+        "parse.url",
+    ];
+
+    /// `NATIVE_FAST`'s index for `name`, or `u32::MAX` for "not in the fast set".
+    pub fn native_fast_id(name: &str) -> u32 {
+        match Self::NATIVE_FAST.iter().position(|n| *n == name) {
+            Some(i) => i as u32,
+            None => u32::MAX,
+        }
+    }
+
+    /// One of `NATIVE_FAST`, by id, with its arguments *borrowed*. `call_native`
+    /// has to own its `Vec` (some natives consume their arguments); these four do
+    /// not, which is what lets a compiled call avoid the allocation entirely.
+    fn call_native_fast(&mut self, id: u32, args: &[Value]) -> VResult {
+        match id {
+            0 => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("random.fill needs a Bytes buffer");
+                };
+                // No `Rc` clone: `args` is borrowed from the caller, not from
+                // `self`, so the buffer's borrow and `self.host`'s are disjoint.
+                // (It used to clone, from when this arm owned its `args` vector.)
+                let mut slot = b.borrow_mut();
+                match self.host.random_fill(&mut slot) {
+                    Ok(()) => {
+                        drop(slot);
+                        Ok(Value::Null)
+                    }
+                    Err(msg) => {
+                        drop(slot);
+                        Err(self.throw("Error", msg))
+                    }
+                }
+            }
+            1 => {
+                let Some(Value::Str(s)) = args.first() else {
+                    return self.type_error("bytes.encodeUtf8 needs a string");
+                };
+                // No intermediate `String`: that one was allocated, validated,
+                // and then had its validation discarded by `into_bytes`.
+                Ok(Value::Bytes(Rc::new(RefCell::new(utf16_to_utf8_bytes(s)))))
+            }
+            2 => {
+                let Some(Value::Bytes(b)) = args.first() else {
+                    return self.type_error("bytes.decodeUtf8 needs bytes");
+                };
+                // Invalid UTF-8 is `null`, not U+FFFD: a decode that quietly
+                // succeeds on garbage is how corrupt data travels.
+                //
+                // Validated in place. `String::from_utf8(b.borrow().clone())`
+                // copied the whole buffer first only to hand the copy back for
+                // re-encoding — a payload-sized allocation and memcpy for
+                // nothing.
+                Ok(match std::str::from_utf8(&b.borrow()) {
+                    Ok(text) => Value::Str(Rc::new(utf16(text))),
+                    Err(_) => Value::Null,
+                })
+            }
+            3 => {
+                let text = self.want_string(args.first())?;
+                // Absolute URLs only: a relative reference is not a URL until
+                // you say what it is relative to, which this does not do.
+                let Ok(u) = url::Url::parse(text.trim()) else {
+                    return Ok(Value::Null);
+                };
+                Ok(Value::UrlV(Rc::new(u)))
+            }
+            _ => unreachable!("id is an index into NATIVE_FAST"),
+        }
+    }
+
     pub fn jit_time_ms(&mut self, epoch: bool) -> f64 {
         self.host.time_ms(epoch)
     }
@@ -4557,12 +4673,36 @@ impl Interp {
     /// it. Returns the result's handle, or 0 for a void/null result; on a throw
     /// it stashes the error for `after_jit` and returns `u64::MAX`, since a shim
     /// cannot unwind through native frames.
-    pub fn jit_native_call(&mut self, name: &str, args: &[u64]) -> u64 {
-        let argv: Vec<Value> = args
-            .iter()
-            .map(|h| self.jit_arena.get(*h).cloned().unwrap_or(Value::Null))
-            .collect();
-        match self.call_native(name, None, argv) {
+    pub fn jit_native_call(&mut self, name: &str, id: u32, args: &[u64]) -> u64 {
+        // A fast-set native takes its arguments from a stack array and reaches its
+        // one implementation by integer switch. The general path below has to
+        // build an owned `Vec` — `call_native` drops it, and some natives consume
+        // their arguments — and then match the name against every native in the
+        // language. On `random.fill(buf)` those two were 20% and 11% of a
+        // compiled iteration respectively, against 61% for the ChaCha it exists
+        // to run.
+        let out = if id != u32::MAX && args.len() == 1 {
+            // Every member of `NATIVE_FAST` takes exactly one argument, so there
+            // is one value to hand over: no buffer to build, index and tear down.
+            // And it is *lent*, not cloned — see `Arena::lend`.
+            match self.jit_arena.lend(args[0]) {
+                Some(v) => {
+                    let r = self.call_native_fast(id, std::slice::from_ref(&v));
+                    self.jit_arena.give_back(args[0], v);
+                    r
+                }
+                // The handle names nothing — the native sees the `null` it would
+                // have seen anyway, and reports its own type error.
+                None => self.call_native_fast(id, &[Value::Null]),
+            }
+        } else {
+            let argv: Vec<Value> = args
+                .iter()
+                .map(|h| self.jit_arena.get(*h).cloned().unwrap_or(Value::Null))
+                .collect();
+            self.call_native(name, None, argv)
+        };
+        match out {
             Ok(Value::Null) => 0,
             Ok(v) => self.jit_arena.keep(v),
             Err(t) => {
@@ -4580,12 +4720,19 @@ impl Interp {
     /// function. A general numeric-property shim needs the checker's type for
     /// each property, which this tier does not have. -1 means "not an integer
     /// length here" and the caller bails.
-    pub fn jit_val_len(&mut self, handle: u64) -> i64 {
-        let Some(v) = self.jit_arena.get(handle).cloned() else {
-            return -1;
-        };
-        match self.get_member(&v, "length") {
-            Ok(Some(Value::I32(n))) => n as i64,
+    pub fn jit_val_len(&self, handle: u64) -> i64 {
+        // Answered from the borrowed arena entry. This used to *clone* the value
+        // (an `Rc` bump and a later drop) and ask `get_member`, which matches the
+        // property name as a string against every kind and wraps the answer in a
+        // `Value` that compiled code immediately unwraps. Together that was ~16%
+        // of a compiled loop doing `random.fill(buf); sum + buf.length` — for
+        // three machine words of work. The three arms below are exactly what
+        // `get_member` answers `"length"` with; anything else returns -1 and the
+        // caller bails to the interpreter, as before.
+        match self.jit_arena.get(handle) {
+            Some(Value::Bytes(b)) => b.borrow().len() as i64,
+            Some(Value::Str(s)) => s.len() as i64,
+            Some(Value::Array(a)) => a.borrow().len() as i64,
             _ => -1,
         }
     }
@@ -5822,23 +5969,7 @@ impl Interp {
             // Fill a caller's buffer in place — the primitive `bytes` is built
             // on, and the one a loop should use: allocating a fresh buffer per
             // call costs more than generating the randomness that goes in it.
-            "random.fill" => {
-                let Some(Value::Bytes(b)) = args.first() else {
-                    return self.type_error("random.fill needs a Bytes buffer");
-                };
-                let b = b.clone();
-                let mut slot = b.borrow_mut();
-                match self.host.random_fill(&mut slot) {
-                    Ok(()) => {
-                        drop(slot);
-                        Ok(Value::Null)
-                    }
-                    Err(msg) => {
-                        drop(slot);
-                        Err(self.throw("Error", msg))
-                    }
-                }
-            }
+            "random.fill" => self.call_native_fast(0, &args),
             "random.float" => {
                 let b = match self.host.random_bytes(8) {
                     Ok(b) => b,
@@ -6041,15 +6172,7 @@ impl Interp {
                     Err(msg) => Err(self.throw("Error", format!("bad regex: {msg}"))),
                 }
             }
-            "parse.url" => {
-                let text = self.want_string(args.first())?;
-                // Absolute URLs only: a relative reference is not a URL until
-                // you say what it is relative to, which this does not do.
-                let Ok(u) = url::Url::parse(text.trim()) else {
-                    return Ok(Value::Null);
-                };
-                Ok(Value::UrlV(Rc::new(u)))
-            }
+            "parse.url" => self.call_native_fast(3, &args),
             "parse.bool" => {
                 let text = self.want_string(args.first())?;
                 // Exactly "true" or "false". Nothing else is a boolean, and
@@ -6200,30 +6323,8 @@ impl Interp {
                 let mac = hmac_sha1(&key.borrow(), &data.borrow());
                 Ok(Value::Bytes(Rc::new(RefCell::new(mac))))
             }
-            "bytes.encodeUtf8" => {
-                let Some(Value::Str(s)) = args.first() else {
-                    return self.type_error("bytes.encodeUtf8 needs a string");
-                };
-                // No intermediate `String`: that one was allocated, validated,
-                // and then had its validation discarded by `into_bytes`.
-                Ok(Value::Bytes(Rc::new(RefCell::new(utf16_to_utf8_bytes(s)))))
-            }
-            "bytes.decodeUtf8" => {
-                let Some(Value::Bytes(b)) = args.first() else {
-                    return self.type_error("bytes.decodeUtf8 needs bytes");
-                };
-                // Invalid UTF-8 is `null`, not U+FFFD: a decode that quietly
-                // succeeds on garbage is how corrupt data travels.
-                //
-                // Validated in place. `String::from_utf8(b.borrow().clone())`
-                // copied the whole buffer first only to hand the copy back for
-                // re-encoding — a payload-sized allocation and memcpy for
-                // nothing.
-                Ok(match std::str::from_utf8(&b.borrow()) {
-                    Ok(text) => Value::Str(Rc::new(utf16(text))),
-                    Err(_) => Value::Null,
-                })
-            }
+            "bytes.encodeUtf8" => self.call_native_fast(1, &args),
+            "bytes.decodeUtf8" => self.call_native_fast(2, &args),
             "bytes.fromHost" => {
                 let Some(Value::JsRef(h)) = args.first() else {
                     return self.type_error("bytes.fromHost needs a host typed array");

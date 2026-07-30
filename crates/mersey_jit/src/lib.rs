@@ -499,7 +499,7 @@ struct Plan {
     /// the arena.
     opaque_globals: HashMap<u16, &'static str>,
     /// `CallMethod` sites that are a native call, and the full member name.
-    native_at: HashMap<usize, &'static str>,
+    native_at: HashMap<usize, (&'static str, u32)>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -785,7 +785,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut getter_pc: HashSet<usize> = HashSet::new();
     let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
-    let mut native_at: HashMap<usize, &'static str> = HashMap::new();
+    let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -1278,7 +1278,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         return None;
                     }
                     let full: &'static str = Box::leak(format!("{ns}.{name}").into_boxed_str());
-                    native_at.insert(pc, full);
+                    native_at.insert(pc, (full, mersey_interp::Interp::native_fast_id(full)));
                     stack.push(TSlot::Val(Ty::Val, Prov::Stable));
                     continue;
                 }
@@ -2024,8 +2024,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         web_call_num: one("msy_web_call_num", Some(types::I64), 6)?,
         // (arena, name_ptr, name_len) -> arena handle, 0 if not an opaque
         global_val: one("msy_global_val", Some(types::I64), 3)?,
-        // (arena, name_ptr, name_len, args_ptr, argc) -> handle / 0 / u64::MAX
-        native_call: one("msy_native_call", Some(types::I64), 5)?,
+        // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
+        native_call: one("msy_native_call", Some(types::I64), 6)?,
         // (arena, handle) -> the length, or -1
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
@@ -3034,7 +3034,7 @@ fn translate(
             // interpreter stashed the error and this traps so `after_jit` can
             // raise it where it happened.
             Op::CallMethod(_, n) if p.native_at.contains_key(&pc) => {
-                let name = *p.native_at.get(&pc)?;
+                let (name, fast_id) = *p.native_at.get(&pc)?;
                 // Each argument becomes an arena handle. A handle we *made*
                 // here is ours to release the moment the call returns — the
                 // native has taken what it needs by then.
@@ -3091,9 +3091,11 @@ fn translate(
                 }
                 let (nptr, nlen) = str_const(b, name);
                 let argc = b.ins().iconst(types::I64, handles.len() as i64);
-                let call = b
-                    .ins()
-                    .call(shim.native_call, &[arena_ptr, nptr, nlen, args_ptr, argc]);
+                let id_v = b.ins().iconst(types::I64, fast_id as i64);
+                let call = b.ins().call(
+                    shim.native_call,
+                    &[arena_ptr, nptr, nlen, args_ptr, argc, id_v],
+                );
                 let out = b.inst_results(call)[0];
                 let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
                 guard(b, ctx, threw, R_HOST, pc, None);
