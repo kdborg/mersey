@@ -2870,6 +2870,12 @@ fn exec(
                             ctx.this,
                             $t,
                             slots,
+                            // The scope the frame is running in. A compiled chunk
+                            // has `needs_env == false`, so nothing local lives in
+                            // it — every name it resolves comes from outside the
+                            // function, and walking up from here reaches the same
+                            // module scope the function was written in.
+                            scopes.last().cloned(),
                         );
                         if let Some(v) = throwing!(out) {
                             // The compiled code ran the rest of *this* function.

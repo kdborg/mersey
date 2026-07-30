@@ -1851,6 +1851,38 @@ pub enum JitSlot {
     Val,
 }
 
+/// The scope a function's free names resolve in, carried opaquely.
+///
+/// Tier 1 has to ask what a name binds, and the honest answer depends on *where
+/// the function was written*. `Interp::globals` is not that: it is swapped to the
+/// module currently being run, so by the time a function gets hot it names the
+/// entry module's scope. For anything defined elsewhere — every module in the
+/// standard library — a `std:` import was therefore invisible, and the function
+/// was refused on its first `LoadName`.
+///
+/// Opaque because the JIT only carries it back; `Scope` is the interpreter's
+/// business. A compiled chunk has `needs_env == false`, so no *local* lives in a
+/// scope: every name this resolves is one from outside the function, which is why
+/// a call-time scope answers the same as the defining one.
+#[derive(Clone)]
+pub struct DefScope(Env);
+
+/// What a free name binds, as far as Tier 1 cares.
+pub enum NameKind {
+    /// A `std:` namespace whose members go through the native shim.
+    StdNs(&'static str),
+    /// `std:time`, which has its own lowering.
+    TimeNs,
+    /// `std:math`, whose members lower to machine intrinsics.
+    MathNs,
+    /// An engine value carried opaquely by arena handle — a `Bytes`, a `Url`.
+    Opaque,
+    /// A binding currently holding a host object handle.
+    Web,
+    /// Anything else, including a name that does not resolve here.
+    Other,
+}
+
 /// One function in a compiled group: its bytecode, and everything about its
 /// signature that compiled code has to know before it compiles the body.
 #[derive(Clone)]
@@ -1875,6 +1907,8 @@ pub struct JitFn {
     /// later repointed (`f = g`), the code is discarded. A method has no binding:
     /// a class's method set cannot change (§4.1).
     pub bind: Option<(String, Rc<Closure>)>,
+    /// Where this function's free names resolve. See `DefScope`.
+    pub scope: Option<DefScope>,
 }
 
 /// The numeric world a compiled function returns in.
@@ -1892,7 +1926,7 @@ pub enum JitKind {
 /// types through the bytecode — which is the compiler's job and nobody else's.
 pub trait JitEnv {
     /// A top-level function by name, if compiled code could call it directly.
-    fn function(&self, name: &str) -> Option<JitFn>;
+    fn function(&self, scope: Option<&DefScope>, name: &str) -> Option<JitFn>;
 
     /// The method `name` on a receiver of class `cls`, if the call can be made
     /// **directly** — which needs `cls` to be the last word on what `m` means. See
@@ -1923,29 +1957,11 @@ pub trait JitEnv {
     /// members compiled code can call through `native_call` — the general
     /// escape hatch, as opposed to `std:math`/`std:time`, which lower to
     /// instructions and a numeric shim respectively.
-    fn std_ns(&self, name: &str) -> Option<&'static str>;
-
-    /// True if the top-level `name` holds an engine value compiled code can
-    /// carry opaquely (`Ty::Val`) — a `Bytes`, a `Url`, anything a native
-    /// returns. Excludes everything the tier models properly, which it would
-    /// rather keep in registers.
-    fn is_opaque_global(&self, name: &str) -> bool;
-
-    /// True if `name` binds the `std:time` namespace at the top level. Its
-    /// `now()`/`monotonic()` are zero-argument numeric host calls, which
-    /// compiled code makes directly through the arena's interp pointer rather
-    /// than bailing to the interpreter. This is the first host call the JIT
-    /// tier compiles; the web-object calls follow the same shim path.
-    fn is_time_ns(&self, name: &str) -> bool;
-
-    /// True if `name` is a top-level binding that currently holds a host object
-    /// (a `JsRef` — a canvas context, an element). Compiled code reads its
-    /// handle fresh each time and calls methods on it directly. The value's
-    /// *kind* is fixed by the checker (a `JsRef`-typed binding is always a
-    /// `JsRef`), so reading it at run time is sound even for a reassignable
-    /// binding — only the handle can change, and reading it live gets the
-    /// current one.
-    fn is_web_global(&self, name: &str) -> bool;
+    /// What `name` binds in `scope` — the scope the function being compiled was
+    /// defined in, or the current globals when there is none. This replaced four
+    /// separate predicates that each asked `Interp::globals`; see `DefScope` for
+    /// why that was the wrong place to ask.
+    fn name_kind(&self, scope: Option<&DefScope>, name: &str) -> NameKind;
 
     /// True if `new name(...)` would go to the host constructor path (`web_new`)
     /// rather than instantiate a Mersey class — i.e. `name` is not a plain class
@@ -1953,12 +1969,6 @@ pub trait JitEnv {
     /// Mirrors `new_named` exactly so the compiled `new` throws or succeeds where
     /// the interpreter would.
     fn new_is_web(&self, name: &str) -> bool;
-
-    /// True if `name` is bound to the `std:math` namespace. Its numeric methods
-    /// (`sqrt`, `floor`, `min`, …) lower to machine instructions instead of a
-    /// call, so a math-heavy loop compiles rather than bailing the whole
-    /// function to the interpreter.
-    fn is_math_ns(&self, name: &str) -> bool;
 
     /// The interned id a web method name *already* has, if any. By the time a
     /// web loop compiles it has run thousands of interpreted iterations, each of
@@ -2035,8 +2045,8 @@ struct InterpEnv<'a> {
 }
 
 impl JitEnv for InterpEnv<'_> {
-    fn function(&self, name: &str) -> Option<JitFn> {
-        self.i.top_level_fn(name)
+    fn function(&self, scope: Option<&DefScope>, name: &str) -> Option<JitFn> {
+        self.i.top_level_fn(scope.map(|s| &s.0), name)
     }
     fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_method(cls, name)
@@ -2059,26 +2069,30 @@ impl JitEnv for InterpEnv<'_> {
         }
         Some(cls)
     }
-    fn std_ns(&self, name: &str) -> Option<&'static str> {
-        let Some(Value::Namespace(ns)) = env_get(&self.i.globals, name) else {
-            return None;
-        };
-        // `math` and `time` have their own lowerings; everything else goes
-        // through the general native shim.
-        Interp::NATIVE_NS.iter().copied().find(|n| *n == ns.name)
-    }
-    fn is_opaque_global(&self, name: &str) -> bool {
-        matches!(
-            env_get(&self.i.globals, name),
-            Some(Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_))
-        )
-    }
-    fn is_time_ns(&self, name: &str) -> bool {
-        matches!(env_get(&self.i.globals, name),
-            Some(Value::Namespace(ns)) if ns.name == "time")
-    }
-    fn is_web_global(&self, name: &str) -> bool {
-        matches!(env_get(&self.i.globals, name), Some(Value::JsRef(_)))
+    fn name_kind(&self, scope: Option<&DefScope>, name: &str) -> NameKind {
+        // The function's own scope when it has one, and only otherwise the
+        // globals — which are the right answer exactly when the function was
+        // written in the module being run.
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
+        match env_get(env, name) {
+            Some(Value::Namespace(ns)) => {
+                // `math` and `time` have their own lowerings; everything else
+                // goes through the general native shim.
+                if ns.name == "time" {
+                    return NameKind::TimeNs;
+                }
+                if ns.name == "math" {
+                    return NameKind::MathNs;
+                }
+                match Interp::NATIVE_NS.iter().copied().find(|n| *n == ns.name) {
+                    Some(n) => NameKind::StdNs(n),
+                    None => NameKind::Other,
+                }
+            }
+            Some(Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_)) => NameKind::Opaque,
+            Some(Value::JsRef(_)) => NameKind::Web,
+            _ => NameKind::Other,
+        }
     }
     fn new_is_web(&self, name: &str) -> bool {
         // A namespaced `new geo.Point(…)` resolves through an import; leave it to
@@ -2093,10 +2107,6 @@ impl JitEnv for InterpEnv<'_> {
         // Anything not bound to a Mersey class goes to `web_new` (a bound URL,
         // WebSocket, Uint8Array, or an unbound name the host may still know).
         !matches!(env_get(&self.i.globals, name), Some(Value::Class(_)))
-    }
-    fn is_math_ns(&self, name: &str) -> bool {
-        matches!(env_get(&self.i.globals, name),
-            Some(Value::Namespace(ns)) if ns.name == "math")
     }
     fn interned_web(&self, name: &str) -> Option<u32> {
         match self.i.interned.get(name) {
@@ -2122,6 +2132,8 @@ impl JitEnv for InterpEnv<'_> {
         if chunk.yields || chunk.needs_env || !chunk.simple_params {
             return None;
         }
+        // A method's free names resolve where its *class* was written.
+        let scope = cls.env.clone().map(DefScope);
         Some(Some(JitFn {
             params: simple_param_names(data.params)?,
             param_tys: self.i.param_types(data.params),
@@ -2131,6 +2143,7 @@ impl JitEnv for InterpEnv<'_> {
             ret_bool: false,
             ret_obj: None,
             bind: None,
+            scope,
         }))
     }
 }
@@ -4328,6 +4341,7 @@ impl Interp {
                             c.data.ret_ty(),
                             c.this.as_ref(),
                             &args,
+                            Some(c.env.clone()),
                         )? {
                             return Ok(v);
                         }
@@ -4461,6 +4475,7 @@ impl Interp {
             c.data.ret_ty(),
             c.this.as_ref(),
             args,
+            Some(c.env.clone()),
         )
     }
 
@@ -4916,6 +4931,7 @@ impl Interp {
                 c.data.ret_ty(),
                 c.this.as_ref(),
                 &args,
+                Some(c.env.clone()),
             )? {
                 return Ok(v);
             }
@@ -4961,6 +4977,7 @@ impl Interp {
         ret_ty: Option<&'static TypeExpr>,
         this: Option<&Value>,
         args: &[Value],
+        scope: Option<Env>,
     ) -> Result<Option<Value>, Thrown> {
         if !self.count_call(chunk) {
             return Ok(None);
@@ -5008,7 +5025,8 @@ impl Interp {
             }
             None => {
                 let ret_obj = self.ret_class_of(ret_ty);
-                let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls)
+                let Some(root) =
+                    self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, cls, scope)
                 else {
                     // Not a signature this tier can even describe. That is a
                     // property of the function, not of this call, so record it —
@@ -5146,8 +5164,10 @@ impl Interp {
         this: Option<Rc<ClassDef>>,
         target: usize,
         frame: &[Value],
+        scope: Option<Env>,
     ) -> Result<Option<Value>, Thrown> {
-        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, this) else {
+        let Some(root) = self.root_fn(chunk, params, ret_num, ret_bool, ret_obj, this, scope)
+        else {
             return Ok(None);
         };
         let Some(compiled) = self.jit_compile(chunk, &root) else {
@@ -5246,7 +5266,9 @@ impl Interp {
         if self.chunk_of(&c).is_none() {
             return false;
         }
-        let Some(root) = self.top_level_fn(name) else {
+        // A test helper: the function is a top-level one of the module under
+        // test, so the globals are its scope.
+        let Some(root) = self.top_level_fn(None, name) else {
             return false;
         };
         let Some(hook) = self.jit else { return false };
@@ -5296,6 +5318,11 @@ impl Interp {
         ret_bool: bool,
         ret_obj: Option<Rc<ClassDef>>,
         this: Option<Rc<ClassDef>>,
+        // Where the *hot* function's free names resolve. Its callees carry their
+        // own (a method's is its class's); this is the one the group starts from,
+        // and it has to come from the caller, which is the only thing that knows
+        // which closure is running.
+        scope: Option<Env>,
     ) -> Option<JitFn> {
         Some(JitFn {
             chunk: chunk.clone(),
@@ -5306,6 +5333,7 @@ impl Interp {
             ret_bool,
             ret_obj,
             bind: None,
+            scope: scope.map(DefScope),
         })
     }
 
@@ -5351,14 +5379,21 @@ impl Interp {
     /// code could call directly: no receiver, no captured environment beyond
     /// the globals, not a generator, not async, and already compiled to
     /// bytecode (if it has never run, it is not on any hot path).
-    fn top_level_fn(&self, name: &str) -> Option<JitFn> {
-        let Some(Value::Closure(c)) = env_get(&self.globals, name) else {
+    fn top_level_fn(&self, scope: Option<&Env>, name: &str) -> Option<JitFn> {
+        // `scope` is where the *calling* function's names resolve. For a call
+        // between two functions of the same module that is the module's scope,
+        // and the globals are not it — which is why a std-library function
+        // calling its own sibling was refused.
+        let env = scope.unwrap_or(&self.globals);
+        let Some(Value::Closure(c)) = env_get(env, name) else {
             return None;
         };
         if c.this.is_some() || c.cls.is_some() || c.data.is_async {
             return None;
         }
-        if !Rc::ptr_eq(&c.env, &self.globals) {
+        // Nothing captured beyond the scope the caller itself resolves in: a
+        // nested closure holding locals is not a direct call.
+        if !Rc::ptr_eq(&c.env, env) {
             return None;
         }
         let chunk = c.data.chunk.borrow().clone()??;
@@ -5374,6 +5409,7 @@ impl Interp {
             ret_bool: c.data.ret_bool,
             ret_obj: self.ret_class(&c.data),
             bind: Some((name.to_string(), c.clone())),
+            scope: Some(DefScope(c.env.clone())),
         })
     }
 
@@ -5398,6 +5434,8 @@ impl Interp {
         if chunk.yields || chunk.needs_env || !chunk.simple_params {
             return None;
         }
+        // A method's free names resolve where its *class* was written.
+        let scope = cls.env.clone().map(DefScope);
         Some(JitFn {
             params: simple_param_names(data.params)?,
             param_tys: self.param_types(data.params),
@@ -5407,6 +5445,7 @@ impl Interp {
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
             bind: None, // a class's method set cannot change (§4.1)
+            scope,
         })
     }
 
@@ -5445,6 +5484,8 @@ impl Interp {
         if chunk.yields || chunk.needs_env || !chunk.simple_params {
             return None;
         }
+        // A method's free names resolve where its *class* was written.
+        let scope = cls.env.clone().map(DefScope);
         Some(JitFn {
             params: vec![],
             param_tys: vec![],
@@ -5454,6 +5495,7 @@ impl Interp {
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
             bind: None, // a class's accessor set cannot change (§4.1)
+            scope,
         })
     }
 

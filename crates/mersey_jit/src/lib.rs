@@ -74,7 +74,7 @@ use mersey_front::check::{IntKind, Num};
 use mersey_interp::vm::{analyze, Chunk, Op};
 use mersey_interp::{
     repr, Arena, ClassDef, FieldTy, JitArg, JitCode, JitEnv, JitFn, JitKind, JitResult, JitSlot,
-    Trap, TrapReason, Value, JIT_DEPTH_LIMIT,
+    NameKind, Trap, TrapReason, Value, JIT_DEPTH_LIMIT,
 };
 
 /// The type of one value. Not of the whole kernel — of one value.
@@ -754,6 +754,7 @@ fn prov(s: TSlot) -> Prov {
 /// call, and reject anything outside the subset.
 fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let chunk = g.fns[me].chunk.clone();
+    let scope = g.fns[me].scope.clone();
     let sig = g.sigs[me].clone();
     let n_slots = sig.n_slots;
     let n_params = sig.params.len();
@@ -911,30 +912,41 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             }
             Op::LoadName(ni) => {
                 let name = chunk.names[ni as usize].as_str();
-                if g.env.is_time_ns(name) {
-                    time_ns_names.insert(ni);
-                    stack.push(TSlot::TimeNs); // a host-call receiver, not a value
-                } else if g.env.is_math_ns(name) {
-                    math_ns_names.insert(ni);
-                    stack.push(TSlot::MathNs); // an intrinsic receiver, not a value
-                } else if let Some(ns) = g.env.std_ns(name) {
-                    std_ns_names.insert(ni, ns);
-                    stack.push(TSlot::StdNs(ns)); // a native-call receiver
-                } else if g.env.is_opaque_global(name) {
-                    opaque_globals
-                        .entry(ni)
-                        .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
-                    stack.push(TSlot::Val(Ty::Val, Prov::Stable));
-                } else if g.env.is_web_global(name) {
-                    web_globals
-                        .entry(ni)
-                        .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
-                    stack.push(TSlot::Web(ni)); // a host-object receiver
-                } else {
-                    let f = g.env.function(name)?;
-                    let idx = g.add(f)?;
-                    callee.insert(ni, idx);
-                    stack.push(TSlot::Callee(idx)); // a function, not a value
+                // Resolved in *this function's* scope, not the globals — see
+                // `DefScope`. A module's `import { bytes } from "std:bytes"` is
+                // invisible from the entry module's scope, which is what made
+                // every std-library function refuse on its first `LoadName`.
+                match g.env.name_kind(scope.as_ref(), name) {
+                    NameKind::TimeNs => {
+                        time_ns_names.insert(ni);
+                        stack.push(TSlot::TimeNs); // a host-call receiver, not a value
+                    }
+                    NameKind::MathNs => {
+                        math_ns_names.insert(ni);
+                        stack.push(TSlot::MathNs); // an intrinsic receiver, not a value
+                    }
+                    NameKind::StdNs(ns) => {
+                        std_ns_names.insert(ni, ns);
+                        stack.push(TSlot::StdNs(ns)); // a native-call receiver
+                    }
+                    NameKind::Opaque => {
+                        opaque_globals
+                            .entry(ni)
+                            .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
+                        stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                    }
+                    NameKind::Web => {
+                        web_globals
+                            .entry(ni)
+                            .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
+                        stack.push(TSlot::Web(ni)); // a host-object receiver
+                    }
+                    NameKind::Other => {
+                        let f = g.env.function(scope.as_ref(), name)?;
+                        let idx = g.add(f)?;
+                        callee.insert(ni, idx);
+                        stack.push(TSlot::Callee(idx)); // a function, not a value
+                    }
                 }
             }
             Op::StoreName(_) | Op::DeclareName(_) => return None,
