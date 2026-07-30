@@ -1778,7 +1778,15 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
             )?;
             b.finalize();
         }
-        module.define_function(ids[n], &mut ctx).ok()?;
+        // Cranelift's verifier runs here, and a malformed function is a bug in
+        // this compiler rather than a shape it declined — so under the tracer say
+        // so, instead of letting `.ok()?` make it look like an ordinary refusal.
+        if let Err(e) = module.define_function(ids[n], &mut ctx) {
+            if *TRACE {
+                eprintln!("jit: define_function failed for fn {n}: {e}");
+            }
+            return None;
+        }
         module.clear_context(&mut ctx);
     }
 
@@ -1835,6 +1843,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 JitArg::F64(v) => (v.to_ne_bytes(), 0),
                 JitArg::Ptr(p) => ((*p as usize as u64).to_ne_bytes(), 0),
                 JitArg::Owned(p, h) => ((*p as usize as u64).to_ne_bytes(), *h),
+                // The same handle in both cells: the entry the body reads, and
+                // the reference it owns.
+                JitArg::Val(h) => (h.to_ne_bytes(), *h),
             };
             buf[at..at + 8].copy_from_slice(&bytes);
             buf[at + 8..at + 16].copy_from_slice(&handle.to_ne_bytes());
@@ -2142,6 +2153,19 @@ fn wrapper(
                         .load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
                     args.push(data);
                     args.push(len);
+                    args.push(h);
+                }
+                // An opaque: no address to derive anything from, just the arena
+                // entry naming it. Two registers, straight from the two cells —
+                // and it must be spelled out, because the catch-all below hands
+                // over one register and a `Ty::Val` is two, which the entry
+                // wrapper's signature notices and Cranelift rejects.
+                Ty::Val => {
+                    let v = b.ins().load(types::I64, MemFlags::trusted(), slots_ptr, at);
+                    let h = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), slots_ptr, at + 8);
+                    args.push(v);
                     args.push(h);
                 }
                 t => args.push(b.ins().load(t.cl(), MemFlags::trusted(), slots_ptr, at)),

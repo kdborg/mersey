@@ -1667,6 +1667,11 @@ pub enum JitArg {
     Ptr(*const u8),
     /// An arena-owned object: its address, and its arena handle.
     Owned(*const u8, u64),
+    /// An opaque engine value, by arena handle — there is no address to hand
+    /// over, because compiled code never looks inside one. 0 is `null`. The
+    /// handle is also the reference the compiled code owns and will release, so
+    /// this arrives already parked (see `try_osr`).
+    Val(u64),
 }
 
 /// Every reference-counted value Tier 1 code creates, owned in one place.
@@ -5164,6 +5169,12 @@ impl Interp {
                 (Value::Null, JitSlot::I32) => JitArg::I32(0),
                 (Value::Null, JitSlot::I64) => JitArg::I64(0),
                 (Value::Null, JitSlot::F64) => JitArg::F64(0.0),
+                // An opaque crosses as an arena handle and nothing else. Parking
+                // it here is also what gives the compiled code the reference it
+                // will release, so it does not need the `owned_slots` step below —
+                // which only knows how to promote a `Ptr`.
+                (Value::Null, JitSlot::Val) => JitArg::Val(0),
+                (other, JitSlot::Val) => JitArg::Val(self.jit_arena.keep(other.clone())),
                 (other, k) => match jit_arg(other, k) {
                     Some(a) => a,
                     None => return Ok(None),
