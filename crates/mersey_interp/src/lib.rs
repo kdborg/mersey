@@ -2752,6 +2752,16 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
                 _ => FieldTy::Opaque,
             }
         }
+        // `Map<K, V>` / `Set<T>` — containers this tier carries as opaques, by
+        // arena handle, the same way it carries one built in compiled code. The
+        // builtin ones are the names that bind nothing, which is the test the
+        // rest of the engine uses; a program with its own generic `Map` falls
+        // through to `Opaque` and interprets.
+        TypeExpr::Named { name, .. }
+            if (name == "Map" || name == "Set") && env_get(env, name).is_none() =>
+        {
+            FieldTy::Val
+        }
         TypeExpr::ArrayOf(e) => match resolve_field_ty(e, env) {
             FieldTy::Opaque => FieldTy::Opaque,
             inner => FieldTy::Arr(Rc::new(inner)),

@@ -63,10 +63,39 @@ function lookup(n: int32): int32 {
     return acc;
 }
 
+/// A `Map` as a *parameter* and as a *return* — the shapes a signature has to be
+/// able to describe. `Map<K, V>` is a generic name, so it resolves to the opaque
+/// this tier carries a container as; a program with its own generic `Map` binds
+/// the name and falls through to interpreting.
+function build(n: int32): Map<int32, int32> {
+    const m = new Map<int32, int32>();
+    let i = 0;
+    while (i < n) {
+        m.set(i % 16, i);
+        i += 1;
+    }
+    return m;
+}
+
+function count(m: Map<int32, int32>, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        if (m.has(i % 20)) {
+            acc = acc + 1;
+        }
+        acc = acc + m.size;
+        i += 1;
+    }
+    return acc;
+}
+
 reconcile(20000);
 lookup(20000);
+count(build(200), 20000);
 
 console.log(`reconcile ${reconcile(3)}`);
 console.log(`lookup    ${lookup(3)}`);
 // The class named `Own` is not a container, and `new Own(…)` must stay one.
 console.log(`own       ${new Own(7).n}`);
+console.log(`carried   ${count(build(200), 5)}`);

@@ -296,4 +296,6 @@ fn maps_and_sets_agree_across_the_tier_boundary() {
     assert!(out.contains("reconcile 114"), "{out}");
     assert!(out.contains("lookup    9"), "{out}");
     assert!(out.contains("own       7"), "{out}");
+    // A `Map` carried *through* a signature — as a parameter and as a return.
+    assert!(out.contains("carried   85"), "{out}");
 }
