@@ -4885,6 +4885,28 @@ impl Interp {
     /// of the element, 0 for a missing or non-string one (which reads as a null
     /// string), `u64::MAX` if the index threw.
     pub fn jit_val_index_str(&mut self, h: u64, idx: i64) -> u64 {
+        // The shape this is nearly always asked in — `parts[k]` on an array a
+        // `split` built, in range, holding a string — taken directly.
+        //
+        // The general path underneath is written for `a[i]` in all its meanings:
+        // it clones the container out of the arena as a `Value`, builds a
+        // `Value::I64` to index with, tries `Bytes` and a host object first, and
+        // dispatches over every indexable type before it gets to an array. None
+        // of that is wrong; it is just a lot for a bounds check and a clone, and
+        // reading elements off a `split` result is what parsing code does between
+        // the splits.
+        if idx >= 0 {
+            let hit = match self.jit_arena.get(h) {
+                Some(Value::Array(a)) => match a.borrow().get(idx as usize) {
+                    Some(v @ Value::Str(_)) => Some(v.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(v) = hit {
+                return self.jit_arena.keep(v);
+            }
+        }
         let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
         match self.index_get(&o, &Value::I64(idx)) {
             Ok(v @ Value::Str(_)) => self.jit_arena.keep(v),
@@ -8163,12 +8185,11 @@ impl Interp {
                             Some(other) => utf16(&to_display(other)),
                             None => Vec::new(),
                         };
-                        Ok(new_array(
-                            split_units(s, &sep)
-                                .into_iter()
-                                .map(|p| Value::Str(Rc::new(p)))
-                                .collect(),
-                        ))
+                        let mut parts: Vec<Value> = Vec::new();
+                        split_units_into(s, &sep, &mut |p| {
+                            parts.push(Value::Str(Rc::new(p.to_vec())))
+                        });
+                        Ok(new_array(parts))
                     }),
                     // Searching, in code units — which is both the correct answer
                     // and by far the cheaper one.
@@ -10412,22 +10433,26 @@ const MAX_CALL_DEPTH: usize = 3_000;
 /// it handed back. Splitting the units has neither problem.
 ///
 /// An empty separator gives one string per code unit, which is what JS does.
-pub fn split_units(s: &[u16], sep: &[u16]) -> Vec<Vec<u16>> {
+/// Each piece handed out as a borrow of the receiver.
+///
+/// Both callers want to build something other than a `Vec<Vec<u16>>` — the
+/// interpreter wants `Vec<Value>` and so does the shim — so returning one cost a
+/// vector of vectors that existed only to be consumed an element at a time and
+/// dropped. Handing out borrows means the caller allocates exactly what it keeps
+/// and nothing else.
+pub fn split_units_into(s: &[u16], sep: &[u16], f: &mut dyn FnMut(&[u16])) {
     if sep.is_empty() {
-        return s.iter().map(|u| vec![*u]).collect();
+        for u in s {
+            f(std::slice::from_ref(u));
+        }
+        return;
     }
-    // Deliberately *not* pre-sized. Counting the separators first is a second
-    // search over the same units, and measured on a four-piece split that costs
-    // more than the reallocations it saves: 618ms became 667ms. The pieces
-    // themselves are the expense here, not the vector holding them.
-    let mut parts = Vec::new();
     let mut last = 0usize;
     while let Some(at) = find_units(s, sep, last) {
-        parts.push(s[last..at].to_vec());
+        f(&s[last..at]);
         last = at + sep.len();
     }
-    parts.push(s[last..].to_vec());
-    parts
+    f(&s[last..]);
 }
 
 /// The first index at or after `from` where `needle`'s code units appear in

@@ -26,8 +26,8 @@ use std::rc::Rc;
 
 use mersey_interp::{
     alloc_instance, append_int_utf16, array_data, char_at_units, code_point_at_units, find_units,
-    gc::GcCell, instance_slots, new_array, rfind_units, slice_units, split_units, substring_units,
-    Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
+    gc::GcCell, instance_slots, new_array, rfind_units, slice_units, split_units_into,
+    substring_units, Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -1055,14 +1055,11 @@ pub(crate) unsafe extern "C" fn str_split(
                 std::slice::from_raw_parts(p, n)
             }
         };
-        let parts = split_units(span(sptr, slen), span(nptr, nlen));
-        let arr = new_array(
-            parts
-                .into_iter()
-                .map(|p| Value::Str(std::rc::Rc::new(p)))
-                .collect(),
-        );
-        (*arena).keep(arr)
+        let mut parts: Vec<Value> = Vec::new();
+        split_units_into(span(sptr, slen), span(nptr, nlen), &mut |p| {
+            parts.push(Value::Str(std::rc::Rc::new(p.to_vec())))
+        });
+        (*arena).keep(new_array(parts))
     }
 }
 
