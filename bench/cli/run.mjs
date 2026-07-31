@@ -30,7 +30,7 @@ const repo = join(here, "..", "..");
 const HOME = process.env.HOME;
 const REPEATS = Number(process.env.REPEATS ?? 5);
 
-const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk", "url", "encoding", "crypto", "json"]);
+const WORKLOADS = (process.env.WL ? process.env.WL.split(",") : ["compute", "calls", "fcompute", "mathk", "url", "encoding", "crypto", "json", "strings"]);
 
 // Resolve each runtime; skip any that isn't installed rather than aborting.
 const first = (...cands) => cands.find((p) => p && existsSync(p));

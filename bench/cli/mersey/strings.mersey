@@ -1,0 +1,83 @@
+// Line-for-line twin of bench/cli/js/strings.js: the string work a parser
+// actually does — searching, splitting, and taking substrings.
+//
+// This workload exists because the arena had none. Its other seven leave
+// `indexOf`, `slice`, `split` and `codePointAt` untouched in their hot loops, so
+// a large body of engine work in exactly that area could neither be seen here
+// nor be caught regressing. The shape is `std:semver`'s `parse`, which is what
+// that work was measured on.
+import { console } from "std:console";
+import { time } from "std:time";
+
+const N: int32 = 50000;
+
+function parse(text: string): int32 {
+    // Build metadata first — it may contain `-`, so strip it before the
+    // prerelease. This is the shape `std:semver` has, deliberately.
+    let s = text;
+    let build = "";
+    const plus = s.indexOf("+");
+    if (plus >= 0) {
+        build = s.slice(plus + 1);
+        s = s.slice(0, plus);
+    }
+    let pre = "";
+    const dash = s.indexOf("-");
+    if (dash >= 0) {
+        pre = s.slice(dash + 1);
+        s = s.slice(0, dash);
+    }
+    const parts = s.split(".");
+    if (parts.length != 3) {
+        return -1;
+    }
+    let acc = 0;
+    for (let k: int32 = 0; k < 3; k += 1) {
+        const p = parts[k];
+        if (p.length == 0) {
+            return -1;
+        }
+        for (let i: int32 = 0; i < p.length; i += 1) {
+            const c = p.codePointAt(i);
+            if (c == null || c < 48 || c > 57) {
+                return -1;
+            }
+            acc = acc * 10 + (c - 48);
+        }
+    }
+    // The prerelease identifiers, checked the way a validator does.
+    for (const id of pre.split(".")) {
+        if (id.length == 0) {
+            continue;
+        }
+        acc = acc + id.length;
+        if (id.startsWith("0") && id.length > 1) {
+            acc = acc + 1;
+        }
+    }
+    if (build.endsWith("5")) {
+        acc = acc + 7;
+    }
+    if (build.lastIndexOf(".") >= 0) {
+        acc = acc + 3;
+    }
+    return acc;
+}
+
+function work(n: int32): int32 {
+    let sum = 0;
+    let i = 0;
+    while (i < n) {
+        sum = sum + parse("1.2.3-rc.1+build.5");
+        sum = sum + parse("10.20.30");
+        sum = sum + parse("nope");
+        i += 1;
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT strings ${t1 - t0} ${c}`);

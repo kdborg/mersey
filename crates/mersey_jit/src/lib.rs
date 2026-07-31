@@ -591,6 +591,8 @@ struct Plan {
     /// receiver and the needle are already spans and the answer is a number, so
     /// none of the general member-call machinery applies. See `SEARCH_METHODS`.
     str_search_at: HashMap<usize, (i64, Ty)>,
+    /// `s.split(sep)`: two spans straight to a shim that parks the array.
+    str_split_at: HashSet<usize>,
     /// `s.codePointAt(i)`: a span and an index, straight to a pure shim.
     str_cp_at: HashSet<usize>,
     /// `s.slice(a, b)` / `s.substring(a, b)` / `s.charAt(a)` by id — the arena
@@ -916,6 +918,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
+    let mut str_split_at: HashSet<usize> = HashSet::new();
     let mut str_cp_at: HashSet<usize> = HashSet::new();
     let mut str_sub_at: HashMap<usize, (i64, bool)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
@@ -1700,6 +1703,11 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             continue;
                         }
                     }
+                    if name == "split" && n == 1 && tval(arg_slots[0]) == Some(Ty::Str) {
+                        str_split_at.insert(pc);
+                        stack.push(TSlot::Val(ret, Prov::Stable));
+                        continue;
+                    }
                     // A search whose one argument is a string: two spans in, a
                     // number out, and nothing in between.
                     if let Some(id) = search_method(&name, n) {
@@ -2187,6 +2195,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         rand_fill_at,
         str_method_at,
         str_search_at,
+        str_split_at,
         str_cp_at,
         str_sub_at,
         val_method_at,
@@ -2312,6 +2321,7 @@ struct Shims {
     str_str: FuncId,
     val_len: FuncId,
     str_search: FuncId,
+    str_split: FuncId,
     str_code_point: FuncId,
     str_sub: FuncId,
     box_str: FuncId,
@@ -2398,6 +2408,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_str_search", heap::str_search as *const u8);
+    builder.symbol("msy_str_split", heap::str_split as *const u8);
     builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
     builder.symbol("msy_str_sub", heap::str_sub as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
@@ -2872,6 +2883,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
         str_search: one("msy_str_search", Some(types::I64), 5)?,
+        str_split: one("msy_str_split", Some(types::I64), 5)?,
         str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
         str_sub: one("msy_str_sub", None, 7)?,
         box_str: one("msy_box_str", Some(types::I64), 4)?,
@@ -3279,6 +3291,7 @@ fn translate(
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         str_search: module.declare_func_in_func(shims.str_search, b.func),
+        str_split: module.declare_func_in_func(shims.str_split, b.func),
         str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
         str_sub: module.declare_func_in_func(shims.str_sub, b.func),
         own_str: module.declare_func_in_func(shims.own_str, b.func),
@@ -4228,6 +4241,21 @@ fn translate(
             // handle back rather than copying, so only constants and borrows are
             // parked. Everything parked here is released the moment the call
             // returns; the result, when it is a string, is this value's to hold.
+            // `s.split(sep)`: two spans, and the array's handle back. The array
+            // itself is unavoidable; the boxing and the dispatch were not.
+            Op::CallMethod(_, _) if p.str_split_at.contains(&pc) => {
+                let SlotV::Str(nptr, nlen, _) = stack.pop()? else {
+                    return None;
+                };
+                let SlotV::Str(sptr, slen, _) = stack.pop()? else {
+                    return None;
+                };
+                let call = b
+                    .ins()
+                    .call(shim.str_split, &[arena_ptr, sptr, slen, nptr, nlen]);
+                let h = b.inst_results(call)[0];
+                stack.push(SlotV::ValRef(h, h));
+            }
             // `s.codePointAt(i)`: a span, an index, and a nullable number back.
             Op::CallMethod(_, _) if p.str_cp_at.contains(&pc) => {
                 let (i, from) = scalar(stack.pop()?)?;
@@ -5359,6 +5387,7 @@ struct Ctx {
 /// The engine functions a compiled body may call, resolved.
 struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
+    str_split: cranelift_codegen::ir::FuncRef,
     str_code_point: cranelift_codegen::ir::FuncRef,
     str_sub: cranelift_codegen::ir::FuncRef,
     own_str: cranelift_codegen::ir::FuncRef,

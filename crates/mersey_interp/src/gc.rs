@@ -253,6 +253,31 @@ pub(crate) enum GcObj {
 }
 
 impl GcObj {
+    /// Is the object still there? A cheaper question than `ptr`, and the only one
+    /// the young-list sweep actually asks.
+    ///
+    /// `ptr` answers it by *upgrading* the `Weak` — building an `Rc`, taking its
+    /// address, and dropping it again, so a refcount up and down per entry per
+    /// sweep. `strong_count` reads the same word and touches nothing. The sweep
+    /// runs over every young object and is the price of allocating, which in
+    /// string-parsing code is most of what happens: 8.6% of a parse workload was
+    /// in `ptr`, nearly all of it from here.
+    fn alive(&self) -> bool {
+        fn c<T: GcContents>(w: &Weak<GcCell<T>>) -> bool {
+            Weak::strong_count(w) > 0
+        }
+        match self {
+            GcObj::Env(w) => c(w),
+            GcObj::Inst(w) => c(w),
+            GcObj::Arr(w) => c(w),
+            GcObj::SetV(w) => c(w),
+            GcObj::Rec(w) => c(w),
+            GcObj::MapV(w) => c(w),
+            GcObj::Prom(w) => c(w),
+            GcObj::Gen(w) => c(w),
+        }
+    }
+
     /// The object's identity, or `None` if refcounting already freed it.
     fn ptr(&self) -> Option<usize> {
         fn p<T: GcContents>(w: &Weak<GcCell<T>>) -> Option<usize> {
@@ -455,7 +480,7 @@ fn register(obj: GcObj) {
 fn prune() {
     let live = YOUNG.with(|y| {
         let mut y = y.borrow_mut();
-        y.retain(|obj| obj.ptr().is_some());
+        y.retain(|obj| obj.alive());
         y.len()
     });
     // Amortised: scan again only once the list has doubled. A program whose
@@ -503,7 +528,7 @@ pub(crate) fn should_collect() -> bool {
 pub(crate) fn stats_only() -> GcStats {
     let young = YOUNG.with(|y| {
         let mut objs = y.borrow_mut();
-        objs.retain(|o| o.ptr().is_some());
+        objs.retain(|o| o.alive());
         objs.len()
     });
     let old = OLD.with(|o| o.borrow().len());
@@ -602,7 +627,7 @@ fn collect_gen(roots: &Roots, major: bool) -> GcStats {
             doomed.iter().filter_map(|p| old.remove(p)).collect()
         });
         for obj in &dead {
-            if obj.ptr().is_some() {
+            if obj.alive() {
                 obj.clear();
                 collected += 1;
             }

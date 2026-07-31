@@ -10574,7 +10574,7 @@ fn class_has_field(class: &Rc<ClassDef>, name: &str) -> bool {
 }
 
 /// Allocate a tracked array (the collector must know about it).
-pub(crate) fn new_array(items: Vec<Value>) -> Value {
+pub fn new_array(items: Vec<Value>) -> Value {
     let a = Rc::new(GcCell::new(items));
     gc::track_array(&a);
     Value::Array(a)

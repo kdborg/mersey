@@ -26,8 +26,8 @@ use std::rc::Rc;
 
 use mersey_interp::{
     alloc_instance, append_int_utf16, array_data, char_at_units, code_point_at_units, find_units,
-    gc::GcCell, instance_slots, rfind_units, slice_units, substring_units, Arena, ClassDef,
-    Instance, Value, WebArg, WebReplyRaw,
+    gc::GcCell, instance_slots, new_array, rfind_units, slice_units, split_units, substring_units,
+    Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -1022,6 +1022,47 @@ pub(crate) unsafe extern "C" fn str_sub(
         *out = data;
         *out.add(1) = len;
         *out.add(2) = h;
+    }
+}
+
+/// `s.split(sep)`: two spans in, an array of strings parked in the arena.
+///
+/// The array and its pieces are real allocations and there is no avoiding them,
+/// but everything around them was avoidable and was not small. The general path
+/// cloned the receiver into a `Value`, *boxed the separator into the arena on
+/// every call* — which for the constant separator real code uses means a memo
+/// lookup that re-verifies it by content — built a vector for the arguments, and
+/// dispatched by comparing the method name. On a semver-shaped parse workload
+/// that was 6% in `jit_box_str` and 3% in `call_member` alone.
+///
+/// Returns the arena handle of the array, which is what `Ty::StrArr` carries.
+///
+/// # Safety
+/// Each `(ptr, len)` names that many readable `u16`s, or the length is 0;
+/// `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn str_split(
+    arena: *mut Arena,
+    sptr: *const u16,
+    slen: usize,
+    nptr: *const u16,
+    nlen: usize,
+) -> u64 {
+    unsafe {
+        let span = |p: *const u16, n: usize| -> &[u16] {
+            if n == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(p, n)
+            }
+        };
+        let parts = split_units(span(sptr, slen), span(nptr, nlen));
+        let arr = new_array(
+            parts
+                .into_iter()
+                .map(|p| Value::Str(std::rc::Rc::new(p)))
+                .collect(),
+        );
+        (*arena).keep(arr)
     }
 }
 
