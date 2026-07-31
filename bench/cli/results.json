@@ -12,24 +12,24 @@
       },
       "legs": {
         "node": {
-          "work": 87.8,
+          "work": 89.34,
           "wall": 120,
           "rssMiB": 38.7
         },
         "bun": {
-          "work": 96.53,
+          "work": 98.27,
           "wall": 110,
           "rssMiB": 29
         },
         "deno": {
-          "work": 96.14,
+          "work": 96.11,
           "wall": 110,
           "rssMiB": 34.8
         },
         "mersey": {
-          "work": 88.42,
+          "work": 90.76,
           "wall": 100,
-          "rssMiB": 5.9
+          "rssMiB": 6
         }
       },
       "checksumOk": true
@@ -44,24 +44,24 @@
       },
       "legs": {
         "node": {
-          "work": 121.37,
-          "wall": 140,
-          "rssMiB": 38.8
+          "work": 124.25,
+          "wall": 150,
+          "rssMiB": 38.9
         },
         "bun": {
-          "work": 30.87,
+          "work": 31.58,
           "wall": 40,
           "rssMiB": 31.2
         },
         "deno": {
-          "work": 28.31,
+          "work": 28.72,
           "wall": 30,
           "rssMiB": 34.9
         },
         "mersey": {
-          "work": 21.77,
+          "work": 22.44,
           "wall": 20,
-          "rssMiB": 5.9
+          "rssMiB": 6
         }
       },
       "checksumOk": true
@@ -76,23 +76,23 @@
       },
       "legs": {
         "node": {
-          "work": 103.05,
+          "work": 105.25,
           "wall": 130,
-          "rssMiB": 40.5
+          "rssMiB": 40.6
         },
         "bun": {
-          "work": 103.11,
+          "work": 105.54,
           "wall": 110,
-          "rssMiB": 29
+          "rssMiB": 29.1
         },
         "deno": {
-          "work": 104.15,
+          "work": 107.17,
           "wall": 110,
           "rssMiB": 36.9
         },
         "mersey": {
-          "work": 102.45,
-          "wall": 100,
+          "work": 110.29,
+          "wall": 110,
           "rssMiB": 5.9
         }
       },
@@ -108,24 +108,24 @@
       },
       "legs": {
         "node": {
-          "work": 13.49,
-          "wall": 30,
-          "rssMiB": 39.9
+          "work": 13.95,
+          "wall": 40,
+          "rssMiB": 40
         },
         "bun": {
-          "work": 13.89,
+          "work": 14.72,
           "wall": 20,
           "rssMiB": 30.7
         },
         "deno": {
-          "work": 13.46,
+          "work": 14.33,
           "wall": 20,
           "rssMiB": 36.9
         },
         "mersey": {
-          "work": 12.54,
+          "work": 13.67,
           "wall": 10,
-          "rssMiB": 5.9
+          "rssMiB": 6
         }
       },
       "checksumOk": true
@@ -140,22 +140,22 @@
       },
       "legs": {
         "node": {
-          "work": 8.6,
+          "work": 8.94,
           "wall": 30,
-          "rssMiB": 43.1
+          "rssMiB": 43.2
         },
         "bun": {
-          "work": 7.74,
+          "work": 7.96,
           "wall": 10,
           "rssMiB": 38.2
         },
         "deno": {
-          "work": 11.06,
+          "work": 11.32,
           "wall": 20,
           "rssMiB": 41.8
         },
         "mersey": {
-          "work": 20.8,
+          "work": 21.12,
           "wall": 20,
           "rssMiB": 7
         }
@@ -172,24 +172,24 @@
       },
       "legs": {
         "node": {
-          "work": 4.42,
+          "work": 4.77,
           "wall": 30,
-          "rssMiB": 42
+          "rssMiB": 42.1
         },
         "bun": {
-          "work": 1.6,
+          "work": 1.73,
           "wall": 10,
           "rssMiB": 30.7
         },
         "deno": {
-          "work": 4.19,
+          "work": 4.31,
           "wall": 10,
-          "rssMiB": 38.4
+          "rssMiB": 38.3
         },
         "mersey": {
-          "work": 1.54,
+          "work": 1.66,
           "wall": 0,
-          "rssMiB": 7.3
+          "rssMiB": 7.4
         }
       },
       "checksumOk": true
@@ -204,22 +204,22 @@
       },
       "legs": {
         "node": {
-          "work": 19.66,
-          "wall": 40,
-          "rssMiB": 48.3
+          "work": 20.1,
+          "wall": 50,
+          "rssMiB": 48.4
         },
         "bun": {
-          "work": 0.46,
-          "wall": 0,
-          "rssMiB": 26.9
+          "work": 0.5,
+          "wall": 10,
+          "rssMiB": 27
         },
         "deno": {
-          "work": 1.56,
+          "work": 1.58,
           "wall": 10,
-          "rssMiB": 35.2
+          "rssMiB": 35.3
         },
         "mersey": {
-          "work": 0.5,
+          "work": 0.52,
           "wall": 0,
           "rssMiB": 5.9
         }
@@ -236,22 +236,22 @@
       },
       "legs": {
         "node": {
-          "work": 4,
+          "work": 4.32,
           "wall": 30,
-          "rssMiB": 40.5
+          "rssMiB": 40.6
         },
         "bun": {
-          "work": 1.35,
+          "work": 1.37,
           "wall": 10,
           "rssMiB": 29.3
         },
         "deno": {
-          "work": 1.46,
+          "work": 1.48,
           "wall": 10,
           "rssMiB": 36.9
         },
         "mersey": {
-          "work": 0.75,
+          "work": 0.82,
           "wall": 0,
           "rssMiB": 5.9
         }

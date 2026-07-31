@@ -396,11 +396,11 @@ impl Group<'_> {
             FieldTy::Bool => Ty::Bool,
             FieldTy::Obj(c) => Ty::Obj(self.class_idx(c)),
             FieldTy::Arr(e) => Ty::Arr(self.elem_of(e)?),
-            // A string or opaque *field* still interprets: reading one means
-            // pulling it out of a `Value` cell, and `load_cell` has no case for
-            // either yet. A *parameter* is a different matter — it arrives already
-            // in registers, or as a handle (see `param_types`).
-            FieldTy::Str | FieldTy::Val | FieldTy::NumOpt => return None,
+            FieldTy::Str => Ty::Str,
+            // An opaque or a nullable-number *field* still interprets: `load_cell`
+            // has no case for either. A *parameter* is a different matter — it
+            // arrives already in registers, or as a handle (see `param_types`).
+            FieldTy::Val | FieldTy::NumOpt => return None,
             FieldTy::Opaque => return None,
         })
     }
@@ -530,6 +530,11 @@ struct Plan {
     str_method_at: HashMap<usize, (&'static str, Ty)>,
     /// Method calls on an *opaque* receiver — `a.push(v)` on an array built here.
     val_method_at: HashMap<usize, (&'static str, Ty)>,
+    /// `CallMethod` sites that are a *static* call — the receiver is a class, so
+    /// there is no `this` to marshal.
+    static_at: HashSet<usize>,
+    /// Name ids that name a *class* — a receiver for a static call, not a value.
+    class_names: HashSet<u16>,
     /// Where a nullable number is used *as* a number: bit 0 the left operand or
     /// the only one, bit 1 the right. See `Ty::I32Opt`.
     unbox_at: HashMap<usize, u8>,
@@ -654,6 +659,10 @@ enum TSlot {
     /// The `std:time` namespace: not a value, only a receiver for the numeric
     /// host calls `now()` / `monotonic()`.
     TimeNs,
+    /// A class named as a value (`Version.parse(…)`). Not a value either — the
+    /// only thing done with it here is call one of its statics, so it carries the
+    /// group's class index and nothing else.
+    ClassRef(u32),
     /// A host object (`JsRef`) read from a top-level web global — a receiver for
     /// a numeric web method call. Carries the name id so codegen can read the
     /// live handle.
@@ -672,6 +681,7 @@ fn tval(s: TSlot) -> Option<Ty> {
         TSlot::Null
         | TSlot::Callee(_)
         | TSlot::TimeNs
+        | TSlot::ClassRef(_)
         | TSlot::Web(_)
         | TSlot::MathNs
         | TSlot::StdNs(_) => None,
@@ -828,6 +838,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
+    let mut static_at: HashSet<usize> = HashSet::new();
+    let mut class_names: HashSet<u16> = HashSet::new();
     let mut unbox_at: HashMap<usize, u8> = HashMap::new();
     let mut val_index_at: HashSet<usize> = HashSet::new();
     let mut array_at: HashSet<usize> = HashSet::new();
@@ -986,6 +998,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
                         stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                    }
+                    // A class named as a value. The only thing done with one is
+                    // call a static on it, so it is a marker, not a value — like
+                    // the namespace receivers above.
+                    NameKind::Other if g.env.class_named(scope.as_ref(), name).is_some() => {
+                        let cls = g.env.class_named(scope.as_ref(), name)?;
+                        let ci = g.class_idx(&cls);
+                        class_names.insert(ni);
+                        stack.push(TSlot::ClassRef(ci));
                     }
                     NameKind::NumGlobal(kind) => {
                         let t = match kind {
@@ -1283,11 +1304,18 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 let slot = cls.field_slot(name)?;
                 let t = g.field_ty(ci, slot as usize)?;
-                // Only a **scalar** may be stored. Storing an object would replace
-                // one reference-counted value with another — an owned reference
+                // A scalar, or a string. Storing an *object* would replace one
+                // reference-counted value with another — an owned reference
                 // released and an owned reference taken — and compiled code does
-                // not do that. It is the one rule the whole design rests on.
-                if !t.is_num() || !assignable(v, t) {
+                // not do that. A string is different only because the field takes
+                // its own copy of the units rather than sharing a reference, so
+                // there is no ownership to hand over.
+                let ok = if t == Ty::Str {
+                    v == Ty::Str
+                } else {
+                    t.is_num() && assignable(v, t)
+                };
+                if !ok {
                     return None;
                 }
                 g.writes = true;
@@ -1396,6 +1424,26 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     let nm: &'static str = Box::leak(name.clone().into_boxed_str());
                     str_method_at.insert(pc, (nm, ret));
                     stack.push(TSlot::Val(ret, Prov::Stable));
+                    continue;
+                }
+                // A static method on a class. No receiver, so none of the
+                // override reasoning applies: a class's statics are fixed with the
+                // class (§4.1) and there is no subclass to dispatch through.
+                if let TSlot::ClassRef(ci) = recv {
+                    let cls = g.classes[ci as usize].clone();
+                    let f = g.env.static_method(&cls, &name)?;
+                    let idx = g.add(f)?;
+                    let sig = g.sigs[idx].clone();
+                    let mut args: Vec<Ty> = Vec::new();
+                    for a in &arg_slots {
+                        args.push(tval(*a)?);
+                    }
+                    if sig.params != args || sig.this.is_some() {
+                        return None;
+                    }
+                    method_at.insert(pc, idx);
+                    static_at.insert(pc);
+                    stack.push(TSlot::Val(sig.ret, Prov::Stable));
                     continue;
                 }
                 // …and on an opaque. The receiver is already a handle, so unlike
@@ -1795,6 +1843,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         rand_fill_at,
         str_method_at,
         val_method_at,
+        static_at,
+        class_names,
         unbox_at,
         val_index_at,
         array_at,
@@ -1881,6 +1931,8 @@ struct Shims {
     arr_len: FuncId,
     cell_obj: FuncId,
     cell_arr: FuncId,
+    cell_str: FuncId,
+    cell_set_str: FuncId,
     alloc: FuncId,
     clone_obj: FuncId,
     release: FuncId,
@@ -1955,6 +2007,8 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_arr_len", heap::arr_len as *const u8);
     builder.symbol("msy_cell_obj", heap::cell_obj as *const u8);
     builder.symbol("msy_cell_arr", heap::cell_arr as *const u8);
+    builder.symbol("msy_cell_str", heap::cell_str as *const u8);
+    builder.symbol("msy_cell_set_str", heap::cell_set_str as *const u8);
     builder.symbol("msy_alloc", heap::alloc as *const u8);
     builder.symbol("msy_clone_obj", heap::clone_obj as *const u8);
     builder.symbol("msy_release", heap::release as *const u8);
@@ -2321,6 +2375,10 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (cell, out) -> writes 2 or 3 words
         cell_obj: one("msy_cell_obj", None, 2)?,
         cell_arr: one("msy_cell_arr", None, 2)?,
+        // (cell, out) -> writes (data, len)
+        cell_str: one("msy_cell_str", None, 2)?,
+        // (cell, ptr, len)
+        cell_set_str: one("msy_cell_set_str", None, 3)?,
         // (class, arena, out) -> writes ptr, fields, handle
         alloc: one("msy_alloc", None, 3)?,
         // (ptr, arena) -> handle
@@ -2587,6 +2645,9 @@ enum SlotV {
     /// The literal `null`. See `TSlot::Null`.
     Null,
     Callee(usize),
+    /// A class named as a value (see `TSlot::ClassRef`): no registers. It reaches
+    /// codegen only to be popped by the static call that follows.
+    ClassRef,
     /// The `std:time` namespace receiver (see `TSlot::TimeNs`): no registers.
     TimeNs,
     /// A host-object receiver: its handle, live in a register.
@@ -2617,6 +2678,7 @@ impl SlotV {
             SlotV::Null
             | SlotV::Callee(_)
             | SlotV::TimeNs
+            | SlotV::ClassRef
             | SlotV::Web(_)
             | SlotV::MathNs
             | SlotV::StdNs => Vec::new(),
@@ -2711,6 +2773,8 @@ fn translate(
     let shim = ShimRefs {
         cell_obj: module.declare_func_in_func(shims.cell_obj, b.func),
         cell_arr: module.declare_func_in_func(shims.cell_arr, b.func),
+        cell_str: module.declare_func_in_func(shims.cell_str, b.func),
+        cell_set_str: module.declare_func_in_func(shims.cell_set_str, b.func),
         alloc: module.declare_func_in_func(shims.alloc, b.func),
         clone_obj: module.declare_func_in_func(shims.clone_obj, b.func),
         release: module.declare_func_in_func(shims.release, b.func),
@@ -2998,6 +3062,8 @@ fn translate(
                     stack.push(SlotV::MathNs);
                 } else if p.std_ns_names.contains_key(&ni) {
                     stack.push(SlotV::StdNs);
+                } else if p.class_names.contains(&ni) {
+                    stack.push(SlotV::ClassRef);
                 } else if let Some(&(name, t)) = p.num_globals.get(&ni) {
                     let (nptr, nlen) = str_const(b, name);
                     let call = b.ins().call(shim.global_num, &[arena_ptr, nptr, nlen]);
@@ -3282,6 +3348,31 @@ fn translate(
                 let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
                 guard(b, ctx, threw, R_HOST, pc, None);
                 stack.push(vslot);
+            }
+            Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Str))) => {
+                let (slot, _) = *p.field_at.get(&pc)?;
+                let v = stack.pop()?;
+                let (ptr, len) = match v {
+                    SlotV::Str(p, l, _) => (p, l),
+                    // `this.s = null` — a null data pointer, and the length is
+                    // not read.
+                    SlotV::Null => {
+                        let z = b.ins().iconst(types::I64, 0);
+                        (z, z)
+                    }
+                    _ => return None,
+                };
+                let SlotV::Obj(_, base, _) = stack.pop()? else {
+                    return None;
+                };
+                let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
+                guard(b, ctx, null, R_NULL, pc, None);
+                let at = (slot as usize * repr::SIZE) as i32;
+                let cell = b.ins().iadd_imm(base, at as i64);
+                // The field takes its own copy: it outlives this call, and the
+                // units may be a constant in the code's own pool.
+                b.ins().call(shim.cell_set_str, &[cell, ptr, len]);
+                stack.push(v);
             }
             Op::SetMember(_, _) => {
                 let (slot, t) = *p.field_at.get(&pc)?;
@@ -3805,6 +3896,17 @@ fn translate(
                     };
                     *a = SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32);
                 }
+                // A static call: the receiver is a class marker with no
+                // registers, and the callee takes no `this`.
+                if p.static_at.contains(&pc) {
+                    let SlotV::ClassRef = stack.pop()? else {
+                        return None;
+                    };
+                    stack.push(SlotV::Callee(*p.method_at.get(&pc)?));
+                    // Fall through to the ordinary call path below, which now
+                    // sees exactly the shape a plain `Op::Call` leaves.
+                }
+                let is_method = is_method && !p.static_at.contains(&pc);
                 let (f, this) = if is_method {
                     let recv = stack.pop()?;
                     let SlotV::Obj(_, base, _) = recv else {
@@ -4413,6 +4515,8 @@ struct Ctx {
 struct ShimRefs {
     cell_obj: cranelift_codegen::ir::FuncRef,
     cell_arr: cranelift_codegen::ir::FuncRef,
+    cell_str: cranelift_codegen::ir::FuncRef,
+    cell_set_str: cranelift_codegen::ir::FuncRef,
     alloc: cranelift_codegen::ir::FuncRef,
     clone_obj: cranelift_codegen::ir::FuncRef,
     release: cranelift_codegen::ir::FuncRef,
@@ -4564,6 +4668,26 @@ fn load_cell(
                 }
                 _ => unreachable!(),
             }
+        }
+        // A string field: its data pointer and length, read out of the cell. The
+        // copy is a *borrow* — handle 0 — exactly as an object field's is, and it
+        // carries the same caveat: overwriting the field while this is still in
+        // flight would leave it pointing at a freed buffer. Compiled code cannot
+        // detach it, and the analysis refuses a slot-to-slot copy that could
+        // outlive its source.
+        Ty::Str => {
+            let is_t = b.ins().icmp_imm(IntCC::Equal, tag, repr::TAG_STRING as i64);
+            let is_null = b.ins().icmp_imm(IntCC::Equal, tag, repr::TAG_NULL as i64);
+            let ok = b.ins().bor(is_t, is_null);
+            let bad = b.ins().icmp_imm(IntCC::Equal, ok, 0);
+            guard(b, ctx, bad, R_TAG, pc, None);
+            let cell = b.ins().iadd_imm(base, at as i64);
+            let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+            b.ins().call(shim.cell_str, &[cell, out]);
+            let ptr = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+            let len = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+            let zero = b.ins().iconst(types::I64, 0);
+            SlotV::Str(ptr, len, zero)
         }
         // A number, on the other hand, has to be *exactly* what it says: there is
         // no null in an `f64`, and a field that is still null is one this cannot

@@ -2025,6 +2025,12 @@ pub trait JitEnv {
     /// **directly** — which needs `cls` to be the last word on what `m` means. See
     /// `Interp::overridden_below`.
     fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
+
+    /// …and a static one, called on the class rather than on an instance.
+    fn static_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
+
+    /// The class a top-level name binds, if it binds one.
+    fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>>;
     /// The body behind `o.name` when `name` is a getter. A getter is a call
     /// wearing a field's clothes, so Tier-1 compiles it as the zero-argument
     /// method it is; without this the whole enclosing function fell back to the
@@ -2147,6 +2153,18 @@ impl JitEnv for InterpEnv<'_> {
     }
     fn method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_method(cls, name)
+    }
+
+    fn static_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        self.i.direct_static(cls, name)
+    }
+
+    fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>> {
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
+        match env_get(env, name) {
+            Some(Value::Class(c)) => Some(c),
+            _ => None,
+        }
     }
     fn getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_getter(cls, name)
@@ -5903,6 +5921,34 @@ impl Interp {
 
     /// The method `name` on a receiver of class `cls`, if the call can be
     /// compiled into a *direct* one.
+    /// A *static* method (`Version.parse(text)`). No receiver, so none of the
+    /// override reasoning applies — a class's statics are fixed with the class
+    /// (§4.1), and there is no subclass to dispatch through.
+    fn direct_static(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        let data = cls.static_methods.get(name)?.clone();
+        if data.is_async {
+            return None;
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        let scope = cls.env.clone().map(DefScope);
+        Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.param_types(data.params),
+            chunk,
+            this: None,
+            ret: data.ret_num,
+            ret_bool: data.ret_bool,
+            ret_obj: self.ret_class(&data),
+            ret_str: self.ret_is_str(data.ret_ty()),
+            ret_val: self.ret_is_val(data.ret_ty()),
+            bind: None,
+            scope,
+        })
+    }
+
     fn direct_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         // A getter or a setter means `o.name` is a call, not a load, and this is
         // not the shape the compiler thinks it is.

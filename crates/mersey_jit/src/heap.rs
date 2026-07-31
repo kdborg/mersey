@@ -227,7 +227,6 @@ pub(crate) unsafe extern "C" fn str_join(
 ///
 /// # Safety
 /// As `cell_arr`.
-#[allow(dead_code)]
 pub(crate) unsafe extern "C" fn cell_str(cell: *const Value, out: *mut u64) {
     let (ptr, len) = match unsafe { &*cell } {
         Value::Str(rc) => {
@@ -240,6 +239,23 @@ pub(crate) unsafe extern "C" fn cell_str(cell: *const Value, out: *mut u64) {
         *out = ptr;
         *out.add(1) = len;
     }
+}
+
+/// Write a string into a heap cell (`this.name = s`). The units are copied into a
+/// fresh `Value::Str`, which is what the field will own; assigning over the cell
+/// drops whatever it held.
+///
+/// # Safety
+/// `cell` addresses a live `Value` inside an object the caller holds an `Rc` to,
+/// and `ptr`/`len` name a valid UTF-16 slice — or `ptr` is null for `null`.
+pub(crate) unsafe extern "C" fn cell_set_str(cell: *mut Value, ptr: *const u16, len: usize) {
+    let v = if ptr.is_null() {
+        Value::Null
+    } else {
+        let units = unsafe { std::slice::from_raw_parts(ptr, len) };
+        Value::Str(std::rc::Rc::new(units.to_vec()))
+    };
+    unsafe { *cell = v };
 }
 
 /// Allocate an instance of `cls`, owned by the arena.

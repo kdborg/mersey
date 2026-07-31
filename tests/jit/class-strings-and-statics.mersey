@@ -1,0 +1,58 @@
+// A string field, and a static method — on both tiers.
+//
+// A `string` field had no register shape, so any method touching one cost its
+// class every compilation. Reading one is a *borrow* — the data pointer and the
+// length, handle 0 — exactly as an object field's is, and it carries the same
+// caveat: overwriting the field while the borrow is in flight would leave it
+// pointing at a freed buffer. Writing one is the opposite of an object write: the
+// field takes its own copy of the units rather than sharing a reference, so there
+// is no ownership to hand over — which is the only reason a string may be stored
+// into a field at all when an object may not.
+//
+// A *static* is a call with no receiver. None of the override reasoning applies:
+// a class's statics are fixed with the class, and there is no subclass to
+// dispatch through.
+
+import { console } from "std:console";
+
+class Tag {
+    public readonly name: string = "";
+    public readonly rank: int32 = 0;
+    public label: string = "";
+
+    public constructor(name: string, rank: int32) {
+        this.name = name;
+        this.rank = rank;
+        this.label = `${name}#${rank}`;
+    }
+
+    /// Reads two string fields and a numeric one.
+    public width(): int32 {
+        return this.name.length + this.label.length + this.rank;
+    }
+
+    /// Writes a string field, then reads it back.
+    public retag(suffix: string): int32 {
+        this.label = `${this.name}${suffix}`;
+        return this.label.length;
+    }
+
+    /// A static: no receiver at all.
+    public static of(name: string, rank: int32): Tag {
+        return new Tag(name, rank);
+    }
+}
+
+function run(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const t = Tag.of("alpha", i % 7);
+        acc = acc + t.width() + t.retag("-x");
+        i += 1;
+    }
+    return acc;
+}
+
+run(40000);
+console.log(`run ${run(20)}`);

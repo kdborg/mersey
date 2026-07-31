@@ -235,3 +235,16 @@ fn globals_and_split_agree_across_the_tier_boundary() {
     // opaque an array is carried as.
     assert!(out.contains("quoted  442"), "{out}");
 }
+
+/// A `string` field and a `static` method. A string field had no register shape,
+/// so any method touching one cost its class every compilation. Reading one is a
+/// borrow, exactly as an object field's is; *writing* one is the opposite of an
+/// object write — the field takes its own copy of the units rather than sharing a
+/// reference, which is the only reason a string may be stored into a field when an
+/// object may not. A static is a call with no receiver at all.
+#[test]
+fn string_fields_and_statics_agree_across_the_tier_boundary() {
+    check("class-strings-and-statics.mersey");
+    let out = run("class-strings-and-statics.mersey", true);
+    assert!(out.contains("run 437"), "{out}");
+}

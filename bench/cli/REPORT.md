@@ -6,37 +6,37 @@ macOS (arm64). 9 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 87.8 | 96.53 | 96.14 | 88.42 |
-| calls | 121.37 | 30.87 | 28.31 | 21.77 |
-| fcompute | 103.05 | 103.11 | 104.15 | 102.45 |
-| mathk | 13.49 | 13.89 | 13.46 | 12.54 |
-| url | 8.6 | 7.74 | 11.06 | 20.8 |
-| encoding | 4.42 | 1.6 | 4.19 | 1.54 |
-| crypto | 19.66 | 0.46 | 1.56 | 0.5 |
-| json | 4 | 1.35 | 1.46 | 0.75 |
+| compute | 89.34 | 98.27 | 96.11 | 90.76 |
+| calls | 124.25 | 31.58 | 28.72 | 22.44 |
+| fcompute | 105.25 | 105.54 | 107.17 | 110.29 |
+| mathk | 13.95 | 14.72 | 14.33 | 13.67 |
+| url | 8.94 | 7.96 | 11.32 | 21.12 |
+| encoding | 4.77 | 1.73 | 4.31 | 1.66 |
+| crypto | 20.1 | 0.5 | 1.58 | 0.52 |
+| json | 4.32 | 1.37 | 1.48 | 0.82 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
 | compute | 120 | 110 | 110 | 100 |
-| calls | 140 | 40 | 30 | 20 |
-| fcompute | 130 | 110 | 110 | 100 |
-| mathk | 30 | 20 | 20 | 10 |
+| calls | 150 | 40 | 30 | 20 |
+| fcompute | 130 | 110 | 110 | 110 |
+| mathk | 40 | 20 | 20 | 10 |
 | url | 30 | 10 | 20 | 20 |
 | encoding | 30 | 10 | 10 | 0 |
-| crypto | 40 | 0 | 10 | 0 |
+| crypto | 50 | 10 | 10 | 0 |
 | json | 30 | 10 | 10 | 0 |
 
 ## Peak RSS (MiB)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.7 | 29 | 34.8 | 5.9 |
-| calls | 38.8 | 31.2 | 34.9 | 5.9 |
-| fcompute | 40.5 | 29 | 36.9 | 5.9 |
-| mathk | 39.9 | 30.7 | 36.9 | 5.9 |
-| url | 43.1 | 38.2 | 41.8 | 7 |
-| encoding | 42 | 30.7 | 38.4 | 7.3 |
-| crypto | 48.3 | 26.9 | 35.2 | 5.9 |
-| json | 40.5 | 29.3 | 36.9 | 5.9 |
+| compute | 38.7 | 29 | 34.8 | 6 |
+| calls | 38.9 | 31.2 | 34.9 | 6 |
+| fcompute | 40.6 | 29.1 | 36.9 | 5.9 |
+| mathk | 40 | 30.7 | 36.9 | 6 |
+| url | 43.2 | 38.2 | 41.8 | 7 |
+| encoding | 42.1 | 30.7 | 38.3 | 7.4 |
+| crypto | 48.4 | 27 | 35.3 | 5.9 |
+| json | 40.6 | 29.3 | 36.9 | 5.9 |
