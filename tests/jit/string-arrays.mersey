@@ -51,12 +51,37 @@ function relabel(parts: string[], n: int32): int32 {
     return parts[0].length + parts[1].length;
 }
 
+/// The array `split` hands back. It is an opaque like any container built here,
+/// but a *known* one — its elements are strings — so an index read off it has a
+/// shape, where a read off a bare opaque has to assume a number and bail when it
+/// is not. `length`, a numeric index and `for…of` all work on it.
+function fields(text: string, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const parts = text.split(",");
+        acc = acc + parts.length;
+        let k = 0;
+        while (k < parts.length) {
+            acc = acc + parts[k].length;
+            k += 1;
+        }
+        for (const p of parts) {
+            acc = acc + p.length;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
 const xs: string[] = ["alpha", "be", "gamma"];
 
 widths(xs, 30000);
 joined(xs, 30000);
 relabel(xs, 30000);
+fields("a,bb,ccc", 30000);
 
 console.log(`widths  ${widths(xs, 3)}`);
 console.log(`joined  ${joined(xs, 3)}`);
 console.log(`relabel ${relabel(xs, 5)}`);
+console.log(`fields  ${fields("a,bb,ccc", 4)}`);

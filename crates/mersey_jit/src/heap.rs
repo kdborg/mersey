@@ -759,6 +759,43 @@ pub(crate) unsafe extern "C" fn clone_val(arena: *mut Arena, h: u64) -> u64 {
     }
 }
 
+/// `a[i]` on an opaque array of strings. `out` receives (data, length, owning
+/// handle); 0, or 1 if it threw.
+///
+/// # Safety
+/// As `global_val`; `out` names three writable words.
+pub(crate) unsafe extern "C" fn val_index_str(
+    arena: *mut Arena,
+    h: u64,
+    idx: i64,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let Some(ip) = (*arena).interp_ptr() else {
+            return 1;
+        };
+        let sh = (*ip).jit_val_index_str(h, idx);
+        if sh == u64::MAX {
+            return 1;
+        }
+        match (*arena).get(sh) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                *out = units.as_ptr() as u64;
+                *out.add(1) = units.len() as u64;
+                *out.add(2) = sh;
+                0
+            }
+            _ => {
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0;
+                0
+            }
+        }
+    }
+}
+
 /// `b[i]` on an opaque. The byte, or `i64::MIN` if it threw.
 ///
 /// # Safety

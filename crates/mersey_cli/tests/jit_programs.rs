@@ -264,6 +264,9 @@ fn string_arrays_agree_across_the_tier_boundary() {
     assert!(out.contains("joined  18"), "{out}");
     // The elements were rewritten in place, so the lengths are the new ones.
     assert!(out.contains("relabel 4"), "{out}");
+    // The array `split` hands back: a *known* opaque, so its elements have a
+    // shape. 3 fields + 6 units, twice over, four times.
+    assert!(out.contains("fields  60"), "{out}");
 }
 
 /// An engine primitive as a class field, its string parts, and `throw new Error`.

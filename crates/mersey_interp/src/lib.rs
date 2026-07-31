@@ -4856,6 +4856,21 @@ impl Interp {
         }
     }
 
+    /// `a[i]` on an opaque known to hold *strings* — a `split` result. The handle
+    /// of the element, 0 for a missing or non-string one (which reads as a null
+    /// string), `u64::MAX` if the index threw.
+    pub fn jit_val_index_str(&mut self, h: u64, idx: i64) -> u64 {
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        match self.index_get(&o, &Value::I64(idx)) {
+            Ok(v @ Value::Str(_)) => self.jit_arena.keep(v),
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
+        }
+    }
+
     /// `b[i]` on an opaque (a `Bytes`) from compiled code. `i64::MIN` means it
     /// threw — out of range, or not something indexable — with the error stashed,
     /// so the message is the interpreter's own, down to the length it reports.

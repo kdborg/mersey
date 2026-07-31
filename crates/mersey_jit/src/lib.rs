@@ -101,6 +101,11 @@ enum Ty {
     /// reduce. That guard is not for well-typed code — it is because a silent
     /// `i64::MIN` would be a wrong answer rather than a bail.
     I32Opt,
+    /// An opaque that is known to be an array *of strings* — what `split` gives.
+    /// The same two registers as `Ty::Val`, and everything an opaque can do; the
+    /// difference is that an element read off one has a shape, where an element
+    /// read off a bare `Ty::Val` has to assume a number and bail when it is not.
+    StrArr,
     /// A UTF-16 string: a data pointer, a length, and an arena handle (nonzero
     /// only for a *built* string this value owns; zero for one borrowed from the
     /// const pool). Immutable, so it is never a field or an array element — only
@@ -154,7 +159,9 @@ impl Ty {
             Ty::I32 | Ty::Bool => types::I32,
             Ty::I64 => types::I64,
             Ty::F64 => types::F64,
-            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web | Ty::Val | Ty::I32Opt => types::I64,
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web | Ty::Val | Ty::StrArr | Ty::I32Opt => {
+                types::I64
+            }
         }
     }
 
@@ -178,7 +185,7 @@ impl Ty {
     fn width(self) -> usize {
         match self {
             Ty::Obj(_) | Ty::Arr(_) | Ty::Str => 3,
-            Ty::Val => 2,
+            Ty::Val | Ty::StrArr => 2,
             _ => 1,
         }
     }
@@ -187,7 +194,7 @@ impl Ty {
     fn parts(self) -> Vec<types::Type> {
         match self {
             Ty::Obj(_) | Ty::Arr(_) | Ty::Str => vec![types::I64, types::I64, types::I64],
-            Ty::Val => vec![types::I64, types::I64],
+            Ty::Val | Ty::StrArr => vec![types::I64, types::I64],
             t => vec![t.cl()],
         }
     }
@@ -223,7 +230,7 @@ impl Ty {
             // the interpreter instead of reading the cell as something it isn't.
             // As `Ty::Val`, and for the same reason: a nullable number is a
             // temporary or a local, never the contents of a heap cell.
-            Ty::Val | Ty::I32Opt => repr::TAG_NULL,
+            Ty::Val | Ty::StrArr | Ty::I32Opt => repr::TAG_NULL,
         }
     }
 }
@@ -548,7 +555,7 @@ struct Plan {
     /// the only one, bit 1 the right. See `Ty::I32Opt`.
     unbox_at: HashMap<usize, u8>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
-    val_index_at: HashSet<usize>,
+    val_index_at: HashMap<usize, bool>,
     /// String-valued property reads on an opaque (`u.pathname`).
     val_prop_str_at: HashMap<usize, &'static str>,
     /// A `Ty::Val` field read whose *only* use is a string part of it, folded into
@@ -858,7 +865,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut class_names: HashSet<u16> = HashSet::new();
     let mut throw_at: HashMap<usize, &'static str> = HashMap::new();
     let mut unbox_at: HashMap<usize, u8> = HashMap::new();
-    let mut val_index_at: HashSet<usize> = HashSet::new();
+    let mut val_index_at: HashMap<usize, bool> = HashMap::new();
     let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
     let mut cell_prop_at: HashMap<usize, (u32, &'static str)> = HashMap::new();
     let mut array_at: HashMap<usize, i64> = HashMap::new();
@@ -1184,8 +1191,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         // `Ty::Val` joins the reference types here: a native
                         // that returned null parked handle 0, so the comparison
                         // is the same handle-is-zero test.
-                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val | Ty::I32Opt)
-                            || !matches!(op, BinOp::Eq | BinOp::Ne)
+                        if !matches!(
+                            t,
+                            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val | Ty::StrArr | Ty::I32Opt
+                        ) || !matches!(op, BinOp::Eq | BinOp::Ne)
                         {
                             return None;
                         }
@@ -1267,7 +1276,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     stack.push(TSlot::Val(Ty::Str, Prov::Stable));
                     continue;
                 }
-                if tval(base) == Some(Ty::Val) {
+                if matches!(tval(base), Some(Ty::Val | Ty::StrArr)) {
                     // `length`, and only `length`: its type is `int32`, and the
                     // type has to be right or the arithmetic around it refuses
                     // the function. Anything else about an opaque stays
@@ -1413,7 +1422,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // whole. Over an array of strings the index read has no register
                 // shape and bails, which is no worse than refusing the function,
                 // and better than refusing it for the numeric case as well.
-                if !matches!(t, Ty::Arr(_) | Ty::Val) {
+                if !matches!(t, Ty::Arr(_) | Ty::Val | Ty::StrArr) {
                     return None;
                 }
                 stack.push(top);
@@ -1454,9 +1463,11 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // lets you index that is not an array or a string. It gives an
                 // `int32`, and the shim reuses the interpreter's own bounds check
                 // so the `RangeError` reads the same, length included.
-                if tval(base) == Some(Ty::Val) && i.is_int() {
-                    val_index_at.insert(pc);
-                    stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                if matches!(tval(base), Some(Ty::Val | Ty::StrArr)) && i.is_int() {
+                    let strs = tval(base) == Some(Ty::StrArr);
+                    val_index_at.insert(pc, strs);
+                    let t = if strs { Ty::Str } else { Ty::I32 };
+                    stack.push(TSlot::Val(t, Prov::Stable));
                     continue;
                 }
                 let Ty::Arr(e) = tval(base)? else {
@@ -1476,7 +1487,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let i = tval(stack.pop()?)?;
                 let base = stack.pop()?;
                 if tval(base) == Some(Ty::Val) && i.is_int() && v.is_int() {
-                    val_index_at.insert(pc);
+                    val_index_at.insert(pc, false);
                     g.writes = true;
                     stack.push(TSlot::Val(v, Prov::Stable));
                     continue;
@@ -1857,7 +1868,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 if matches!(top, TSlot::Null) {
                     // `string?` is a null data pointer and `Bytes?` is handle 0,
                     // the same idea as a null object.
-                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str | Ty::Val)) {
+                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr)) {
                         return None;
                     }
                     reachable = false;
@@ -1878,6 +1889,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // does an opaque.
                     (Some(Ty::Str), Ty::Str) => {}
                     (Some(Ty::Val), Ty::Val) => {}
+                    (Some(Ty::StrArr), Ty::StrArr) => {}
                     (Some(k), t) if t.is_num() => {
                         if k != t && !(k.is_int() && t.is_int() && k.cl() == t.cl()) {
                             return None;
@@ -2056,6 +2068,7 @@ struct Shims {
     array_new: FuncId,
     array_push: FuncId,
     val_index_get: FuncId,
+    val_index_str: FuncId,
     val_index_set: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
@@ -2137,6 +2150,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_array_new", heap::array_new as *const u8);
     builder.symbol("msy_array_push", heap::array_push as *const u8);
     builder.symbol("msy_val_index_get", heap::val_index_get as *const u8);
+    builder.symbol("msy_val_index_str", heap::val_index_str as *const u8);
     builder.symbol("msy_val_index_set", heap::val_index_set as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
@@ -2304,7 +2318,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 // the arena is cleared.
                 // Both come back by the handle of the arena slot that owns them;
                 // a null one has handle 0, which `take` reports as absent.
-                Ty::Obj(_) | Ty::Str | Ty::Val => {
+                Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr => {
                     let h = u64::from_ne_bytes(out[8..16].try_into().expect("8"));
                     match arena.take(h) {
                         Some(v) => JitResult::Val(v),
@@ -2429,7 +2443,7 @@ const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
     // An array of strings, carried as an opaque like any array built here — so
     // `length` and a numeric index work on it, and handing it somewhere that
     // wants a typed `string[]` does not.
-    ("split", Ty::Val, 1, 1),
+    ("split", Ty::StrArr, 1, 1),
     ("contains", Ty::Bool, 1, 1),
     ("startsWith", Ty::Bool, 1, 1),
     ("endsWith", Ty::Bool, 1, 1),
@@ -2555,6 +2569,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, handle, kind, bits) -> 0 ok / 1 not an array
         array_push: one("msy_array_push", Some(types::I64), 4)?,
         val_index_get: one("msy_val_index_get", Some(types::I64), 3)?,
+        // (arena, handle, index, out) -> 0 ok / 1 threw
+        val_index_str: one("msy_val_index_str", Some(types::I64), 4)?,
         // (arena, handle, index, value) -> 0 ok / 1 threw
         val_index_set: one("msy_val_index_set", Some(types::I64), 4)?,
         // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
@@ -2722,7 +2738,7 @@ fn wrapper(
                 // and it must be spelled out, because the catch-all below hands
                 // over one register and a `Ty::Val` is two, which the entry
                 // wrapper's signature notices and Cranelift rejects.
-                Ty::Val => {
+                Ty::Val | Ty::StrArr => {
                     let v = b.ins().load(types::I64, MemFlags::trusted(), slots_ptr, at);
                     let h = b
                         .ins()
@@ -2746,7 +2762,7 @@ fn wrapper(
             // An object or a string result: its address, and the handle that owns
             // it — the third register in both cases (ptr, fields|len, handle).
             // An opaque is two registers, so its owning handle is the second.
-            Ty::Val => {
+            Ty::Val | Ty::StrArr => {
                 let rp = b.inst_results(call)[0];
                 let rh = b.inst_results(call)[1];
                 b.ins().store(MemFlags::trusted(), rp, out_ptr, 0);
@@ -2895,7 +2911,7 @@ fn unflatten(vals: &[ClValue], tys: &[Ty]) -> Vec<SlotV> {
             // promised three. Cranelift's verifier caught it; nothing else would
             // have.
             Ty::Str => SlotV::Str(vals[i], vals[i + 1], vals[i + 2]),
-            Ty::Val => SlotV::ValRef(vals[i], vals[i + 1]),
+            Ty::Val | Ty::StrArr => SlotV::ValRef(vals[i], vals[i + 1]),
             t => SlotV::Val(vals[i], t),
         });
         i += t.width();
@@ -2943,6 +2959,7 @@ fn translate(
         array_new: module.declare_func_in_func(shims.array_new, b.func),
         array_push: module.declare_func_in_func(shims.array_push, b.func),
         val_index_get: module.declare_func_in_func(shims.val_index_get, b.func),
+        val_index_str: module.declare_func_in_func(shims.val_index_str, b.func),
         val_index_set: module.declare_func_in_func(shims.val_index_set, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
@@ -3164,7 +3181,7 @@ fn translate(
                     }
                     // A borrow, as for a string: the arena handle, and 0 for
                     // the copy's own — the slot keeps the one reference.
-                    Ty::Val => {
+                    Ty::Val | Ty::StrArr => {
                         let val = v(0, b);
                         let zero = b.ins().iconst(types::I64, 0);
                         SlotV::ValRef(val, zero)
@@ -3639,7 +3656,30 @@ fn translate(
                 let bad = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
                 guard(b, ctx, bad, R_TAG, pc, None);
             }
-            Op::IndexGet if p.val_index_at.contains(&pc) => {
+            Op::IndexGet if p.val_index_at.get(&pc) == Some(&true) => {
+                let (i, it) = scalar(stack.pop()?)?;
+                let i = convert(b, i, it, Ty::I64);
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let call = b
+                    .ins()
+                    .call(shim.val_index_str, &[arena_ptr, h, i, out_ptr]);
+                let status = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(d, l, sh));
+            }
+            Op::IndexGet if p.val_index_at.contains_key(&pc) => {
                 let (i, it) = scalar(stack.pop()?)?;
                 let i = convert(b, i, it, Ty::I64);
                 let SlotV::ValRef(h, _) = stack.pop()? else {
@@ -3651,7 +3691,7 @@ fn translate(
                 guard(b, ctx, threw, R_HOST, pc, None);
                 stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
             }
-            Op::IndexSet if p.val_index_at.contains(&pc) => {
+            Op::IndexSet if p.val_index_at.contains_key(&pc) => {
                 let (v, vt) = scalar(stack.pop()?)?;
                 let v64 = convert(b, v, vt, Ty::I64);
                 let (i, it) = scalar(stack.pop()?)?;
@@ -3879,7 +3919,7 @@ fn translate(
                 let (nptr, nlen) = str_const(b, name);
                 let argc = b.ins().iconst(types::I64, n as i64);
 
-                let result = if ret == Ty::Val {
+                let result = if ret == Ty::Val || ret == Ty::StrArr {
                     // `split`: an array, carried by handle like any other opaque.
                     let call = b.ins().call(
                         shim.member_val,
@@ -4296,7 +4336,7 @@ fn translate(
                     // handle that owns it. Taking only the first left the length
                     // behind, so `f(x).length` could not be emitted.
                     Ty::Str => stack.push(SlotV::Str(results[0], results[1], results[2])),
-                    Ty::Val => stack.push(SlotV::ValRef(results[0], results[1])),
+                    Ty::Val | Ty::StrArr => stack.push(SlotV::ValRef(results[0], results[1])),
                     t => stack.push(SlotV::Val(results[0], t)),
                 }
             }
@@ -4652,7 +4692,7 @@ fn translate(
                 // some slot owns, so it takes a reference of its own first — the
                 // caller will `take` it out of the arena, which must not steal it
                 // from whoever still holds it.
-                SlotV::ValRef(v, h) if matches!(p.ret, Ty::Val) => {
+                SlotV::ValRef(v, h) if matches!(p.ret, Ty::Val | Ty::StrArr) => {
                     let no_handle = b.ins().icmp_imm(IntCC::Equal, h, 0);
                     let is_real = b.ins().icmp_imm(IntCC::NotEqual, v, 0);
                     let promote = b.ins().band(no_handle, is_real);
@@ -4671,7 +4711,7 @@ fn translate(
                     b.ins().return_(&[v, h]);
                     reachable = false;
                 }
-                SlotV::Null if matches!(p.ret, Ty::Val) => {
+                SlotV::Null if matches!(p.ret, Ty::Val | Ty::StrArr) => {
                     let z = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[z, z]);
                     reachable = false;
@@ -4835,6 +4875,7 @@ struct ShimRefs {
     array_new: cranelift_codegen::ir::FuncRef,
     array_push: cranelift_codegen::ir::FuncRef,
     val_index_get: cranelift_codegen::ir::FuncRef,
+    val_index_str: cranelift_codegen::ir::FuncRef,
     val_index_set: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
