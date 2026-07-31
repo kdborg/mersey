@@ -1,0 +1,62 @@
+// Arrays of strings — read, written and iterated — on both tiers.
+//
+// An array's elements are `Value`s in a buffer, exactly as an object's fields
+// are, so once a string *cell* had a shape a string *element* came almost free:
+// reading one is the same cell load, writing one the same copy-into-the-cell.
+// That is what `std:path`'s `join(parts: string[])` is made of.
+//
+// The limit worth stating: this holds for an array whose element type is *known* —
+// a parameter, a field. An array built in compiled code is carried as an opaque,
+// and an opaque's element has no shape at compile time, so an index read off one
+// assumes a number and bails when it is not. Correct, and slow, and refused
+// further along rather than silently wrong.
+
+import { console } from "std:console";
+
+/// Reads elements, and their lengths.
+function widths(parts: string[], n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        let k = 0;
+        while (k < parts.length) {
+            acc = acc + parts[k].length;
+            k += 1;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+/// `for…of` over one, which is the same index loop with the bounds implied.
+function joined(parts: string[], n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        for (const p of parts) {
+            acc = acc + p.length;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+/// Writes elements — the cell takes its own copy of the units.
+function relabel(parts: string[], n: int32): int32 {
+    let i = 0;
+    while (i < n) {
+        parts[i % parts.length] = `p${i % 5}`;
+        i += 1;
+    }
+    return parts[0].length + parts[1].length;
+}
+
+const xs: string[] = ["alpha", "be", "gamma"];
+
+widths(xs, 30000);
+joined(xs, 30000);
+relabel(xs, 30000);
+
+console.log(`widths  ${widths(xs, 3)}`);
+console.log(`joined  ${joined(xs, 3)}`);
+console.log(`relabel ${relabel(xs, 5)}`);

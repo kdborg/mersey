@@ -6,14 +6,14 @@ macOS (arm64). 9 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 89.34 | 98.27 | 96.11 | 90.76 |
-| calls | 124.25 | 31.58 | 28.72 | 22.44 |
-| fcompute | 105.25 | 105.54 | 107.17 | 110.29 |
-| mathk | 13.95 | 14.72 | 14.33 | 13.67 |
-| url | 8.94 | 7.96 | 11.32 | 21.12 |
-| encoding | 4.77 | 1.73 | 4.31 | 1.66 |
-| crypto | 20.1 | 0.5 | 1.58 | 0.52 |
-| json | 4.32 | 1.37 | 1.48 | 0.82 |
+| compute | 87.76 | 96.6 | 97.1 | 88.87 |
+| calls | 123.59 | 31.22 | 28.59 | 22.22 |
+| fcompute | 104.38 | 104.4 | 104.88 | 104.11 |
+| mathk | 13.57 | 14.14 | 13.14 | 12.76 |
+| url | 8.55 | 7.76 | 11.05 | 20.45 |
+| encoding | 4.46 | 1.63 | 4.26 | 1.54 |
+| crypto | 19.26 | 0.48 | 1.43 | 0.5 |
+| json | 4.03 | 1.3 | 1.44 | 0.74 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
@@ -21,22 +21,22 @@ macOS (arm64). 9 repeats per cell; work/wall = min, rss = median of peak. Checks
 |---|---|---|---|---|
 | compute | 120 | 110 | 110 | 100 |
 | calls | 150 | 40 | 30 | 20 |
-| fcompute | 130 | 110 | 110 | 110 |
-| mathk | 40 | 20 | 20 | 10 |
+| fcompute | 130 | 110 | 110 | 100 |
+| mathk | 30 | 20 | 20 | 10 |
 | url | 30 | 10 | 20 | 20 |
 | encoding | 30 | 10 | 10 | 0 |
-| crypto | 50 | 10 | 10 | 0 |
+| crypto | 40 | 0 | 10 | 0 |
 | json | 30 | 10 | 10 | 0 |
 
 ## Peak RSS (MiB)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.7 | 29 | 34.8 | 6 |
+| compute | 38.7 | 29 | 34.9 | 6 |
 | calls | 38.9 | 31.2 | 34.9 | 6 |
-| fcompute | 40.6 | 29.1 | 36.9 | 5.9 |
-| mathk | 40 | 30.7 | 36.9 | 6 |
+| fcompute | 40.6 | 29 | 36.9 | 5.9 |
+| mathk | 39.9 | 30.7 | 36.9 | 6 |
 | url | 43.2 | 38.2 | 41.8 | 7 |
-| encoding | 42.1 | 30.7 | 38.3 | 7.4 |
-| crypto | 48.4 | 27 | 35.3 | 5.9 |
-| json | 40.6 | 29.3 | 36.9 | 5.9 |
+| encoding | 42 | 30.7 | 38.3 | 7.4 |
+| crypto | 48.2 | 26.9 | 35.3 | 5.9 |
+| json | 40.5 | 29.3 | 36.9 | 6 |

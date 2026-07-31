@@ -248,3 +248,20 @@ fn string_fields_and_statics_agree_across_the_tier_boundary() {
     let out = run("class-strings-and-statics.mersey", true);
     assert!(out.contains("run 437"), "{out}");
 }
+
+/// Arrays of strings — read, written and iterated. An array's elements are
+/// `Value`s in a buffer exactly as an object's fields are, so once a string cell
+/// had a shape a string element came almost free. The limit is stated in the
+/// program: this holds where the element type is *known* (a parameter, a field);
+/// an array built in compiled code is an opaque, whose element has no shape at
+/// compile time, so an index read off one assumes a number and bails when it is
+/// not — slow, and refused further along, never silently wrong.
+#[test]
+fn string_arrays_agree_across_the_tier_boundary() {
+    check("string-arrays.mersey");
+    let out = run("string-arrays.mersey", true);
+    assert!(out.contains("widths  18"), "{out}");
+    assert!(out.contains("joined  18"), "{out}");
+    // The elements were rewritten in place, so the lengths are the new ones.
+    assert!(out.contains("relabel 4"), "{out}");
+}

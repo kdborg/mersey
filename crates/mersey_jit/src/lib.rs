@@ -128,6 +128,10 @@ enum Elem {
     F64,
     Bool,
     Obj(u32),
+    /// A string element. Reading one is the same cell load a string *field* is,
+    /// and writing one the same copy-into-the-cell — an array's elements are
+    /// `Value`s in a buffer, exactly as an object's fields are.
+    Str,
 }
 
 impl Elem {
@@ -138,6 +142,7 @@ impl Elem {
             Elem::F64 => Ty::F64,
             Elem::Bool => Ty::Bool,
             Elem::Obj(c) => Ty::Obj(c),
+            Elem::Str => Ty::Str,
         }
     }
 }
@@ -383,6 +388,7 @@ impl Group<'_> {
             FieldTy::Num(Num::F64) => Elem::F64,
             FieldTy::Bool => Elem::Bool,
             FieldTy::Obj(c) => Elem::Obj(self.class_idx(c)),
+            FieldTy::Str => Elem::Str,
             // An array of arrays, or of anything this tier has no register for.
             _ => return None,
         })
@@ -1329,7 +1335,13 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             Op::IterArray => {
                 let top = stack.pop()?;
                 let t = tval(top)?;
-                if !matches!(t, Ty::Arr(_)) {
+                // `Ty::Val` too: an array built here, or handed back by `split`,
+                // is carried as an opaque. `length` and a numeric index both
+                // answer for one — so a `for…of` over an array of *numbers* is
+                // whole. Over an array of strings the index read has no register
+                // shape and bails, which is no worse than refusing the function,
+                // and better than refusing it for the numeric case as well.
+                if !matches!(t, Ty::Arr(_) | Ty::Val) {
                     return None;
                 }
                 stack.push(top);
@@ -1393,7 +1405,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let Ty::Arr(e) = tval(base)? else {
                     return None;
                 };
-                if !i.is_int() || !e.ty().is_num() || !assignable(v, e.ty()) {
+                let ok = if e.ty() == Ty::Str {
+                    v == Ty::Str
+                } else {
+                    e.ty().is_num() && assignable(v, e.ty())
+                };
+                if !i.is_int() || !ok {
                     return None;
                 }
                 g.writes = true;
@@ -3446,6 +3463,24 @@ fn translate(
                 };
                 let at = elem_addr(b, ctx, pc, data, len, i, it);
                 let v = load_cell(b, ctx, pc, at, 0, e.ty(), &shim);
+                stack.push(v);
+            }
+            // A *string* element: the cell takes its own copy of the units, as a
+            // string field's does.
+            Op::IndexSet if matches!(stack.last(), Some(SlotV::Str(..))) => {
+                let v = stack.pop()?;
+                let SlotV::Str(sp, sl, _) = v else {
+                    return None;
+                };
+                let (i, it) = scalar(stack.pop()?)?;
+                let SlotV::Arr(_, data, len, e) = stack.pop()? else {
+                    return None;
+                };
+                if e.ty() != Ty::Str {
+                    return None;
+                }
+                let at = elem_addr(b, ctx, pc, data, len, i, it);
+                b.ins().call(shim.cell_set_str, &[at, sp, sl]);
                 stack.push(v);
             }
             Op::IndexSet => {
