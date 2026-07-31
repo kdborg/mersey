@@ -403,10 +403,11 @@ impl Group<'_> {
             FieldTy::Obj(c) => Ty::Obj(self.class_idx(c)),
             FieldTy::Arr(e) => Ty::Arr(self.elem_of(e)?),
             FieldTy::Str => Ty::Str,
-            // An opaque or a nullable-number *field* still interprets: `load_cell`
-            // has no case for either. A *parameter* is a different matter — it
-            // arrives already in registers, or as a handle (see `param_types`).
-            FieldTy::Val | FieldTy::NumOpt => return None,
+            FieldTy::Val => Ty::Val,
+            // A nullable-number *field* still interprets: `load_cell` has no case
+            // for one. A *parameter* is a different matter — it arrives already
+            // in a register (see `param_types`).
+            FieldTy::NumOpt => return None,
             FieldTy::Opaque => return None,
         })
     }
@@ -541,11 +542,15 @@ struct Plan {
     static_at: HashSet<usize>,
     /// Name ids that name a *class* — a receiver for a static call, not a value.
     class_names: HashSet<u16>,
+    /// `throw new Error(msg)` sites: the builtin error class, by name.
+    throw_at: HashMap<usize, &'static str>,
     /// Where a nullable number is used *as* a number: bit 0 the left operand or
     /// the only one, bit 1 the right. See `Ty::I32Opt`.
     unbox_at: HashMap<usize, u8>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
     val_index_at: HashSet<usize>,
+    /// String-valued property reads on an opaque (`u.pathname`).
+    val_prop_str_at: HashMap<usize, &'static str>,
     /// `[]` and `a.push(v)` sites, which build an array as an opaque.
     array_at: HashSet<usize>,
     /// `GetMember` sites reading a numeric property off an opaque.
@@ -846,8 +851,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut static_at: HashSet<usize> = HashSet::new();
     let mut class_names: HashSet<u16> = HashSet::new();
+    let mut throw_at: HashMap<usize, &'static str> = HashMap::new();
     let mut unbox_at: HashMap<usize, u8> = HashMap::new();
     let mut val_index_at: HashSet<usize> = HashSet::new();
+    let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
     let mut array_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
@@ -1057,6 +1064,22 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // import discards this code wholesale.
             Op::NewNamed(ni, argc) => {
                 let name = chunk.names[ni as usize].as_str();
+                // `throw new Error(msg)`. The pair is lowered together: the error
+                // is built by the interpreter and the compiled body traps, so
+                // nothing here has to construct one. A *cold* path by
+                // construction, and refusing a whole function because it can
+                // throw was a poor trade.
+                if argc == 1 && matches!(chunk.code.get(pc + 1), Some(Op::Throw)) {
+                    if let Some(cls) = g.env.error_class(scope.as_ref(), name) {
+                        if tval(*stack.last()?) == Some(Ty::Str) {
+                            stack.pop();
+                            throw_at.insert(pc, cls);
+                            // The `Throw` that follows consumes what this leaves.
+                            stack.push(TSlot::Null);
+                            continue;
+                        }
+                    }
+                }
                 // A host constructor (`new URL(s)`): not a Mersey class, so it
                 // takes the `web_new` path and hands back a `Ty::Web` handle. The
                 // arguments cross as `WebArg`s, exactly like a `web_call_v` call.
@@ -1223,6 +1246,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                     return None;
                 }
+                if tval(base) == Some(Ty::Val) && VAL_STR_PROPS.contains(&name) {
+                    let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                    val_prop_str_at.insert(pc, nm);
+                    stack.push(TSlot::Val(Ty::Str, Prov::Stable));
+                    continue;
+                }
                 if tval(base) == Some(Ty::Val) {
                     // `length`, and only `length`: its type is `int32`, and the
                     // type has to be right or the arithmetic around it refuses
@@ -1318,6 +1347,11 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // there is no ownership to hand over.
                 let ok = if t == Ty::Str {
                     v == Ty::Str
+                } else if t == Ty::Val {
+                    // An opaque field takes the arena entry the value already
+                    // names — the cell keeps its own clone, so as with a string
+                    // there is no ownership handed over.
+                    v == Ty::Val
                 } else {
                     t.is_num() && assignable(v, t)
                 };
@@ -1755,6 +1789,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 stack.push(TSlot::Val(sig.ret, Prov::Stable));
             }
+            // Only the shape above reaches here: the value was put on the stack by
+            // a `NewNamed` this pass already turned into a trap.
+            Op::Throw if throw_at.contains_key(&pc.wrapping_sub(1)) => {
+                stack.pop()?;
+                reachable = false;
+            }
             Op::Pop => {
                 stack.pop()?;
             }
@@ -1862,8 +1902,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         val_method_at,
         static_at,
         class_names,
+        throw_at,
         unbox_at,
         val_index_at,
+        val_prop_str_at,
         array_at,
         val_prop_at,
         field_at,
@@ -1950,6 +1992,10 @@ struct Shims {
     cell_arr: FuncId,
     cell_str: FuncId,
     cell_set_str: FuncId,
+    cell_val: FuncId,
+    cell_set_val: FuncId,
+    val_prop_str: FuncId,
+    throw_error: FuncId,
     alloc: FuncId,
     clone_obj: FuncId,
     release: FuncId,
@@ -2026,6 +2072,10 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_cell_arr", heap::cell_arr as *const u8);
     builder.symbol("msy_cell_str", heap::cell_str as *const u8);
     builder.symbol("msy_cell_set_str", heap::cell_set_str as *const u8);
+    builder.symbol("msy_cell_val", heap::cell_val as *const u8);
+    builder.symbol("msy_cell_set_val", heap::cell_set_val as *const u8);
+    builder.symbol("msy_val_prop_str", heap::val_prop_str as *const u8);
+    builder.symbol("msy_throw_error", heap::throw_error as *const u8);
     builder.symbol("msy_alloc", heap::alloc as *const u8);
     builder.symbol("msy_clone_obj", heap::clone_obj as *const u8);
     builder.symbol("msy_release", heap::release as *const u8);
@@ -2360,6 +2410,16 @@ const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
 /// (name, result, min args, max args)
 const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[("push", Ty::Val, 1, 1), ("clear", Ty::Val, 0, 0)];
 
+/// String-valued properties of an opaque. Only `Url`'s parts are here, because
+/// they are the only ones a `Ty::Val` can currently be: a `Bytes` has none and a
+/// `Regex`'s are not strings. The tier cannot ask what an opaque *is*, so this is
+/// a list of names — and the shim checks the answer really is a string, handing
+/// back a null string when it is not, which the caller compares against null
+/// exactly as it would an interpreted one.
+const VAL_STR_PROPS: &[&str] = &[
+    "href", "protocol", "hostname", "port", "pathname", "search", "hash",
+];
+
 fn val_method(name: &str, argc: u8) -> Option<Ty> {
     VAL_METHODS
         .iter()
@@ -2396,6 +2456,14 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         cell_str: one("msy_cell_str", None, 2)?,
         // (cell, ptr, len)
         cell_set_str: one("msy_cell_set_str", None, 3)?,
+        // (cell, arena) -> handle, 0 for null
+        cell_val: one("msy_cell_val", Some(types::I64), 2)?,
+        // (cell, arena, handle)
+        cell_set_val: one("msy_cell_set_val", None, 3)?,
+        // (arena, handle, name_ptr, name_len, out) -> 0 ok / 1 threw
+        val_prop_str: one("msy_val_prop_str", Some(types::I64), 5)?,
+        // (arena, class_ptr, class_len, msg_ptr, msg_len)
+        throw_error: one("msy_throw_error", None, 5)?,
         // (class, arena, out) -> writes ptr, fields, handle
         alloc: one("msy_alloc", None, 3)?,
         // (ptr, arena) -> handle
@@ -2792,6 +2860,10 @@ fn translate(
         cell_arr: module.declare_func_in_func(shims.cell_arr, b.func),
         cell_str: module.declare_func_in_func(shims.cell_str, b.func),
         cell_set_str: module.declare_func_in_func(shims.cell_set_str, b.func),
+        cell_val: module.declare_func_in_func(shims.cell_val, b.func),
+        cell_set_val: module.declare_func_in_func(shims.cell_set_val, b.func),
+        val_prop_str: module.declare_func_in_func(shims.val_prop_str, b.func),
+        throw_error: module.declare_func_in_func(shims.throw_error, b.func),
         alloc: module.declare_func_in_func(shims.alloc, b.func),
         clone_obj: module.declare_func_in_func(shims.clone_obj, b.func),
         release: module.declare_func_in_func(shims.release, b.func),
@@ -3291,6 +3363,33 @@ fn translate(
             // `length` on an opaque. This has to precede the generic
             // `GetMember` arm below, which matches every remaining member read
             // and would otherwise take this one and fail on it.
+            Op::GetMember(_, _) if p.val_prop_str_at.contains_key(&pc) => {
+                let name = *p.val_prop_str_at.get(&pc)?;
+                let SlotV::ValRef(h, owned) = stack.pop()? else {
+                    return None;
+                };
+                let (nptr, nlen) = str_const(b, name);
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let call = b
+                    .ins()
+                    .call(shim.val_prop_str, &[arena_ptr, h, nptr, nlen, out_ptr]);
+                let status = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                // The receiver was this value's to let go of — a field read makes
+                // an arena entry, and reading a part of it in a loop would
+                // otherwise leave one behind each time.
+                release_if_owned(b, shim.release, arena_ptr, owned);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(d, l, sh));
+            }
             Op::GetMember(_, _) if p.val_prop_at.contains_key(&pc) => {
                 let SlotV::ValRef(v, _) = stack.pop()? else {
                     return None;
@@ -3330,7 +3429,7 @@ fn translate(
                 let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
                 guard(b, ctx, null, R_NULL, pc, None);
                 let at = (slot as usize * repr::SIZE) as i32;
-                let v = load_cell(b, ctx, pc, base, at, t, &shim);
+                let v = load_cell(b, ctx, pc, base, at, t, &shim, arena_ptr);
                 stack.push(v);
             }
             // A web property set (`el.textContent = str`): the value crosses as a
@@ -3365,6 +3464,22 @@ fn translate(
                 let threw = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
                 guard(b, ctx, threw, R_HOST, pc, None);
                 stack.push(vslot);
+            }
+            Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Val))) => {
+                let (slot, _) = *p.field_at.get(&pc)?;
+                let v = stack.pop()?;
+                let SlotV::ValRef(h, _) = v else {
+                    return None;
+                };
+                let SlotV::Obj(_, base, _) = stack.pop()? else {
+                    return None;
+                };
+                let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
+                guard(b, ctx, null, R_NULL, pc, None);
+                let at = (slot as usize * repr::SIZE) as i32;
+                let cell = b.ins().iadd_imm(base, at as i64);
+                b.ins().call(shim.cell_set_val, &[cell, arena_ptr, h]);
+                stack.push(v);
             }
             Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Str))) => {
                 let (slot, _) = *p.field_at.get(&pc)?;
@@ -3462,7 +3577,7 @@ fn translate(
                     return None;
                 };
                 let at = elem_addr(b, ctx, pc, data, len, i, it);
-                let v = load_cell(b, ctx, pc, at, 0, e.ty(), &shim);
+                let v = load_cell(b, ctx, pc, at, 0, e.ty(), &shim, arena_ptr);
                 stack.push(v);
             }
             // A *string* element: the cell takes its own copy of the units, as a
@@ -4064,6 +4179,23 @@ fn translate(
             // A host constructor (`new URL(s)`): build the args, call `web_new`,
             // capture the handle. No receiver and no depth guard — it is a host
             // call, not a Mersey frame.
+            Op::NewNamed(_, _) if p.throw_at.contains_key(&pc) => {
+                let cls = *p.throw_at.get(&pc)?;
+                let SlotV::Str(mp, ml, _) = stack.pop()? else {
+                    return None;
+                };
+                let (cp, cl) = str_const(b, cls);
+                b.ins().call(shim.throw_error, &[arena_ptr, cp, cl, mp, ml]);
+                // Not a `guard`: this is unconditional, so it traps outright.
+                // A guard would leave its "did not trap" block behind, and
+                // nothing follows to terminate it — which the verifier catches
+                // as a branch to a block that was never finished.
+                trap(b, ctx, R_HOST, pc, None);
+                reachable = false;
+            }
+            // Consumed above: the block is already terminated, so this is only
+            // ever reached with `reachable` false and skipped.
+            Op::Throw if p.throw_at.contains_key(&pc.wrapping_sub(1)) => {}
             Op::NewNamed(_, _) if p.web_new_at.contains_key(&pc) => {
                 let (name, id, kinds) = p.web_new_at.get(&pc)?.clone();
                 let (desc_ptr, n, owned) = build_web_args(b, &mut stack, &kinds)?;
@@ -4552,6 +4684,10 @@ struct ShimRefs {
     cell_arr: cranelift_codegen::ir::FuncRef,
     cell_str: cranelift_codegen::ir::FuncRef,
     cell_set_str: cranelift_codegen::ir::FuncRef,
+    cell_val: cranelift_codegen::ir::FuncRef,
+    cell_set_val: cranelift_codegen::ir::FuncRef,
+    val_prop_str: cranelift_codegen::ir::FuncRef,
+    throw_error: cranelift_codegen::ir::FuncRef,
     alloc: cranelift_codegen::ir::FuncRef,
     clone_obj: cranelift_codegen::ir::FuncRef,
     release: cranelift_codegen::ir::FuncRef,
@@ -4667,6 +4803,7 @@ fn load_cell(
     at: i32,
     t: Ty,
     shim: &ShimRefs,
+    arena_ptr: ClValue,
 ) -> SlotV {
     let tag = b.ins().load(types::I8, MemFlags::trusted(), base, at);
     let pay = at + t.payload();
@@ -4723,6 +4860,16 @@ fn load_cell(
             let len = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
             let zero = b.ins().iconst(types::I64, 0);
             SlotV::Str(ptr, len, zero)
+        }
+        // An opaque field. There is no representation for one but an arena entry,
+        // so unlike a string this is *owned* — the reader releases it. No tag
+        // check: compiled code never looks inside one, so there is nothing a
+        // wrong tag could make it misread.
+        Ty::Val => {
+            let cell = b.ins().iadd_imm(base, at as i64);
+            let call = b.ins().call(shim.cell_val, &[cell, arena_ptr]);
+            let h = b.inst_results(call)[0];
+            SlotV::ValRef(h, h)
         }
         // A number, on the other hand, has to be *exactly* what it says: there is
         // no null in an `f64`, and a field that is still null is one this cannot

@@ -241,6 +241,31 @@ pub(crate) unsafe extern "C" fn cell_str(cell: *const Value, out: *mut u64) {
     }
 }
 
+/// The opaque a heap cell holds (`this.u`), as an arena handle — a `Bytes`, a
+/// `Url`. There is no representation for one but an arena entry, so unlike a
+/// string field this is *owned*: whoever takes it releases it.  0 for null.
+///
+/// # Safety
+/// As `cell_obj`.
+pub(crate) unsafe extern "C" fn cell_val(cell: *const Value, arena: *mut Arena) -> u64 {
+    unsafe {
+        match &*cell {
+            Value::Null => 0,
+            v => (*arena).keep(v.clone()),
+        }
+    }
+}
+
+/// Write one into a heap cell (`this.u = parsed`). Assigning over the cell drops
+/// whatever it held.
+///
+/// # Safety
+/// As `cell_set_str`.
+pub(crate) unsafe extern "C" fn cell_set_val(cell: *mut Value, arena: *mut Arena, h: u64) {
+    let v = unsafe { (*arena).get(h).cloned().unwrap_or(Value::Null) };
+    unsafe { *cell = v };
+}
+
 /// Write a string into a heap cell (`this.name = s`). The units are copied into a
 /// fresh `Value::Str`, which is what the field will own; assigning over the cell
 /// drops whatever it held.
@@ -427,6 +452,74 @@ pub(crate) unsafe extern "C" fn str_num(
         match (*arena).interp_ptr() {
             Some(ip) => (*ip).jit_str_num(recv, name, args),
             None => i64::MIN,
+        }
+    }
+}
+
+/// `throw new Error(msg)`: the error is built by the interpreter and stashed, and
+/// the compiled body then traps — the same route a host call that threw takes.
+///
+/// # Safety
+/// As `native_call`; the class name is a `&'static str` baked in at compile time.
+pub(crate) unsafe extern "C" fn throw_error(
+    arena: *mut Arena,
+    cname_ptr: *const u8,
+    cname_len: usize,
+    msg_ptr: *const u16,
+    msg_len: usize,
+) {
+    unsafe {
+        let class = std::str::from_utf8_unchecked(std::slice::from_raw_parts(cname_ptr, cname_len));
+        // Leaked once per site at compile time; `throw` wants a `'static` name.
+        let class: &'static str = std::mem::transmute::<&str, &'static str>(class);
+        let msg = if msg_len == 0 || msg_ptr.is_null() {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(msg_ptr, msg_len)
+        };
+        if let Some(ip) = (*arena).interp_ptr() {
+            (*ip).jit_throw_error(class, msg);
+        }
+    }
+}
+
+/// A string-valued property of an opaque (`u.pathname`). `out` receives
+/// (data, length, owning handle); 0, or 1 if it threw.
+///
+/// # Safety
+/// As `native_call`; `out` names three writable words.
+pub(crate) unsafe extern "C" fn val_prop_str(
+    arena: *mut Arena,
+    h: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let Some(ip) = (*arena).interp_ptr() else {
+            return 1;
+        };
+        let sh = (*ip).jit_val_prop_str(h, name);
+        if sh == u64::MAX {
+            return 1;
+        }
+        match (*arena).get(sh) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                *out = units.as_ptr() as u64;
+                *out.add(1) = units.len() as u64;
+                *out.add(2) = sh;
+                0
+            }
+            // Absent, or not a string: a null string, which the caller compares
+            // against null exactly as it would an interpreted one.
+            _ => {
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0;
+                0
+            }
         }
     }
 }

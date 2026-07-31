@@ -1,0 +1,60 @@
+// An engine primitive as a class field, its string parts, and `throw new Error` —
+// on both tiers. Between them these are what `std:url`'s `URL` is made of, and it
+// was the last of the command-line workloads running wholly interpreted.
+//
+// An opaque field is *owned* where a string field is borrowed: there is no
+// representation for one but an arena entry, so reading it makes one, and the
+// reader lets it go. Reading a part of the same field in a loop would otherwise
+// leave an entry behind on every iteration.
+//
+// `throw new Error(msg)` is lowered as a pair: the error is built by the
+// interpreter and stashed, and the compiled body traps — the same route a host
+// call that threw already takes. A throw is a cold path by construction, and
+// refusing a whole function because it *can* throw was a poor trade. What has to
+// be checked is that it still throws the same thing, with the same message.
+
+import { console } from "std:console";
+import { parse } from "std:parse";
+
+class Site {
+    private u: Url;
+
+    public constructor(input: string) {
+        const parsed = parse.url(input);
+        if (parsed == null) {
+            throw new Error(`not a URL: "${input}"`);
+        }
+        this.u = parsed;
+    }
+
+    public get path(): string { return this.u.pathname; }
+    public get query(): string { return this.u.search; }
+    public get host(): string { return this.u.hostname; }
+}
+
+function span(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const s = new Site(`https://example.com/p/${i}?q=1`);
+        acc = acc + s.path.length + s.query.length + s.host.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// The throw itself, caught, so the message can be compared.
+function bad(): string {
+    try {
+        const s = new Site("nonsense");
+        return s.path;
+    } catch (e: Error) {
+        return `${e.message}`;
+    }
+}
+
+span(20000);
+bad();
+
+console.log(`span ${span(10)}`);
+console.log(`bad  ${bad()}`);

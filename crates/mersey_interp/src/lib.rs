@@ -2029,6 +2029,12 @@ pub trait JitEnv {
     /// …and a static one, called on the class rather than on an instance.
     fn static_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
 
+    /// `Error`, `TypeError`, `RangeError` — a builtin error class by name, and
+    /// only those. `throw new Error(msg)` is lowered by building the error *here*
+    /// and trapping, so the compiled code never has to make one; that is only
+    /// sound for the classes `Interp::throw` knows how to build.
+    fn error_class(&self, scope: Option<&DefScope>, name: &str) -> Option<&'static str>;
+
     /// The class a top-level name binds, if it binds one.
     fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>>;
     /// The body behind `o.name` when `name` is a getter. A getter is a call
@@ -2157,6 +2163,17 @@ impl JitEnv for InterpEnv<'_> {
 
     fn static_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_static(cls, name)
+    }
+
+    fn error_class(&self, scope: Option<&DefScope>, name: &str) -> Option<&'static str> {
+        const KNOWN: &[&str] = &["Error", "TypeError", "RangeError"];
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
+        let matched = KNOWN.iter().copied().find(|k| *k == name)?;
+        // …and it must still *be* that class here, not a rebinding of the name.
+        match env_get(env, name) {
+            Some(Value::Class(c)) if c.is_builtin_error => Some(matched),
+            _ => None,
+        }
     }
 
     fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>> {
@@ -4708,6 +4725,29 @@ impl Interp {
                 1
             }
             Err(()) => 1,
+        }
+    }
+
+    /// `throw new Error(msg)` from compiled code: build the error here and stash
+    /// it, exactly as a failed host call does, so the compiled body only has to
+    /// trap. The class name is one of the few `throw` knows how to build.
+    pub fn jit_throw_error(&mut self, class: &'static str, msg: &[u16]) {
+        let t = self.throw(class, utf16_to_string(msg));
+        self.jit_host_error = Some(t);
+    }
+
+    /// A string-valued property of an opaque (`u.pathname` on a `Url`). The
+    /// handle of the resulting string, 0 if the property is absent or is not a
+    /// string, `u64::MAX` if reading it threw.
+    pub fn jit_val_prop_str(&mut self, h: u64, name: &str) -> u64 {
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        match self.get_member(&o, name) {
+            Ok(Some(v @ Value::Str(_))) => self.jit_arena.keep(v),
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
         }
     }
 

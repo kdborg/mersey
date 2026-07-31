@@ -265,3 +265,19 @@ fn string_arrays_agree_across_the_tier_boundary() {
     // The elements were rewritten in place, so the lengths are the new ones.
     assert!(out.contains("relabel 4"), "{out}");
 }
+
+/// An engine primitive as a class field, its string parts, and `throw new Error`.
+/// Between them these are what `std:url`'s `URL` is made of, and the last of the
+/// command-line workloads to be running wholly interpreted. An opaque field is
+/// *owned* where a string field is borrowed — there is no representation for one
+/// but an arena entry — so reading a part of the same field in a loop would leave
+/// an entry behind each time if the reader did not let it go. The throw is lowered
+/// as a pair: the interpreter builds the error, the compiled body traps, and what
+/// must be checked is that it still throws the same thing with the same message.
+#[test]
+fn opaque_fields_and_throw_agree_across_the_tier_boundary() {
+    check("opaque-fields-and-throw.mersey");
+    let out = run("opaque-fields-and-throw.mersey", true);
+    assert!(out.contains("span 190"), "{out}");
+    assert!(out.contains(r#"bad  not a URL: "nonsense""#), "{out}");
+}
