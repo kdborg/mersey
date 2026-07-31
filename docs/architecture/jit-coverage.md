@@ -118,6 +118,19 @@ off a handle. `split` did exactly this before a test caught it.
 trap" block behind and nothing follows to terminate it; the verifier reports a
 branch to a block that was never finished.
 
+**Ownership is per *copy*, not per value.** `Dup` makes two values out of one,
+and each must survive the other's release — so an owned handle has to be
+duplicated, not copied. Copying it left two owners of one reference, and since
+`t = expr` lowers to `Dup / StoreSlot / Pop`, the slot kept the string and `Pop`
+freed it. Note the shape of the symptom: the length register was untouched, so
+the string had the right length and the wrong contents, and it surfaced as a
+wrong answer several calls away. A declaration stores without the `Dup`, which is
+why only reassignment was affected — and why it went unnoticed.
+
+**The status word is shared by the whole group.** A callee that reports something
+through it is not describing its own result, it is overwriting its caller's. Say
+it in the return registers whenever the type has a way to.
+
 **A refusal is not free.** Tier 1 refuses whole functions, so "refused" is the
 normal state for most code — which means the path *to* discovering a refusal has
 to be cheap. It once cost 18% of a workload that compiled nothing at all.
