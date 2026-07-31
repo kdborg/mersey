@@ -1228,8 +1228,19 @@ impl C {
             }
             Stmt::Var(v) => self.var_stmt(v),
             Stmt::Expr(e) => {
-                self.expr(e);
-                self.emit(Op::Pop);
+                // An expression statement throws its value away, so ask the
+                // assignment and update forms not to produce one.
+                let left = match e {
+                    Expr::Assign { op, target, value } => self.assign(e, op, target, value, true),
+                    Expr::Update { prefix, inc, expr } => self.update(e, *prefix, *inc, expr, true),
+                    _ => {
+                        self.expr(e);
+                        true
+                    }
+                };
+                if left {
+                    self.emit(Op::Pop);
+                }
             }
             Stmt::Empty => {}
             Stmt::If { cond, then, els } => {
@@ -1958,7 +1969,9 @@ impl C {
                     self.emit(Op::Un(*op));
                 }
             }
-            Expr::Update { prefix, inc, expr } => self.update(e, *prefix, *inc, expr),
+            Expr::Update { prefix, inc, expr } => {
+                self.update(e, *prefix, *inc, expr, false);
+            }
             Expr::Binary { op, l, r } => match op {
                 BinOp::And => {
                     self.expr(l);
@@ -2000,7 +2013,9 @@ impl C {
                     self.emit_bin(e, *op);
                 }
             },
-            Expr::Assign { op, target, value } => self.assign(e, op, target, value),
+            Expr::Assign { op, target, value } => {
+                self.assign(e, op, target, value, false);
+            }
             Expr::Cond { cond, then, els } => {
                 self.expr(cond);
                 let jf = self.emit(Op::JumpIfFalse(0));
@@ -2280,7 +2295,17 @@ impl C {
         }
     }
 
-    fn update(&mut self, e: &'static Expr, prefix: bool, inc: bool, target: &'static Expr) {
+    /// `i++` / `--n`. `discard` as in `assign`: a statement wants no value, and
+    /// then neither the `Dup` that keeps one nor the `Pop` that drops it is
+    /// needed. Returns whether a value is on the stack.
+    fn update(
+        &mut self,
+        e: &'static Expr,
+        prefix: bool,
+        inc: bool,
+        target: &'static Expr,
+        discard: bool,
+    ) -> bool {
         let op = if inc { BinOp::Add } else { BinOp::Sub };
         // The `1` is built at the operand's own type: an `int32` counter must not
         // add a float, and a `float64` one must not add an int and then discover
@@ -2296,15 +2321,16 @@ impl C {
         match target {
             Expr::Ident(n) => {
                 self.load_name(&n.text);
-                if !prefix {
+                if !prefix && !discard {
                     self.emit(Op::Dup);
                 }
                 self.emit(Op::Const(one));
                 self.emit_bin(e, op);
-                if prefix {
+                if prefix && !discard {
                     self.emit(Op::Dup);
                 }
                 self.store_name(&n.text);
+                return !discard;
             }
             Expr::Member { obj, name, .. } => {
                 let no = self.temp_slot("u");
@@ -2356,21 +2382,37 @@ impl C {
             }
             _ => self.bail(),
         }
+        true
     }
 
+    /// Emit an assignment. `discard` says the caller wants no value left — which
+    /// is what an assignment *statement* wants, and what most assignments are.
+    ///
+    /// Without it `x = e;` costs three ops where one would do: `Dup` to leave the
+    /// expression's value, `StoreSlot`, and then the statement's `Pop` to throw
+    /// that value away again. Same for `i += 1` and `i++`. Those are the three
+    /// commonest statements in any loop body, so the pair was being executed —
+    /// and compiled — everywhere.
+    ///
+    /// Returns whether a value is on the stack, because not every shape can drop
+    /// one: a member or index assignment leaves the value its store op pushes.
     fn assign(
         &mut self,
         e: &'static Expr,
         op: &'static str,
         target: &'static Expr,
         value: &'static Expr,
-    ) {
+        discard: bool,
+    ) -> bool {
         if op == "=" {
             match target {
                 Expr::Ident(n) => {
                     self.expr(value);
-                    self.emit(Op::Dup);
+                    if !discard {
+                        self.emit(Op::Dup);
+                    }
                     self.store_name(&n.text);
+                    return !discard;
                 }
                 Expr::Member { obj, name, .. } => {
                     self.expr(obj);
@@ -2386,7 +2428,7 @@ impl C {
                 }
                 _ => self.bail(),
             }
-            return;
+            return true;
         }
         // Compound / logical assignment.
         let bin = match op {
@@ -2417,8 +2459,11 @@ impl C {
                         if let Some(to) = result_coercion_for(e) {
                             self.emit(Op::Convert(to));
                         }
-                        self.emit(Op::Dup);
+                        if !discard {
+                            self.emit(Op::Dup);
+                        }
                         self.store_name(&n.text);
+                        return !discard;
                     }
                     (None, "??=") => {
                         let j = self.emit(Op::NotNullJump(0));
@@ -2427,6 +2472,9 @@ impl C {
                         self.store_name(&n.text);
                         let end = self.here();
                         self.patch(j, end);
+                        // The value flows through a merge, so it cannot simply be
+                        // left unproduced — the caller pops it.
+                        return true;
                     }
                     (None, "&&=") | (None, "||=") => {
                         self.emit(Op::Dup);
@@ -2442,8 +2490,12 @@ impl C {
                         self.store_name(&n.text);
                         let end = self.here();
                         self.patch(j, end);
+                        return true;
                     }
-                    _ => self.bail(),
+                    _ => {
+                        self.bail();
+                        return true;
+                    }
                 }
             }
             Expr::Member { obj, name, .. } if bin.is_some() => {
@@ -2488,6 +2540,9 @@ impl C {
             }
             _ => self.bail(),
         }
+        // Every shape below the `Ident` ones leaves the value its store op
+        // pushes; only a slot store can simply not produce one.
+        true
     }
 }
 
