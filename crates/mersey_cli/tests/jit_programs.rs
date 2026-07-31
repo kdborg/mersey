@@ -346,3 +346,27 @@ fn bool_parameters_agree_across_the_tier_boundary() {
     assert!(out.contains("span   15 5 10 0"), "{out}");
     assert!(out.contains("isEven true false"), "{out}");
 }
+
+/// Reassigning a variable that holds a built string. This was a use-after-free
+/// and it shipped: an assignment is `Dup / StoreSlot / Pop` where a declaration
+/// is one store, and `Dup` copied the string's arena handle verbatim — so the
+/// slot took one copy and `Pop` released the other, leaving the slot pointing
+/// into freed memory. The length register stayed correct, so the string kept its
+/// right length and lost its contents, and nothing crashed or bailed. It surfaced
+/// as `std:semver` parsing a valid prerelease version into null, several calls
+/// downstream of the reassignment that caused it.
+///
+/// The assertions read *contents* back, not lengths — length was the one thing
+/// that stayed right.
+#[test]
+fn reassigned_strings_agree_across_the_tier_boundary() {
+    check("reassigned-strings.mersey");
+    let out = run("reassigned-strings.mersey", true);
+    // Every one of these printed -1 before the fix: the slot's units were gone.
+    assert!(out.contains("fromSelf     1"), "{out}");
+    assert!(out.contains("fromOther    1"), "{out}");
+    assert!(out.contains("twice        1"), "{out}");
+    assert!(out.contains("fromTemplate 1"), "{out}");
+    assert!(out.contains("underBranch  1"), "{out}");
+    assert!(out.contains("opaque       5"), "{out}");
+}

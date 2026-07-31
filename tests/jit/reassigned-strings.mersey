@@ -1,0 +1,95 @@
+// Reassigning a variable that holds a *built* string, on both tiers.
+//
+// This was a use-after-free, and it shipped. An assignment is three ops —
+// `Dup`, `StoreSlot`, `Pop` — where a *declaration* is one, and `Dup` copied a
+// string's arena handle verbatim. That left two owners of a single reference:
+// the slot took one copy, `Pop` released the other, and the slot was left
+// pointing into freed memory. The length register was still correct, so the
+// string kept its right length and lost its contents — `"1.2.3"` read back as
+// five units of whatever the allocator did next.
+//
+// Nothing crashed and nothing bailed. `std:semver` parsed `1.2.3-rc.1` into
+// null, because the reassignment `s = s.slice(0, plus)` is how it strips a
+// prerelease, and the wrongness only showed up several calls later as a
+// different answer. Which is why the checks below read the *contents* back
+// rather than the length: length was the one thing that stayed right.
+//
+// A declaration never had the bug, so every case here reassigns, and each does
+// it a different way — from itself, from another string, from a template, and
+// under a branch.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// Reassigned from itself: the receiver is the very slot being overwritten.
+function fromSelf(s: string): int32 {
+    let t = s;
+    t = t.slice(0, 5);
+    return t.indexOf(".");
+}
+
+/// Reassigned from an unrelated string, so the old value is a live const.
+function fromOther(): int32 {
+    let t = "9.9.9.9.9";
+    t = "1.2.3".slice(0, 5);
+    return t.indexOf(".");
+}
+
+/// Twice over: the second store releases a handle the first store owned.
+function twice(): int32 {
+    let t = "abcdef".slice(0, 3);
+    t = "1.2.3".slice(0, 5);
+    return t.indexOf(".");
+}
+
+/// Built by a template rather than a method — a different producer, same
+/// ownership.
+function fromTemplate(i: int32): int32 {
+    let t = "9.9.9.9.9";
+    t = `1.2.${i}`;
+    return t.indexOf(".");
+}
+
+/// Under a branch, which is how the standard library actually writes it.
+function underBranch(s: string): int32 {
+    let t = s;
+    if (t.indexOf("+") >= 0) {
+        t = t.slice(0, 5);
+    }
+    return t.indexOf(".");
+}
+
+/// An *opaque* reassigned the same way. This one did not reproduce the bug —
+/// it is here because the handle it carries is its identity, so the same
+/// double-ownership would be a stale *name* rather than a stale pointer, and
+/// the fix covers both. Coverage, not a reproduction.
+function opaque(): int32 {
+    let b = bytes.encodeUtf8("abcdef");
+    b = bytes.encodeUtf8("hello");
+    return b.length;
+}
+
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = fromSelf("1.2.3+b.5")
+            + fromOther()
+            + twice()
+            + fromTemplate(3)
+            + underBranch("1.2.3+b.5")
+            + opaque();
+        i += 1;
+    }
+    return acc;
+}
+
+// Hot enough that every one of them is compiled.
+console.log(`drive        ${drive(200000)}`);
+// Then each read back on its own. Contents, not lengths.
+console.log(`fromSelf     ${fromSelf("1.2.3+b.5")}`);
+console.log(`fromOther    ${fromOther()}`);
+console.log(`twice        ${twice()}`);
+console.log(`fromTemplate ${fromTemplate(3)}`);
+console.log(`underBranch  ${underBranch("1.2.3+b.5")}`);
+console.log(`opaque       ${opaque()}`);

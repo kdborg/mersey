@@ -1178,6 +1178,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let ctor_idx = match ctor {
                     Some(f) => {
                         let idx = g.add(f)?;
+                        // The same two allowances a plain call makes, and for the
+                        // same reasons: `bool` and `int32` share a register, and a
+                        // nullable number the checker has already narrowed stops
+                        // being nullable here. Without them `new Version(major,
+                        // minor, patch, pre, build)` — every field of which comes
+                        // from an `int32?` guarded against null a line earlier —
+                        // was refused, which is where `std:semver`'s `parse`
+                        // stopped once its callees compiled.
                         if g.sigs[idx].params != args {
                             return None;
                         }
@@ -4623,6 +4631,29 @@ fn translate(
                         let h2 = b.block_params(done)[0];
                         stack.push(SlotV::Obj(ptr, fields, h2));
                     }
+                    // A string owns its arena entry exactly as an object owns its
+                    // handle, and the catch-all below copied that handle verbatim
+                    // — leaving *two* owners of one reference. `t = expr` is
+                    // `Dup / StoreSlot / Pop`: the slot took one copy and `Pop`
+                    // released the other, so the slot was left pointing into freed
+                    // memory with its length register still correct. Reading it
+                    // gave a string of the right length and the wrong contents,
+                    // which is how `std:semver` parsed `1.2.3-rc.1` into nothing.
+                    // A *declaration* stores without the `Dup`, which is why only
+                    // reassignment was affected.
+                    SlotV::Str(ptr, len, h) => {
+                        let h2 = dup_handle(b, shim.clone_val, arena_ptr, h);
+                        stack.push(SlotV::Str(ptr, len, h2));
+                    }
+                    // The same for an opaque, whose handle is also its identity:
+                    // the copy names the entry it now owns, and a borrow (handle
+                    // 0) keeps naming the one somebody else owns.
+                    SlotV::ValRef(v, h) => {
+                        let h2 = dup_handle(b, shim.clone_val, arena_ptr, h);
+                        let is_new = b.ins().icmp_imm(IntCC::NotEqual, h2, 0);
+                        let v2 = b.ins().select(is_new, h2, v);
+                        stack.push(SlotV::ValRef(v2, h2));
+                    }
                     other => stack.push(other),
                 }
             }
@@ -4851,14 +4882,14 @@ fn translate(
                 }
             },
             Op::ReturnNull => {
-                ret_null(b, p, state_ptr);
+                ret_null(b, p, state_ptr, is_root);
                 reachable = false;
             }
             _ => unreachable!("plan filtered"),
         }
     }
     if reachable {
-        ret_null(b, p, state_ptr);
+        ret_null(b, p, state_ptr, is_root);
     }
 
     b.switch_to_block(bail);
@@ -4872,13 +4903,42 @@ fn translate(
 /// A `void` function returns nothing, and says so only at the root — an inner
 /// call's result is a placeholder nobody reads, and marking the *shared* status
 /// would tell the caller its own call had produced no value.
-fn ret_null(b: &mut FunctionBuilder, p: &Plan, state_ptr: ClValue) {
+///
+/// The same trap, once removed, is why `is_root` is here. The status is shared
+/// by every function in the group, and the root wrapper reads it for the *whole*
+/// call — so an inner callee that says "null" this way does not report its own
+/// result, it overwrites its caller's. That could not happen while `ReturnNull`
+/// was legal only in a `void` function; it became possible the moment a
+/// value-returning one could say `return null`, and it hid behind the inliner,
+/// which turns a small callee's `ReturnNull` into nothing at all. So an inner
+/// call says null in its *registers* whenever its type has a representation for
+/// it — zeros for a reference, the sentinel for a nullable number — and touches
+/// the status only when there is no other way to say it.
+fn ret_null(b: &mut FunctionBuilder, p: &Plan, state_ptr: ClValue, is_root: bool) {
     if !p.void {
+        if !is_root {
+            if let Some(zs) = nulls_of(b, p.ret) {
+                b.ins().return_(&zs);
+                return;
+            }
+        }
         let n = b.ins().iconst(types::I64, ST_NULL);
         b.ins().store(MemFlags::trusted(), n, state_ptr, ST_STATUS);
     }
     let zs = zeros_of(b, p.ret);
     b.ins().return_(&zs);
+}
+
+/// How a value of this type says "null" in its own registers, if it can. A
+/// reference is a null pointer; a nullable number is `i64::MIN`, because 0 is an
+/// ordinary value. Everything else has no spare value to spend and must say it
+/// out of band.
+fn nulls_of(b: &mut FunctionBuilder, t: Ty) -> Option<Vec<ClValue>> {
+    match t {
+        Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr => Some(zeros_of(b, t)),
+        Ty::I32Opt => Some(vec![b.ins().iconst(types::I64, i64::MIN)]),
+        _ => None,
+    }
 }
 
 /// One argument on its way to a shim that takes arena handles: a string is parked
@@ -4931,6 +4991,32 @@ fn unbox_num(b: &mut FunctionBuilder, ctx: Ctx, pc: usize, v: ClValue) -> ClValu
     let is_null = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
     guard(b, ctx, is_null, R_TAG, pc, None);
     b.ins().ireduce(types::I32, v)
+}
+
+/// A second arena reference to what this value already owns, or 0 if it owns
+/// nothing. The two copies a `Dup` makes part ways — one stored, one released,
+/// in either order — so each needs a reference that outlives the other's
+/// release. A borrow duplicates for free.
+fn dup_handle(
+    b: &mut FunctionBuilder,
+    clone_val: cranelift_codegen::ir::FuncRef,
+    arena_ptr: ClValue,
+    h: ClValue,
+) -> ClValue {
+    let owned = b.ins().icmp_imm(IntCC::NotEqual, h, 0);
+    let take = b.create_block();
+    let done = b.create_block();
+    b.append_block_param(done, types::I64);
+    let zero = b.ins().iconst(types::I64, 0);
+    b.ins().brif(owned, take, &[], done, &[zero]);
+    b.switch_to_block(take);
+    b.seal_block(take);
+    let cl = b.ins().call(clone_val, &[arena_ptr, h]);
+    let cloned = b.inst_results(cl)[0];
+    b.ins().jump(done, &[cloned]);
+    b.switch_to_block(done);
+    b.seal_block(done);
+    b.block_params(done)[0]
 }
 
 fn release_if_owned(

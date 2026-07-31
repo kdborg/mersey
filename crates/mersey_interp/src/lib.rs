@@ -2268,18 +2268,22 @@ impl JitEnv for InterpEnv<'_> {
         }
     }
     fn new_is_web(&self, name: &str) -> bool {
+        let env = &self.i.globals;
         // A namespaced `new geo.Point(…)` resolves through an import; leave it to
         // the interpreter.
         if name.contains('.') {
             return false;
         }
         // `Map`/`Set` with no binding are the builtin containers, not host `new`.
-        if (name == "Map" || name == "Set") && env_get(&self.i.globals, name).is_none() {
+        if (name == "Map" || name == "Set") && env_get(env, name).is_none() {
             return false;
         }
         // Anything not bound to a Mersey class goes to `web_new` (a bound URL,
         // WebSocket, Uint8Array, or an unbound name the host may still know).
-        !matches!(env_get(&self.i.globals, name), Some(Value::Class(_)))
+        // Asked of the wrong scope this is worse than a refusal: a class defined
+        // in a module reads as "not a Mersey class", and its `new` would be sent
+        // to the host as if it named a web constructor.
+        !matches!(env_get(env, name), Some(Value::Class(_)))
     }
     fn interned_web(&self, name: &str) -> Option<u32> {
         match self.i.interned.get(name) {
