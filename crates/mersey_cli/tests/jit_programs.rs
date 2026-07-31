@@ -124,3 +124,23 @@ fn min_and_max_propagate_nan_on_both_tiers() {
     assert!(out.contains("max      7 7"), "{out}");
     assert!(out.contains("min      3 3"), "{out}");
 }
+
+/// Every string method Tier 1 emits, and `==` on strings. One of these anywhere
+/// in a function used to cost that function its compilation; they reach the
+/// interpreter's one implementation now, by arena handle, with the receiver and
+/// arguments parked on the way in — a mistake there hands the method a *different*
+/// string rather than failing, so the tiers are compared answer for answer.
+/// `==` needs no arena, and its trap is that a null string and an empty one are
+/// both "no characters" and must not compare equal.
+#[test]
+fn string_methods_and_equality_agree_across_the_tier_boundary() {
+    check("string-methods.mersey");
+    let out = run("string-methods.mersey", true);
+    // `slice(1, 4)` and `substring(4, 1)` differ only in that one swaps bounds
+    // the wrong way round — both must give "/b/".
+    assert!(out.contains(",/b/,/b/,"), "{out}");
+    // null == null, and null != "" — 16 (is null) + 2 (not equal) for the mixed
+    // pair, against 17 (equal + is null) when both are null.
+    assert!(out.contains("eq null  17"), "{out}");
+    assert!(out.contains("eq mixed 18"), "{out}");
+}

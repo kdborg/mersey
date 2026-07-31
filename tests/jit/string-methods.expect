@@ -1,0 +1,6 @@
+methods 1,5,true,true,true,b/c.txt,/b/,/b/,/,a/b/c.txta/b/c.txt,a/b/c.txt!?,---a/b/c.txt,a/b/c.txt++,a/z/c.txt,a:b:c.txt,A/B/C.TXT,a/b/c.txt,a/b/c.txt,[pad][pad  ][  pad]
+eq same  5
+eq diff  6
+eq empty 9
+eq null  17
+eq mixed 18

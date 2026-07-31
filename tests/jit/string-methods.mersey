@@ -1,0 +1,61 @@
+// Every string method Tier 1 emits, and `==` on strings, on both tiers.
+//
+// These went through `call_member` in the interpreter and nowhere at all in
+// compiled code: one of them anywhere in a function cost that function its
+// compilation. They reach the same implementation now, by arena handle, so what
+// has to be checked is not that they are fast but that they still answer the same
+// — the receiver and the arguments are *parked* on the way in, and a mistake
+// there hands the method a different string rather than failing.
+//
+// `==` is the exception: it needs no arena, because a comparison of code units is
+// all the language means by it. Its trap is that a null string and an empty one
+// are both "no characters" and must not compare equal.
+
+import { console } from "std:console";
+
+function methods(s: string, n: int32): string {
+    let out = "";
+    let i = 0;
+    while (i < n) {
+        // Answering with a number, or a bool.
+        out = `${s.indexOf("/")},${s.lastIndexOf(".")}`;
+        out = `${out},${s.contains("b/")},${s.startsWith("a")},${s.endsWith("txt")}`;
+        // …and answering with a string. `slice` and `substring` differ on
+        // bounds the wrong way round, which is why both exist.
+        out = `${out},${s.slice(2)},${s.slice(1, 4)},${s.substring(4, 1)}`;
+        out = `${out},${s.charAt(3)},${s.repeat(2)},${s.concat("!", "?")}`;
+        out = `${out},${s.padStart(12, "-")},${s.padEnd(11, "+")}`;
+        out = `${out},${s.replace("b", "z")},${s.replaceAll("/", ":")}`;
+        out = `${out},${s.toUpperCase()},${s.toLowerCase()},${s.toString()}`;
+        out = `${out},[${"  pad  ".trim()}][${"  pad  ".trimStart()}][${"  pad  ".trimEnd()}]`;
+        i += 1;
+    }
+    return out;
+}
+
+/// String equality, including the null cases the code-unit comparison has to
+/// keep apart: `null` equals only `null`, and never the empty string.
+function eq(a: string?, b: string?, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        if (a == b) { acc = acc + 1; }
+        if (a != b) { acc = acc + 2; }
+        if (a == "alpha") { acc = acc + 4; }
+        if (a == "") { acc = acc + 8; }
+        if (a == null) { acc = acc + 16; }
+        i += 1;
+    }
+    return acc;
+}
+
+// Hot enough that the tier takes them, then asked once for the answer.
+methods("a/b/c.txt", 20000);
+eq("alpha", "alpha", 20000);
+
+console.log(`methods ${methods("a/b/c.txt", 1)}`);
+console.log(`eq same  ${eq("alpha", "alpha", 1)}`);
+console.log(`eq diff  ${eq("alpha", "beta", 1)}`);
+console.log(`eq empty ${eq("", "", 1)}`);
+console.log(`eq null  ${eq(null, null, 1)}`);
+console.log(`eq mixed ${eq(null, "", 1)}`);

@@ -361,6 +361,104 @@ pub(crate) unsafe extern "C" fn host_time(arena: *mut Arena, epoch: i64) -> f64 
     }
 }
 
+/// `a == b` on two strings: 1 or 0. No arena and no interpreter — a comparison of
+/// code units is all the language means by it, and boxing either side to ask
+/// would cost more than the answer.
+///
+/// A *null* string is a null data pointer, and null equals only null: an empty
+/// string is `(non-null, 0)` and must not compare equal to it.
+///
+/// # Safety
+/// Each pointer is either null or names `len` readable code units.
+pub(crate) unsafe extern "C" fn str_eq(
+    a: *const u16,
+    alen: usize,
+    bb: *const u16,
+    blen: usize,
+) -> i64 {
+    let (an, bn) = (a.is_null(), bb.is_null());
+    if an || bn {
+        return i64::from(an && bn);
+    }
+    if alen != blen {
+        return 0;
+    }
+    let x = unsafe { std::slice::from_raw_parts(a, alen) };
+    let y = unsafe { std::slice::from_raw_parts(bb, blen) };
+    i64::from(x == y)
+}
+
+/// A string method answering with a number or a bool (`indexOf`, `startsWith`).
+/// Receiver and arguments are arena handles. `i64::MIN` means it threw.
+///
+/// # Safety
+/// As `native_call`.
+pub(crate) unsafe extern "C" fn str_num(
+    arena: *mut Arena,
+    recv: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const u64,
+    argc: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = if argc == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc)
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_str_num(recv, name, args),
+            None => i64::MIN,
+        }
+    }
+}
+
+/// A string method answering with a string (`slice`, `trim`, `replace`). `out`
+/// receives (data, length, owning handle); returns 0, or 1 if it threw.
+///
+/// # Safety
+/// As `native_call`; `out` names three writable words.
+pub(crate) unsafe extern "C" fn str_str(
+    arena: *mut Arena,
+    recv: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const u64,
+    argc: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = if argc == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc)
+        };
+        let Some(ip) = (*arena).interp_ptr() else {
+            return 1;
+        };
+        let h = (*ip).jit_str_str(recv, name, args);
+        if h == u64::MAX {
+            return 1;
+        }
+        // The parts are read back out of the arena entry that owns them, so the
+        // pointer compiled code carries and the reference keeping it alive name
+        // the same buffer.
+        match (*arena).get(h) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                *out = units.as_ptr() as u64;
+                *out.add(1) = units.len() as u64;
+                *out.add(2) = h;
+                0
+            }
+            _ => 1,
+        }
+    }
+}
+
 /// `random.fill(buf)` from compiled code: the buffer's arena handle in, 0 or 1
 /// (threw) out. See `Interp::jit_random_fill` for why this bypasses the general
 /// native path entirely.

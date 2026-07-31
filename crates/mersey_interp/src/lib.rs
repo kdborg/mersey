@@ -1661,6 +1661,9 @@ pub struct Interp {
     pub jit: Option<JitHook>,
     /// Owns every value Tier 1 code allocates, for the duration of one call.
     jit_arena: Arena,
+    /// The last few strings parked for a shim, so a *constant* receiver is parked
+    /// once rather than copied on every call. See `jit_box_str`.
+    jit_str_memo: Vec<(usize, u64)>,
     /// A thrown value stashed by a compiled host call that failed: the shim
     /// cannot unwind through compiled code, so it records the error and traps,
     /// and `after_jit` raises this at the trapping instruction's position.
@@ -2468,6 +2471,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         gc_pending: false,
         jit: None,
         jit_arena: Arena::default(),
+        jit_str_memo: Vec::new(),
         jit_host_error: None,
         jit_cache: HashMap::default(),
         call_counts: HashMap::default(),
@@ -4580,6 +4584,57 @@ impl Interp {
         }
     }
 
+    /// A string method from compiled code, by arena handle.
+    ///
+    /// There is one implementation of these — `call_member`'s — and this is how
+    /// compiled code reaches it. Tier 1 knows from its own table what each method
+    /// gives back (the checker's `string` member types are where that table comes
+    /// from), so the two entry points below unwrap to the shape it is expecting
+    /// and report a mismatch as a thrown `TypeError` rather than a silent zero.
+    fn jit_str_call(&mut self, recv: u64, name: &str, args: &[u64]) -> Result<Value, ()> {
+        let recv_v = self.jit_arena.get(recv).cloned().unwrap_or(Value::Null);
+        let argv: Vec<Value> = args
+            .iter()
+            .map(|h| self.jit_arena.get(*h).cloned().unwrap_or(Value::Null))
+            .collect();
+        match self.call_member(&recv_v, name, argv) {
+            Ok(v) => Ok(v),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                Err(())
+            }
+        }
+    }
+
+    /// …one that answers with a number or a bool (`indexOf`, `startsWith`).
+    /// `i64::MIN` means it threw, as it does for a numeric web property.
+    pub fn jit_str_num(&mut self, recv: u64, name: &str, args: &[u64]) -> i64 {
+        match self.jit_str_call(recv, name, args) {
+            Ok(Value::I32(n)) => n as i64,
+            Ok(Value::Bool(b)) => i64::from(b),
+            Ok(_) => {
+                let t = self.throw("TypeError", format!("string.{name} gave no number"));
+                self.jit_host_error = Some(t);
+                i64::MIN
+            }
+            Err(()) => i64::MIN,
+        }
+    }
+
+    /// …and one that answers with a string, parked in the arena. `u64::MAX` means
+    /// it threw; the handle is the compiled code's to release.
+    pub fn jit_str_str(&mut self, recv: u64, name: &str, args: &[u64]) -> u64 {
+        match self.jit_str_call(recv, name, args) {
+            Ok(v @ Value::Str(_)) => self.jit_arena.keep(v),
+            Ok(_) => {
+                let t = self.throw("TypeError", format!("string.{name} gave no string"));
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
+            Err(()) => u64::MAX,
+        }
+    }
+
     /// `random.fill(buf)` straight from compiled code.
     ///
     /// The general native path is name (or id) plus an argument array plus a
@@ -4701,7 +4756,31 @@ impl Interp {
         if have != 0 && matches!(self.jit_arena.get(have), Some(Value::Str(_))) {
             return have;
         }
-        self.jit_arena.keep(Value::Str(Rc::new(units.to_vec())))
+        // A string with no handle of its own is a constant, or a borrow of one:
+        // `base.lastIndexOf(".")` in a loop would otherwise copy both the receiver
+        // and the argument on every iteration, which costs more than the method.
+        // So the last few are kept, keyed on where the units live and *verified by
+        // content* — a freed buffer can be replaced by an unrelated string at the
+        // same address, and a stale key must not hand back the wrong text.
+        let key = units.as_ptr() as usize;
+        if let Some((_, h)) = self.jit_str_memo.iter().find(|(k, _)| *k == key) {
+            let h = *h;
+            if matches!(self.jit_arena.get(h), Some(Value::Str(rc)) if rc.as_slice() == units) {
+                return h;
+            }
+        }
+        let h = self.jit_arena.keep(Value::Str(Rc::new(units.to_vec())));
+        // Bounded, and what it displaces is released here — which is why nothing
+        // parked by this function is the caller's to release. Eight is comfortably
+        // more than the receiver plus arguments of any one call, so a handle in
+        // flight is never the one evicted.
+        const MEMO: usize = 8;
+        if self.jit_str_memo.len() == MEMO {
+            let (_, old) = self.jit_str_memo.remove(0);
+            self.jit_arena.release(old);
+        }
+        self.jit_str_memo.push((key, h));
+        h
     }
 
     /// The same for a number. `int32` and `float64` are separate because the
@@ -5282,6 +5361,8 @@ impl Interp {
         self.jit_arena.interp = None;
         self.jit_arena.web_bind = None;
         self.jit_arena.clear();
+        // Its handles named arena slots that have just gone.
+        self.jit_str_memo.clear();
         match jit_value(r, ret_bool) {
             Ok(v) => Ok(Some(v)),
             Err(r) => self.after_jit(r, &compiled),
@@ -5436,6 +5517,8 @@ impl Interp {
         self.jit_arena.interp = None;
         self.jit_arena.web_bind = None;
         self.jit_arena.clear();
+        // Its handles named arena slots that have just gone.
+        self.jit_str_memo.clear();
         match jit_value(r, ret_bool) {
             Ok(v) => Ok(Some(v)),
             Err(r) => self.after_jit(r, &compiled),
@@ -5455,7 +5538,13 @@ impl Interp {
             return false;
         }
         compiled.code.bound.iter().all(|(name, expected)| {
-            matches!(env_get(&self.globals, name), Some(Value::Closure(c)) if Rc::ptr_eq(&c, expected))
+            // In the scope the name was *resolved* in, which is the closure's own:
+            // `top_level_fn` only takes a callee whose environment is the scope it
+            // was found in. Asking `self.globals` instead is right only for the
+            // module being run — for anything else (the whole standard library)
+            // the name is not bound there, every check fails, and the code is
+            // discarded and rebuilt on every single call.
+            matches!(env_get(&expected.env, name), Some(Value::Closure(c)) if Rc::ptr_eq(&c, expected))
         })
     }
 

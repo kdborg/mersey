@@ -505,6 +505,9 @@ struct Plan {
     /// `random.fill(buf)` sites, lowered to a direct shim rather than the general
     /// native path — see `Interp::jit_random_fill`.
     rand_fill_at: HashSet<usize>,
+    /// String method sites: the method's name, and the register shape of its
+    /// result (`STR_METHODS`).
+    str_method_at: HashMap<usize, (&'static str, Ty)>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -792,6 +795,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
+    let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -1062,6 +1066,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         }
                         stack.push(TSlot::Val(Ty::Bool, Prov::Stable));
                     }
+                    // Two strings: a comparison of code units, which is all the
+                    // language means by `==` on them.
+                    (TSlot::Val(Ty::Str, _), TSlot::Val(Ty::Str, _)) => {
+                        if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                            return None;
+                        }
+                        stack.push(TSlot::Val(Ty::Bool, Prov::Stable));
+                    }
                     (TSlot::Val(a, _), TSlot::Val(b, _)) if a == b && a.is_int() => match op {
                         BinOp::Add | BinOp::Sub => stack.push(TSlot::Val(a, Prov::Stable)),
                         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
@@ -1258,6 +1270,25 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 arg_slots.reverse();
                 let recv = stack.pop()?;
+                // A method on a string. The receiver and every argument cross as
+                // arena handles, and the result comes back in the shape
+                // `STR_METHODS` promised — so the analysis can type the use site
+                // without asking the checker, which is not here.
+                if tval(recv) == Some(Ty::Str) {
+                    let ret = str_method(&name, n)?;
+                    // Only what can be boxed: a string, or a number that fits one
+                    // of the `box_num` kinds.
+                    if !arg_slots
+                        .iter()
+                        .all(|a| tval(*a) == Some(Ty::Str) || tval(*a).is_some_and(|t| t.is_num()))
+                    {
+                        return None;
+                    }
+                    let nm: &'static str = Box::leak(name.clone().into_boxed_str());
+                    str_method_at.insert(pc, (nm, ret));
+                    stack.push(TSlot::Val(ret, Prov::Stable));
+                    continue;
+                }
                 if recv == TSlot::TimeNs {
                     // A numeric host call: `time.now()` / `time.monotonic()`,
                     // no arguments, an `f64` result.
@@ -1597,6 +1628,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         opaque_globals,
         native_at,
         rand_fill_at,
+        str_method_at,
         val_prop_at,
         field_at,
         new_at,
@@ -1689,6 +1721,9 @@ struct Shims {
     global_val: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
+    str_eq: FuncId,
+    str_num: FuncId,
+    str_str: FuncId,
     val_len: FuncId,
     box_str: FuncId,
     box_num: FuncId,
@@ -1751,6 +1786,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
+    builder.symbol("msy_str_eq", heap::str_eq as *const u8);
+    builder.symbol("msy_str_num", heap::str_num as *const u8);
+    builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
     builder.symbol("msy_box_num", heap::box_num as *const u8);
@@ -1822,7 +1860,8 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         // so, instead of letting `.ok()?` make it look like an ordinary refusal.
         if let Err(e) = module.define_function(ids[n], &mut ctx) {
             if *TRACE {
-                eprintln!("jit: define_function failed for fn {n}: {e}");
+                eprintln!("jit: define_function failed for fn {n}: {e:?}");
+                eprintln!("{}", ctx.func.display());
             }
             return None;
         }
@@ -2016,6 +2055,46 @@ fn boundary(t: Ty, classes: &[Rc<ClassDef>]) -> JitSlot {
     }
 }
 
+/// The string methods Tier 1 emits, with what each gives back and how many
+/// arguments it takes.
+///
+/// The types are the checker's (`Type::Str`'s member table in `check.rs`) — this
+/// is the same information in the terms this tier works in, because the analysis
+/// has to know the result's *register shape* before it looks at the use site.
+/// Absent on purpose: `codePointAt` and `at` return nullable scalars and `split`
+/// returns an array, none of which has a shape here yet; they keep interpreting.
+///
+/// (name, result, min args, max args)
+const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
+    ("indexOf", Ty::I32, 1, 1),
+    ("lastIndexOf", Ty::I32, 1, 1),
+    ("contains", Ty::Bool, 1, 1),
+    ("startsWith", Ty::Bool, 1, 1),
+    ("endsWith", Ty::Bool, 1, 1),
+    ("slice", Ty::Str, 1, 2),
+    ("substring", Ty::Str, 1, 2),
+    ("charAt", Ty::Str, 1, 1),
+    ("repeat", Ty::Str, 1, 1),
+    ("padStart", Ty::Str, 1, 2),
+    ("padEnd", Ty::Str, 1, 2),
+    ("replace", Ty::Str, 2, 2),
+    ("replaceAll", Ty::Str, 2, 2),
+    ("concat", Ty::Str, 0, 4),
+    ("toUpperCase", Ty::Str, 0, 0),
+    ("toLowerCase", Ty::Str, 0, 0),
+    ("trim", Ty::Str, 0, 0),
+    ("trimStart", Ty::Str, 0, 0),
+    ("trimEnd", Ty::Str, 0, 0),
+    ("toString", Ty::Str, 0, 0),
+];
+
+fn str_method(name: &str, argc: u8) -> Option<Ty> {
+    STR_METHODS
+        .iter()
+        .find(|(n, _, lo, hi)| *n == name && argc >= *lo && argc <= *hi)
+        .map(|(_, t, _, _)| *t)
+}
+
 fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
     let mut one = |name: &str, ret: Option<types::Type>, args: usize| -> Option<FuncId> {
         let mut sig = module.make_signature();
@@ -2052,6 +2131,12 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         native_call: one("msy_native_call", Some(types::I64), 6)?,
         // (arena, handle) -> 0 ok / 1 threw
         random_fill: one("msy_random_fill", Some(types::I64), 2)?,
+        // (arena, recv, name_ptr, name_len, args_ptr, argc) -> the number / i64::MIN
+        // (a_ptr, a_len, b_ptr, b_len) -> 1 / 0
+        str_eq: one("msy_str_eq", Some(types::I64), 4)?,
+        str_num: one("msy_str_num", Some(types::I64), 6)?,
+        // (…, out) -> 0 ok / 1 threw; `out` gets (data, len, handle)
+        str_str: one("msy_str_str", Some(types::I64), 7)?,
         // (arena, handle) -> the length, or -1
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
@@ -2358,6 +2443,14 @@ fn unflatten(vals: &[ClValue], tys: &[Ty]) -> Vec<SlotV> {
         out.push(match *t {
             Ty::Obj(_) => SlotV::Obj(vals[i], vals[i + 1], vals[i + 2]),
             Ty::Arr(e) => SlotV::Arr(vals[i], vals[i + 1], vals[i + 2], e),
+            // A string and an opaque are three and two registers wide. The
+            // catch-all below takes one, and `i` still advanced by the full width —
+            // so a string live across a branch came back as a scalar and the
+            // function's `return` handed over one value where its signature
+            // promised three. Cranelift's verifier caught it; nothing else would
+            // have.
+            Ty::Str => SlotV::Str(vals[i], vals[i + 1], vals[i + 2]),
+            Ty::Val => SlotV::ValRef(vals[i], vals[i + 1]),
             t => SlotV::Val(vals[i], t),
         });
         i += t.width();
@@ -2394,6 +2487,9 @@ fn translate(
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
+        str_eq: module.declare_func_in_func(shims.str_eq, b.func),
+        str_num: module.declare_func_in_func(shims.str_num, b.func),
+        str_str: module.declare_func_in_func(shims.str_str, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         box_num: module.declare_func_in_func(shims.box_num, b.func),
@@ -2722,6 +2818,17 @@ fn translate(
                         };
                         let c = b.ins().icmp_imm(cc, ptr, 0);
                         let v = b.ins().uextend(types::I32, c);
+                        stack.push(SlotV::Val(v, Ty::Bool));
+                    }
+                    (SlotV::Str(ap, al, _), SlotV::Str(bp, bl, _)) => {
+                        let call = b.ins().call(shim.str_eq, &[ap, al, bp, bl]);
+                        let eq = b.inst_results(call)[0];
+                        let v = match binop {
+                            BinOp::Eq => b.ins().icmp_imm(IntCC::NotEqual, eq, 0),
+                            BinOp::Ne => b.ins().icmp_imm(IntCC::Equal, eq, 0),
+                            _ => return None,
+                        };
+                        let v = b.ins().uextend(types::I32, v);
                         stack.push(SlotV::Val(v, Ty::Bool));
                     }
                     (SlotV::Val(lv, lt), SlotV::Val(rv, _)) => {
@@ -3057,6 +3164,70 @@ fn translate(
                 let ms = b.inst_results(call)[0];
                 stack.push(SlotV::Val(ms, Ty::F64));
             }
+            // A string method. Receiver and arguments go out as arena handles —
+            // a *built* string already owns one and `box_str` hands that same
+            // handle back rather than copying, so only constants and borrows are
+            // parked. Everything parked here is released the moment the call
+            // returns; the result, when it is a string, is this value's to hold.
+            Op::CallMethod(_, n) if p.str_method_at.contains_key(&pc) => {
+                let (name, ret) = *p.str_method_at.get(&pc)?;
+                let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
+                let mut boxed: Vec<ClValue> = Vec::new();
+                for _ in 0..n {
+                    handles.push(box_arg(b, &shim, arena_ptr, stack.pop()?, &mut boxed)?);
+                }
+                handles.reverse();
+                let SlotV::Str(rptr, rlen, rh) = stack.pop()? else {
+                    return None;
+                };
+                let rc = b.ins().call(shim.box_str, &[arena_ptr, rptr, rlen, rh]);
+                let recv = b.inst_results(rc)[0];
+
+                let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (n as u32).max(1) * 8,
+                    3,
+                ));
+                let args_ptr = b.ins().stack_addr(types::I64, slot, 0);
+                for (k, h) in handles.iter().enumerate() {
+                    b.ins()
+                        .store(MemFlags::trusted(), *h, args_ptr, (k * 8) as i32);
+                }
+                let (nptr, nlen) = str_const(b, name);
+                let argc = b.ins().iconst(types::I64, n as i64);
+
+                let result = if ret == Ty::Str {
+                    let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                        24,
+                        3,
+                    ));
+                    let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                    let call = b.ins().call(
+                        shim.str_str,
+                        &[arena_ptr, recv, nptr, nlen, args_ptr, argc, out_ptr],
+                    );
+                    let status = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                    let h = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                    SlotV::Str(d, l, h)
+                } else {
+                    let call = b
+                        .ins()
+                        .call(shim.str_num, &[arena_ptr, recv, nptr, nlen, args_ptr, argc]);
+                    let v = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    SlotV::Val(b.ins().ireduce(types::I32, v), ret)
+                };
+                for h in boxed {
+                    b.ins().call(shim.release, &[arena_ptr, h]);
+                }
+                stack.push(result);
+            }
             // `random.fill(buf)`: the buffer's handle straight to a shim. No name,
             // no argument array, no lend/give-back, no `Result` to unwrap.
             Op::CallMethod(_, _) if p.rand_fill_at.contains(&pc) => {
@@ -3092,16 +3263,11 @@ fn translate(
                         SlotV::Str(ptr, len, have) => {
                             // A built string already owns an arena entry holding
                             // exactly this `Value::Str`, and `box_str` hands that
-                            // same handle back rather than copying. It is then
-                            // *not* ours to release — the string still owns it —
-                            // so what goes on the release list is the handle only
-                            // when the shim made a new one.
+                            // same handle back rather than copying; a constant is
+                            // parked in the interpreter's memo, which owns it.
+                            // Either way it is not ours to release.
                             let c = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, have]);
-                            let h = b.inst_results(c)[0];
-                            let reused = b.ins().icmp(IntCC::Equal, h, have);
-                            let zero = b.ins().iconst(types::I64, 0);
-                            boxed.push(b.ins().select(reused, zero, h));
-                            h
+                            b.inst_results(c)[0]
                         }
                         SlotV::Val(v, t) if t.is_num() => {
                             let (kind, bits) = if t == Ty::F64 {
@@ -3684,6 +3850,45 @@ fn ret_null(b: &mut FunctionBuilder, p: &Plan, state_ptr: ClValue) {
     b.ins().return_(&zs);
 }
 
+/// One argument on its way to a shim that takes arena handles: a string is parked
+/// (or its existing entry reused, or found in the interpreter's memo), a number is
+/// boxed. Anything already opaque is passed as it stands. `boxed` collects only
+/// what has to be released after the call — which a string never does, its entry
+/// being owned by the string itself or by the memo.
+fn box_arg(
+    b: &mut FunctionBuilder,
+    shim: &ShimRefs,
+    arena_ptr: ClValue,
+    v: SlotV,
+    boxed: &mut Vec<ClValue>,
+) -> Option<ClValue> {
+    Some(match v {
+        SlotV::ValRef(h, _) => h,
+        // Nothing parked by `box_str` is ours to release: it is either the
+        // string's own arena entry handed straight back, or one the interpreter
+        // holds in a small bounded memo and frees when it displaces it.
+        SlotV::Str(ptr, len, have) => {
+            let c = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, have]);
+            b.inst_results(c)[0]
+        }
+        SlotV::Val(v, t) if t.is_num() => {
+            let (kind, bits) = if t == Ty::F64 {
+                (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
+            } else if t == Ty::I64 {
+                (0i64, v)
+            } else {
+                (0i64, b.ins().sextend(types::I64, v))
+            };
+            let k = b.ins().iconst(types::I64, kind);
+            let c = b.ins().call(shim.box_num, &[arena_ptr, k, bits]);
+            let h = b.inst_results(c)[0];
+            boxed.push(h);
+            h
+        }
+        _ => return None,
+    })
+}
+
 /// Release an arena handle, if there is one. The zero test is inlined — a
 /// handle is usually 0 (a borrow), and a C call per borrowed store is what this
 /// branch buys back.
@@ -3741,6 +3946,9 @@ struct ShimRefs {
     global_val: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
+    str_eq: cranelift_codegen::ir::FuncRef,
+    str_num: cranelift_codegen::ir::FuncRef,
+    str_str: cranelift_codegen::ir::FuncRef,
     val_len: cranelift_codegen::ir::FuncRef,
     box_str: cranelift_codegen::ir::FuncRef,
     box_num: cranelift_codegen::ir::FuncRef,
