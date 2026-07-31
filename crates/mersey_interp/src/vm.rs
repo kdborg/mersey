@@ -1507,7 +1507,14 @@ impl C {
                     c.emit(Op::LoadSlot(n_items));
                     let len = c.name("length");
                     c.emit_get_member(len);
-                    c.emit(Op::Bin(BinOp::Lt));
+                    // Typed, because both operands are known: the index is a
+                    // counter this lowering owns, initialised to `I32(0)` and
+                    // only ever incremented by one, and `length` on an array is
+                    // always `Value::I32`. The untyped `Bin` that used to be here
+                    // made the interpreter dispatch on the operand types once per
+                    // element of every `for…of` in the language, to reach the
+                    // int32 kernel it was always going to reach.
+                    c.emit(Op::BinNum(BinOp::Lt, Num::Int(IntKind::I32)));
                     let jf = c.emit(Op::JumpIfFalse(0));
                     // The item's own scope, needed only when a closure can see
                     // it — then each iteration must get its own binding.
@@ -1531,7 +1538,7 @@ impl C {
                     c.emit(Op::LoadSlot(n_idx));
                     let one = c.konst(Value::I32(1));
                     c.emit(Op::Const(one));
-                    c.emit(Op::Bin(BinOp::Add));
+                    c.emit(Op::BinNum(BinOp::Add, Num::Int(IntKind::I32)));
                     c.emit(Op::StoreSlot(n_idx));
                     (start, cont, vec![jf])
                 });
