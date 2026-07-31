@@ -10,3 +10,9 @@ test-dumps/
 
 # Local build logs (fork rebuilds); never committed
 .build-logs/
+
+# The fuzzer writes the case it is currently running here, so a crash leaves the
+# reproducer on disk. CI runs the fuzzers on every push, so this file exists in
+# any tree that has run them — and it is exactly the sort of thing a `git add -A`
+# sweeps up by accident.
+fuzz-current.mersey
