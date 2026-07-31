@@ -281,3 +281,19 @@ fn opaque_fields_and_throw_agree_across_the_tier_boundary() {
     assert!(out.contains("span 190"), "{out}");
     assert!(out.contains(r#"bad  not a URL: "nonsense""#), "{out}");
 }
+
+/// `Map` and `Set` in compiled code. A keyed reconciler is written out of `has`,
+/// `set`, `add` and a `size`, which is the shape browser code leans on hardest.
+/// `new Map()` is recognised the way the interpreter recognises it — by the name
+/// binding *nothing* — so a program with its own `Map` gets its own; `Own` is here
+/// to check `new` of an ordinary class stayed ordinary.
+#[test]
+fn maps_and_sets_agree_across_the_tier_boundary() {
+    check("map-and-set.mersey");
+    let out = run("map-and-set.mersey", true);
+    // The 1000/4000 terms are the branches that must *not* be taken: a member
+    // that was never added, and a second removal of the same key.
+    assert!(out.contains("reconcile 114"), "{out}");
+    assert!(out.contains("lookup    9"), "{out}");
+    assert!(out.contains("own       7"), "{out}");
+}

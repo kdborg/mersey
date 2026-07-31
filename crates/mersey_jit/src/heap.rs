@@ -717,14 +717,15 @@ pub(crate) unsafe extern "C" fn global_val(
     }
 }
 
-/// `[]` from compiled code: a fresh array in the arena, by handle.
+/// `[]`, `{}`, a set literal: a fresh container in the arena, by handle.
+/// `kind` is 0 an array, 1 a map, 2 a set.
 ///
 /// # Safety
 /// As `global_val`.
-pub(crate) unsafe extern "C" fn array_new(arena: *mut Arena) -> u64 {
+pub(crate) unsafe extern "C" fn array_new(arena: *mut Arena, kind: i64) -> u64 {
     unsafe {
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_array_new(),
+            Some(ip) => (*ip).jit_array_new(kind),
             None => 0,
         }
     }
@@ -923,15 +924,17 @@ pub(crate) unsafe extern "C" fn box_num(arena: *mut Arena, kind: i64, bits: i64)
 /// # Safety
 /// As `global_val`.
 pub(crate) unsafe extern "C" fn val_len(arena: *mut Arena, handle: u64) -> i64 {
-    // Straight off the arena. Measuring a buffer does not need the interpreter,
+    // Straight off the arena. Measuring a container does not need the interpreter,
     // and the hop through `interp_ptr` into `Interp::jit_val_len` was half of what
-    // a `.length` cost in a compiled loop. These are the same three kinds
-    // `get_member` answers `"length"` for; anything else is -1 and the caller
-    // bails, as before.
+    // a `.length` cost in a compiled loop. These are the kinds `get_member`
+    // answers `"length"` (or, for a map and a set, `"size"`) with; anything else
+    // is -1 and the caller bails, as before.
     match unsafe { (*arena).get(handle) } {
         Some(Value::Bytes(b)) => b.borrow().len() as i64,
         Some(Value::Str(s)) => s.len() as i64,
         Some(Value::Array(a)) => a.borrow().len() as i64,
+        Some(Value::MapV(m)) => m.borrow().len() as i64,
+        Some(Value::SetV(m)) => m.borrow().len() as i64,
         _ => -1,
     }
 }

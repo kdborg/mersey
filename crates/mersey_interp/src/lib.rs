@@ -2039,6 +2039,12 @@ pub trait JitEnv {
     /// sound for the classes `Interp::throw` knows how to build.
     fn error_class(&self, scope: Option<&DefScope>, name: &str) -> Option<&'static str>;
 
+    /// `new Map()` / `new Set()` — 1 and 2, matching `jit_array_new`'s `kind`.
+    /// The builtin containers are the names that bind *nothing*, which is the
+    /// same test `new_is_web` uses: a program that defines its own `Map` gets its
+    /// own, and this declines.
+    fn container_kind(&self, scope: Option<&DefScope>, name: &str) -> Option<i64>;
+
     /// The class a top-level name binds, if it binds one.
     fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>>;
     /// The body behind `o.name` when `name` is a getter. A getter is a call
@@ -2176,6 +2182,18 @@ impl JitEnv for InterpEnv<'_> {
         // …and it must still *be* that class here, not a rebinding of the name.
         match env_get(env, name) {
             Some(Value::Class(c)) if c.is_builtin_error => Some(matched),
+            _ => None,
+        }
+    }
+
+    fn container_kind(&self, scope: Option<&DefScope>, name: &str) -> Option<i64> {
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
+        if env_get(env, name).is_some() {
+            return None;
+        }
+        match name {
+            "Map" => Some(1),
+            "Set" => Some(2),
             _ => None,
         }
     }
@@ -4804,8 +4822,13 @@ impl Interp {
     /// and length, and a `push` moves both — so a growable one goes through the
     /// same shims a `Bytes` does. `index_get`, `index_set` and `length` already
     /// answer for an array, so only `push` is new.
-    pub fn jit_array_new(&mut self) -> u64 {
-        self.jit_arena.keep(new_array(Vec::new()))
+    pub fn jit_array_new(&mut self, kind: i64) -> u64 {
+        let v = match kind {
+            1 => new_map(Vec::new()),
+            2 => new_set(Vec::new()),
+            _ => new_array(Vec::new()),
+        };
+        self.jit_arena.keep(v)
     }
 
     /// `a.push(v)` for a numeric element. 0, or 1 if the handle names no array.

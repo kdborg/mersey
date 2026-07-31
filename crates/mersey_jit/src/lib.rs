@@ -554,8 +554,10 @@ struct Plan {
     /// A `Ty::Val` field read whose *only* use is a string part of it, folded into
     /// one read off the cell: (field slot, property name).
     cell_prop_at: HashMap<usize, (u32, &'static str)>,
-    /// `[]` and `a.push(v)` sites, which build an array as an opaque.
-    array_at: HashSet<usize>,
+    /// `[]`, `{}`, `new Map()` and `a.push(v)` sites: a container built here,
+    /// carried as an opaque. The value is the container kind for the sites that
+    /// make one (0 array, 1 map, 2 set) and is unread for a `push`.
+    array_at: HashMap<usize, i64>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -859,7 +861,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut val_index_at: HashSet<usize> = HashSet::new();
     let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
     let mut cell_prop_at: HashMap<usize, (u32, &'static str)> = HashMap::new();
-    let mut array_at: HashSet<usize> = HashSet::new();
+    let mut array_at: HashMap<usize, i64> = HashMap::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -1073,6 +1075,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // nothing here has to construct one. A *cold* path by
                 // construction, and refusing a whole function because it can
                 // throw was a poor trade.
+                // `new Map()` / `new Set()`: the same container this tier builds
+                // for a literal, by the same shim.
+                if argc == 0 {
+                    if let Some(kind) = g.env.container_kind(scope.as_ref(), name) {
+                        array_at.insert(pc, kind);
+                        stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                        continue;
+                    }
+                }
                 if argc == 1 && matches!(chunk.code.get(pc + 1), Some(Op::Throw)) {
                     if let Some(cls) = g.env.error_class(scope.as_ref(), name) {
                         if tval(*stack.last()?) == Some(Ty::Str) {
@@ -1261,10 +1272,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // type has to be right or the arithmetic around it refuses
                     // the function. Anything else about an opaque stays
                     // interpreted — this tier knows nothing about what it holds.
-                    if name != "length" {
+                    // `length` on a buffer or an array, `size` on a `Map` or a
+                    // `Set` — both `int32`, and the type has to be right or the
+                    // arithmetic around it refuses the function.
+                    if name != "length" && name != "size" {
                         return None;
                     }
-                    val_prop_at.insert(pc, "length");
+                    let nm: &'static str = if name == "size" { "size" } else { "length" };
+                    val_prop_at.insert(pc, nm);
                     stack.push(TSlot::Val(Ty::I32, Prov::Stable));
                     continue;
                 }
@@ -1408,8 +1423,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // length, and a `push` moves both, so it is the wrong shape for an
             // array that grows. Reading, writing and `length` already go through
             // the same shims a `Bytes` uses.
-            Op::MakeArray => {
-                array_at.insert(pc);
+            Op::MakeArray | Op::MakeMap | Op::MakeSet => {
+                array_at.insert(
+                    pc,
+                    match *op {
+                        Op::MakeMap => 1,
+                        Op::MakeSet => 2,
+                        _ => 0,
+                    },
+                );
                 stack.push(TSlot::Val(Ty::Val, Prov::Stable));
             }
             // `a.push(v)` — and the array stays on the stack, as the interpreter
@@ -1422,7 +1444,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 if tval(*stack.last()?) != Some(Ty::Val) {
                     return None;
                 }
-                array_at.insert(pc);
+                array_at.insert(pc, 0);
                 g.writes = true;
             }
             Op::IndexGet => {
@@ -2438,6 +2460,17 @@ const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("push", Ty::Val, 1, 1),
     ("clear", Ty::Val, 0, 0),
     ("join", Ty::Str, 1, 1),
+    // `Map` and `Set`. A keyed reconciler is written out of `has`/`set`/`add`
+    // and a `size`, which is the shape browser code leans on hardest. `get`
+    // gives back whatever the map holds, so it comes back as an opaque — enough
+    // to compare against null and pass on, not enough to read a `.length` off.
+    ("set", Ty::Val, 2, 2),
+    ("get", Ty::Val, 1, 1),
+    ("has", Ty::Bool, 1, 1),
+    ("add", Ty::Val, 1, 1),
+    ("remove", Ty::Bool, 1, 1),
+    ("keys", Ty::Val, 0, 0),
+    ("values", Ty::Val, 0, 0),
 ];
 
 /// String-valued properties of an opaque. Only `Url`'s parts are here, because
@@ -2517,8 +2550,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, handle, index) -> the byte / i64::MIN
         // (arena, handle) -> a fresh handle to the same value
         clone_val: one("msy_clone_val", Some(types::I64), 2)?,
-        // (arena) -> handle of a fresh array
-        array_new: one("msy_array_new", Some(types::I64), 1)?,
+        // (arena, kind) -> handle of a fresh array / map / set
+        array_new: one("msy_array_new", Some(types::I64), 2)?,
         // (arena, handle, kind, bits) -> 0 ok / 1 not an array
         array_push: one("msy_array_push", Some(types::I64), 4)?,
         val_index_get: one("msy_val_index_get", Some(types::I64), 3)?,
@@ -3580,14 +3613,15 @@ fn translate(
             }
             // Live iteration: the array itself, not a copy.
             Op::IterArray => {}
-            Op::MakeArray if p.array_at.contains(&pc) => {
-                let call = b.ins().call(shim.array_new, &[arena_ptr]);
+            Op::MakeArray | Op::MakeMap | Op::MakeSet if p.array_at.contains_key(&pc) => {
+                let k = b.ins().iconst(types::I64, *p.array_at.get(&pc)?);
+                let call = b.ins().call(shim.array_new, &[arena_ptr, k]);
                 let h = b.inst_results(call)[0];
                 // Owned: overwriting the slot it is stored into releases it, and
                 // the sweep at the end of the call takes the rest.
                 stack.push(SlotV::ValRef(h, h));
             }
-            Op::ArrayPush1 if p.array_at.contains(&pc) => {
+            Op::ArrayPush1 if p.array_at.contains_key(&pc) => {
                 let (v, t) = scalar(stack.pop()?)?;
                 let (kind, bits) = if t == Ty::F64 {
                     (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
@@ -4272,6 +4306,12 @@ fn translate(
             // A host constructor (`new URL(s)`): build the args, call `web_new`,
             // capture the handle. No receiver and no depth guard — it is a host
             // call, not a Mersey frame.
+            Op::NewNamed(_, _) if p.array_at.contains_key(&pc) => {
+                let k = b.ins().iconst(types::I64, *p.array_at.get(&pc)?);
+                let call = b.ins().call(shim.array_new, &[arena_ptr, k]);
+                let h = b.inst_results(call)[0];
+                stack.push(SlotV::ValRef(h, h));
+            }
             Op::NewNamed(_, _) if p.throw_at.contains_key(&pc) => {
                 let cls = *p.throw_at.get(&pc)?;
                 let SlotV::Str(mp, ml, _) = stack.pop()? else {

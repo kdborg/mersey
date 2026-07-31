@@ -1,0 +1,72 @@
+// `Map` and `Set` in compiled code, on both tiers.
+//
+// A keyed reconciler is written out of `has`, `set`, `add` and a `size` — which
+// is the shape browser code leans on hardest, and it was running interpreted.
+// Both are carried as opaques, like any container built here: one arena handle,
+// with the methods reaching the interpreter's own implementations.
+//
+// `new Map()` is recognised the way the interpreter recognises it — by the name
+// binding *nothing*. A program that defines its own `Map` gets its own, and this
+// declines rather than quietly building a builtin one.
+//
+// `get` gives back whatever the map holds, so it comes back as an opaque: enough
+// to compare against null and pass on, not enough to read a `.length` off. That
+// limit is deliberate and visible.
+
+import { console } from "std:console";
+
+class Own {
+    public readonly n: int32 = 0;
+    public constructor(n: int32) { this.n = n; }
+}
+
+function reconcile(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const seen = new Set<int32>();
+        const nodes = new Map<int32, int32>();
+        let k = 0;
+        while (k < 8) {
+            nodes.set(k, k * 3);
+            seen.add(k);
+            k += 1;
+        }
+        // A member that is there, and one that is not.
+        if (nodes.has(3)) { acc = acc + 1; }
+        if (nodes.has(99)) { acc = acc + 1000; }
+        if (seen.has(5)) { acc = acc + 2; }
+        acc = acc + nodes.size + seen.size;
+        // Removing reports whether it removed something, and the size follows.
+        if (nodes.remove(2)) { acc = acc + 4; }
+        if (nodes.remove(2)) { acc = acc + 4000; }
+        acc = acc + nodes.size;
+        // Adding a member twice adds it once.
+        seen.add(5);
+        acc = acc + seen.size;
+        i += 1;
+    }
+    return acc;
+}
+
+/// A `get` that is present and one that is not — the nullable an opaque carries.
+function lookup(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    const m = new Map<int32, int32>();
+    m.set(1, 10);
+    while (i < n) {
+        if (m.get(1) != null) { acc = acc + 1; }
+        if (m.get(2) == null) { acc = acc + 2; }
+        i += 1;
+    }
+    return acc;
+}
+
+reconcile(20000);
+lookup(20000);
+
+console.log(`reconcile ${reconcile(3)}`);
+console.log(`lookup    ${lookup(3)}`);
+// The class named `Own` is not a container, and `new Own(…)` must stay one.
+console.log(`own       ${new Own(7).n}`);
