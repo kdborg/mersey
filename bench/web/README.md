@@ -184,3 +184,28 @@ generous by design — `PERF_TIME_TOL` (default 1.5×, with a 20 ms floor) and
 accidental O(n²) or a leaked handle table, not 5% noise. Baselines are
 machine-relative: after moving to new hardware, `--update` once. Don't run it
 concurrently with builds or other benchmarks.
+
+### What a number here can actually resolve
+
+The fork runners (`run-native-*.mjs`) take `n=3` per workload, and for some
+workloads that is not enough to call a small difference. Measured on
+2026-07-31, same binary, repeat runs of `run-native-chromium.mjs`:
+
+| workload | readings (ms) | spread |
+|---|---|---|
+| `bchannel` | 116.4 / 134.2 / 138.0 / 153.3 | **32%** |
+| `blob` | 2105 / 2195 / 2248 / 2546 | **21%** |
+| `streams` | 77.2 / 77.5 / 87.5 / 90.8 | **17%** |
+| `frameworkui2` | 43.8 / 49.9 | **12%** |
+| `locks` | 163.2 / 169.7 / 173.0 / 177.7 | **9%** |
+| `websocket` | 41.4 / 41.7 / 43.9 / 44.4 | **7%** |
+
+So a 5% or even 10% move on an async or IPC-shaped workload (`bchannel`,
+`websocket`, `streams`, `blob`, `locks`) says nothing on its own. That is
+not hypothetical: five of these were once reported as regressions from an
+engine change and every one turned out to be inside its own spread. If a
+difference on one of them matters, run it several times and quote the
+range, or raise `n`.
+
+The compute- and string-shaped workloads (`json`, `mathk`, `encoding`,
+`compute`) are far steadier, and a 15%+ move on those is real.
