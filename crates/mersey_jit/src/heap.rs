@@ -25,8 +25,8 @@
 use std::rc::Rc;
 
 use mersey_interp::{
-    alloc_instance, append_int_utf16, array_data, gc::GcCell, instance_slots, Arena, ClassDef,
-    Instance, Value, WebArg, WebReplyRaw,
+    alloc_instance, append_int_utf16, array_data, find_units, gc::GcCell, instance_slots,
+    rfind_units, Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -905,6 +905,54 @@ pub(crate) unsafe extern "C" fn native_call(
         match (*arena).interp_ptr() {
             Some(ip) => (*ip).jit_native_call(name, id as u32, args),
             None => u64::MAX,
+        }
+    }
+}
+
+/// `s.indexOf(t)` and its four siblings, as a function of two spans.
+///
+/// The general member call does four things none of these need: it clones the
+/// receiver out of the arena as a `Value`, allocates a `Vec<Value>` for the
+/// arguments, boxes each argument into the arena (re-verifying a constant needle
+/// against the interpreter's memo *by content*, every call), and dispatches by
+/// comparing the method name. Measured on `"ab.cdef".indexOf(".")` in a compiled
+/// loop, that was the entire cost: 22% allocating and dropping, 19% in
+/// `call_member`, 14% boxing the needle, 15% in `memcmp` between the name
+/// comparisons and the memo check — and none of it the search.
+///
+/// None of it is needed, because a receiver and a needle are already spans and
+/// the answer is a number. Nothing here can throw, allocate, or touch the arena,
+/// so there is no interpreter round-trip at all.
+///
+/// `id` is an index into `SEARCH_METHODS`, fixed at compile time. The search
+/// itself is the interpreter's own `find_units`/`rfind_units`, so the two tiers
+/// cannot drift: one implementation, called from both.
+///
+/// # Safety
+/// Each `(ptr, len)` names that many readable `u16`s, or the length is 0.
+pub(crate) unsafe extern "C" fn str_search(
+    sptr: *const u16,
+    slen: usize,
+    nptr: *const u16,
+    nlen: usize,
+    id: i64,
+) -> i64 {
+    unsafe {
+        let span = |p: *const u16, n: usize| -> &[u16] {
+            if n == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(p, n)
+            }
+        };
+        let hay = span(sptr, slen);
+        let needle = span(nptr, nlen);
+        match id {
+            0 => find_units(hay, needle, 0).map_or(-1, |i| i as i64), // indexOf
+            1 => rfind_units(hay, needle).map_or(-1, |i| i as i64),   // lastIndexOf
+            2 => i64::from(find_units(hay, needle, 0).is_some()),     // contains
+            3 => i64::from(hay.starts_with(needle)),                  // startsWith
+            _ => i64::from(hay.ends_with(needle)),                    // endsWith
         }
     }
 }

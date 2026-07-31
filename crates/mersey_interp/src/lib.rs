@@ -10428,7 +10428,7 @@ const MAX_CALL_DEPTH: usize = 3_000;
 /// dominates for the short needles real code uses (a `"."`, a `"/"`), and it
 /// works on bytes this engine would have to transcode to reach. An empty needle
 /// matches at `from`, as JS has it.
-fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+pub fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(from.min(hay.len()));
     }
@@ -10450,7 +10450,7 @@ fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
 }
 
 /// …and the last such index. An empty needle matches at the end, as JS has it.
-fn rfind_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
+pub fn rfind_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
     if needle.is_empty() {
         return Some(hay.len());
     }

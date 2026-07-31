@@ -587,6 +587,10 @@ struct Plan {
     /// String method sites: the method's name, and the register shape of its
     /// result (`STR_METHODS`).
     str_method_at: HashMap<usize, (&'static str, Ty)>,
+    /// String searches that go straight to a shim over two spans, by id — the
+    /// receiver and the needle are already spans and the answer is a number, so
+    /// none of the general member-call machinery applies. See `SEARCH_METHODS`.
+    str_search_at: HashMap<usize, (i64, Ty)>,
     /// Method calls on an *opaque* receiver — `a.push(v)` on an array built here.
     val_method_at: HashMap<usize, (&'static str, Ty)>,
     /// `CallMethod` sites that are a *static* call — the receiver is a class, so
@@ -905,6 +909,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
+    let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut static_at: HashSet<usize> = HashSet::new();
     let mut class_names: HashSet<u16> = HashSet::new();
@@ -1663,6 +1668,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     {
                         return None;
                     }
+                    // A search whose one argument is a string: two spans in, a
+                    // number out, and nothing in between.
+                    if let Some(id) = search_method(&name, n) {
+                        if tval(arg_slots[0]) == Some(Ty::Str) {
+                            str_search_at.insert(pc, (id, ret));
+                            stack.push(TSlot::Val(ret, Prov::Stable));
+                            continue;
+                        }
+                    }
                     let nm: &'static str = Box::leak(name.clone().into_boxed_str());
                     str_method_at.insert(pc, (nm, ret));
                     stack.push(TSlot::Val(ret, Prov::Stable));
@@ -2140,6 +2154,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         native_at,
         rand_fill_at,
         str_method_at,
+        str_search_at,
         val_method_at,
         static_at,
         class_names,
@@ -2262,6 +2277,7 @@ struct Shims {
     str_numopt: FuncId,
     str_str: FuncId,
     val_len: FuncId,
+    str_search: FuncId,
     box_str: FuncId,
     own_str: FuncId,
     box_num: FuncId,
@@ -2345,6 +2361,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_numopt", heap::str_numopt as *const u8);
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
+    builder.symbol("msy_str_search", heap::str_search as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
     builder.symbol("msy_own_str", heap::own_str as *const u8);
     builder.symbol("msy_box_num", heap::box_num as *const u8);
@@ -2709,6 +2726,27 @@ fn val_method(name: &str, argc: u8) -> Option<Ty> {
         .map(|(_, t, _, _)| *t)
 }
 
+/// The five string methods that are a *search over two spans* and nothing else:
+/// no allocation, no arena, no `Value`, and an answer that is a number. Their
+/// order is the `id` the shim switches on. See `heap::str_search`.
+const SEARCH_METHODS: [&str; 5] = [
+    "indexOf",
+    "lastIndexOf",
+    "contains",
+    "startsWith",
+    "endsWith",
+];
+
+fn search_method(name: &str, argc: u8) -> Option<i64> {
+    if argc != 1 {
+        return None;
+    }
+    SEARCH_METHODS
+        .iter()
+        .position(|n| *n == name)
+        .map(|i| i as i64)
+}
+
 fn str_method(name: &str, argc: u8) -> Option<Ty> {
     STR_METHODS
         .iter()
@@ -2795,6 +2833,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, handle) -> the length, or -1
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
+        str_search: one("msy_str_search", Some(types::I64), 5)?,
         box_str: one("msy_box_str", Some(types::I64), 4)?,
         own_str: one("msy_own_str", None, 4)?,
         // (arena, kind, bits) -> handle of a Value::I32 / Value::F64
@@ -3199,6 +3238,7 @@ fn translate(
         str_str: module.declare_func_in_func(shims.str_str, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
+        str_search: module.declare_func_in_func(shims.str_search, b.func),
         own_str: module.declare_func_in_func(shims.own_str, b.func),
         box_num: module.declare_func_in_func(shims.box_num, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
@@ -4146,6 +4186,27 @@ fn translate(
             // handle back rather than copying, so only constants and borrows are
             // parked. Everything parked here is released the moment the call
             // returns; the result, when it is a string, is this value's to hold.
+            // `s.indexOf(t)` and its four siblings: both operands are already
+            // spans in registers, so this is one call to a pure function — no
+            // arena, no boxing, no name.
+            Op::CallMethod(_, _) if p.str_search_at.contains_key(&pc) => {
+                // `contains`/`startsWith`/`endsWith` answer `bool` and the other
+                // two `int32`. Same register; not the same type, and the label is
+                // what every later check reads.
+                let (id, ret) = *p.str_search_at.get(&pc)?;
+                let SlotV::Str(nptr, nlen, _) = stack.pop()? else {
+                    return None;
+                };
+                let SlotV::Str(sptr, slen, _) = stack.pop()? else {
+                    return None;
+                };
+                let idv = b.ins().iconst(types::I64, id);
+                let call = b
+                    .ins()
+                    .call(shim.str_search, &[sptr, slen, nptr, nlen, idv]);
+                let v = b.inst_results(call)[0];
+                stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), ret));
+            }
             Op::CallMethod(_, n) if p.str_method_at.contains_key(&pc) => {
                 let (name, ret) = *p.str_method_at.get(&pc)?;
                 let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
@@ -5220,6 +5281,7 @@ struct Ctx {
 
 /// The engine functions a compiled body may call, resolved.
 struct ShimRefs {
+    str_search: cranelift_codegen::ir::FuncRef,
     own_str: cranelift_codegen::ir::FuncRef,
     cell_obj: cranelift_codegen::ir::FuncRef,
     cell_arr: cranelift_codegen::ir::FuncRef,

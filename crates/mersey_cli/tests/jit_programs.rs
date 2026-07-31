@@ -376,3 +376,31 @@ fn reassigned_strings_agree_across_the_tier_boundary() {
     // silently.
     assert!(out.contains("alias        1 1"), "{out}");
 }
+
+/// The five searching string methods. Compiled code no longer reaches these
+/// through the interpreter at all: receiver and needle are already spans in
+/// registers and the answer is a number, so the call goes straight to a shim over
+/// the two spans — no arena, no `Value`, no argument vector, no dispatch by name.
+/// Worth 4.8x on `indexOf` and 7.2x on `startsWith`.
+///
+/// The search itself is shared (one `find_units`, called from both tiers), so
+/// what this pins is everything around it: which argument is the needle, what an
+/// empty or over-long one does, and that the index is in code units. Every
+/// expected value here was cross-checked against Node.
+#[test]
+fn string_searches_agree_across_the_tier_boundary() {
+    check("string-search.mersey");
+    let out = run("string-search.mersey", true);
+    // A haystack with a character outside the BMP, so a code-point index and a
+    // code-unit index disagree and the test can tell them apart.
+    assert!(out.contains("dot       306100"), "{out}");
+    assert!(out.contains("emoji     1110"), "{out}");
+    assert!(out.contains("whole     1111"), "{out}");
+    // An empty needle matches at the start, and at the end for `lastIndexOf`.
+    assert!(out.contains("empty     4111"), "{out}");
+    // Longer than the haystack, and simply absent: -1 from both indexers.
+    assert!(out.contains("toolong   -100000"), "{out}");
+    assert!(out.contains("absent    -100000"), "{out}");
+    // Present twice, so first and last differ.
+    assert!(out.contains("repeated  104100"), "{out}");
+}

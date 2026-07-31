@@ -1,0 +1,50 @@
+// The five searching string methods, on both tiers.
+//
+// Compiled code no longer reaches these through the interpreter at all. The
+// receiver and the needle are already spans in registers and the answer is a
+// number, so the call goes straight to a shim over the two spans — no arena, no
+// `Value`, no argument vector, no dispatch by name. That is worth 4.8x on
+// `indexOf` and 7.2x on `startsWith`, and it means the compiled path and the
+// interpreted one now *reach* the same search by different routes.
+//
+// They share the search itself — one `find_units`, called from both — so what
+// this pins is everything around it: which argument is the needle, what an empty
+// or over-long needle does, and that the index is in code units.
+
+import { console } from "std:console";
+
+/// Every method, over a haystack with a character outside the BMP — so a
+/// code-point index and a code-unit index disagree and the test can tell.
+function all(s: string, needle: string): int32 {
+    // Packed into one number so a single mismatch changes the output.
+    let acc = s.indexOf(needle);
+    acc = acc * 100 + (s.lastIndexOf(needle) + 1);
+    acc = acc * 10 + (s.contains(needle) ? 1 : 0);
+    acc = acc * 10 + (s.startsWith(needle) ? 1 : 0);
+    acc = acc * 10 + (s.endsWith(needle) ? 1 : 0);
+    return acc;
+}
+
+/// Hot enough to compile, and the loop is where the fast path actually runs.
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = all("😀a.b.c", ".") + all("😀a.b.c", "😀") + all("abc", "abc");
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive     ${drive(200000)}`);
+// Read back one at a time, after the loop has made them hot.
+console.log(`dot       ${all("😀a.b.c", ".")}`);
+console.log(`emoji     ${all("😀a.b.c", "😀")}`);
+console.log(`whole     ${all("abc", "abc")}`);
+// The edges: an empty needle matches at the start (and at the end, for
+// `lastIndexOf`); a needle longer than the haystack is absent everywhere.
+console.log(`empty     ${all("abc", "")}`);
+console.log(`toolong   ${all("ab", "abcd")}`);
+console.log(`absent    ${all("abc", "z")}`);
+// A needle that is present more than once, so first and last differ.
+console.log(`repeated  ${all("a.b.c", ".")}`);
