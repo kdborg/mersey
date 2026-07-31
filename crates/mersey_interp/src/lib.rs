@@ -6129,10 +6129,16 @@ impl Interp {
         }
     }
 
-    /// …and the same for an engine primitive.
+    /// …and the same for an engine primitive — or an *array*, which compiled code
+    /// carries the same way when it built the array itself. A function returning
+    /// one it was merely handed (a `Ty::Arr` parameter) is a different shape and
+    /// is refused, which is a refusal and not a wrong answer.
     pub(crate) fn ret_is_val(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
         match ret_ty {
-            Some(t) => matches!(resolve_field_ty(t, &self.globals), FieldTy::Val),
+            Some(t) => matches!(
+                resolve_field_ty(t, &self.globals),
+                FieldTy::Val | FieldTy::Arr(_)
+            ),
             None => false,
         }
     }

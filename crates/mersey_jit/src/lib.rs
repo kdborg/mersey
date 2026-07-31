@@ -2434,7 +2434,11 @@ const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
 /// result is typed as an opaque and discarded by the `Pop` that follows.
 ///
 /// (name, result, min args, max args)
-const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[("push", Ty::Val, 1, 1), ("clear", Ty::Val, 0, 0)];
+const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[
+    ("push", Ty::Val, 1, 1),
+    ("clear", Ty::Val, 0, 0),
+    ("join", Ty::Str, 1, 1),
+];
 
 /// String-valued properties of an opaque. Only `Url`'s parts are here, because
 /// they are the only ones a `Ty::Val` can currently be: a `Bytes` has none and a
@@ -3902,7 +3906,7 @@ fn translate(
             // A method on an opaque: the receiver's handle straight through, the
             // arguments parked as for any shim that takes handles.
             Op::CallMethod(_, n) if p.val_method_at.contains_key(&pc) => {
-                let (name, _) = *p.val_method_at.get(&pc)?;
+                let (name, ret) = *p.val_method_at.get(&pc)?;
                 let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
                 let mut boxed: Vec<ClValue> = Vec::new();
                 for _ in 0..n {
@@ -3924,17 +3928,50 @@ fn translate(
                 }
                 let (nptr, nlen) = str_const(b, name);
                 let argc = b.ins().iconst(types::I64, n as i64);
-                let call = b.ins().call(
-                    shim.member_val,
-                    &[arena_ptr, recv, nptr, nlen, args_ptr, argc],
-                );
-                let out = b.inst_results(call)[0];
-                let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
-                guard(b, ctx, threw, R_HOST, pc, None);
+                // The same three result shapes a *string* method has, and for the
+                // same reason: `join` gives a string where `push` gives nothing.
+                // An explicit arm each — a fallthrough here once turned `split`
+                // into an integer read off a handle.
+                let result = if ret == Ty::Str {
+                    let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                        24,
+                        3,
+                    ));
+                    let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                    let call = b.ins().call(
+                        shim.str_str,
+                        &[arena_ptr, recv, nptr, nlen, args_ptr, argc, out_ptr],
+                    );
+                    let status = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                    let h = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                    SlotV::Str(d, l, h)
+                } else if ret == Ty::Val {
+                    let call = b.ins().call(
+                        shim.member_val,
+                        &[arena_ptr, recv, nptr, nlen, args_ptr, argc],
+                    );
+                    let out = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    SlotV::ValRef(out, out)
+                } else {
+                    let call = b
+                        .ins()
+                        .call(shim.str_num, &[arena_ptr, recv, nptr, nlen, args_ptr, argc]);
+                    let v = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    SlotV::Val(b.ins().ireduce(types::I32, v), ret)
+                };
                 for h in boxed {
                     b.ins().call(shim.release, &[arena_ptr, h]);
                 }
-                stack.push(SlotV::ValRef(out, out));
+                stack.push(result);
             }
             // `random.fill(buf)`: the buffer's handle straight to a shim. No name,
             // no argument array, no lend/give-back, no `Result` to unwrap.
