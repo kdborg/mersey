@@ -513,8 +513,12 @@ struct Plan {
     /// String method sites: the method's name, and the register shape of its
     /// result (`STR_METHODS`).
     str_method_at: HashMap<usize, (&'static str, Ty)>,
+    /// Method calls on an *opaque* receiver — `a.push(v)` on an array built here.
+    val_method_at: HashMap<usize, (&'static str, Ty)>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
     val_index_at: HashSet<usize>,
+    /// `[]` and `a.push(v)` sites, which build an array as an opaque.
+    array_at: HashSet<usize>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -804,7 +808,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
+    let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut val_index_at: HashSet<usize> = HashSet::new();
+    let mut array_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -1257,6 +1263,28 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 stack.push(top);
             }
+            // `[]` — an array built here. It is carried as an *opaque*, not as
+            // `Ty::Arr`: that shape caches the element buffer's address and its
+            // length, and a `push` moves both, so it is the wrong shape for an
+            // array that grows. Reading, writing and `length` already go through
+            // the same shims a `Bytes` uses.
+            Op::MakeArray => {
+                array_at.insert(pc);
+                stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+            }
+            // `a.push(v)` — and the array stays on the stack, as the interpreter
+            // leaves it.
+            Op::ArrayPush1 => {
+                let v = tval(stack.pop()?)?;
+                if !v.is_num() {
+                    return None;
+                }
+                if tval(*stack.last()?) != Some(Ty::Val) {
+                    return None;
+                }
+                array_at.insert(pc);
+                g.writes = true;
+            }
             Op::IndexGet => {
                 let i = tval(stack.pop()?)?;
                 let base = stack.pop()?;
@@ -1324,6 +1352,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                     let nm: &'static str = Box::leak(name.clone().into_boxed_str());
                     str_method_at.insert(pc, (nm, ret));
+                    stack.push(TSlot::Val(ret, Prov::Stable));
+                    continue;
+                }
+                // …and on an opaque. The receiver is already a handle, so unlike
+                // a string it needs no parking.
+                if tval(recv) == Some(Ty::Val) {
+                    let ret = val_method(&name, n)?;
+                    if !arg_slots
+                        .iter()
+                        .all(|a| tval(*a).is_some_and(|t| t.is_num() || t == Ty::Val))
+                    {
+                        return None;
+                    }
+                    let nm: &'static str = Box::leak(name.clone().into_boxed_str());
+                    val_method_at.insert(pc, (nm, ret));
                     stack.push(TSlot::Val(ret, Prov::Stable));
                     continue;
                 }
@@ -1671,7 +1714,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         native_at,
         rand_fill_at,
         str_method_at,
+        val_method_at,
         val_index_at,
+        array_at,
         val_prop_at,
         field_at,
         new_at,
@@ -1764,11 +1809,14 @@ struct Shims {
     global_val: FuncId,
     global_str: FuncId,
     clone_val: FuncId,
+    array_new: FuncId,
+    array_push: FuncId,
     val_index_get: FuncId,
     val_index_set: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
     str_eq: FuncId,
+    member_val: FuncId,
     str_num: FuncId,
     str_str: FuncId,
     val_len: FuncId,
@@ -1833,11 +1881,14 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_global_str", heap::global_str as *const u8);
     builder.symbol("msy_clone_val", heap::clone_val as *const u8);
+    builder.symbol("msy_array_new", heap::array_new as *const u8);
+    builder.symbol("msy_array_push", heap::array_push as *const u8);
     builder.symbol("msy_val_index_get", heap::val_index_get as *const u8);
     builder.symbol("msy_val_index_set", heap::val_index_set as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
     builder.symbol("msy_str_eq", heap::str_eq as *const u8);
+    builder.symbol("msy_member_val", heap::member_val as *const u8);
     builder.symbol("msy_str_num", heap::str_num as *const u8);
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
@@ -2140,6 +2191,21 @@ const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("toString", Ty::Str, 0, 0),
 ];
 
+/// Methods on an *opaque* receiver. Small on purpose: an array built in compiled
+/// code is carried as one, and this is what such an array is asked to do. `push`
+/// is void, and the interpreter's nothing is `null` — handle 0 — which is why its
+/// result is typed as an opaque and discarded by the `Pop` that follows.
+///
+/// (name, result, min args, max args)
+const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[("push", Ty::Val, 1, 1), ("clear", Ty::Val, 0, 0)];
+
+fn val_method(name: &str, argc: u8) -> Option<Ty> {
+    VAL_METHODS
+        .iter()
+        .find(|(n, _, lo, hi)| *n == name && argc >= *lo && argc <= *hi)
+        .map(|(_, t, _, _)| *t)
+}
+
 fn str_method(name: &str, argc: u8) -> Option<Ty> {
     STR_METHODS
         .iter()
@@ -2184,6 +2250,10 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, handle, index) -> the byte / i64::MIN
         // (arena, handle) -> a fresh handle to the same value
         clone_val: one("msy_clone_val", Some(types::I64), 2)?,
+        // (arena) -> handle of a fresh array
+        array_new: one("msy_array_new", Some(types::I64), 1)?,
+        // (arena, handle, kind, bits) -> 0 ok / 1 not an array
+        array_push: one("msy_array_push", Some(types::I64), 4)?,
         val_index_get: one("msy_val_index_get", Some(types::I64), 3)?,
         // (arena, handle, index, value) -> 0 ok / 1 threw
         val_index_set: one("msy_val_index_set", Some(types::I64), 4)?,
@@ -2194,6 +2264,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, recv, name_ptr, name_len, args_ptr, argc) -> the number / i64::MIN
         // (a_ptr, a_len, b_ptr, b_len) -> 1 / 0
         str_eq: one("msy_str_eq", Some(types::I64), 4)?,
+        // (arena, recv, name_ptr, name_len, args_ptr, argc) -> handle / 0 / MAX
+        member_val: one("msy_member_val", Some(types::I64), 6)?,
         str_num: one("msy_str_num", Some(types::I64), 6)?,
         // (…, out) -> 0 ok / 1 threw; `out` gets (data, len, handle)
         str_str: one("msy_str_str", Some(types::I64), 7)?,
@@ -2554,11 +2626,14 @@ fn translate(
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         global_str: module.declare_func_in_func(shims.global_str, b.func),
         clone_val: module.declare_func_in_func(shims.clone_val, b.func),
+        array_new: module.declare_func_in_func(shims.array_new, b.func),
+        array_push: module.declare_func_in_func(shims.array_push, b.func),
         val_index_get: module.declare_func_in_func(shims.val_index_get, b.func),
         val_index_set: module.declare_func_in_func(shims.val_index_set, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
         str_eq: module.declare_func_in_func(shims.str_eq, b.func),
+        member_val: module.declare_func_in_func(shims.member_val, b.func),
         str_num: module.declare_func_in_func(shims.str_num, b.func),
         str_str: module.declare_func_in_func(shims.str_str, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
@@ -3096,6 +3171,31 @@ fn translate(
             }
             // Live iteration: the array itself, not a copy.
             Op::IterArray => {}
+            Op::MakeArray if p.array_at.contains(&pc) => {
+                let call = b.ins().call(shim.array_new, &[arena_ptr]);
+                let h = b.inst_results(call)[0];
+                // Owned: overwriting the slot it is stored into releases it, and
+                // the sweep at the end of the call takes the rest.
+                stack.push(SlotV::ValRef(h, h));
+            }
+            Op::ArrayPush1 if p.array_at.contains(&pc) => {
+                let (v, t) = scalar(stack.pop()?)?;
+                let (kind, bits) = if t == Ty::F64 {
+                    (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
+                } else if t == Ty::I64 {
+                    (0i64, v)
+                } else {
+                    (0i64, b.ins().sextend(types::I64, v))
+                };
+                let SlotV::ValRef(h, _) = *stack.last()? else {
+                    return None;
+                };
+                let k = b.ins().iconst(types::I64, kind);
+                let call = b.ins().call(shim.array_push, &[arena_ptr, h, k, bits]);
+                let status = b.inst_results(call)[0];
+                let bad = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, bad, R_TAG, pc, None);
+            }
             Op::IndexGet if p.val_index_at.contains(&pc) => {
                 let (i, it) = scalar(stack.pop()?)?;
                 let i = convert(b, i, it, Ty::I64);
@@ -3349,6 +3449,43 @@ fn translate(
                     b.ins().call(shim.release, &[arena_ptr, h]);
                 }
                 stack.push(result);
+            }
+            // A method on an opaque: the receiver's handle straight through, the
+            // arguments parked as for any shim that takes handles.
+            Op::CallMethod(_, n) if p.val_method_at.contains_key(&pc) => {
+                let (name, _) = *p.val_method_at.get(&pc)?;
+                let mut handles: Vec<ClValue> = Vec::with_capacity(n as usize);
+                let mut boxed: Vec<ClValue> = Vec::new();
+                for _ in 0..n {
+                    handles.push(box_arg(b, &shim, arena_ptr, stack.pop()?, &mut boxed)?);
+                }
+                handles.reverse();
+                let SlotV::ValRef(recv, _) = stack.pop()? else {
+                    return None;
+                };
+                let slot = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    (n as u32).max(1) * 8,
+                    3,
+                ));
+                let args_ptr = b.ins().stack_addr(types::I64, slot, 0);
+                for (k, h) in handles.iter().enumerate() {
+                    b.ins()
+                        .store(MemFlags::trusted(), *h, args_ptr, (k * 8) as i32);
+                }
+                let (nptr, nlen) = str_const(b, name);
+                let argc = b.ins().iconst(types::I64, n as i64);
+                let call = b.ins().call(
+                    shim.member_val,
+                    &[arena_ptr, recv, nptr, nlen, args_ptr, argc],
+                );
+                let out = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
+                guard(b, ctx, threw, R_HOST, pc, None);
+                for h in boxed {
+                    b.ins().call(shim.release, &[arena_ptr, h]);
+                }
+                stack.push(SlotV::ValRef(out, out));
             }
             // `random.fill(buf)`: the buffer's handle straight to a shim. No name,
             // no argument array, no lend/give-back, no `Result` to unwrap.
@@ -4097,11 +4234,14 @@ struct ShimRefs {
     global_val: cranelift_codegen::ir::FuncRef,
     global_str: cranelift_codegen::ir::FuncRef,
     clone_val: cranelift_codegen::ir::FuncRef,
+    array_new: cranelift_codegen::ir::FuncRef,
+    array_push: cranelift_codegen::ir::FuncRef,
     val_index_get: cranelift_codegen::ir::FuncRef,
     val_index_set: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
     str_eq: cranelift_codegen::ir::FuncRef,
+    member_val: cranelift_codegen::ir::FuncRef,
     str_num: cranelift_codegen::ir::FuncRef,
     str_str: cranelift_codegen::ir::FuncRef,
     val_len: cranelift_codegen::ir::FuncRef,

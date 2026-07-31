@@ -4648,6 +4648,17 @@ impl Interp {
         }
     }
 
+    /// …and one that answers with a value of no particular shape — an opaque, or
+    /// nothing at all (`push` is void, and the interpreter's nothing is `null`).
+    /// The handle is 0 for null and `u64::MAX` if it threw.
+    pub fn jit_member_val(&mut self, recv: u64, name: &str, args: &[u64]) -> u64 {
+        match self.jit_str_call(recv, name, args) {
+            Ok(Value::Null) => 0,
+            Ok(v) => self.jit_arena.keep(v),
+            Err(()) => u64::MAX,
+        }
+    }
+
     /// …and one that answers with a string, parked in the arena. `u64::MAX` means
     /// it threw; the handle is the compiled code's to release.
     pub fn jit_str_str(&mut self, recv: u64, name: &str, args: &[u64]) -> u64 {
@@ -4659,6 +4670,32 @@ impl Interp {
                 u64::MAX
             }
             Err(()) => u64::MAX,
+        }
+    }
+
+    /// `[]` from compiled code: a fresh array, parked in the arena.
+    ///
+    /// Compiled code carries it as an *opaque* rather than as `Ty::Arr`. An array
+    /// that grows cannot use that shape — it caches the element buffer's address
+    /// and length, and a `push` moves both — so a growable one goes through the
+    /// same shims a `Bytes` does. `index_get`, `index_set` and `length` already
+    /// answer for an array, so only `push` is new.
+    pub fn jit_array_new(&mut self) -> u64 {
+        self.jit_arena.keep(new_array(Vec::new()))
+    }
+
+    /// `a.push(v)` for a numeric element. 0, or 1 if the handle names no array.
+    pub fn jit_array_push(&mut self, h: u64, kind: i64, bits: i64) -> i64 {
+        let v = match kind {
+            1 => Value::F64(f64::from_bits(bits as u64)),
+            _ => Value::I32(bits as i32),
+        };
+        match self.jit_arena.get(h) {
+            Some(Value::Array(a)) => {
+                a.borrow_mut().push(v);
+                0
+            }
+            _ => 1,
         }
     }
 

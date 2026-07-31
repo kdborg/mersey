@@ -415,6 +415,33 @@ pub(crate) unsafe extern "C" fn str_num(
     }
 }
 
+/// A member call by handle whose result is an opaque, or nothing (`a.push(v)`).
+/// The result's handle, 0 for null, `u64::MAX` if it threw.
+///
+/// # Safety
+/// As `native_call`.
+pub(crate) unsafe extern "C" fn member_val(
+    arena: *mut Arena,
+    recv: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const u64,
+    argc: usize,
+) -> u64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = if argc == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc)
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_member_val(recv, name, args),
+            None => u64::MAX,
+        }
+    }
+}
+
 /// A string method answering with a string (`slice`, `trim`, `replace`). `out`
 /// receives (data, length, owning handle); returns 0, or 1 if it threw.
 ///
@@ -509,6 +536,32 @@ pub(crate) unsafe extern "C" fn global_val(
         match (*arena).interp_ptr() {
             Some(ip) => (*ip).jit_global_val(name),
             None => 0,
+        }
+    }
+}
+
+/// `[]` from compiled code: a fresh array in the arena, by handle.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn array_new(arena: *mut Arena) -> u64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_array_new(),
+            None => 0,
+        }
+    }
+}
+
+/// `a.push(v)`, the value as `box_num`'s (kind, bits). 0, or 1 if it is no array.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn array_push(arena: *mut Arena, h: u64, kind: i64, bits: i64) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_array_push(h, kind, bits),
+            None => 1,
         }
     }
 }

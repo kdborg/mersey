@@ -1,0 +1,66 @@
+// Building an array in compiled code, on both tiers.
+//
+// Reading one has always worked: `Ty::Arr` carries the element buffer's address
+// and the length, and an access is a bounds check and a load. That shape is wrong
+// for an array that *grows* — a `push` moves both — so an array built here is
+// carried as an opaque instead, by arena handle, and its reads, writes and
+// `length` go through the same shims a `Bytes` uses. Slower per access than the
+// cached form, and the only form that is correct for something that changes size.
+//
+// What that risks is ownership: the array is the compiled code's to release when
+// the slot holding it is overwritten, and an array that went missing would show up
+// as a wrong number rather than a crash.
+
+import { console } from "std:console";
+
+/// Builds, grows past any initial capacity, then reads back.
+function build(n: int32): int32 {
+    const xs: int32[] = [];
+    let i = 0;
+    while (i < n) {
+        xs.push(i % 251);
+        i += 1;
+    }
+    let acc = 0;
+    let k = 0;
+    while (k < xs.length) {
+        acc = acc + xs[k];
+        k += 1;
+    }
+    return acc;
+}
+
+/// A fresh array on every iteration — each one owned, and let go when the slot
+/// that holds it is overwritten. If it were not, this would grow without bound.
+function churn(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const one: int32[] = [];
+        one.push(i);
+        one.push(i * 2);
+        acc = acc + one[0] + one[1] + one.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// An array literal with elements, which is the same ops in a row.
+function literal(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const xs: int32[] = [3, 1, 4, 1, 5];
+        acc = acc + xs[2] + xs.length;
+        i += 1;
+    }
+    return acc;
+}
+
+build(20000);
+churn(20000);
+literal(20000);
+
+console.log(`build   ${build(1000)}`);
+console.log(`churn   ${churn(1000)}`);
+console.log(`literal ${literal(1000)}`);

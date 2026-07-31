@@ -182,3 +182,21 @@ fn indexing_and_returning_a_bytes_agree_across_the_tier_boundary() {
         "{out}"
     );
 }
+
+/// Building an array in compiled code. Reading one always worked — `Ty::Arr`
+/// carries the element buffer's address and the length — but that shape is wrong
+/// for an array that *grows*, since a `push` moves both. One built here is carried
+/// as an opaque instead, by arena handle, which makes it the compiled code's to
+/// release when the slot holding it is overwritten. `churn` is the case that
+/// matters: a fresh array every iteration, which would grow without bound if the
+/// old one were never let go, and would print a wrong number if it were let go too
+/// early.
+#[test]
+fn building_an_array_agrees_across_the_tier_boundary() {
+    check("array-build.mersey");
+    let out = run("array-build.mersey", true);
+    assert!(out.contains("build   124506"), "{out}");
+    assert!(out.contains("churn   1500500"), "{out}");
+    // An array literal is the same ops in a row: make, then push each element.
+    assert!(out.contains("literal 9000"), "{out}");
+}
