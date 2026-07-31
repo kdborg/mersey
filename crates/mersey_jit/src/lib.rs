@@ -1433,24 +1433,32 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // array that grows. Reading, writing and `length` already go through
             // the same shims a `Bytes` uses.
             Op::MakeArray | Op::MakeMap | Op::MakeSet => {
-                array_at.insert(
-                    pc,
-                    match *op {
-                        Op::MakeMap => 1,
-                        Op::MakeSet => 2,
-                        _ => 0,
-                    },
-                );
-                stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                let kind = match *op {
+                    Op::MakeMap => 1,
+                    Op::MakeSet => 2,
+                    _ => 0,
+                };
+                array_at.insert(pc, kind);
+                // `const out: string[] = []` — the declaration says what the
+                // elements are, which is the one thing an opaque cannot say for
+                // itself. The compiler emits the make and the store together, so
+                // the slot it lands in is the next op.
+                let strs = kind == 0
+                    && matches!(chunk.code.get(pc + 1), Some(Op::StoreSlot(sl))
+                        if chunk.slot_str_array.get(*sl as usize).copied().unwrap_or(false));
+                stack.push(TSlot::Val(
+                    if strs { Ty::StrArr } else { Ty::Val },
+                    Prov::Stable,
+                ));
             }
             // `a.push(v)` — and the array stays on the stack, as the interpreter
             // leaves it.
             Op::ArrayPush1 => {
                 let v = tval(stack.pop()?)?;
-                if !v.is_num() {
+                if !v.is_num() && v != Ty::Str {
                     return None;
                 }
-                if tval(*stack.last()?) != Some(Ty::Val) {
+                if !matches!(tval(*stack.last()?), Some(Ty::Val | Ty::StrArr)) {
                     return None;
                 }
                 array_at.insert(pc, 0);
@@ -1555,8 +1563,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 // …and on an opaque. The receiver is already a handle, so unlike
                 // a string it needs no parking.
-                if tval(recv) == Some(Ty::Val) {
+                if matches!(tval(recv), Some(Ty::Val | Ty::StrArr)) {
                     let ret = val_method(&name, n)?;
+                    // `slice` hands back a container of the same kind it took.
+                    let ret = if name == "slice" && tval(recv) == Some(Ty::StrArr) {
+                        Ty::StrArr
+                    } else {
+                        ret
+                    };
                     // Whatever `box_arg` can park: a number, a string, or
                     // something already opaque. `xs.push("a")` is as ordinary as
                     // `xs.push(1)`.
@@ -1889,6 +1903,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // does an opaque.
                     (Some(Ty::Str), Ty::Str) => {}
                     (Some(Ty::Val), Ty::Val) => {}
+                    // A *known* string array where an opaque one was promised: the
+                    // caller stops knowing what the elements are, which is a
+                    // widening and not a mismatch.
+                    (Some(Ty::Val), Ty::StrArr) => {}
                     (Some(Ty::StrArr), Ty::StrArr) => {}
                     (Some(k), t) if t.is_num() => {
                         if k != t && !(k.is_int() && t.is_int() && k.cl() == t.cl()) {
@@ -2474,6 +2492,7 @@ const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("push", Ty::Val, 1, 1),
     ("clear", Ty::Val, 0, 0),
     ("join", Ty::Str, 1, 1),
+    ("slice", Ty::Val, 1, 2),
     // `Map` and `Set`. A keyed reconciler is written out of `has`/`set`/`add`
     // and a `size`, which is the shape browser code leans on hardest. `get`
     // gives back whatever the map holds, so it comes back as an opaque — enough
@@ -4024,7 +4043,7 @@ fn translate(
                     let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
                     let h = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
                     SlotV::Str(d, l, h)
-                } else if ret == Ty::Val {
+                } else if ret == Ty::Val || ret == Ty::StrArr {
                     let call = b.ins().call(
                         shim.member_val,
                         &[arena_ptr, recv, nptr, nlen, args_ptr, argc],

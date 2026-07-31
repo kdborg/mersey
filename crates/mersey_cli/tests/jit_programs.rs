@@ -267,6 +267,10 @@ fn string_arrays_agree_across_the_tier_boundary() {
     // The array `split` hands back: a *known* opaque, so its elements have a
     // shape. 3 fields + 6 units, twice over, four times.
     assert!(out.contains("fields  60"), "{out}");
+    // An array of strings *built here* — comparing an element against a string,
+    // slicing it, joining it. Needs the declared element type, which only the
+    // checker knows.
+    assert!(out.contains("trim    56"), "{out}");
 }
 
 /// An engine primitive as a class field, its string parts, and `throw new Error`.

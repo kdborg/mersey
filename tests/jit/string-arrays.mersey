@@ -74,14 +74,44 @@ function fields(text: string, n: int32): int32 {
     return acc;
 }
 
+/// An array of strings *built here*. Compiled code carries a container it built
+/// as an opaque, and an opaque's element has no type — so this reads its elements
+/// as numbers and refuses the comparison, unless the tier is told what the
+/// declaration said. That fact comes from the checker; it is the one thing about
+/// a container the tier cannot work out for itself.
+function trim(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const out: string[] = [];
+        out.push("a");
+        out.push("..");
+        out.push("bb");
+        // Comparing an element against a string — the shape that needed the fact.
+        if (out[out.length - 1] != "..") {
+            acc = acc + 1;
+        }
+        if (out[1] == "..") {
+            acc = acc + 2;
+        }
+        // …and slicing one, which gives back an array of the same kind.
+        const cut = out.slice(0, out.length - 1);
+        acc = acc + cut.length + cut[1].length + out.join("/").length;
+        i += 1;
+    }
+    return acc;
+}
+
 const xs: string[] = ["alpha", "be", "gamma"];
 
 widths(xs, 30000);
 joined(xs, 30000);
 relabel(xs, 30000);
 fields("a,bb,ccc", 30000);
+trim(30000);
 
 console.log(`widths  ${widths(xs, 3)}`);
 console.log(`joined  ${joined(xs, 3)}`);
 console.log(`relabel ${relabel(xs, 5)}`);
 console.log(`fields  ${fields("a,bb,ccc", 4)}`);
+console.log(`trim    ${trim(4)}`);

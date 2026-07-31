@@ -83,6 +83,12 @@ thread_local! {
     static OP_TYPES: RefCell<Coercions> = RefCell::new(Coercions::new());
     /// The numeric type of each local, keyed by its declaring name.
     static LOCAL_TYPES: RefCell<Coercions> = RefCell::new(Coercions::new());
+    /// Locals declared `string[]`. Only that one shape, because it is the one the
+    /// engine's compiler cannot work out for itself: an array *built* in compiled
+    /// code is carried opaquely, and an opaque's element has no type — so without
+    /// this, `out[i] != ".."` reads the element as a number.
+    static LOCAL_STR_ARRAYS: RefCell<std::collections::HashSet<usize>> =
+        RefCell::new(std::collections::HashSet::new());
     /// The default an *uninitialized* binding or field starts with, keyed by the
     /// address of its declared `TypeExpr`. See [`DefaultVal`].
     static DEFAULTS: RefCell<std::collections::HashMap<usize, DefaultVal>> =
@@ -201,17 +207,25 @@ pub fn local_type_for(n: &Name) -> Option<Num> {
     LOCAL_TYPES.with(|m| m.borrow().get(&id).copied())
 }
 
+/// Was this local declared `string[]`? See `LOCAL_STR_ARRAYS`.
+pub fn local_is_str_array(n: &Name) -> bool {
+    let id = n as *const Name as usize;
+    LOCAL_STR_ARRAYS.with(|m| m.borrow().contains(&id))
+}
+
 fn publish(
     c: &Coercions,
     results: &Coercions,
     ops: &Coercions,
     locals: &Coercions,
     defaults: &std::collections::HashMap<usize, DefaultVal>,
+    str_arrays: &std::collections::HashSet<usize>,
 ) {
     COERCIONS.with(|m| m.borrow_mut().extend(c.iter().map(|(k, v)| (*k, *v))));
     RESULT_COERCIONS.with(|m| m.borrow_mut().extend(results.iter().map(|(k, v)| (*k, *v))));
     OP_TYPES.with(|m| m.borrow_mut().extend(ops.iter().map(|(k, v)| (*k, *v))));
     LOCAL_TYPES.with(|m| m.borrow_mut().extend(locals.iter().map(|(k, v)| (*k, *v))));
+    LOCAL_STR_ARRAYS.with(|m| m.borrow_mut().extend(str_arrays.iter().copied()));
     DEFAULTS.with(|m| {
         m.borrow_mut()
             .extend(defaults.iter().map(|(k, v)| (*k, *v)))
@@ -1187,6 +1201,7 @@ fn check_graph_indexed_with(
         let result_coercions = std::mem::take(&mut c.result_coercions);
         let op_types = std::mem::take(&mut c.op_types);
         let local_types = std::mem::take(&mut c.local_types);
+        let local_str_arrays = std::mem::take(&mut c.local_str_arrays);
         let defaults = std::mem::take(&mut c.defaults);
         // The editor does not publish. It re-checks on every keystroke, dropping
         // the AST each time, and an address that has been freed can be handed to
@@ -1200,6 +1215,7 @@ fn check_graph_indexed_with(
                 &op_types,
                 &local_types,
                 &defaults,
+                &local_str_arrays,
             );
         }
         results.push((
@@ -1521,6 +1537,7 @@ struct Checker {
     /// The numeric type of a local, keyed by the name that declares it. The
     /// engine gives every local a frame slot; this is what that slot holds.
     local_types: Coercions,
+    local_str_arrays: std::collections::HashSet<usize>,
     /// Zero-defaults for uninitialized bindings and fields, keyed by the address
     /// of the declared `TypeExpr`. See [`DefaultVal`].
     defaults: std::collections::HashMap<usize, DefaultVal>,
@@ -1608,6 +1625,7 @@ impl Checker {
             result_coercions: Coercions::new(),
             op_types: Coercions::new(),
             local_types: Coercions::new(),
+            local_str_arrays: std::collections::HashSet::new(),
             defaults: std::collections::HashMap::default(),
             classes: Vec::new(),
             ifaces: Vec::new(),
@@ -4132,10 +4150,16 @@ impl Checker {
         }
     }
 
-    /// Remember what a local holds, if it holds a number.
+    /// Remember what a local holds, if it holds a number — or an array of
+    /// strings, which the engine's compiler cannot work out for itself.
     fn note_local(&mut self, p: &Pattern, ty: &Type) {
-        if let (Pattern::Name(n), Some(k)) = (p, num_of(ty)) {
-            self.local_types.insert(n as *const Name as usize, k);
+        let Pattern::Name(n) = p else { return };
+        let id = n as *const Name as usize;
+        if let Some(k) = num_of(ty) {
+            self.local_types.insert(id, k);
+        }
+        if matches!(ty, Type::Array(e) if matches!(**e, Type::Str)) {
+            self.local_str_arrays.insert(id);
         }
     }
 

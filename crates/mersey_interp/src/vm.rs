@@ -53,6 +53,9 @@ pub struct Chunk {
     /// and a function that mixes `int32` and `float64` stops being a function it
     /// has to refuse.
     pub slot_types: Vec<Option<Num>>,
+    /// Which slots were declared `string[]` — the one fact about a container the
+    /// tier cannot work out for itself. See `check::local_is_str_array`.
+    pub slot_str_array: Vec<bool>,
     /// What each slot is CALLED — the debugger's view of slot-resolved locals
     /// ('#'-prefixed entries are compiler temps and are not shown).
     pub slot_names: Vec<String>,
@@ -306,7 +309,11 @@ pub(crate) fn compile_fn_in(
         .all(|p| matches!(p.target, Pattern::Name(_)) && !p.rest && p.default.is_none());
     for p in params {
         if let Pattern::Name(n) = &p.target {
-            match c.declare_local_typed(&n.text, local_type_for(n)) {
+            match c.declare_local_full(
+                &n.text,
+                local_type_for(n),
+                mersey_front::check::local_is_str_array(n),
+            ) {
                 Some(slot) => {
                     let ni = c.name(&n.text);
                     c.param_slots.push((ni, slot));
@@ -869,6 +876,7 @@ struct C {
     param_slots: Vec<(u16, u16)>,
     /// What each slot holds, indexed by slot.
     slot_types: Vec<Option<Num>>,
+    slot_str_array: Vec<bool>,
     slot_names: Vec<String>,
     /// The slot `this` lives in, allocated the first time the body needs it.
     this_slot: Option<u16>,
@@ -902,6 +910,7 @@ impl C {
             n_slots: 0,
             param_slots: vec![],
             slot_types: vec![],
+            slot_str_array: vec![],
             slot_names: vec![],
             this_slot: None,
             simple_params: true,
@@ -935,6 +944,7 @@ impl C {
                 .collect(),
             n_slots: self.n_slots,
             slot_types: std::mem::take(&mut self.slot_types),
+            slot_str_array: std::mem::take(&mut self.slot_str_array),
             slot_names: std::mem::take(&mut self.slot_names),
             needs_env,
             simple_params: self.simple_params,
@@ -1009,12 +1019,17 @@ impl C {
     }
 
     fn declare_local_typed(&mut self, name: &str, ty: Option<Num>) -> Option<u16> {
+        self.declare_local_full(name, ty, false)
+    }
+
+    fn declare_local_full(&mut self, name: &str, ty: Option<Num>, str_array: bool) -> Option<u16> {
         if self.captured.contains(name) {
             return None;
         }
         let slot = self.n_slots;
         self.n_slots += 1;
         self.slot_types.push(ty);
+        self.slot_str_array.push(str_array);
         self.slot_names.push(name.to_string());
         self.slot_scopes
             .last_mut()
@@ -1081,7 +1096,11 @@ impl C {
 
     /// Declare a local, carrying the numeric type the checker gave it.
     fn declare_typed(&mut self, n: &'static Name) {
-        match self.declare_local_typed(&n.text, local_type_for(n)) {
+        match self.declare_local_full(
+            &n.text,
+            local_type_for(n),
+            mersey_front::check::local_is_str_array(n),
+        ) {
             Some(slot) => {
                 self.emit(Op::StoreSlot(slot));
             }
@@ -1151,6 +1170,7 @@ impl C {
                 let s = self.n_slots;
                 self.n_slots += 1;
                 self.slot_types.push(None); // an instance, not a number
+                self.slot_str_array.push(false);
                 self.this_slot = Some(s);
                 s
             }
@@ -1165,6 +1185,7 @@ impl C {
         let slot = self.n_slots;
         self.n_slots += 1;
         self.slot_types.push(None); // a compiler temp: an array, an index, a value
+        self.slot_str_array.push(false);
         self.slot_names.push(name.clone());
         self.slot_scopes
             .last_mut()
