@@ -127,6 +127,23 @@ the string had the right length and the wrong contents, and it surfaced as a
 wrong answer several calls away. A declaration stores without the `Dup`, which is
 why only reassignment was affected — and why it went unnoticed.
 
+**A borrow is only as long-lived as the slot it came from.** A `LoadSlot` yields
+data and length with handle 0, and the buffer lives in the arena under the
+*slot's* handle — so overwriting that slot frees what the borrow points at.
+`Prov::FromSlot` marks these, and every type that carries a handle must be on
+that list and be handled at the store: cloned, or declined. A type missing from
+the list takes neither option, which is the third and worst one. This is the same
+bug as the paragraph above by a different route, and it reached a shipped release
+the same way.
+
+**`box_str` and `own_str` are not interchangeable.** `box_str` answers from the
+interpreter's small memo, which owns what it parks and releases it when it
+displaces it — right for a receiver or an argument, which are finished with
+before the call returns, and wrong for anything that must outlive it. Those want
+`own_str`, which parks a copy the caller owns. Note that copying moves the data:
+a handle that names a copy while the pointer still names the original is a
+dangling read with extra steps, so `own_str` hands back both.
+
 **The status word is shared by the whole group.** A callee that reports something
 through it is not describing its own result, it is overwriting its caller's. Say
 it in the return registers whenever the type has a way to.
