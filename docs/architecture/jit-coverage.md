@@ -30,6 +30,11 @@ Three things about the trace are worth knowing before reading one:
   end to end, and the function can still be refused when Cranelift rejects the
   entry wrapper. Two of the nastiest bugs so far looked exactly like an ordinary
   refusal from the outside.
+- **A refusal at `Return` has two causes and the trace names which.** The body
+  returned something with no shape, or the *signature* promised nothing because
+  the declared return type resolved to nothing. The second prints
+  ``return type `int32?` has no shape in this tier — the signature, not the
+  body``, which is a different repair entirely.
 
 Over a whole library, a histogram of "the last op each refusal printed" ranks the
 work. That is how the coverage below was driven: fix the top entry, re-run, look
@@ -69,7 +74,9 @@ binding *nothing* — the same test the interpreter uses — so a program with i
 ordinary value, so the null test is against the sentinel and *not* the
 "is it zero" test every other nullable here uses. Where a number is required the
 checker has already narrowed it, so the value is unboxed at that point — a guard,
-then a reduce.
+then a reduce. It crosses as a parameter, a local, a method's result **and a
+declared return type** — the last being what every `parse`-shaped function in the
+standard library needed before it could be compiled at all.
 
 **`std:` natives**, reached by a compile-time id rather than a name match, with
 the four a compiled loop sits on going straight to their one implementation.
@@ -85,14 +92,14 @@ happens to be running.
 
 Containers crossing a boundary in ways their *element type* matters for. An array
 built in compiled code is an opaque, and an opaque's element has no shape — so an
-index read off one assumes a number and bails when it is not. `split`'s result is
-the exception (`Ty::StrArr`), because that one method's element type is known.
-Carrying the same fact for a local declared `string[]` has been attempted twice
-and reverted twice; the plumbing works and `slice` on such an array is the
-unexplained trigger.
+index read off one assumes a number and bails when it is not. Two exceptions
+carry the element type: `split`'s result, and a local declared `string[]` —
+both `Ty::StrArr`.
 
-Also absent: writing a top-level binding, nested arrays, and a class instance
-returned through a signature.
+Also absent: writing a top-level binding, nested arrays, `bool?` (a bool has no
+spare value to spend on null, and reading one back as the 0 or 1 it travels in
+would be a wrong answer rather than a bail), and a function with **no declared
+return type** — the tier does not infer one from the body.
 
 ## Traps, each of which has bitten more than once
 
@@ -118,7 +125,19 @@ to be cheap. It once cost 18% of a workload that compiled nothing at all.
 **Asking the wrong scope is silent.** Compiled code that cannot find its own
 module's globals does not fail: the shim answers "absent" and the body bails on
 every iteration, giving right answers at exactly interpreted speed. Worth 34x when
-it was found, and invisible until someone counted compilations.
+it was found, and invisible until someone counted compilations. The same mistake
+came back for *declared types* — a return type or a parameter type is a name, and
+a name means what the scope it was written in says, so resolving one against the
+running globals read a module-defined class as nothing and the signature came out
+`void`. Anything that resolves a name needs the defining scope, not the running
+one.
+
+**A signature describes registers, not types.** `param_types` says which register
+a parameter is carried in, and a `bool` is carried in the `i32` an `int32` is —
+so a signature says `int32` where the value says `bool`. Comparing the two for
+equality refused every call to every function taking a `bool`, callers included.
+The rule that works is the one `Return` uses: same machine class, both integral.
+Representation is what agrees here; the checker has already settled the types.
 
 ## Verifying
 
