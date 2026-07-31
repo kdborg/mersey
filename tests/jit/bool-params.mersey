@@ -1,0 +1,64 @@
+// A `bool` crossing a call, on both tiers.
+//
+// This was refused, and for a reason worth recording: a parameter's type is
+// described by `param_types`, which says what *register* it is carried in, and
+// a `bool` is carried in the same `i32` an `int32` is. So the signature said
+// `int32` while a boolean value on the stack said `bool`, the call site
+// compared the two for equality, and every call to every function taking a
+// `bool` was refused — including the callers, which cannot be compiled without
+// their callee. `std:semver`'s `validIdentifiers(pre, false)` is the one that
+// gave it away, taking `Version.parse` down with it.
+//
+// The fix is the rule `Return` already used — same machine class, both
+// integral — so what this pins is that the two stay *distinct as values* even
+// though they share a register: a bool must not come back as a number, and the
+// branch a flag selects must be the same one on both tiers.
+
+import { console } from "std:console";
+
+/// A `bool` in, a number out.
+function pick(s: string, flag: bool): int32 {
+    if (flag) {
+        return s.length;
+    }
+    return 0;
+}
+
+/// Two of them, so a mistake in argument order or masking shows up as a
+/// different number rather than the same one twice.
+function span(lo: bool, hi: bool, n: int32): int32 {
+    if (lo && hi) {
+        return n * 3;
+    }
+    if (lo) {
+        return n;
+    }
+    if (hi) {
+        return n * 2;
+    }
+    return 0;
+}
+
+/// A `bool` *returned* and immediately fed back in as an argument — the round
+/// trip, which is where a bool silently widening to a number would show.
+function isEven(i: int32): bool {
+    return i % 2 == 0;
+}
+
+function tally(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + pick("abcd", isEven(i)) + pick("xy", true);
+        acc = acc + span(isEven(i), i % 3 == 0, 1);
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`tally  ${tally(200000)}`);
+// Read back one at a time, after the loop has made them hot. A bool must print
+// as a bool, not as the 0 or 1 it travels in.
+console.log(`pick   ${pick("abcd", true)} ${pick("abcd", false)}`);
+console.log(`span   ${span(true, true, 5)} ${span(true, false, 5)} ${span(false, true, 5)} ${span(false, false, 5)}`);
+console.log(`isEven ${isEven(4)} ${isEven(5)}`);

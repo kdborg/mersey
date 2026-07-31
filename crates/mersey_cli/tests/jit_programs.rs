@@ -328,3 +328,21 @@ fn nullable_returns_agree_across_the_tier_boundary() {
     assert!(out.contains("firstDigit 7 null"), "{out}");
     assert!(out.contains("digitsOf   5 null null"), "{out}");
 }
+
+/// A `bool` crossing a call. A parameter's type says which *register* it uses,
+/// and a `bool` uses the `i32` an `int32` does — so the signature said `int32`
+/// where the value said `bool`, the call site compared them for equality, and
+/// every call to a function taking a `bool` was refused, callers included. The
+/// rule is now the one `Return` already used: same machine class, both integral.
+/// What this pins is that they stay distinct as *values* despite sharing a
+/// register — a bool must not come back as the 0 or 1 it travels in.
+#[test]
+fn bool_parameters_agree_across_the_tier_boundary() {
+    check("bool-params.mersey");
+    let out = run("bool-params.mersey", true);
+    assert!(out.contains("pick   4 0"), "{out}");
+    // Both flags, each alone, and neither — so a swapped or masked argument
+    // shows as a different number rather than the same one twice.
+    assert!(out.contains("span   15 5 10 0"), "{out}");
+    assert!(out.contains("isEven true false"), "{out}");
+}

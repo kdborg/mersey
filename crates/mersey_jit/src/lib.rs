@@ -1590,7 +1590,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     for a in &arg_slots {
                         args.push(tval(*a)?);
                     }
-                    if sig.params != args || sig.this.is_some() {
+                    if sig.this.is_some()
+                        || sig.params.len() != args.len()
+                        || !sig.params.iter().zip(&args).all(|(w, h)| arg_fits(*w, *h))
+                    {
                         return None;
                     }
                     method_at.insert(pc, idx);
@@ -1745,7 +1748,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let f = g.env.method(&cls, &name)?;
                 let idx = g.add(f)?;
                 let sig = g.sigs[idx].clone();
-                if sig.params != args {
+                if sig.params.len() != args.len()
+                    || !sig.params.iter().zip(&args).all(|(w, h)| arg_fits(*w, *h))
+                {
                     return None;
                 }
                 method_at.insert(pc, idx);
@@ -1882,7 +1887,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // declines, which is not a real limit on a call.
                 let mut mask = 0u8;
                 for (k, (want, have)) in sig.params.iter().zip(&args).enumerate() {
-                    if want == have {
+                    if arg_fits(*want, *have) {
                         continue;
                     }
                     if *have == Ty::I32Opt && *want == Ty::I32 && k < 8 {
@@ -2985,6 +2990,20 @@ fn flatten(stack: &[SlotV]) -> Option<Vec<ClValue>> {
 }
 
 /// Rebuild the abstract stack from a block's parameters.
+/// Does an argument of type `have` fit a parameter declared `want`?
+///
+/// Not `==`, because `bool` and `int32` are the same machine register and the
+/// signature cannot tell them apart: a parameter's type comes from
+/// `param_types`, which describes a `bool` as the `i32` it is carried in, while
+/// a boolean *value* on the stack is `Ty::Bool`. Requiring equality meant every
+/// call to a function taking a `bool` was refused — `validIdentifiers(pre,
+/// false)` in `std:semver` among them, which took `Version.parse` down with it.
+/// The checker has already established the program is well typed, so this only
+/// has to agree about representation, which is the same rule `Return` uses.
+fn arg_fits(want: Ty, have: Ty) -> bool {
+    want == have || (want.is_int() && have.is_int() && want.cl() == have.cl())
+}
+
 fn unflatten(vals: &[ClValue], tys: &[Ty]) -> Vec<SlotV> {
     let mut out = Vec::with_capacity(tys.len());
     let mut i = 0;
