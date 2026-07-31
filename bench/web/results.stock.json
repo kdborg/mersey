@@ -1120,28 +1120,6 @@
   {
     "browser": "chromium",
     "impl": "js",
-    "wl": "compute",
-    "ms": 87.13000000000466,
-    "rss": 19793,
-    "heap": 10000000,
-    "checksum": 1765835917,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "compute",
-    "ms": 16449.074999999953,
-    "rss": 53009,
-    "heap": 0,
-    "checksum": 1765835917,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
     "wl": "crypto",
     "ms": 19.614999999990687,
     "rss": 17585,
@@ -1164,28 +1142,6 @@
   {
     "browser": "chromium",
     "impl": "js",
-    "wl": "cssom",
-    "ms": 3.805000000167638,
-    "rss": 18465,
-    "heap": 10000000,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "cssom",
-    "ms": 110.40999999991618,
-    "rss": 96705,
-    "heap": 0,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
     "wl": "dom",
     "ms": 2.2700000000186265,
     "rss": 59233,
@@ -1202,28 +1158,6 @@
     "rss": 118545,
     "heap": 0,
     "checksum": 10000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
-    "wl": "encoding",
-    "ms": 7.090000000083819,
-    "rss": 28353,
-    "heap": 10000000,
-    "checksum": 437780,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "encoding",
-    "ms": 64.2699999997858,
-    "rss": 95185,
-    "heap": 0,
-    "checksum": 437780,
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -1384,28 +1318,6 @@
   {
     "browser": "chromium",
     "impl": "js",
-    "wl": "json",
-    "ms": 1.380000000121072,
-    "rss": 19297,
-    "heap": 10000000,
-    "checksum": 848890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "json",
-    "ms": 7.334999999962747,
-    "rss": 62081,
-    "heap": 0,
-    "checksum": 848890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
     "wl": "locks",
     "ms": 19.66000000014901,
     "rss": 18945,
@@ -1422,28 +1334,6 @@
     "rss": 66929,
     "heap": 0,
     "checksum": 5500,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "js",
-    "wl": "mathk",
-    "ms": 13.120000000111759,
-    "rss": 18977,
-    "heap": 10000000,
-    "checksum": "true",
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium",
-    "impl": "poly",
-    "wl": "mathk",
-    "ms": 3065.1399999998976,
-    "rss": 54433,
-    "heap": 0,
-    "checksum": "true",
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -1798,24 +1688,6 @@
   {
     "browser": "firefox",
     "impl": "js",
-    "wl": "compute",
-    "ms": 98.84,
-    "rss": 59377,
-    "heap": 0,
-    "checksum": 1765835917,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "compute",
-    "ms": null,
-    "platform": "macos"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
     "wl": "crypto",
     "ms": 6.299999999999997,
     "rss": 59442,
@@ -1838,28 +1710,6 @@
   {
     "browser": "firefox",
     "impl": "js",
-    "wl": "cssom",
-    "ms": 7.140000000000001,
-    "rss": 60529,
-    "heap": 0,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "cssom",
-    "ms": 315.46000000000004,
-    "rss": 105025,
-    "heap": 0,
-    "checksum": 48000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
     "wl": "dom",
     "ms": 4.140000000000001,
     "rss": 77905,
@@ -1876,28 +1726,6 @@
     "rss": 123234,
     "heap": 0,
     "checksum": 10000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
-    "wl": "encoding",
-    "ms": 2.1400000000000006,
-    "rss": 60033,
-    "heap": 0,
-    "checksum": 437780,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "encoding",
-    "ms": 170.68000000000006,
-    "rss": 110530,
-    "heap": 0,
-    "checksum": 437780,
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -2058,28 +1886,6 @@
   {
     "browser": "firefox",
     "impl": "js",
-    "wl": "json",
-    "ms": 2.8599999999999994,
-    "rss": 60001,
-    "heap": 0,
-    "checksum": 848890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "json",
-    "ms": 32.94,
-    "rss": 103042,
-    "heap": 0,
-    "checksum": 848890,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
     "wl": "locks",
     "ms": 20.02000000000001,
     "rss": 61393,
@@ -2096,28 +1902,6 @@
     "rss": 105873,
     "heap": 0,
     "checksum": 5500,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "js",
-    "wl": "mathk",
-    "ms": 12.680000000000007,
-    "rss": 59425,
-    "heap": 0,
-    "checksum": "true",
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "firefox",
-    "impl": "poly",
-    "wl": "mathk",
-    "ms": 17000.56,
-    "rss": 92049,
-    "heap": 0,
-    "checksum": "true",
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -2360,6 +2144,222 @@
     "rss": 103777,
     "heap": 0,
     "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "json",
+    "ms": 1.405000001192093,
+    "rss": 19393,
+    "heap": 10000000,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "json",
+    "ms": 6.159999996423721,
+    "rss": 61409,
+    "heap": 0,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "mathk",
+    "ms": 13.365000009536743,
+    "rss": 19089,
+    "heap": 10000000,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "mathk",
+    "ms": 2737.3499999940395,
+    "rss": 53985,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "encoding",
+    "ms": 7.235000014305115,
+    "rss": 28353,
+    "heap": 10000000,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "encoding",
+    "ms": 63.49500000476837,
+    "rss": 95313,
+    "heap": 0,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "compute",
+    "ms": 86.7049999833107,
+    "rss": 19729,
+    "heap": 10000000,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "compute",
+    "ms": 12669.825000017881,
+    "rss": 52945,
+    "heap": 0,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "js",
+    "wl": "cssom",
+    "ms": 3.7649999856948853,
+    "rss": 18433,
+    "heap": 10000000,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium",
+    "impl": "poly",
+    "wl": "cssom",
+    "ms": 108.90000000596046,
+    "rss": 96161,
+    "heap": 0,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "json",
+    "ms": 2.9399999999999977,
+    "rss": 76417,
+    "heap": 0,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "json",
+    "ms": 27.879999999999995,
+    "rss": 110866,
+    "heap": 0,
+    "checksum": 848890,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "mathk",
+    "ms": 12.83999999999999,
+    "rss": 63121,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "mathk",
+    "ms": 15341.880000000001,
+    "rss": 92705,
+    "heap": 0,
+    "checksum": "true",
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "encoding",
+    "ms": 2.0400000000000063,
+    "rss": 61697,
+    "heap": 0,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "encoding",
+    "ms": 158.8,
+    "rss": 115122,
+    "heap": 0,
+    "checksum": 437780,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "compute",
+    "ms": 100.16,
+    "rss": 70065,
+    "heap": 0,
+    "checksum": 1765835917,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "compute",
+    "ms": null,
+    "platform": "macos"
+  },
+  {
+    "browser": "firefox",
+    "impl": "js",
+    "wl": "cssom",
+    "ms": 7.359999999999999,
+    "rss": 60225,
+    "heap": 0,
+    "checksum": 48000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "firefox",
+    "impl": "poly",
+    "wl": "cssom",
+    "ms": 305.96000000000004,
+    "rss": 109041,
+    "heap": 0,
+    "checksum": 48000,
     "platform": "macos",
     "mem_metric": "footprint"
   }
