@@ -513,6 +513,47 @@ pub(crate) unsafe extern "C" fn global_val(
     }
 }
 
+/// A second arena reference to the same opaque, for a function returning one it
+/// only borrowed — the caller takes its handle out of the arena, which must not
+/// take it away from whoever still holds it.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn clone_val(arena: *mut Arena, h: u64) -> u64 {
+    unsafe {
+        match (*arena).get(h).cloned() {
+            Some(v) => (*arena).keep(v),
+            None => 0,
+        }
+    }
+}
+
+/// `b[i]` on an opaque. The byte, or `i64::MIN` if it threw.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn val_index_get(arena: *mut Arena, h: u64, idx: i64) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_val_index_get(h, idx),
+            None => i64::MIN,
+        }
+    }
+}
+
+/// `b[i] = v` on an opaque. 0, or 1 if it threw.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn val_index_set(arena: *mut Arena, h: u64, idx: i64, v: i64) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_val_index_set(h, idx, v),
+            None => 1,
+        }
+    }
+}
+
 /// A top-level binding holding a string, as compiled code carries one. `out`
 /// receives (data, length); the arena entry keeping the buffer alive for the call
 /// is the interpreter's, so the value read here is a borrow and owns nothing.

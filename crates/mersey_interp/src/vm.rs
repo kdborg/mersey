@@ -2868,6 +2868,7 @@ fn exec(
                             ctx.ret_bool,
                             i.ret_class_of(ctx.ret_ty),
                             i.ret_is_str(ctx.ret_ty),
+                            i.ret_is_val(ctx.ret_ty),
                             ctx.this,
                             $t,
                             slots,

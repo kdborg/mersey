@@ -443,13 +443,16 @@ impl Group<'_> {
         // A method whose body never says `this` has no slot for it, and does not
         // need one.
         let this_slot = f.chunk.this_slot.map(|s| s as usize);
-        let void = f.ret.is_none() && !f.ret_bool && f.ret_obj.is_none() && !f.ret_str;
+        let void =
+            f.ret.is_none() && !f.ret_bool && f.ret_obj.is_none() && !f.ret_str && !f.ret_val;
         let ret = if void {
             Ty::I32 // a placeholder: nothing reads it
         } else if let Some(c) = &f.ret_obj {
             Ty::Obj(self.class_idx(c))
         } else if f.ret_str {
             Ty::Str
+        } else if f.ret_val {
+            Ty::Val
         } else if f.ret_bool {
             Ty::Bool
         } else {
@@ -510,6 +513,8 @@ struct Plan {
     /// String method sites: the method's name, and the register shape of its
     /// result (`STR_METHODS`).
     str_method_at: HashMap<usize, (&'static str, Ty)>,
+    /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
+    val_index_at: HashSet<usize>,
     /// `GetMember` sites reading a numeric property off an opaque.
     val_prop_at: HashMap<usize, &'static str>,
     /// Bytecode position → (field offset, what it holds).
@@ -799,6 +804,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
+    let mut val_index_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
@@ -843,7 +849,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut reachable = true;
     for (pc, op) in chunk.code.iter().enumerate() {
         if *TRACE {
-            eprintln!("jit: analyze {pc} {op:?}");
+            // A name id says nothing on its own, and a refusal on `LoadName` is
+            // one of the commonest — so resolve it here.
+            match *op {
+                Op::LoadName(ni) | Op::CallMethod(ni, _) | Op::GetMember(ni, _) => {
+                    eprintln!("jit: analyze {pc} {op:?} `{}`", chunk.names[ni as usize])
+                }
+                _ => eprintln!("jit: analyze {pc} {op:?}"),
+            }
         }
         // Folded into the previous op (a `.length` a web-string read absorbed).
         if folded.contains(&pc) {
@@ -1247,6 +1260,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             Op::IndexGet => {
                 let i = tval(stack.pop()?)?;
                 let base = stack.pop()?;
+                // `b[i]` on an opaque — a `Bytes`, the only thing the language
+                // lets you index that is not an array or a string. It gives an
+                // `int32`, and the shim reuses the interpreter's own bounds check
+                // so the `RangeError` reads the same, length included.
+                if tval(base) == Some(Ty::Val) && i.is_int() {
+                    val_index_at.insert(pc);
+                    stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                    continue;
+                }
                 let Ty::Arr(e) = tval(base)? else {
                     return None;
                 };
@@ -1262,7 +1284,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             Op::IndexSet => {
                 let v = tval(stack.pop()?)?;
                 let i = tval(stack.pop()?)?;
-                let Ty::Arr(e) = tval(stack.pop()?)? else {
+                let base = stack.pop()?;
+                if tval(base) == Some(Ty::Val) && i.is_int() && v.is_int() {
+                    val_index_at.insert(pc);
+                    g.writes = true;
+                    stack.push(TSlot::Val(v, Prov::Stable));
+                    continue;
+                }
+                let Ty::Arr(e) = tval(base)? else {
                     return None;
                 };
                 if !i.is_int() || !e.ty().is_num() || !assignable(v, e.ty()) {
@@ -1554,8 +1583,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 // `return null` from an object-returning function.
                 if matches!(top, TSlot::Null) {
-                    // `string?` is a null data pointer, the same as a null object.
-                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str)) {
+                    // `string?` is a null data pointer and `Bytes?` is handle 0,
+                    // the same idea as a null object.
+                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str | Ty::Val)) {
                         return None;
                     }
                     reachable = false;
@@ -1572,8 +1602,10 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             return None;
                         }
                     }
-                    // A string leaves owned, exactly as an object does.
+                    // A string leaves owned, exactly as an object does — and so
+                    // does an opaque.
                     (Some(Ty::Str), Ty::Str) => {}
+                    (Some(Ty::Val), Ty::Val) => {}
                     (Some(k), t) if t.is_num() => {
                         if k != t && !(k.is_int() && t.is_int() && k.cl() == t.cl()) {
                             return None;
@@ -1639,6 +1671,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         native_at,
         rand_fill_at,
         str_method_at,
+        val_index_at,
         val_prop_at,
         field_at,
         new_at,
@@ -1730,6 +1763,9 @@ struct Shims {
     web_call_num: FuncId,
     global_val: FuncId,
     global_str: FuncId,
+    clone_val: FuncId,
+    val_index_get: FuncId,
+    val_index_set: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
     str_eq: FuncId,
@@ -1796,6 +1832,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_global_str", heap::global_str as *const u8);
+    builder.symbol("msy_clone_val", heap::clone_val as *const u8);
+    builder.symbol("msy_val_index_get", heap::val_index_get as *const u8);
+    builder.symbol("msy_val_index_set", heap::val_index_set as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
     builder.symbol("msy_str_eq", heap::str_eq as *const u8);
@@ -1960,7 +1999,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 // the arena is cleared.
                 // Both come back by the handle of the arena slot that owns them;
                 // a null one has handle 0, which `take` reports as absent.
-                Ty::Obj(_) | Ty::Str => {
+                Ty::Obj(_) | Ty::Str | Ty::Val => {
                     let h = u64::from_ne_bytes(out[8..16].try_into().expect("8"));
                     match arena.take(h) {
                         Some(v) => JitResult::Val(v),
@@ -2142,6 +2181,12 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         global_val: one("msy_global_val", Some(types::I64), 3)?,
         // (arena, name_ptr, name_len, out) -> writes (data, len)
         global_str: one("msy_global_str", None, 4)?,
+        // (arena, handle, index) -> the byte / i64::MIN
+        // (arena, handle) -> a fresh handle to the same value
+        clone_val: one("msy_clone_val", Some(types::I64), 2)?,
+        val_index_get: one("msy_val_index_get", Some(types::I64), 3)?,
+        // (arena, handle, index, value) -> 0 ok / 1 threw
+        val_index_set: one("msy_val_index_set", Some(types::I64), 4)?,
         // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
         native_call: one("msy_native_call", Some(types::I64), 6)?,
         // (arena, handle) -> 0 ok / 1 threw
@@ -2326,6 +2371,13 @@ fn wrapper(
         match root.ret {
             // An object or a string result: its address, and the handle that owns
             // it — the third register in both cases (ptr, fields|len, handle).
+            // An opaque is two registers, so its owning handle is the second.
+            Ty::Val => {
+                let rp = b.inst_results(call)[0];
+                let rh = b.inst_results(call)[1];
+                b.ins().store(MemFlags::trusted(), rp, out_ptr, 0);
+                b.ins().store(MemFlags::trusted(), rh, out_ptr, 8);
+            }
             Ty::Obj(_) | Ty::Str => {
                 let rp = b.inst_results(call)[0];
                 let rh = b.inst_results(call)[2];
@@ -2501,6 +2553,9 @@ fn translate(
         web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         global_str: module.declare_func_in_func(shims.global_str, b.func),
+        clone_val: module.declare_func_in_func(shims.clone_val, b.func),
+        val_index_get: module.declare_func_in_func(shims.val_index_get, b.func),
+        val_index_set: module.declare_func_in_func(shims.val_index_set, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
         str_eq: module.declare_func_in_func(shims.str_eq, b.func),
@@ -3041,6 +3096,32 @@ fn translate(
             }
             // Live iteration: the array itself, not a copy.
             Op::IterArray => {}
+            Op::IndexGet if p.val_index_at.contains(&pc) => {
+                let (i, it) = scalar(stack.pop()?)?;
+                let i = convert(b, i, it, Ty::I64);
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                let call = b.ins().call(shim.val_index_get, &[arena_ptr, h, i]);
+                let v = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            Op::IndexSet if p.val_index_at.contains(&pc) => {
+                let (v, vt) = scalar(stack.pop()?)?;
+                let v64 = convert(b, v, vt, Ty::I64);
+                let (i, it) = scalar(stack.pop()?)?;
+                let i = convert(b, i, it, Ty::I64);
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                let call = b.ins().call(shim.val_index_set, &[arena_ptr, h, i, v64]);
+                let status = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                stack.push(SlotV::Val(v, vt));
+            }
             Op::IndexGet => {
                 let (i, it) = scalar(stack.pop()?)?;
                 let SlotV::Arr(_, data, len, e) = stack.pop()? else {
@@ -3532,6 +3613,7 @@ fn translate(
                     // handle that owns it. Taking only the first left the length
                     // behind, so `f(x).length` could not be emitted.
                     Ty::Str => stack.push(SlotV::Str(results[0], results[1], results[2])),
+                    Ty::Val => stack.push(SlotV::ValRef(results[0], results[1])),
                     t => stack.push(SlotV::Val(results[0], t)),
                 }
             }
@@ -3849,6 +3931,34 @@ fn translate(
                     b.ins().return_(&[ptr, len, h]);
                     reachable = false;
                 }
+                // An opaque leaves owned too. A borrow (handle 0) names an entry
+                // some slot owns, so it takes a reference of its own first — the
+                // caller will `take` it out of the arena, which must not steal it
+                // from whoever still holds it.
+                SlotV::ValRef(v, h) if matches!(p.ret, Ty::Val) => {
+                    let no_handle = b.ins().icmp_imm(IntCC::Equal, h, 0);
+                    let is_real = b.ins().icmp_imm(IntCC::NotEqual, v, 0);
+                    let promote = b.ins().band(no_handle, is_real);
+                    let borrow = b.create_block();
+                    let done = b.create_block();
+                    b.append_block_param(done, types::I64);
+                    b.ins().brif(promote, borrow, &[], done, &[h]);
+                    b.switch_to_block(borrow);
+                    b.seal_block(borrow);
+                    let cl = b.ins().call(shim.clone_val, &[arena_ptr, v]);
+                    let cloned = b.inst_results(cl)[0];
+                    b.ins().jump(done, &[cloned]);
+                    b.switch_to_block(done);
+                    b.seal_block(done);
+                    let h = b.block_params(done)[0];
+                    b.ins().return_(&[v, h]);
+                    reachable = false;
+                }
+                SlotV::Null if matches!(p.ret, Ty::Val) => {
+                    let z = b.ins().iconst(types::I64, 0);
+                    b.ins().return_(&[z, z]);
+                    reachable = false;
+                }
                 SlotV::Null if matches!(p.ret, Ty::Obj(_) | Ty::Str) => {
                     let z = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[z, z, z]);
@@ -3986,6 +4096,9 @@ struct ShimRefs {
     web_call_num: cranelift_codegen::ir::FuncRef,
     global_val: cranelift_codegen::ir::FuncRef,
     global_str: cranelift_codegen::ir::FuncRef,
+    clone_val: cranelift_codegen::ir::FuncRef,
+    val_index_get: cranelift_codegen::ir::FuncRef,
+    val_index_set: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
     str_eq: cranelift_codegen::ir::FuncRef,

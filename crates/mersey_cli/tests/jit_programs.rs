@@ -159,3 +159,26 @@ fn a_compiled_function_reads_its_own_modules_globals() {
     // 16 units + indexOf("a") == 10 + 1 for the equality, ten times over.
     assert!(out.contains("tableSpan 270"), "{out}");
 }
+
+/// Indexing a `Bytes`, and giving one back. `b[i]` is the only indexing the
+/// language allows that is neither an array nor a string, and every encoder in
+/// the standard library is built on it; a `Bytes?` return is what every `decode`
+/// gives. Both reach the interpreter's own implementation, so the bounds check
+/// and the message it raises are the same — which a compiled check that
+/// disagreed would have left to a program to discover.
+#[test]
+fn indexing_and_returning_a_bytes_agree_across_the_tier_boundary() {
+    check("bytes-index.mersey");
+    let out = run("bytes-index.mersey", true);
+    assert!(out.contains("total   8480"), "{out}");
+    // The null return is handle 0, and must not read as a value.
+    assert!(
+        out.contains("some    true") && out.contains("none    true"),
+        "{out}"
+    );
+    // Word for word what the interpreter says, length included.
+    assert!(
+        out.contains("range   index 99 out of bounds (length 16)"),
+        "{out}"
+    );
+}

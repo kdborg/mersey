@@ -1,0 +1,71 @@
+// Indexing a `Bytes`, and giving one back — on both tiers.
+//
+// `b[i]` is the only indexing the language allows that is neither an array nor a
+// string, and every encoder in the standard library is built on it. It reaches
+// the interpreter's own `index_get`/`index_set`, so the bounds check and the
+// `RangeError` it raises are the same ones — which is the part worth pinning,
+// because a compiled bounds check that disagreed would be found by a program, not
+// by a test.
+//
+// Returning a `Bytes?` is the other half: every `decode` in the library does it,
+// and the signature could not describe it before. A borrowed one has to take an
+// arena reference of its own on the way out, or the caller's `take` would steal it
+// from whoever still holds it.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// Reads and writes through the index, and returns the buffer it was given.
+function fill(b: Bytes, n: int32): Bytes {
+    let i = 0;
+    while (i < n) {
+        b[i % b.length] = (i * 7) % 256;
+        i += 1;
+    }
+    return b;
+}
+
+function total(b: Bytes, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + b[i % b.length];
+        i += 1;
+    }
+    return acc;
+}
+
+/// A nullable opaque return, and the null branch, which is handle 0.
+function maybe(b: Bytes, want: bool, n: int32): Bytes? {
+    let i = 0;
+    while (i < n) {
+        i += 1;
+    }
+    if (want) {
+        return b;
+    }
+    return null;
+}
+
+/// Out of range must throw, and say the same thing it says interpreted.
+function outOfRange(b: Bytes): string {
+    try {
+        return `${b[99]}`;
+    } catch (e: Error) {
+        return `${e.message}`;
+    }
+}
+
+const buf = bytes.alloc(16);
+
+// Hot enough that Tier 1 takes them.
+fill(buf, 100000);
+total(buf, 100000);
+maybe(buf, true, 100000);
+
+console.log(`total   ${total(fill(buf, 64), 64)}`);
+const m = maybe(buf, true, 4);
+console.log(`some    ${m != null}`);
+const z = maybe(buf, false, 4);
+console.log(`none    ${z == null}`);
+console.log(`range   ${outOfRange(buf)}`);

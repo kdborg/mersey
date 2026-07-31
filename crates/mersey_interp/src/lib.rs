@@ -1982,6 +1982,9 @@ pub struct JitFn {
     /// handle of the arena slot that owns it — see the `Ty::Str` arm of the call
     /// wrapper's result marshalling.
     pub ret_str: bool,
+    /// …or an engine primitive (or null): a `Bytes`, a `Url`. Which is what every
+    /// `decode` in the standard library gives back.
+    pub ret_val: bool,
     /// The global binding this came from, if it came from one. Compiled code
     /// calls the function a name meant *when it was compiled*; if the name is
     /// later repointed (`f = g`), the code is discarded. A method has no binding:
@@ -2228,6 +2231,7 @@ impl JitEnv for InterpEnv<'_> {
             ret_bool: false,
             ret_obj: None,
             ret_str: false,
+            ret_val: false,
             bind: None,
             scope,
         }))
@@ -4658,6 +4662,32 @@ impl Interp {
         }
     }
 
+    /// `b[i]` on an opaque (a `Bytes`) from compiled code. `i64::MIN` means it
+    /// threw — out of range, or not something indexable — with the error stashed,
+    /// so the message is the interpreter's own, down to the length it reports.
+    pub fn jit_val_index_get(&mut self, h: u64, idx: i64) -> i64 {
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        match self.index_get(&o, &Value::I64(idx)) {
+            Ok(v) => as_i64(&v).unwrap_or(i64::MIN),
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                i64::MIN
+            }
+        }
+    }
+
+    /// …and `b[i] = v`. 0 on success, 1 if it threw.
+    pub fn jit_val_index_set(&mut self, h: u64, idx: i64, v: i64) -> i64 {
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        match self.index_set(&o, &Value::I64(idx), Value::I64(v)) {
+            Ok(()) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
     /// `random.fill(buf)` straight from compiled code.
     ///
     /// The general native path is name (or id) plus an argument array plus a
@@ -5338,8 +5368,9 @@ impl Interp {
             None => {
                 let ret_obj = self.ret_class_of(ret_ty);
                 let ret_str = self.ret_is_str(ret_ty);
+                let ret_val = self.ret_is_val(ret_ty);
                 let Some(root) = self.root_fn(
-                    chunk, params, ret_num, ret_bool, ret_obj, ret_str, cls, scope,
+                    chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, cls, scope,
                 ) else {
                     // Not a signature this tier can even describe. That is a
                     // property of the function, not of this call, so record it —
@@ -5494,13 +5525,14 @@ impl Interp {
         ret_bool: bool,
         ret_obj: Option<Rc<ClassDef>>,
         ret_str: bool,
+        ret_val: bool,
         this: Option<Rc<ClassDef>>,
         target: usize,
         frame: &[Value],
         scope: Option<Env>,
     ) -> Result<Option<Value>, Thrown> {
         let Some(root) = self.root_fn(
-            chunk, params, ret_num, ret_bool, ret_obj, ret_str, this, scope,
+            chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, this, scope,
         ) else {
             return Ok(None);
         };
@@ -5666,6 +5698,7 @@ impl Interp {
         ret_bool: bool,
         ret_obj: Option<Rc<ClassDef>>,
         ret_str: bool,
+        ret_val: bool,
         this: Option<Rc<ClassDef>>,
         // Where the *hot* function's free names resolve. Its callees carry their
         // own (a method's is its class's); this is the one the group starts from,
@@ -5682,6 +5715,7 @@ impl Interp {
             ret_bool,
             ret_obj,
             ret_str,
+            ret_val,
             bind: None,
             scope: scope.map(DefScope),
         })
@@ -5760,6 +5794,7 @@ impl Interp {
             ret_bool: c.data.ret_bool,
             ret_obj: self.ret_class(&c.data),
             ret_str: self.ret_is_str(c.data.ret_ty()),
+            ret_val: self.ret_is_val(c.data.ret_ty()),
             bind: Some((name.to_string(), c.clone())),
             scope: Some(DefScope(c.env.clone())),
         })
@@ -5797,6 +5832,7 @@ impl Interp {
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
             ret_str: self.ret_is_str(data.ret_ty()),
+            ret_val: self.ret_is_val(data.ret_ty()),
             bind: None, // a class's method set cannot change (§4.1)
             scope,
         })
@@ -5848,6 +5884,7 @@ impl Interp {
             ret_bool: data.ret_bool,
             ret_obj: self.ret_class(&data),
             ret_str: self.ret_is_str(data.ret_ty()),
+            ret_val: self.ret_is_val(data.ret_ty()),
             bind: None, // a class's accessor set cannot change (§4.1)
             scope,
         })
@@ -5864,6 +5901,14 @@ impl Interp {
     pub(crate) fn ret_is_str(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
         match ret_ty {
             Some(t) => matches!(resolve_field_ty(t, &self.globals), FieldTy::Str),
+            None => false,
+        }
+    }
+
+    /// …and the same for an engine primitive.
+    pub(crate) fn ret_is_val(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
+        match ret_ty {
+            Some(t) => matches!(resolve_field_ty(t, &self.globals), FieldTy::Val),
             None => false,
         }
     }
