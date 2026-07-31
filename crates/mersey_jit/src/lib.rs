@@ -518,6 +518,8 @@ struct Plan {
     opaque_globals: HashMap<u16, &'static str>,
     /// Name ids bound to a top-level *string*, read (and parked) once at entry.
     str_globals: HashMap<u16, &'static str>,
+    /// Name ids bound to a top-level number or bool, with its register type.
+    num_globals: HashMap<u16, (&'static str, Ty)>,
     /// `CallMethod` sites that are a native call, and the full member name.
     native_at: HashMap<usize, (&'static str, u32)>,
     /// `random.fill(buf)` sites, lowered to a direct shim rather than the general
@@ -821,6 +823,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut str_globals: HashMap<u16, &'static str> = HashMap::new();
+    let mut num_globals: HashMap<u16, (&'static str, Ty)> = HashMap::new();
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
@@ -984,6 +987,18 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
                         stack.push(TSlot::Val(Ty::Val, Prov::Stable));
                     }
+                    NameKind::NumGlobal(kind) => {
+                        let t = match kind {
+                            0 => Ty::I32,
+                            1 => Ty::I64,
+                            2 => Ty::F64,
+                            _ => Ty::Bool,
+                        };
+                        num_globals
+                            .entry(ni)
+                            .or_insert_with(|| (Box::leak(name.to_string().into_boxed_str()), t));
+                        stack.push(TSlot::Val(t, Prov::Stable));
+                    }
                     NameKind::StrGlobal => {
                         str_globals
                             .entry(ni)
@@ -1107,6 +1122,17 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val | Ty::I32Opt)
                             || !matches!(op, BinOp::Eq | BinOp::Ne)
                         {
+                            return None;
+                        }
+                        stack.push(TSlot::Val(Ty::Bool, Prov::Stable));
+                    }
+                    // A nullable number against a plain one. No unboxing: the
+                    // sentinel is `i64::MIN` and an `int32` never is, so widening
+                    // the number and comparing gives exactly the right answer —
+                    // null equals no number, which is what the interpreter says.
+                    (TSlot::Val(Ty::I32Opt, _), TSlot::Val(Ty::I32, _))
+                    | (TSlot::Val(Ty::I32, _), TSlot::Val(Ty::I32Opt, _)) => {
+                        if !matches!(op, BinOp::Eq | BinOp::Ne) {
                             return None;
                         }
                         stack.push(TSlot::Val(Ty::Bool, Prov::Stable));
@@ -1376,10 +1402,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // a string it needs no parking.
                 if tval(recv) == Some(Ty::Val) {
                     let ret = val_method(&name, n)?;
-                    if !arg_slots
-                        .iter()
-                        .all(|a| tval(*a).is_some_and(|t| t.is_num() || t == Ty::Val))
-                    {
+                    // Whatever `box_arg` can park: a number, a string, or
+                    // something already opaque. `xs.push("a")` is as ordinary as
+                    // `xs.push(1)`.
+                    if !arg_slots.iter().all(|a| {
+                        tval(*a).is_some_and(|t| t.is_num() || t == Ty::Val || t == Ty::Str)
+                    }) {
                         return None;
                     }
                     let nm: &'static str = Box::leak(name.clone().into_boxed_str());
@@ -1762,6 +1790,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         std_ns_names,
         opaque_globals,
         str_globals,
+        num_globals,
         native_at,
         rand_fill_at,
         str_method_at,
@@ -1860,6 +1889,7 @@ struct Shims {
     web_call_num: FuncId,
     global_val: FuncId,
     global_str: FuncId,
+    global_num: FuncId,
     clone_val: FuncId,
     array_new: FuncId,
     array_push: FuncId,
@@ -1933,6 +1963,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_global_str", heap::global_str as *const u8);
+    builder.symbol("msy_global_num", heap::global_num as *const u8);
     builder.symbol("msy_clone_val", heap::clone_val as *const u8);
     builder.symbol("msy_array_new", heap::array_new as *const u8);
     builder.symbol("msy_array_push", heap::array_push as *const u8);
@@ -2226,6 +2257,10 @@ const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("indexOf", Ty::I32, 1, 1),
     ("lastIndexOf", Ty::I32, 1, 1),
     ("codePointAt", Ty::I32Opt, 1, 1),
+    // An array of strings, carried as an opaque like any array built here — so
+    // `length` and a numeric index work on it, and handing it somewhere that
+    // wants a typed `string[]` does not.
+    ("split", Ty::Val, 1, 1),
     ("contains", Ty::Bool, 1, 1),
     ("startsWith", Ty::Bool, 1, 1),
     ("endsWith", Ty::Bool, 1, 1),
@@ -2302,6 +2337,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         global_val: one("msy_global_val", Some(types::I64), 3)?,
         // (arena, name_ptr, name_len, out) -> writes (data, len)
         global_str: one("msy_global_str", None, 4)?,
+        // (arena, name_ptr, name_len) -> the value as raw bits
+        global_num: one("msy_global_num", Some(types::I64), 3)?,
         // (arena, handle, index) -> the byte / i64::MIN
         // (arena, handle) -> a fresh handle to the same value
         clone_val: one("msy_clone_val", Some(types::I64), 2)?,
@@ -2682,6 +2719,7 @@ fn translate(
         web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         global_str: module.declare_func_in_func(shims.global_str, b.func),
+        global_num: module.declare_func_in_func(shims.global_num, b.func),
         clone_val: module.declare_func_in_func(shims.clone_val, b.func),
         array_new: module.declare_func_in_func(shims.array_new, b.func),
         array_push: module.declare_func_in_func(shims.array_push, b.func),
@@ -2960,6 +2998,16 @@ fn translate(
                     stack.push(SlotV::MathNs);
                 } else if p.std_ns_names.contains_key(&ni) {
                     stack.push(SlotV::StdNs);
+                } else if let Some(&(name, t)) = p.num_globals.get(&ni) {
+                    let (nptr, nlen) = str_const(b, name);
+                    let call = b.ins().call(shim.global_num, &[arena_ptr, nptr, nlen]);
+                    let bits = b.inst_results(call)[0];
+                    let v = match t {
+                        Ty::I64 => bits,
+                        Ty::F64 => b.ins().bitcast(types::F64, MemFlags::new(), bits),
+                        _ => b.ins().ireduce(types::I32, bits),
+                    };
+                    stack.push(SlotV::Val(v, t));
                 } else if let Some(&(d, l)) = str_globals.get(&ni) {
                     let zero = b.ins().iconst(types::I64, 0);
                     stack.push(SlotV::Str(d, l, zero));
@@ -3054,6 +3102,18 @@ fn translate(
                         }
                         let ptr = x.addr()?;
                         let c = b.ins().icmp_imm(cc, ptr, 0);
+                        let v = b.ins().uextend(types::I32, c);
+                        stack.push(SlotV::Val(v, Ty::Bool));
+                    }
+                    (SlotV::Val(l, Ty::I32Opt), SlotV::Val(r, Ty::I32))
+                    | (SlotV::Val(r, Ty::I32), SlotV::Val(l, Ty::I32Opt)) => {
+                        let r = b.ins().sextend(types::I64, r);
+                        let cc = match binop {
+                            BinOp::Eq => IntCC::Equal,
+                            BinOp::Ne => IntCC::NotEqual,
+                            _ => return None,
+                        };
+                        let c = b.ins().icmp(cc, l, r);
                         let v = b.ins().uextend(types::I32, c);
                         stack.push(SlotV::Val(v, Ty::Bool));
                     }
@@ -3484,7 +3544,17 @@ fn translate(
                 let (nptr, nlen) = str_const(b, name);
                 let argc = b.ins().iconst(types::I64, n as i64);
 
-                let result = if ret == Ty::I32Opt {
+                let result = if ret == Ty::Val {
+                    // `split`: an array, carried by handle like any other opaque.
+                    let call = b.ins().call(
+                        shim.member_val,
+                        &[arena_ptr, recv, nptr, nlen, args_ptr, argc],
+                    );
+                    let out = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::Equal, out, -1); // u64::MAX
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    SlotV::ValRef(out, out)
+                } else if ret == Ty::I32Opt {
                     let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                         cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
                         8,
@@ -4351,6 +4421,7 @@ struct ShimRefs {
     web_call_num: cranelift_codegen::ir::FuncRef,
     global_val: cranelift_codegen::ir::FuncRef,
     global_str: cranelift_codegen::ir::FuncRef,
+    global_num: cranelift_codegen::ir::FuncRef,
     clone_val: cranelift_codegen::ir::FuncRef,
     array_new: cranelift_codegen::ir::FuncRef,
     array_push: cranelift_codegen::ir::FuncRef,

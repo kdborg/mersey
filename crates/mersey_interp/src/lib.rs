@@ -1954,6 +1954,11 @@ pub enum NameKind {
     MathNs,
     /// An engine value carried opaquely by arena handle — a `Bytes`, a `Url`.
     Opaque,
+    /// A binding holding a number or a bool: 0 an `int32`, 1 an `int64`, 2 a
+    /// `float64`, 3 a `bool`. The kind is fixed by the checker — a binding has one
+    /// type — so reading it once at compile time to decide the register is sound
+    /// even though the *value* is read live.
+    NumGlobal(u8),
     /// A binding holding a string. Compiled code takes it as the three registers
     /// any other string uses, so its methods and `==` work on it — which a
     /// module-level `const` needs, that being how a lookup table is written.
@@ -2183,6 +2188,10 @@ impl JitEnv for InterpEnv<'_> {
             }
             Some(Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_)) => NameKind::Opaque,
             Some(Value::Str(_)) => NameKind::StrGlobal,
+            Some(Value::I32(_)) => NameKind::NumGlobal(0),
+            Some(Value::I64(_)) => NameKind::NumGlobal(1),
+            Some(Value::F64(_)) => NameKind::NumGlobal(2),
+            Some(Value::Bool(_)) => NameKind::NumGlobal(3),
             Some(Value::JsRef(_)) => NameKind::Web,
             _ => NameKind::Other,
         }
@@ -4870,6 +4879,24 @@ impl Interp {
             .unwrap_or_else(|| self.globals.clone());
         match env_get(&env, name) {
             Some(v @ Value::Str(_)) => self.jit_arena.keep(v),
+            _ => 0,
+        }
+    }
+
+    /// A top-level binding holding a number, as raw bits — an integer or a bool
+    /// as itself, a `float64` as its IEEE pattern.
+    ///
+    /// Read *live*, once per use, rather than hoisted to the top of the call like
+    /// the handles are: nothing here can tell a `const` from a `let`, and a `let`
+    /// reassigned by something this call goes on to invoke would leave a hoisted
+    /// copy stale. A shim call is the price of not having to know.
+    pub fn jit_global_num(&self, name: &str) -> i64 {
+        let env = self.jit_scope.as_ref().unwrap_or(&self.globals);
+        match env_get(env, name) {
+            Some(Value::I32(n)) => n as i64,
+            Some(Value::I64(n)) => n,
+            Some(Value::F64(f)) => f.to_bits() as i64,
+            Some(Value::Bool(t)) => i64::from(t),
             _ => 0,
         }
     }

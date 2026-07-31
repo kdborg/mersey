@@ -635,6 +635,25 @@ pub(crate) unsafe extern "C" fn val_index_set(arena: *mut Arena, h: u64, idx: i6
     }
 }
 
+/// A top-level binding holding a number, as raw bits. See `Interp::jit_global_num`
+/// for why this is a call and not a value read once at entry.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn global_num(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_global_num(name),
+            None => 0,
+        }
+    }
+}
+
 /// A top-level binding holding a string, as compiled code carries one. `out`
 /// receives (data, length); the arena entry keeping the buffer alive for the call
 /// is the interpreter's, so the value read here is a borrow and owns nothing.

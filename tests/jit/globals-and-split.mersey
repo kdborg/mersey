@@ -1,0 +1,77 @@
+// A module-level number, a nullable compared against one, and `split` — on both
+// tiers.
+//
+// A numeric global is read *live*, once per use, rather than lifted to the top of
+// the call the way the handles are: nothing in the engine can tell a `const` from
+// a `let`. Today that is more conservative than it needs to be — writing a
+// top-level binding is not compiled at all, so `bump` below is refused rather than
+// compiled, and no compiled call can change one out from under itself. It is here
+// so that stops being true loudly rather than quietly.
+//
+// `cp == QUOTE` compares a nullable number with a plain one and needs no unboxing
+// at all — the sentinel is `i64::MIN` and an `int32` never is, so widening the
+// number and comparing says exactly what the interpreter says: null equals no
+// number.
+
+import { console } from "std:console";
+
+const QUOTE: int32 = 34;
+const LIMIT: float64 = 2.5;
+const ON: bool = true;
+let counter: int32 = 0;
+
+/// Reads three top-level bindings of three different shapes.
+function shapes(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + QUOTE;
+        if (ON) {
+            acc = acc + 1;
+        }
+        if (LIMIT > 2.0) {
+            acc = acc + 2;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+/// Reassigns a top-level `let` and reads it back. Not compiled — `StoreName` has
+/// no lowering — so this pins the *answer*, and stands ready for the day a write
+/// to a global does compile and a lifted read would start being wrong.
+function bump(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        counter = counter + 1;
+        acc = acc + counter;
+        i += 1;
+    }
+    return acc;
+}
+
+/// A nullable against a plain number, and `split`, whose `string[]` is carried as
+/// an opaque — so `length` works on it and a typed `string[]` does not.
+function quoted(text: string, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const cp = text.codePointAt(i % text.length);
+        if (cp == QUOTE) {
+            acc = acc + 100;
+        }
+        acc = acc + text.split(",").length;
+        i += 1;
+    }
+    return acc;
+}
+
+shapes(60000);
+bump(60000);
+quoted("a,\"b\",c", 60000);
+
+counter = 0;
+console.log(`shapes  ${shapes(10)}`);
+console.log(`bump    ${bump(10)}`);
+console.log(`quoted  ${quoted("a,\"b\",c", 14)}`);

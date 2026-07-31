@@ -219,3 +219,19 @@ fn a_nullable_number_agrees_across_the_tier_boundary() {
     // `codePointAt` past the end is where null actually comes from.
     assert!(out.contains("past  40"), "{out}");
 }
+
+/// Top-level bindings of every shape a compiled function can read, a nullable
+/// number compared against a plain one, and `split`. The numeric global is read
+/// live rather than lifted to the top of the call, because nothing in the engine
+/// can tell a `const` from a `let`; `bump` is the case that would break a lifted
+/// read, and is refused today only because writing a global has no lowering.
+#[test]
+fn globals_and_split_agree_across_the_tier_boundary() {
+    check("globals-and-split.mersey");
+    let out = run("globals-and-split.mersey", true);
+    assert!(out.contains("shapes  370"), "{out}");
+    assert!(out.contains("bump    55"), "{out}");
+    // `cp == QUOTE` needs no unboxing, and `split(",").length` reads through the
+    // opaque an array is carried as.
+    assert!(out.contains("quoted  442"), "{out}");
+}
