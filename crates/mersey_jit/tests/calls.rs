@@ -478,3 +478,54 @@ fn compiled_fns(src_text: &str) -> Vec<String> {
     }
     out
 }
+
+/// A callee on a branch this run never took is still a callee.
+///
+/// A function is compiled to bytecode on its first *call*, so a helper that
+/// nothing has called yet has no chunk — and a caller that merely *names* it was
+/// refused outright, because a call it cannot describe is a call it cannot make.
+/// The cold branch does not have to run; it only has to exist.
+///
+/// That is not a corner: it is how a validator is written. `std:semver`'s `parse`
+/// can reach `validIdentifiers`, so it names it, and a program parsing only plain
+/// versions never calls it — which left `parse` interpreted for exactly the
+/// programs that gave it nothing to validate. Worth 3x on that function once the
+/// chunk is built on demand, the way a method's already was.
+#[test]
+fn a_never_called_helper_does_not_refuse_its_caller() {
+    let fns = compiled_fns(
+        r#"
+        // `hot` is declared *first* on purpose: the harness asks each function in
+        // source order, and asking about a function builds its chunk — so a
+        // `cold` declared above would have one by the time `hot` was asked, and
+        // the test would pass without the fix.
+        function hot(s: string, flag: bool): int32 {
+            if (flag) {
+                return cold(s);
+            }
+            return s.length;
+        }
+
+        // Never reached: `flag` is false on every call below.
+        function cold(s: string): int32 {
+            let n = 0;
+            let i = 0;
+            while (i < s.length) { n = n + 1; i += 1; }
+            return n;
+        }
+
+        function drive(n: int32): int32 {
+            let acc = 0;
+            let i = 0;
+            while (i < n) { acc = acc + hot("abc", false); i += 1; }
+            return acc;
+        }
+
+        drive(200);
+        "#,
+    );
+    assert!(
+        fns.iter().any(|f| f == "hot"),
+        "`hot` was refused for naming a helper nothing had called: {fns:?}"
+    );
+}

@@ -457,9 +457,17 @@ impl Group<'_> {
             return Some(i);
         }
         if self.fns.len() >= GROUP_MAX {
+            if *TRACE {
+                eprintln!("jit:   group full at {GROUP_MAX} — callee not added");
+            }
             return None;
         }
-        let sig = self.sig_of(&f)?;
+        let Some(sig) = self.sig_of(&f) else {
+            if *TRACE {
+                eprintln!("jit:   callee signature undescribable");
+            }
+            return None;
+        };
         let i = self.fns.len();
         self.by_key.insert(key, i);
         self.fns.push(f);
@@ -1110,7 +1118,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::Web(ni)); // a host-object receiver
                     }
                     NameKind::Other => {
-                        let f = g.env.function(scope.as_ref(), name)?;
+                        let Some(f) = g.env.function(scope.as_ref(), name) else {
+                            if *TRACE {
+                                eprintln!(
+                                    "jit:   `{name}` is not a callable this tier can describe"
+                                );
+                            }
+                            return None;
+                        };
                         let idx = g.add(f)?;
                         callee.insert(ni, idx);
                         stack.push(TSlot::Callee(idx)); // a function, not a value

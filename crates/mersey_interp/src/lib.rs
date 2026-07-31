@@ -6060,7 +6060,26 @@ impl Interp {
         if !Rc::ptr_eq(&c.env, env) {
             return None;
         }
-        let chunk = c.data.chunk.borrow().clone()??;
+        // A function is compiled to bytecode on its first *call*, so a callee on
+        // a branch this program has not taken yet has none at all — and refusing
+        // the callee refuses the caller entire, because a call it cannot describe
+        // is a call it cannot make. That is how `std:semver`'s `parse` stayed
+        // interpreted for any program parsing only plain versions: it *can* reach
+        // `validIdentifiers`, so it names it, but nothing had called it yet.
+        //
+        // A method has always been compiled on demand here; a top-level function
+        // was not. Same `current_module` the ordinary call path uses — a chunk's
+        // module names its stack frames and nothing else.
+        let cached = c.data.chunk.borrow().clone();
+        let chunk = match cached {
+            Some(x) => x?,
+            None => {
+                let module = self.current_module.clone();
+                let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+                *c.data.chunk.borrow_mut() = Some(out.clone());
+                out?
+            }
+        };
         if chunk.yields {
             return None;
         }
