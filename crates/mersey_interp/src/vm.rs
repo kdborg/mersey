@@ -1069,6 +1069,50 @@ impl C {
     }
 
     /// Assign to an existing binding.
+    /// Evaluate `e` for its effect and leave nothing on the stack.
+    ///
+    /// An expression statement and a `for` head's update clause both want this,
+    /// and both used to get it by producing a value and popping it. The
+    /// assignment and update forms can simply not produce one — see `assign`.
+    fn expr_discarding(&mut self, e: &'static Expr) {
+        let left = match e {
+            Expr::Assign { op, target, value } => self.assign(e, op, target, value, true),
+            Expr::Update { prefix, inc, expr } => self.update(e, *prefix, *inc, expr, true),
+            _ => {
+                self.expr(e);
+                true
+            }
+        };
+        if left {
+            self.emit(Op::Pop);
+        }
+    }
+
+    /// `Truthy`, unless the value is already a `bool`.
+    ///
+    /// A comparison yields one, `!` yields one, and `Truthy` itself yields one —
+    /// so the `Truthy` the `&&`/`||` lowering puts after each operand is dead
+    /// whenever the operand was a comparison, which is nearly always. A chain
+    /// like `a == null || a < 48 || a > 57` emitted five of them and needed
+    /// none. Skipped at emit time rather than removed afterwards, so no jump
+    /// target can be left pointing at an instruction that moved.
+    fn emit_truthy(&mut self) {
+        let already = matches!(
+            self.code.last(),
+            Some(Op::Truthy | Op::Un(UnaryOp::Not))
+                | Some(Op::Bin(
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                ))
+                | Some(Op::BinNum(
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+                    _
+                ))
+        );
+        if !already {
+            self.emit(Op::Truthy);
+        }
+    }
+
     fn store_name(&mut self, name: &str) {
         match self.slot_of(name) {
             Some(slot) => {
@@ -1378,8 +1422,9 @@ impl C {
                         }
                     }
                     for e in step {
-                        c.expr(e);
-                        c.emit(Op::Pop);
+                        // The same as an expression statement, and for the same
+                        // reason: `i += 1` in a loop head wants no value either.
+                        c.expr_discarding(e);
                     }
                     (start, cont, jf)
                 });
@@ -1975,23 +2020,23 @@ impl C {
             Expr::Binary { op, l, r } => match op {
                 BinOp::And => {
                     self.expr(l);
-                    self.emit(Op::Truthy);
+                    self.emit_truthy();
                     self.emit(Op::Dup);
                     let j = self.emit(Op::JumpIfFalse(0));
                     self.emit(Op::Pop);
                     self.expr(r);
-                    self.emit(Op::Truthy);
+                    self.emit_truthy();
                     let end = self.here();
                     self.patch(j, end);
                 }
                 BinOp::Or => {
                     self.expr(l);
-                    self.emit(Op::Truthy);
+                    self.emit_truthy();
                     self.emit(Op::Dup);
                     let j = self.emit(Op::JumpIfTrue(0));
                     self.emit(Op::Pop);
                     self.expr(r);
-                    self.emit(Op::Truthy);
+                    self.emit_truthy();
                     let end = self.here();
                     self.patch(j, end);
                 }
@@ -2478,7 +2523,7 @@ impl C {
                     }
                     (None, "&&=") | (None, "||=") => {
                         self.emit(Op::Dup);
-                        self.emit(Op::Truthy);
+                        self.emit_truthy();
                         let j = if op == "&&=" {
                             self.emit(Op::JumpIfFalse(0))
                         } else {
