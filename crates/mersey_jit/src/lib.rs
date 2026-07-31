@@ -990,7 +990,18 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // A reference loaded from a slot the body stores into is the one
                 // borrow that can dangle — see `Prov`.
                 let pv = match t {
-                    Ty::Obj(_) | Ty::Arr(_) | Ty::Val if stored[s as usize] => Prov::FromSlot(s),
+                    // `Ty::Str` and `Ty::StrArr` belong here as much as the rest:
+                    // a load is a borrow with handle 0, and the buffer it points
+                    // at lives in the arena under the *slot's* handle. Leaving
+                    // them off meant `let a = b; b = …` released the entry `a`
+                    // was pointing into — a use-after-free that read back as a
+                    // string of the right length and the wrong contents, which is
+                    // exactly how the `Dup` one presented.
+                    Ty::Obj(_) | Ty::Arr(_) | Ty::Val | Ty::StrArr | Ty::Str
+                        if stored[s as usize] =>
+                    {
+                        Prov::FromSlot(s)
+                    }
                     _ => Prov::Stable,
                 };
                 stack.push(TSlot::Val(t, pv));
@@ -1014,18 +1025,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     match t {
                         // Storing a borrow that a later overwrite could kill:
                         // clone it, so it owns an arena reference of its own.
-                        Ty::Obj(_) => {
+                        // A string is parked; an opaque takes a second arena
+                        // reference to the entry it names. Both are the same idea
+                        // as the object's clone: the stored copy must outlive any
+                        // overwrite of the slot it came from.
+                        Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr => {
+                            if *TRACE {
+                                eprintln!("jit:   clone-at {pc} (borrow from slot {src})");
+                            }
                             clone_at.insert(pc);
                         }
-                        // An array cannot be cloned into the arena (its handle
-                        // has nowhere to live in three registers), so this rare
-                        // shape is interpreted rather than risked.
+                        // An array is the exception, and still is: its handle has
+                        // nowhere to live in three registers, so there is nothing
+                        // to clone into. This rare shape is interpreted rather
+                        // than risked.
                         Ty::Arr(_) => return None,
-                        // Nor an opaque: there is no `clone_val` shim, and a
-                        // borrow whose owning slot is overwritten would be left
-                        // pointing at a released arena entry. Slot-to-slot copies
-                        // of a native's result are rare; correctness is not.
-                        Ty::Val => return None,
                         _ => {
                             let _ = src;
                         }
@@ -2190,6 +2204,7 @@ struct Shims {
     str_str: FuncId,
     val_len: FuncId,
     box_str: FuncId,
+    own_str: FuncId,
     box_num: FuncId,
     str_join: FuncId,
     str_vec_parts: FuncId,
@@ -2272,6 +2287,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
+    builder.symbol("msy_own_str", heap::own_str as *const u8);
     builder.symbol("msy_box_num", heap::box_num as *const u8);
     builder.symbol("msy_web_bind_call", heap::web_bind_call as *const u8);
     builder.symbol("msy_str_join", heap::str_join as *const u8);
@@ -2709,6 +2725,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
         box_str: one("msy_box_str", Some(types::I64), 4)?,
+        own_str: one("msy_own_str", None, 4)?,
         // (arena, kind, bits) -> handle of a Value::I32 / Value::F64
         box_num: one("msy_box_num", Some(types::I64), 3)?,
         // (arena, target, bind_id, name_ptr, name_len, args_ptr, argc) -> 0/1
@@ -3102,6 +3119,7 @@ fn translate(
         str_str: module.declare_func_in_func(shims.str_str, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
+        own_str: module.declare_func_in_func(shims.own_str, b.func),
         box_num: module.declare_func_in_func(shims.box_num, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
         str_join: module.declare_func_in_func(shims.str_join, b.func),
@@ -3341,6 +3359,20 @@ fn translate(
                     v = SlotV::Obj(ptr, fields, h);
                 }
                 if let SlotV::Str(ptr, len, h) = v {
+                    // As for an object: a borrow whose source slot is later
+                    // overwritten is parked here, so it holds a reference of its
+                    // own rather than pointing into one the store is about to
+                    // release. Cloning happens *before* the release, because the
+                    // source may be this very slot.
+                    let (ptr, h) = if p.clone_at.contains(&pc) {
+                        let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                        b.ins().call(shim.own_str, &[arena_ptr, ptr, len, out]);
+                        let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                        let nh = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                        (d, nh)
+                    } else {
+                        (ptr, h)
+                    };
                     // A built string owns an arena handle; overwriting the slot
                     // releases the one it held. A borrowed (const) string carries
                     // handle 0, so this is a no-op for it.
@@ -3348,11 +3380,21 @@ fn translate(
                     release_if_owned(b, shim.release, arena_ptr, old);
                     v = SlotV::Str(ptr, len, h);
                 }
-                if matches!(v, SlotV::ValRef(..)) {
+                if let SlotV::ValRef(val, h) = v {
+                    // An opaque's handle is its identity, so a cloned borrow
+                    // names the entry it now owns.
+                    let (val, h) = if p.clone_at.contains(&pc) {
+                        let c = b.ins().call(shim.clone_val, &[arena_ptr, val]);
+                        let h2 = b.inst_results(c)[0];
+                        (h2, h2)
+                    } else {
+                        (val, h)
+                    };
                     // As for a string, but an opaque is two registers wide, so
                     // its owned handle is the *second* one.
                     let old = b.use_var(Variable::from_u32(p.var_at[s as usize] + 1));
                     release_if_owned(b, shim.release, arena_ptr, old);
+                    v = SlotV::ValRef(val, h);
                 }
                 for (j, part) in v.parts().into_iter().enumerate() {
                     b.def_var(Variable::from_u32(at + j as u32), part);
@@ -4842,17 +4884,23 @@ fn translate(
                     let promote = b.ins().band(no_handle, is_real);
                     let borrow = b.create_block();
                     let done = b.create_block();
+                    // *Both* the data pointer and the handle: parking a borrow
+                    // makes a copy, and the caller must be given the copy's
+                    // address, not the address of the thing it was copied from.
                     b.append_block_param(done, types::I64);
-                    b.ins().brif(promote, borrow, &[], done, &[h]);
+                    b.append_block_param(done, types::I64);
+                    b.ins().brif(promote, borrow, &[], done, &[ptr, h]);
                     b.switch_to_block(borrow);
                     b.seal_block(borrow);
-                    let zero = b.ins().iconst(types::I64, 0);
-                    let cl = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, zero]);
-                    let boxed = b.inst_results(cl)[0];
-                    b.ins().jump(done, &[boxed]);
+                    let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                    b.ins().call(shim.own_str, &[arena_ptr, ptr, len, out]);
+                    let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                    let boxed = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                    b.ins().jump(done, &[d, boxed]);
                     b.switch_to_block(done);
                     b.seal_block(done);
-                    let h = b.block_params(done)[0];
+                    let ptr = b.block_params(done)[0];
+                    let h = b.block_params(done)[1];
                     b.ins().return_(&[ptr, len, h]);
                     reachable = false;
                 }
@@ -5092,6 +5140,7 @@ struct Ctx {
 
 /// The engine functions a compiled body may call, resolved.
 struct ShimRefs {
+    own_str: cranelift_codegen::ir::FuncRef,
     cell_obj: cranelift_codegen::ir::FuncRef,
     cell_arr: cranelift_codegen::ir::FuncRef,
     cell_str: cranelift_codegen::ir::FuncRef,

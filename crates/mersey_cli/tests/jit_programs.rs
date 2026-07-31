@@ -369,4 +369,10 @@ fn reassigned_strings_agree_across_the_tier_boundary() {
     assert!(out.contains("fromTemplate 1"), "{out}");
     assert!(out.contains("underBranch  1"), "{out}");
     assert!(out.contains("opaque       5"), "{out}");
+    // The other route to the same freed buffer, found by audit rather than by a
+    // wrong answer: `let a = b; b = …` releases the entry `a` borrows from. The
+    // tier guarded this for objects and refused to compile it for arrays and
+    // opaques; strings were on neither list, so they took the third option
+    // silently.
+    assert!(out.contains("alias        1 1"), "{out}");
 }

@@ -909,6 +909,46 @@ pub(crate) unsafe extern "C" fn native_call(
     }
 }
 
+/// A string parked in the arena as an entry the *caller* owns.
+///
+/// Not `box_str`: that one answers from the interpreter's small memo, which owns
+/// what it parks and releases it when it displaces it — so its handle is a
+/// borrow with a lifetime nobody at the call site controls. That is right for a
+/// receiver or an argument, which are done with before the call returns, and
+/// wrong for anything that has to outlive it: a value being stored into a slot,
+/// or handed to a caller. Those get a copy of their own. Strings are immutable,
+/// so a copy is only ever a cost, never a difference.
+///
+/// `out` receives (data pointer, arena handle) — both of the copy.
+///
+/// # Safety
+/// `ptr` names `len` readable `u16`s, or `len` is 0; `out` names two writable
+/// words.
+pub(crate) unsafe extern "C" fn own_str(
+    arena: *mut Arena,
+    ptr: *const u16,
+    len: usize,
+    out: *mut u64,
+) {
+    unsafe {
+        let units = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(ptr, len)
+        };
+        let rc = std::rc::Rc::new(units.to_vec());
+        // The *copy's* address, not the original's. A string value is three
+        // registers — data, length, handle — and handing back a handle that names
+        // a copy while leaving the data pointer on the original is the same
+        // dangling read by a longer route: the handle keeps something alive and
+        // the pointer reads something else.
+        let data = rc.as_ptr() as u64;
+        let h = (*arena).keep(Value::Str(rc));
+        *out = data;
+        *out.add(1) = h;
+    }
+}
+
 /// Park a compiled string in the arena as a `Value::Str`, so a native can take
 /// it as an argument. `have` is the handle the string already owns (0 for a
 /// constant or a borrow); see `Interp::jit_box_str` for why that is worth

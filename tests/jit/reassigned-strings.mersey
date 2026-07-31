@@ -17,6 +17,12 @@
 // A declaration never had the bug, so every case here reassigns, and each does
 // it a different way — from itself, from another string, from a template, and
 // under a branch.
+//
+// The last two cases are a *second* route to the same freed buffer, found by
+// auditing the ownership rules rather than by a wrong answer: an alias (`let a =
+// b`) borrows the entry `b` owns, and overwriting `b` releases it. Same symptom,
+// same shape, different mechanism — which is the argument for auditing the rest
+// of the family rather than waiting for each one to surface.
 
 import { console } from "std:console";
 import { bytes } from "std:bytes";
@@ -69,6 +75,33 @@ function opaque(): int32 {
     return b.length;
 }
 
+/// The *other* route to the same freed buffer, and the one an audit found rather
+/// than a wrong answer. A load is a borrow — data and length, handle 0 — so `a`
+/// points into the entry `b` owns. Overwriting `b` releases that entry, and `a`
+/// is left reading it. The tier already guarded this for objects and refused to
+/// compile it for arrays and opaques; strings were on neither list, so they took
+/// the third option silently.
+function aliasThenOverwrite(): int32 {
+    let b = "1.2.3".slice(0, 5);
+    let a = b;
+    b = "zzzzzzzzz";
+    return a.indexOf(".");
+}
+
+/// The same alias, killed by a loop that reassigns the source many times over —
+/// so a fix that survives one overwrite but not the arena's reuse of the slot
+/// still shows up here.
+function aliasThenLoop(n: int32): int32 {
+    let b = "1.2.3".slice(0, 5);
+    let a = b;
+    let i = 0;
+    while (i < n) {
+        b = `q${i}`;
+        i += 1;
+    }
+    return a.indexOf(".");
+}
+
 function drive(n: int32): int32 {
     let acc = 0;
     let i = 0;
@@ -78,7 +111,9 @@ function drive(n: int32): int32 {
             + twice()
             + fromTemplate(3)
             + underBranch("1.2.3+b.5")
-            + opaque();
+            + opaque()
+            + aliasThenOverwrite()
+            + aliasThenLoop(3);
         i += 1;
     }
     return acc;
@@ -93,3 +128,4 @@ console.log(`twice        ${twice()}`);
 console.log(`fromTemplate ${fromTemplate(3)}`);
 console.log(`underBranch  ${underBranch("1.2.3+b.5")}`);
 console.log(`opaque       ${opaque()}`);
+console.log(`alias        ${aliasThenOverwrite()} ${aliasThenLoop(3)}`);
