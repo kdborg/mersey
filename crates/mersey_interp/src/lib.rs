@@ -2076,7 +2076,7 @@ pub trait JitEnv {
     /// its field initializers all fold (no expressions to evaluate), it is not
     /// host-backed, and it is not one of the built-in error classes. The
     /// constructor body, if there is one, is compiled like any method.
-    fn class_for_new(&self, name: &str) -> Option<Rc<ClassDef>>;
+    fn class_for_new(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>>;
 
     /// A class's constructor as a compilable function, `None` if it has none
     /// (then `new` takes no arguments and only the field defaults run).
@@ -2097,7 +2097,7 @@ pub trait JitEnv {
     /// binding, is not a namespaced path, and is not the `Map`/`Set` builtin.
     /// Mirrors `new_named` exactly so the compiled `new` throws or succeeds where
     /// the interpreter would.
-    fn new_is_web(&self, name: &str) -> bool;
+    fn new_is_web(&self, scope: Option<&DefScope>, name: &str) -> bool;
 
     /// The interned id a web method name *already* has, if any. By the time a
     /// web loop compiles it has run thousands of interpreted iterations, each of
@@ -2225,8 +2225,13 @@ impl JitEnv for InterpEnv<'_> {
     fn n_classes(&self) -> usize {
         self.i.all_classes.len()
     }
-    fn class_for_new(&self, name: &str) -> Option<Rc<ClassDef>> {
-        let Some(Value::Class(cls)) = env_get(&self.i.globals, name) else {
+    fn class_for_new(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>> {
+        // In the scope the *constructing* function was written in — a class
+        // defined in a module is invisible from the entry module's globals, and
+        // asking there answered "not a class", which refused every `new` of it.
+        // See `DefScope`.
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
+        let Some(Value::Class(cls)) = env_get(env, name) else {
             return None;
         };
         // Field initializers that compute need an evaluator, and the shim that
@@ -2267,8 +2272,8 @@ impl JitEnv for InterpEnv<'_> {
             _ => NameKind::Other,
         }
     }
-    fn new_is_web(&self, name: &str) -> bool {
-        let env = &self.i.globals;
+    fn new_is_web(&self, scope: Option<&DefScope>, name: &str) -> bool {
+        let env = scope.map_or(&self.i.globals, |s| &s.0);
         // A namespaced `new geo.Point(…)` resolves through an import; leave it to
         // the interpreter.
         if name.contains('.') {

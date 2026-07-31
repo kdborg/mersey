@@ -1142,7 +1142,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // A host constructor (`new URL(s)`): not a Mersey class, so it
                 // takes the `web_new` path and hands back a `Ty::Web` handle. The
                 // arguments cross as `WebArg`s, exactly like a `web_call_v` call.
-                if g.env.class_for_new(name).is_none() && g.env.new_is_web(name) {
+                if g.env.class_for_new(scope.as_ref(), name).is_none()
+                    && g.env.new_is_web(scope.as_ref(), name)
+                {
                     let mut arg_slots: Vec<TSlot> = Vec::with_capacity(argc as usize);
                     for _ in 0..argc {
                         arg_slots.push(stack.pop()?);
@@ -1167,7 +1169,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     stack.push(TSlot::Val(Ty::Web, Prov::Stable));
                     continue;
                 }
-                let cls = g.env.class_for_new(name)?;
+                let cls = g.env.class_for_new(scope.as_ref(), name)?;
                 let ci = g.class_idx(&cls);
                 let ctor = g.env.ctor(&cls)?;
                 let mut args: Vec<Ty> = Vec::new();
@@ -1186,8 +1188,23 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         // from an `int32?` guarded against null a line earlier —
                         // was refused, which is where `std:semver`'s `parse`
                         // stopped once its callees compiled.
-                        if g.sigs[idx].params != args {
+                        let want = &g.sigs[idx].params;
+                        if want.len() != args.len() {
                             return None;
+                        }
+                        let mut mask = 0u8;
+                        for (k, (w, h)) in want.iter().zip(&args).enumerate() {
+                            if arg_fits(*w, *h) {
+                                continue;
+                            }
+                            if *h == Ty::I32Opt && *w == Ty::I32 && k < 8 {
+                                mask |= 1 << k;
+                                continue;
+                            }
+                            return None;
+                        }
+                        if mask != 0 {
+                            unbox_at.insert(pc, mask);
                         }
                         Some(idx)
                     }
@@ -4516,6 +4533,19 @@ fn translate(
                     args.push(stack.pop()?);
                 }
                 args.reverse();
+                // A nullable number handed to a parameter that wants a number —
+                // guarded against the sentinel, then reduced. Exactly as at a
+                // call; `plan` recorded which positions.
+                let unbox_mask = p.unbox_at.get(&pc).copied().unwrap_or(0);
+                for (k, a) in args.iter_mut().enumerate() {
+                    if unbox_mask & (1 << k) == 0 {
+                        continue;
+                    }
+                    let SlotV::Val(v, _) = *a else {
+                        return None;
+                    };
+                    *a = SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32);
+                }
 
                 // The class, baked in. `JitCode::classes` keeps it alive for as
                 // long as this code exists; a class binding cannot be reassigned
