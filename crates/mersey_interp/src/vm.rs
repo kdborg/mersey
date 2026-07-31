@@ -1199,6 +1199,24 @@ impl C {
     }
 
     /// Emit an operator, typed if the checker knew what its operands are.
+    /// Emit a binary operator, typed where the checker knew the type.
+    ///
+    /// A `Const` followed by a `BinNum` is the commonest adjacent pair in the
+    /// standard library's bytecode by some way — `i < n`, `c >= 48`, `acc + 1` —
+    /// so folding the constant into the operator looks obviously free: one
+    /// dispatch instead of two, and no push-then-pop of the literal.
+    ///
+    /// It is not free. Measured with a `BinNumConst(op, num, const_index)`
+    /// carrying the pool index, a `for…of` benchmark went from 385ms to 433ms
+    /// and a parsing one did not move. The operand stack is hot — the value was
+    /// pushed an instruction ago and is in cache — while the constant pool is
+    /// cold and reached through a bounds-checked index. Trading the first for
+    /// the second loses more than the saved dispatch wins.
+    ///
+    /// Recorded here because the static op counts argue for it loudly, and the
+    /// obvious next step after that is a matching arm in Tier 1 — whose `BinNum`
+    /// codegen carries strength reduction and division guards that would have to
+    /// be duplicated or refactored. Measure the interpreter first; it says no.
     fn emit_bin(&mut self, e: &'static Expr, op: BinOp) {
         match op_type_for(e) {
             Some(n) => self.emit(Op::BinNum(op, n)),
