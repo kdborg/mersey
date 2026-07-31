@@ -200,3 +200,22 @@ fn building_an_array_agrees_across_the_tier_boundary() {
     // An array literal is the same ops in a row: make, then push each element.
     assert!(out.contains("literal 9000"), "{out}");
 }
+
+/// A nullable number. `int32?` is what a scan over code points is written in, and
+/// every decoder in the standard library starts with one. It rides a single
+/// register with `i64::MIN` for null — 0 being an ordinary value, the null test
+/// cannot be the "is it zero" one every other nullable here uses — and is unboxed
+/// where a number is required, which the checker has already narrowed. The guard
+/// on that unbox is not for well-typed code; it is so a stray sentinel bails
+/// rather than being read as a number.
+#[test]
+fn a_nullable_number_agrees_across_the_tier_boundary() {
+    check("nullable-number.mersey");
+    let out = run("nullable-number.mersey", true);
+    // A nullable *parameter*, present and absent, and one that misses its range.
+    assert!(out.contains("nib   0 -1 -2"), "{out}");
+    // Compared against numbers, added, and handed on to a nullable parameter.
+    assert!(out.contains("scan  1408"), "{out}");
+    // `codePointAt` past the end is where null actually comes from.
+    assert!(out.contains("past  40"), "{out}");
+}

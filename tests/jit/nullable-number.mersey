@@ -1,0 +1,70 @@
+// A nullable number, on both tiers.
+//
+// `int32?` is what a scan over code points is written in, and every decoder in the
+// standard library begins with one. It is carried in a single register, as an
+// `i64` with `i64::MIN` for null: every `int32` fits with room to spare, so the
+// sentinel collides with nothing — and 0 is an ordinary value, which is why the
+// null test cannot be the "is it zero" one every other nullable uses here.
+//
+// Where a *number* is required the checker has already narrowed it, so the value
+// is unboxed at that point: a guard against the sentinel, then a reduce. The guard
+// exists because a silent `i64::MIN` would be a wrong answer rather than a bail.
+// What this pins is that both tiers agree about which branch was taken.
+
+import { console } from "std:console";
+
+/// A nullable *parameter*, which `std:uuid` needs — its `nibble` takes one.
+function nib(cp: int32?): int32 {
+    if (cp == null) {
+        return -1;
+    }
+    if (cp >= 48 && cp <= 57) {
+        return cp - 48;
+    }
+    return -2;
+}
+
+/// A nullable *result*, used as a number after the check, and passed on as one.
+function scan(text: string, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const cp = text.codePointAt(i % text.length);
+        if (cp == null) {
+            return -1;
+        }
+        // Compared against numbers — the unbox point — and handed to a function
+        // whose parameter is also nullable, which must *not* unbox.
+        if (cp == 32 || cp == 9) {
+            i += 1;
+            continue;
+        }
+        acc = acc + cp + nib(cp);
+        i += 1;
+    }
+    return acc;
+}
+
+/// Out of range is where `codePointAt` actually answers null.
+function past(text: string, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const cp = text.codePointAt(999);
+        if (cp == null) {
+            acc = acc + 1;
+        } else {
+            acc = acc + cp;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+nib(48);
+scan("0 9\t7", 60000);
+past("abc", 60000);
+
+console.log(`nib   ${nib(48)} ${nib(null)} ${nib(65)}`);
+console.log(`scan  ${scan("0 9\t7", 40)}`);
+console.log(`past  ${past("abc", 40)}`);

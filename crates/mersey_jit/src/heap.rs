@@ -442,6 +442,34 @@ pub(crate) unsafe extern "C" fn member_val(
     }
 }
 
+/// A string method answering with a *nullable* number (`codePointAt`). `out` gets
+/// the value or `i64::MIN` for null; returns 0, or 1 if it threw.
+///
+/// # Safety
+/// As `native_call`; `out` names one writable word.
+pub(crate) unsafe extern "C" fn str_numopt(
+    arena: *mut Arena,
+    recv: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args_ptr: *const u64,
+    argc: usize,
+    out: *mut i64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let args = if argc == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc)
+        };
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_str_numopt(recv, name, args, &mut *out),
+            None => 1,
+        }
+    }
+}
+
 /// A string method answering with a string (`slice`, `trim`, `replace`). `out`
 /// receives (data, length, owning handle); returns 0, or 1 if it threw.
 ///

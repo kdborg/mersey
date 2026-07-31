@@ -1384,6 +1384,9 @@ pub enum FieldTy {
     /// An engine primitive Tier 1 can carry without looking inside: a `Bytes`, a
     /// `Url`, a `Regex`. One arena handle, the same shape a native's result takes.
     Val,
+    /// A nullable `int32`. One register, with `i64::MIN` for null — see the JIT's
+    /// `Ty::I32Opt`. `int32?` is what a scan over code points is written in.
+    NumOpt,
     /// A record, a function, a generic — something Tier 1 has no register for.
     /// Reading one is not a bug; it is a reason to interpret.
     Opaque,
@@ -1908,6 +1911,8 @@ pub enum JitSlot {
     Str,
     /// A host-object handle (`JsRef`): one word, the handle id.
     Web,
+    /// A nullable `int32`: one register, `i64::MIN` for null.
+    NumOpt,
     /// Any other engine value, carried opaquely by arena handle — a `Bytes`, a
     /// `Url`, whatever a `std:` native hands back. Compiled code never looks
     /// inside one; it passes it to a shim, which is enough to keep a loop
@@ -2403,6 +2408,9 @@ fn jit_arg(v: &Value, slot: &JitSlot) -> Option<JitArg> {
         // entry wrapper derives the data pointer and length from it, as it does
         // an object's fields. A borrow — the caller (or the OSR clone) owns it.
         (Value::Str(s), JitSlot::Str) => Some(JitArg::Ptr(Rc::as_ptr(s) as *const u8)),
+        // A nullable number crosses as its value, or the sentinel.
+        (Value::I32(n), JitSlot::NumOpt) => Some(JitArg::I64(*n as i64)),
+        (Value::Null, JitSlot::NumOpt) => Some(JitArg::I64(i64::MIN)),
         // A host handle is one word — the id itself. A null handle is 0.
         (Value::JsRef(h), JitSlot::Web) => Some(JitArg::I64(*h)),
         (Value::Null, JitSlot::Web) => Some(JitArg::I64(0)),
@@ -2692,6 +2700,11 @@ fn resolve_field_ty(t: &TypeExpr, env: &Env) -> FieldTy {
             FieldTy::Str => FieldTy::Str,
             // …and `Bytes?` the same handle, with 0 for null.
             FieldTy::Val => FieldTy::Val,
+            // `int32?` is one register with a sentinel; the other widths have no
+            // spare value to spend on null, so they stay opaque.
+            FieldTy::Num(mersey_front::check::Num::Int(mersey_front::check::IntKind::I32)) => {
+                FieldTy::NumOpt
+            }
             _ => FieldTy::Opaque,
         },
         _ => FieldTy::Opaque,
@@ -4648,6 +4661,29 @@ impl Interp {
         }
     }
 
+    /// …and one that answers with a *nullable* number (`codePointAt`). `out` gets
+    /// the value, or `i64::MIN` for null; the return is 0, or 1 if it threw —
+    /// which is why the two are separate, null being an ordinary answer here and
+    /// not an error.
+    pub fn jit_str_numopt(&mut self, recv: u64, name: &str, args: &[u64], out: &mut i64) -> i64 {
+        match self.jit_str_call(recv, name, args) {
+            Ok(Value::I32(n)) => {
+                *out = n as i64;
+                0
+            }
+            Ok(Value::Null) => {
+                *out = i64::MIN;
+                0
+            }
+            Ok(_) => {
+                let t = self.throw("TypeError", format!("string.{name} gave no number"));
+                self.jit_host_error = Some(t);
+                1
+            }
+            Err(()) => 1,
+        }
+    }
+
     /// …and one that answers with a value of no particular shape — an opaque, or
     /// nothing at all (`push` is void, and the interpreter's nothing is `null`).
     /// The handle is 0 for null and `u64::MAX` if it threw.
@@ -5778,6 +5814,7 @@ impl Interp {
                     FieldTy::Arr(e) => Some(JitSlot::Arr(e)),
                     FieldTy::Str => Some(JitSlot::Str),
                     FieldTy::Val => Some(JitSlot::Val),
+                    FieldTy::NumOpt => Some(JitSlot::NumOpt),
                     _ => None,
                 }
             })

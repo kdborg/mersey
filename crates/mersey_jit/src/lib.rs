@@ -91,6 +91,16 @@ enum Ty {
     Obj(u32),
     /// An array of these.
     Arr(Elem),
+    /// A nullable `int32`, in one register: the value as an `i64`, with
+    /// `i64::MIN` for null. Every `int32` fits in an `i64` with room to spare, so
+    /// the sentinel collides with nothing. `codePointAt` is the reason it exists —
+    /// and every decoder in the standard library starts with one.
+    ///
+    /// Where a *number* is required the checker has already narrowed it, so the
+    /// value is unboxed there (`unbox_at`): a guard against the sentinel, then a
+    /// reduce. That guard is not for well-typed code — it is because a silent
+    /// `i64::MIN` would be a wrong answer rather than a bail.
+    I32Opt,
     /// A UTF-16 string: a data pointer, a length, and an arena handle (nonzero
     /// only for a *built* string this value owns; zero for one borrowed from the
     /// const pool). Immutable, so it is never a field or an array element — only
@@ -139,7 +149,7 @@ impl Ty {
             Ty::I32 | Ty::Bool => types::I32,
             Ty::I64 => types::I64,
             Ty::F64 => types::F64,
-            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web | Ty::Val => types::I64,
+            Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Web | Ty::Val | Ty::I32Opt => types::I64,
         }
     }
 
@@ -206,7 +216,9 @@ impl Ty {
             // ever tag-checks one. `TAG_NULL` is the fail-closed answer if that
             // ever stops being true: no cell carries it, so the guard bails to
             // the interpreter instead of reading the cell as something it isn't.
-            Ty::Val => repr::TAG_NULL,
+            // As `Ty::Val`, and for the same reason: a nullable number is a
+            // temporary or a local, never the contents of a heap cell.
+            Ty::Val | Ty::I32Opt => repr::TAG_NULL,
         }
     }
 }
@@ -360,6 +372,7 @@ impl Group<'_> {
             JitSlot::Str => Ty::Str,
             JitSlot::Web => Ty::Web,
             JitSlot::Val => Ty::Val,
+            JitSlot::NumOpt => Ty::I32Opt,
         })
     }
 
@@ -387,7 +400,7 @@ impl Group<'_> {
             // pulling it out of a `Value` cell, and `load_cell` has no case for
             // either yet. A *parameter* is a different matter — it arrives already
             // in registers, or as a handle (see `param_types`).
-            FieldTy::Str | FieldTy::Val => return None,
+            FieldTy::Str | FieldTy::Val | FieldTy::NumOpt => return None,
             FieldTy::Opaque => return None,
         })
     }
@@ -515,6 +528,9 @@ struct Plan {
     str_method_at: HashMap<usize, (&'static str, Ty)>,
     /// Method calls on an *opaque* receiver — `a.push(v)` on an array built here.
     val_method_at: HashMap<usize, (&'static str, Ty)>,
+    /// Where a nullable number is used *as* a number: bit 0 the left operand or
+    /// the only one, bit 1 the right. See `Ty::I32Opt`.
+    unbox_at: HashMap<usize, u8>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
     val_index_at: HashSet<usize>,
     /// `[]` and `a.push(v)` sites, which build an array as an opaque.
@@ -809,6 +825,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
+    let mut unbox_at: HashMap<usize, u8> = HashMap::new();
     let mut val_index_at: HashSet<usize> = HashSet::new();
     let mut array_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
@@ -1087,7 +1104,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         // `Ty::Val` joins the reference types here: a native
                         // that returned null parked handle 0, so the comparison
                         // is the same handle-is-zero test.
-                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val)
+                        if !matches!(t, Ty::Obj(_) | Ty::Arr(_) | Ty::Str | Ty::Val | Ty::I32Opt)
                             || !matches!(op, BinOp::Eq | BinOp::Ne)
                         {
                             return None;
@@ -1506,6 +1523,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let t = ty_of(num)?;
                 let b = tval(stack.pop()?)?;
                 let a = tval(stack.pop()?)?;
+                // A nullable number used *as* a number. The checker narrowed it
+                // to get here, so this is where it stops being nullable — see
+                // `Ty::I32Opt`.
+                let mut mask = 0u8;
+                if a == Ty::I32Opt && t == Ty::I32 {
+                    mask |= 1;
+                }
+                if b == Ty::I32Opt && t == Ty::I32 {
+                    mask |= 2;
+                }
+                if mask != 0 {
+                    unbox_at.insert(pc, mask);
+                }
+                let a = if mask & 1 != 0 { t } else { a };
+                let b = if mask & 2 != 0 { t } else { b };
                 if a != t || b != t {
                     // The checker inserted the conversions that make both
                     // operands this type. If they are not, do not guess.
@@ -1606,8 +1638,27 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     return None; // calling a value, not a function
                 };
                 let sig = g.sigs[f].clone();
-                if sig.params != args || sig.this.is_some() {
+                if sig.this.is_some() || sig.params.len() != args.len() {
                     return None;
+                }
+                // A nullable number handed to a parameter that wants a number: the
+                // checker narrowed it at the call site, so this is where it stops
+                // being nullable. The mask says which arguments — bit per
+                // position, and there are at most eight of those before this
+                // declines, which is not a real limit on a call.
+                let mut mask = 0u8;
+                for (k, (want, have)) in sig.params.iter().zip(&args).enumerate() {
+                    if want == have {
+                        continue;
+                    }
+                    if *have == Ty::I32Opt && *want == Ty::I32 && k < 8 {
+                        mask |= 1 << k;
+                        continue;
+                    }
+                    return None;
+                }
+                if mask != 0 {
+                    unbox_at.insert(pc, mask);
                 }
                 stack.push(TSlot::Val(sig.ret, Prov::Stable));
             }
@@ -1715,6 +1766,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         rand_fill_at,
         str_method_at,
         val_method_at,
+        unbox_at,
         val_index_at,
         array_at,
         val_prop_at,
@@ -1818,6 +1870,7 @@ struct Shims {
     str_eq: FuncId,
     member_val: FuncId,
     str_num: FuncId,
+    str_numopt: FuncId,
     str_str: FuncId,
     val_len: FuncId,
     box_str: FuncId,
@@ -1890,6 +1943,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_eq", heap::str_eq as *const u8);
     builder.symbol("msy_member_val", heap::member_val as *const u8);
     builder.symbol("msy_str_num", heap::str_num as *const u8);
+    builder.symbol("msy_str_numopt", heap::str_numopt as *const u8);
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
@@ -2171,6 +2225,7 @@ fn boundary(t: Ty, classes: &[Rc<ClassDef>]) -> JitSlot {
 const STR_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("indexOf", Ty::I32, 1, 1),
     ("lastIndexOf", Ty::I32, 1, 1),
+    ("codePointAt", Ty::I32Opt, 1, 1),
     ("contains", Ty::Bool, 1, 1),
     ("startsWith", Ty::Bool, 1, 1),
     ("endsWith", Ty::Bool, 1, 1),
@@ -2267,6 +2322,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, recv, name_ptr, name_len, args_ptr, argc) -> handle / 0 / MAX
         member_val: one("msy_member_val", Some(types::I64), 6)?,
         str_num: one("msy_str_num", Some(types::I64), 6)?,
+        // (…, out) -> 0 ok / 1 threw; `out` gets the value or i64::MIN for null
+        str_numopt: one("msy_str_numopt", Some(types::I64), 7)?,
         // (…, out) -> 0 ok / 1 threw; `out` gets (data, len, handle)
         str_str: one("msy_str_str", Some(types::I64), 7)?,
         // (arena, handle) -> the length, or -1
@@ -2635,6 +2692,7 @@ fn translate(
         str_eq: module.declare_func_in_func(shims.str_eq, b.func),
         member_val: module.declare_func_in_func(shims.member_val, b.func),
         str_num: module.declare_func_in_func(shims.str_num, b.func),
+        str_numopt: module.declare_func_in_func(shims.str_numopt, b.func),
         str_str: module.declare_func_in_func(shims.str_str, b.func),
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
@@ -2981,12 +3039,20 @@ fn translate(
                 let l = stack.pop()?;
                 match (l, r) {
                     (SlotV::Null, x) | (x, SlotV::Null) => {
-                        let ptr = x.addr()?;
                         let cc = match binop {
                             BinOp::Eq => IntCC::Equal,
                             BinOp::Ne => IntCC::NotEqual,
                             _ => return None,
                         };
+                        // A nullable number is null at `i64::MIN`, not at 0 —
+                        // 0 is an ordinary value of one.
+                        if let SlotV::Val(v, Ty::I32Opt) = x {
+                            let c = b.ins().icmp_imm(cc, v, i64::MIN);
+                            let u = b.ins().uextend(types::I32, c);
+                            stack.push(SlotV::Val(u, Ty::Bool));
+                            continue;
+                        }
+                        let ptr = x.addr()?;
                         let c = b.ins().icmp_imm(cc, ptr, 0);
                         let v = b.ins().uextend(types::I32, c);
                         stack.push(SlotV::Val(v, Ty::Bool));
@@ -3418,7 +3484,23 @@ fn translate(
                 let (nptr, nlen) = str_const(b, name);
                 let argc = b.ins().iconst(types::I64, n as i64);
 
-                let result = if ret == Ty::Str {
+                let result = if ret == Ty::I32Opt {
+                    let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                        8,
+                        3,
+                    ));
+                    let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                    let call = b.ins().call(
+                        shim.str_numopt,
+                        &[arena_ptr, recv, nptr, nlen, args_ptr, argc, out_ptr],
+                    );
+                    let status = b.inst_results(call)[0];
+                    let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                    guard(b, ctx, threw, R_HOST, pc, None);
+                    let v = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    SlotV::Val(v, Ty::I32Opt)
+                } else if ret == Ty::Str {
                     let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                         cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
                         24,
@@ -3641,6 +3723,18 @@ fn translate(
                     args.push(stack.pop()?);
                 }
                 args.reverse();
+                // A nullable number handed to a parameter that wants a number —
+                // see `Ty::I32Opt`. `plan` recorded which positions.
+                let unbox_mask = p.unbox_at.get(&pc).copied().unwrap_or(0);
+                for (k, a) in args.iter_mut().enumerate() {
+                    if unbox_mask & (1 << k) == 0 {
+                        continue;
+                    }
+                    let SlotV::Val(v, _) = *a else {
+                        return None;
+                    };
+                    *a = SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32);
+                }
                 let (f, this) = if is_method {
                     let recv = stack.pop()?;
                     let SlotV::Obj(_, base, _) = recv else {
@@ -3659,7 +3753,10 @@ fn translate(
                 // Inline a small straight-line arithmetic leaf (`add3`, `step`):
                 // its body is expanded here, erasing the call, the frame marshal,
                 // and the depth guard. The wins V8's inliner gets for free.
-                if !is_method && this.is_none() && inlinable(plans, f, 1) {
+                // Not inlined when an argument had to be unboxed: the inliner
+                // walks the callee's body itself and would take the raw sentinel
+                // for a number.
+                if unbox_mask == 0 && !is_method && this.is_none() && inlinable(plans, f, 1) {
                     let r = inline_body(b, plans, f, &args, 1)?;
                     stack.push(r);
                     continue;
@@ -3934,8 +4031,19 @@ fn translate(
             }
             Op::BinNum(binop, num) => {
                 let t = ty_of(num)?;
+                let mask = p.unbox_at.get(&pc).copied().unwrap_or(0);
                 let (r, _) = scalar(stack.pop()?)?;
                 let (l, _) = scalar(stack.pop()?)?;
+                let r = if mask & 2 != 0 {
+                    unbox_num(b, ctx, pc, r)
+                } else {
+                    r
+                };
+                let l = if mask & 1 != 0 {
+                    unbox_num(b, ctx, pc, l)
+                } else {
+                    l
+                };
                 // Integer division can fault (spec §3.6).
                 if t.is_int() && matches!(binop, BinOp::Div | BinOp::Rem) {
                     // Constant divisor with |d| ≥ 2: strength-reduce to a
@@ -4180,6 +4288,16 @@ fn box_arg(
 /// Release an arena handle, if there is one. The zero test is inlined — a
 /// handle is usually 0 (a borrow), and a C call per borrowed store is what this
 /// branch buys back.
+/// A nullable number where a number is required: guard against the sentinel, then
+/// narrow. The guard is not for well-typed code — the checker narrowed this value
+/// to get here — but a silent `i64::MIN` would be a wrong answer, and a bail is
+/// not.
+fn unbox_num(b: &mut FunctionBuilder, ctx: Ctx, pc: usize, v: ClValue) -> ClValue {
+    let is_null = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+    guard(b, ctx, is_null, R_TAG, pc, None);
+    b.ins().ireduce(types::I32, v)
+}
+
 fn release_if_owned(
     b: &mut FunctionBuilder,
     release: cranelift_codegen::ir::FuncRef,
@@ -4243,6 +4361,7 @@ struct ShimRefs {
     str_eq: cranelift_codegen::ir::FuncRef,
     member_val: cranelift_codegen::ir::FuncRef,
     str_num: cranelift_codegen::ir::FuncRef,
+    str_numopt: cranelift_codegen::ir::FuncRef,
     str_str: cranelift_codegen::ir::FuncRef,
     val_len: cranelift_codegen::ir::FuncRef,
     box_str: cranelift_codegen::ir::FuncRef,
