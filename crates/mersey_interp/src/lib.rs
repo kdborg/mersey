@@ -1999,6 +1999,13 @@ pub struct JitFn {
     /// …or an engine primitive (or null): a `Bytes`, a `Url`. Which is what every
     /// `decode` in the standard library gives back.
     pub ret_val: bool,
+    /// …or a *nullable* `int32`, which is one register with `i64::MIN` for null.
+    /// Distinct from `ret` because the shape is not a number's: `int32?` and
+    /// `int32` cross the boundary differently, and a function that returns the
+    /// first had no describable signature at all until it did — which is why
+    /// every `parse`-shaped function in the standard library was refused, along
+    /// with each of its callers.
+    pub ret_numopt: bool,
     /// The global binding this came from, if it came from one. Compiled code
     /// calls the function a name meant *when it was compiled*; if the name is
     /// later repointed (`f = g`), the code is discarded. A method has no binding:
@@ -2006,6 +2013,13 @@ pub struct JitFn {
     pub bind: Option<(String, Rc<Closure>)>,
     /// Where this function's free names resolve. See `DefScope`.
     pub scope: Option<DefScope>,
+    /// The declared return type, exactly as written — carried only so the trace
+    /// can tell the two refusals apart. A `Return` in a signature that promises
+    /// nothing and a `Return` of an unrepresentable value print the same line
+    /// otherwise, and they are different bugs: the first is a type this tier has
+    /// no shape for, the second is a value it could not produce. It is a
+    /// `'static` reference, so carrying it costs nothing.
+    pub ret_ty: Option<&'static TypeExpr>,
 }
 
 /// The numeric world a compiled function returns in.
@@ -2295,7 +2309,7 @@ impl JitEnv for InterpEnv<'_> {
         let scope = cls.env.clone().map(DefScope);
         Some(Some(JitFn {
             params: simple_param_names(data.params)?,
-            param_tys: self.i.param_types(data.params),
+            param_tys: self.i.param_types(cls.env.as_ref(), data.params),
             chunk,
             this: Some(cls.clone()),
             ret: None,
@@ -2303,8 +2317,10 @@ impl JitEnv for InterpEnv<'_> {
             ret_obj: None,
             ret_str: false,
             ret_val: false,
+            ret_numopt: false,
             bind: None,
             scope,
+            ret_ty: data.ret_ty(),
         }))
     }
 }
@@ -5609,11 +5625,13 @@ impl Interp {
                 return Ok(None);
             }
             None => {
-                let ret_obj = self.ret_class_of(ret_ty);
-                let ret_str = self.ret_is_str(ret_ty);
-                let ret_val = self.ret_is_val(ret_ty);
+                let ret_obj = self.ret_class_in(scope.as_ref(), ret_ty);
+                let ret_str = self.ret_is_str_in(scope.as_ref(), ret_ty);
+                let ret_val = self.ret_is_val_in(scope.as_ref(), ret_ty);
+                let ret_numopt = self.ret_is_numopt_in(scope.as_ref(), ret_ty);
                 let Some(root) = self.root_fn(
-                    chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, cls, scope,
+                    chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, ret_numopt, cls,
+                    scope, ret_ty,
                 ) else {
                     // Not a signature this tier can even describe. That is a
                     // property of the function, not of this call, so record it —
@@ -5769,13 +5787,16 @@ impl Interp {
         ret_obj: Option<Rc<ClassDef>>,
         ret_str: bool,
         ret_val: bool,
+        ret_numopt: bool,
         this: Option<Rc<ClassDef>>,
         target: usize,
         frame: &[Value],
         scope: Option<Env>,
+        ret_ty: Option<&'static TypeExpr>,
     ) -> Result<Option<Value>, Thrown> {
         let Some(root) = self.root_fn(
-            chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, this, scope,
+            chunk, params, ret_num, ret_bool, ret_obj, ret_str, ret_val, ret_numopt, this, scope,
+            ret_ty,
         ) else {
             return Ok(None);
         };
@@ -5942,36 +5963,41 @@ impl Interp {
         ret_obj: Option<Rc<ClassDef>>,
         ret_str: bool,
         ret_val: bool,
+        ret_numopt: bool,
         this: Option<Rc<ClassDef>>,
         // Where the *hot* function's free names resolve. Its callees carry their
         // own (a method's is its class's); this is the one the group starts from,
         // and it has to come from the caller, which is the only thing that knows
         // which closure is running.
         scope: Option<Env>,
+        ret_ty_decl: Option<&'static TypeExpr>,
     ) -> Option<JitFn> {
         Some(JitFn {
             chunk: chunk.clone(),
             params: simple_param_names(params)?,
-            param_tys: self.param_types(params),
+            param_tys: self.param_types(scope.as_ref(), params),
             this,
             ret,
             ret_bool,
             ret_obj,
             ret_str,
             ret_val,
+            ret_numopt,
             bind: None,
             scope: scope.map(DefScope),
+            ret_ty: ret_ty_decl,
         })
     }
 
     /// What each parameter is declared to be. A body cannot tell you: the values
     /// come from outside it.
-    fn param_types(&self, params: &[Param]) -> Vec<Option<JitSlot>> {
+    fn param_types(&self, env: Option<&Env>, params: &[Param]) -> Vec<Option<JitSlot>> {
+        let env = env.unwrap_or(&self.globals);
         params
             .iter()
             .map(|p| {
                 let t = p.ty.as_ref()?;
-                match resolve_field_ty(t, &self.globals) {
+                match resolve_field_ty(t, env) {
                     FieldTy::Num(mersey_front::check::Num::Int(
                         mersey_front::check::IntKind::I32,
                     )) => Some(JitSlot::I32),
@@ -6031,16 +6057,18 @@ impl Interp {
         }
         Some(JitFn {
             params: simple_param_names(c.data.params)?,
-            param_tys: self.param_types(c.data.params),
+            param_tys: self.param_types(Some(&c.env), c.data.params),
             chunk,
             this: None,
             ret: c.data.ret_num,
             ret_bool: c.data.ret_bool,
-            ret_obj: self.ret_class(&c.data),
-            ret_str: self.ret_is_str(c.data.ret_ty()),
-            ret_val: self.ret_is_val(c.data.ret_ty()),
+            ret_obj: self.ret_class_in(Some(&c.env), c.data.ret_ty()),
+            ret_str: self.ret_is_str_in(Some(&c.env), c.data.ret_ty()),
+            ret_val: self.ret_is_val_in(Some(&c.env), c.data.ret_ty()),
+            ret_numopt: self.ret_is_numopt_in(Some(&c.env), c.data.ret_ty()),
             bind: Some((name.to_string(), c.clone())),
             scope: Some(DefScope(c.env.clone())),
+            ret_ty: c.data.ret_ty(),
         })
     }
 
@@ -6061,16 +6089,18 @@ impl Interp {
         let scope = cls.env.clone().map(DefScope);
         Some(JitFn {
             params: simple_param_names(data.params)?,
-            param_tys: self.param_types(data.params),
+            param_tys: self.param_types(cls.env.as_ref(), data.params),
             chunk,
             this: None,
             ret: data.ret_num,
             ret_bool: data.ret_bool,
-            ret_obj: self.ret_class(&data),
-            ret_str: self.ret_is_str(data.ret_ty()),
-            ret_val: self.ret_is_val(data.ret_ty()),
+            ret_obj: self.ret_class_in(cls.env.as_ref(), data.ret_ty()),
+            ret_str: self.ret_is_str_in(cls.env.as_ref(), data.ret_ty()),
+            ret_val: self.ret_is_val_in(cls.env.as_ref(), data.ret_ty()),
+            ret_numopt: self.ret_is_numopt_in(cls.env.as_ref(), data.ret_ty()),
             bind: None,
             scope,
+            ret_ty: data.ret_ty(),
         })
     }
 
@@ -6097,16 +6127,18 @@ impl Interp {
         let scope = cls.env.clone().map(DefScope);
         Some(JitFn {
             params: simple_param_names(data.params)?,
-            param_tys: self.param_types(data.params),
+            param_tys: self.param_types(cls.env.as_ref(), data.params),
             chunk,
             this: Some(cls.clone()),
             ret: data.ret_num,
             ret_bool: data.ret_bool,
-            ret_obj: self.ret_class(&data),
-            ret_str: self.ret_is_str(data.ret_ty()),
-            ret_val: self.ret_is_val(data.ret_ty()),
+            ret_obj: self.ret_class_in(cls.env.as_ref(), data.ret_ty()),
+            ret_str: self.ret_is_str_in(cls.env.as_ref(), data.ret_ty()),
+            ret_val: self.ret_is_val_in(cls.env.as_ref(), data.ret_ty()),
+            ret_numopt: self.ret_is_numopt_in(cls.env.as_ref(), data.ret_ty()),
             bind: None, // a class's method set cannot change (§4.1)
             scope,
+            ret_ty: data.ret_ty(),
         })
     }
 
@@ -6154,49 +6186,76 @@ impl Interp {
             this: Some(cls.clone()),
             ret: data.ret_num,
             ret_bool: data.ret_bool,
-            ret_obj: self.ret_class(&data),
-            ret_str: self.ret_is_str(data.ret_ty()),
-            ret_val: self.ret_is_val(data.ret_ty()),
+            ret_obj: self.ret_class_in(cls.env.as_ref(), data.ret_ty()),
+            ret_str: self.ret_is_str_in(cls.env.as_ref(), data.ret_ty()),
+            ret_val: self.ret_is_val_in(cls.env.as_ref(), data.ret_ty()),
+            ret_numopt: self.ret_is_numopt_in(cls.env.as_ref(), data.ret_ty()),
             bind: None, // a class's accessor set cannot change (§4.1)
             scope,
+            ret_ty: data.ret_ty(),
         })
     }
 
-    /// The class a function is declared to return, when it returns an object.
-    pub(crate) fn ret_class(&self, data: &FnData) -> Option<Rc<ClassDef>> {
-        self.ret_class_of(data.ret_ty)
-    }
-
-    /// Does this return type resolve to `string`? Kept beside `ret_class_of`
-    /// because they answer the same question about the same `TypeExpr`, and both
-    /// are asked only on the compile path.
-    pub(crate) fn ret_is_str(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
-        match ret_ty {
-            Some(t) => matches!(resolve_field_ty(t, &self.globals), FieldTy::Str),
-            None => false,
+    /// What a function is declared to return — a class, a string, an engine
+    /// primitive, a nullable number — asked in the scope the function was
+    /// *written* in rather than the one being run.
+    ///
+    /// A declared return type is a name, and a name means what its own scope says
+    /// — so a method of a class defined in a module resolves `Version?` to
+    /// nothing when asked of the entry module's globals. The signature then reads
+    /// as `void`, and every caller comparing the result against `null` is refused.
+    /// This is the same mistake `name_kind` and `top_level_fn` made before they
+    /// took a scope, and it hides the same way: as a refusal somewhere else.
+    pub(crate) fn ret_class_in(
+        &self,
+        env: Option<&Env>,
+        ret_ty: Option<&'static TypeExpr>,
+    ) -> Option<Rc<ClassDef>> {
+        match resolve_field_ty(ret_ty?, env.unwrap_or(&self.globals)) {
+            FieldTy::Obj(c) => Some(c),
+            _ => None,
         }
     }
 
-    /// …and the same for an engine primitive — or an *array*, which compiled code
-    /// carries the same way when it built the array itself. A function returning
-    /// one it was merely handed (a `Ty::Arr` parameter) is a different shape and
-    /// is refused, which is a refusal and not a wrong answer.
-    pub(crate) fn ret_is_val(&self, ret_ty: Option<&'static TypeExpr>) -> bool {
+    pub(crate) fn ret_is_str_in(
+        &self,
+        env: Option<&Env>,
+        ret_ty: Option<&'static TypeExpr>,
+    ) -> bool {
         match ret_ty {
             Some(t) => matches!(
-                resolve_field_ty(t, &self.globals),
-                FieldTy::Val | FieldTy::Arr(_)
+                resolve_field_ty(t, env.unwrap_or(&self.globals)),
+                FieldTy::Str
             ),
             None => false,
         }
     }
 
-    /// The same, from a return type already in hand — see `vm::OsrCtx::ret_ty`
-    /// for why the two are separate.
-    pub(crate) fn ret_class_of(&self, ret_ty: Option<&'static TypeExpr>) -> Option<Rc<ClassDef>> {
-        match resolve_field_ty(ret_ty?, &self.globals) {
-            FieldTy::Obj(c) => Some(c),
-            _ => None,
+    pub(crate) fn ret_is_numopt_in(
+        &self,
+        env: Option<&Env>,
+        ret_ty: Option<&'static TypeExpr>,
+    ) -> bool {
+        match ret_ty {
+            Some(t) => matches!(
+                resolve_field_ty(t, env.unwrap_or(&self.globals)),
+                FieldTy::NumOpt
+            ),
+            None => false,
+        }
+    }
+
+    pub(crate) fn ret_is_val_in(
+        &self,
+        env: Option<&Env>,
+        ret_ty: Option<&'static TypeExpr>,
+    ) -> bool {
+        match ret_ty {
+            Some(t) => matches!(
+                resolve_field_ty(t, env.unwrap_or(&self.globals)),
+                FieldTy::Val | FieldTy::Arr(_)
+            ),
+            None => false,
         }
     }
 

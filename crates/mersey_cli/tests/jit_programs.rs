@@ -306,3 +306,25 @@ fn maps_and_sets_agree_across_the_tier_boundary() {
     // A `Map` carried *through* a signature — as a parameter and as a return.
     assert!(out.contains("carried   85"), "{out}");
 }
+
+/// A nullable number returned through a *signature*. The tier has carried one in
+/// a register for a while — an `i64` with `i64::MIN` for null — but only as a
+/// local, a parameter, or a builtin method's result; a function could not say it
+/// returned one. So the signature came out `void`, the body was refused at its
+/// first `Return`, and every caller went with it, because a caller that cannot
+/// describe the callee cannot call it. That is what kept `parse`-shaped
+/// functions interpreted right across the standard library.
+///
+/// Null here is a *sentinel*, not a zero, and 0 is an ordinary value — so this
+/// pins that the two stay distinct on both tiers, on `return null`, on a
+/// returned 0, and on falling off the end.
+#[test]
+fn nullable_returns_agree_across_the_tier_boundary() {
+    check("nullable-return.mersey");
+    let out = run("nullable-return.mersey", true);
+    // Zero comes back as zero, null as null, and neither as the other.
+    assert!(out.contains("zeroOrNull 0 null 5"), "{out}");
+    // A value found part-way through, and an implicit null off the end.
+    assert!(out.contains("firstDigit 7 null"), "{out}");
+    assert!(out.contains("digitsOf   5 null null"), "{out}");
+}

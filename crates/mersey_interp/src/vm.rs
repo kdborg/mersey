@@ -2882,14 +2882,19 @@ fn exec(
                             .expect("osr_off is set when there is no context");
                         let slots = &frame[frame_base..frame_base + chunk.n_slots as usize];
                         let chunk_here = chunk.clone();
+                        // The declared return type is a *name*, so it means what
+                        // the running scope says — resolving it against the entry
+                        // module's globals reads a module-defined class as `void`.
+                        let here = scopes.last().cloned();
                         let out = i.try_osr(
                             &chunk_here,
                             ctx.params,
                             ctx.ret,
                             ctx.ret_bool,
-                            i.ret_class_of(ctx.ret_ty),
-                            i.ret_is_str(ctx.ret_ty),
-                            i.ret_is_val(ctx.ret_ty),
+                            i.ret_class_in(here.as_ref(), ctx.ret_ty),
+                            i.ret_is_str_in(here.as_ref(), ctx.ret_ty),
+                            i.ret_is_val_in(here.as_ref(), ctx.ret_ty),
+                            i.ret_is_numopt_in(here.as_ref(), ctx.ret_ty),
                             ctx.this,
                             $t,
                             slots,
@@ -2898,7 +2903,8 @@ fn exec(
                             // it — every name it resolves comes from outside the
                             // function, and walking up from here reaches the same
                             // module scope the function was written in.
-                            scopes.last().cloned(),
+                            here,
+                            ctx.ret_ty,
                         );
                         if let Some(v) = throwing!(out) {
                             // The compiled code ran the rest of *this* function.

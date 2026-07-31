@@ -286,6 +286,29 @@ const SLOT_BYTES: usize = 8;
 const GROUP_MAX: usize = 48;
 
 /// The hook the interpreter calls: compile a call graph, or refuse it.
+/// A declared type as written, for the trace. `TypeExpr` has no `Debug`, and a
+/// derived one would be unreadable anyway — what the reader wants is the source
+/// spelling, which is the only part that says which shape is missing.
+fn ty_desc(t: &mersey_front::ast::TypeExpr) -> String {
+    use mersey_front::ast::TypeExpr as T;
+    match t {
+        T::Named { name, args, .. } if args.is_empty() => name.clone(),
+        T::Named { name, args, .. } => format!(
+            "{name}<{}>",
+            args.iter().map(ty_desc).collect::<Vec<_>>().join(", ")
+        ),
+        T::Nullable(e) => format!("{}?", ty_desc(e)),
+        T::ArrayOf(e) => format!("{}[]", ty_desc(e)),
+        T::Union(es) => es.iter().map(ty_desc).collect::<Vec<_>>().join(" | "),
+        T::Tuple(es) => format!(
+            "[{}]",
+            es.iter().map(ty_desc).collect::<Vec<_>>().join(", ")
+        ),
+        T::Record(_) => "{…}".to_string(),
+        T::Function { .. } => "(…) => …".to_string(),
+    }
+}
+
 /// `MERSEY_JIT_TRACE=1` — print every opcode the two passes accept.
 ///
 /// Tier-1 refuses a *function* for one op it cannot type, and `None` carries no
@@ -335,6 +358,9 @@ struct Sig {
     ret: Ty,
     /// The function returns nothing. Its result register is a placeholder.
     void: bool,
+    /// What the signature *said*, when `void` came out of a declared type this
+    /// tier has no shape for rather than out of an honest `void`. Trace only.
+    void_but_declared: Option<&'static mersey_front::ast::TypeExpr>,
     n_slots: usize,
     this_slot: Option<usize>,
     this: Option<Ty>,
@@ -470,8 +496,16 @@ impl Group<'_> {
         // A method whose body never says `this` has no slot for it, and does not
         // need one.
         let this_slot = f.chunk.this_slot.map(|s| s as usize);
-        let void =
-            f.ret.is_none() && !f.ret_bool && f.ret_obj.is_none() && !f.ret_str && !f.ret_val;
+        let void = f.ret.is_none()
+            && !f.ret_bool
+            && f.ret_obj.is_none()
+            && !f.ret_str
+            && !f.ret_val
+            && !f.ret_numopt;
+        // A declared return type that produced no shape is the single most
+        // misleading refusal this tier gives: the body reads fine, every op is
+        // accepted, and it stops dead at `Return` with nothing to say why.
+        let void_but_declared = if void { f.ret_ty } else { None };
         let ret = if void {
             Ty::I32 // a placeholder: nothing reads it
         } else if let Some(c) = &f.ret_obj {
@@ -480,6 +514,8 @@ impl Group<'_> {
             Ty::Str
         } else if f.ret_val {
             Ty::Val
+        } else if f.ret_numopt {
+            Ty::I32Opt
         } else if f.ret_bool {
             Ty::Bool
         } else {
@@ -489,6 +525,7 @@ impl Group<'_> {
             params,
             ret,
             void,
+            void_but_declared,
             n_slots: f.chunk.n_slots as usize,
             this_slot,
             this,
@@ -1876,13 +1913,25 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             Op::Return => {
                 let top = stack.pop()?;
                 if sig.void {
+                    if *TRACE {
+                        if let Some(t) = sig.void_but_declared {
+                            eprintln!(
+                                "jit:   return type `{}` has no shape in this tier \
+                                 — the signature, not the body",
+                                ty_desc(t)
+                            );
+                        }
+                    }
                     return None;
                 }
                 // `return null` from an object-returning function.
                 if matches!(top, TSlot::Null) {
                     // `string?` is a null data pointer and `Bytes?` is handle 0,
                     // the same idea as a null object.
-                    if !matches!(ret, Some(Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr)) {
+                    if !matches!(
+                        ret,
+                        Some(Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr | Ty::I32Opt)
+                    ) {
                         return None;
                     }
                     reachable = false;
@@ -1908,6 +1957,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // widening and not a mismatch.
                     (Some(Ty::Val), Ty::StrArr) => {}
                     (Some(Ty::StrArr), Ty::StrArr) => {}
+                    // A nullable number takes a plain one — every `int32` fits,
+                    // and the widening is the same sign-extend a slot store does.
+                    // This arm must come *before* the numeric one below, which
+                    // would see `I32Opt != I32` and an `is_int` that is false for
+                    // the sentinel type, and refuse.
+                    (Some(Ty::I32Opt), Ty::I32 | Ty::Bool | Ty::I32Opt) => {}
                     (Some(k), t) if t.is_num() => {
                         if k != t && !(k.is_int() && t.is_int() && k.cl() == t.cl()) {
                             return None;
@@ -1919,7 +1974,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 reachable = false;
             }
             Op::ReturnNull => {
-                if !sig.void {
+                // Not a value at all: the wrapper reports `ST_NULL` and the
+                // caller reads it as null — which is a legitimate result for any
+                // type that has a null, and nothing at all for a `void`.
+                if !sig.void
+                    && !matches!(
+                        ret,
+                        Some(Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr | Ty::I32Opt)
+                    )
+                {
                     return None; // a value was promised and none is being given
                 }
                 reachable = false;
@@ -2336,6 +2399,12 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 // the arena is cleared.
                 // Both come back by the handle of the arena slot that owns them;
                 // a null one has handle 0, which `take` reports as absent.
+                // One register, `i64::MIN` for null — so the interpreter is
+                // handed either a number or nothing, never the sentinel itself.
+                Ty::I32Opt => match i64::from_ne_bytes(out[..8].try_into().expect("8")) {
+                    i64::MIN => JitResult::Null,
+                    v => JitResult::I32(v as i32),
+                },
                 Ty::Obj(_) | Ty::Str | Ty::Val | Ty::StrArr => {
                     let h = u64::from_ne_bytes(out[8..16].try_into().expect("8"));
                     match arena.take(h) {
@@ -4740,8 +4809,24 @@ fn translate(
                     b.ins().return_(&[z, z, z]);
                     reachable = false;
                 }
+                // A nullable number is null by its *sentinel*, not by zero — zero
+                // is an ordinary `int32` and would come back as the number 0.
+                SlotV::Null if matches!(p.ret, Ty::I32Opt) => {
+                    let n = b.ins().iconst(types::I64, i64::MIN);
+                    b.ins().return_(&[n]);
+                    reachable = false;
+                }
                 v => {
-                    let (v, _) = scalar(v)?;
+                    let (v, from) = scalar(v)?;
+                    // A plain `int32` returned where `int32?` was promised is one
+                    // register either way, but not the same width — the catch-all
+                    // used to hand back an i32 from an i64 signature, which the
+                    // verifier rejects and nothing before it would have caught.
+                    let v = if p.ret == Ty::I32Opt && from != Ty::I32Opt {
+                        convert(b, v, from, Ty::I64)
+                    } else {
+                        v
+                    };
                     b.ins().return_(&[v]);
                     reachable = false;
                 }

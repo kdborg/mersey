@@ -1,0 +1,83 @@
+// `int32?` coming back *out* of a function, on both tiers.
+//
+// The tier has carried a nullable number in a register for a while — one `i64`
+// with `i64::MIN` for null — but only as a local, a parameter or a method's
+// result. A *signature* had no way to say it: `ret` described a number, a bool,
+// a class, a string or an opaque, and `int32?` was none of those, so the
+// signature came out `void` and the body was refused the moment it returned
+// anything. That refusal is the quiet kind — it lands on `Return` with every
+// preceding op accepted, and it takes every caller down with it, because a
+// caller that cannot describe the callee cannot call it.
+//
+// It is worth pinning rather than assuming, because null here is a *sentinel*
+// and not a zero: 0 is an ordinary `int32`, so getting the two confused turns a
+// "no digits" answer into the number zero and the program keeps running.
+
+import { console } from "std:console";
+
+/// Returns a value on one path and null on another — the shape every `parse` in
+/// the standard library has.
+function digitsOf(s: string, at: int32): int32? {
+    if (s.length == 0) {
+        return null;
+    }
+    const c = s.codePointAt(at);
+    if (c == null) {
+        return null;
+    }
+    if (c < 48 || c > 57) {
+        return null;
+    }
+    return c - 48;
+}
+
+/// Zero is a *value*, not an absence — the case the sentinel exists for.
+function zeroOrNull(i: int32): int32? {
+    if (i % 3 == 0) {
+        return 0;
+    }
+    if (i % 3 == 1) {
+        return null;
+    }
+    return i;
+}
+
+/// Falling off the end with nothing to return. The wrapper reports "null" as a
+/// status rather than as a value, which is a different path from `return null`.
+function firstDigit(s: string): int32? {
+    let i = 0;
+    while (i < s.length) {
+        const d = digitsOf(s, i);
+        if (d != null) {
+            return d;
+        }
+        i += 1;
+    }
+    // implicit null
+}
+
+/// The caller: it has to distinguish null from 0, on every one of these.
+function tally(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const z = zeroOrNull(i);
+        if (z == null) {
+            acc = acc + 1000;
+        } else {
+            acc = acc + z;
+        }
+        const d = firstDigit("ab7cd");
+        if (d != null) {
+            acc = acc + d;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`tally      ${tally(200000)}`);
+// The three shapes read back one at a time, after the loop has made them hot.
+console.log(`zeroOrNull ${zeroOrNull(3)} ${zeroOrNull(4)} ${zeroOrNull(5)}`);
+console.log(`firstDigit ${firstDigit("ab7cd")} ${firstDigit("none")}`);
+console.log(`digitsOf   ${digitsOf("5", 0)} ${digitsOf("x", 0)} ${digitsOf("", 0)}`);
