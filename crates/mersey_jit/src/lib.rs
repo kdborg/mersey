@@ -957,25 +957,61 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut stack: Vec<TSlot> = Vec::new();
     let mut reachable = true;
     for (pc, op) in chunk.code.iter().enumerate() {
+        // Folded into the previous op (a `.length` a web-string read absorbed).
+        let skip = folded.contains(&pc);
+        if !skip {
+            if let Some(want) = block_types.get(&pc) {
+                // A *fall-through* into a labelled block has to agree with the
+                // jumps that reach it. This used to overwrite the stack with the
+                // recorded types and say nothing, so the two predecessors of a
+                // ternary could disagree and the analysis would never notice —
+                // `x == null ? 0 : x` merges an `int32` with an `int32?`. Where
+                // the two have different machine types Cranelift catches it and
+                // the function is refused, which is how this was found; where
+                // they have the *same* one (`int32?` is an `i64`, and so is
+                // `int64`) nothing catches it and the sentinel is read as a
+                // number. Only a reachable fall-through has anything to check —
+                // arriving here after a `Return` or a `Jump` is the ordinary case.
+                if reachable {
+                    let have: Option<Vec<Ty>> = stack.iter().map(|s| tval(*s)).collect();
+                    match have {
+                        Some(h)
+                            if h.len() == want.len()
+                                && h.iter().zip(want).all(|(a, b)| arg_fits(*b, *a)) => {}
+                        _ => return None,
+                    }
+                }
+                stack = want.iter().map(|t| TSlot::Val(*t, Prov::Stable)).collect();
+                reachable = true;
+            }
+        }
         if *TRACE {
+            // Printed *after* deciding whether this op is even looked at, so that
+            // "the last line is the op that failed" stays true. It was not: the
+            // trailing `ReturnNull` every function carries is unreachable after a
+            // `Return`, and printing it first made a refusal that happened later —
+            // in codegen, or in the entry wrapper — look like an analysis failure
+            // on an op the analysis had skipped.
+            let why = if skip {
+                " (folded)"
+            } else if !reachable {
+                " (unreachable)"
+            } else {
+                ""
+            };
             // A name id says nothing on its own, and a refusal on `LoadName` is
             // one of the commonest — so resolve it here.
             match *op {
                 Op::LoadName(ni) | Op::CallMethod(ni, _) | Op::GetMember(ni, _) => {
-                    eprintln!("jit: analyze {pc} {op:?} `{}`", chunk.names[ni as usize])
+                    eprintln!(
+                        "jit: analyze {pc} {op:?} `{}`{why}",
+                        chunk.names[ni as usize]
+                    )
                 }
-                _ => eprintln!("jit: analyze {pc} {op:?}"),
+                _ => eprintln!("jit: analyze {pc} {op:?}{why}"),
             }
         }
-        // Folded into the previous op (a `.length` a web-string read absorbed).
-        if folded.contains(&pc) {
-            continue;
-        }
-        if let Some(want) = block_types.get(&pc) {
-            stack = want.iter().map(|t| TSlot::Val(*t, Prov::Stable)).collect();
-            reachable = true;
-        }
-        if !reachable {
+        if skip || !reachable {
             continue;
         }
         match *op {
@@ -2060,6 +2096,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             _ => return None,
         }
     }
+    if *TRACE {
+        // Reaching here at all is the fact worth printing: without it, "analysis
+        // passed and something later refused" reads exactly like "the last op
+        // failed", and the two want completely different investigations.
+        eprintln!(
+            "jit:   analysis accepted every op — a refusal after this is codegen or the wrapper"
+        );
+    }
 
     let slots: Vec<Ty> = slots.into_iter().map(|t| t.unwrap_or(Ty::I32)).collect();
     let owned_slots: Vec<bool> = slots
@@ -2355,7 +2399,11 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         let mut fbc = FunctionBuilderContext::new();
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-            translate(
+            // A `None` here is codegen declining a shape the analysis accepted —
+            // the two passes disagreeing, which is a gap in this compiler rather
+            // than a property of the program. Silence made it indistinguishable
+            // from an ordinary refusal.
+            if translate(
                 &mut b,
                 &mut module,
                 &plans,
@@ -2364,7 +2412,14 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
                 &shims,
                 &g.classes,
                 &osr_entries,
-            )?;
+            )
+            .is_none()
+            {
+                if *TRACE {
+                    eprintln!("jit: codegen declined fn {n} — analysis had accepted it");
+                }
+                return None;
+            }
             b.finalize();
         }
         // Cranelift's verifier runs here, and a malformed function is a bug in
@@ -2373,6 +2428,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         if let Err(e) = module.define_function(ids[n], &mut ctx) {
             if *TRACE {
                 eprintln!("jit: define_function failed for fn {n}: {e:?}");
+                eprintln!("jit: its bytecode: {:?}", plans[n].chunk.code);
                 eprintln!("{}", ctx.func.display());
             }
             return None;
@@ -2942,7 +2998,16 @@ fn wrapper(
         b.seal_all_blocks();
         b.finalize();
     }
-    module.define_function(id, ctx).ok()?;
+    // As above: the *wrapper* is generated code too, and a verifier complaint
+    // about it is this compiler's bug. Two of the worst refusals so far were
+    // exactly here — analysis and codegen both clean, the entry wrapper rejected.
+    if let Err(e) = module.define_function(id, ctx) {
+        if *TRACE {
+            eprintln!("jit: entry wrapper rejected (osr={is_osr}): {e:?}");
+            eprintln!("{}", ctx.func.display());
+        }
+        return None;
+    }
     module.clear_context(ctx);
     Some(id)
 }
