@@ -1,0 +1,76 @@
+// A borrow crossing a block edge, whose source is then overwritten.
+//
+// This was refused outright, and the reason was sound: a borrow rooted in a
+// re-assignable local is only as long-lived as that local, and a block parameter
+// has no provenance — so the guard that keeps such a borrow from dangling could
+// not follow it across the edge. Refusing was the safe answer.
+//
+// It is not the only answer. Giving the borrow a reference of *its own* before
+// it crosses removes the question instead of tracking it: what arrives in the
+// merge no longer depends on the slot it came from, so there is nothing left for
+// an overwrite to invalidate. A string is copied, an opaque and an object take a
+// second arena reference, and an array is still refused because it has no handle
+// to own.
+//
+// Every case here overwrites the source *after* the merge and then reads the
+// value that crossed. If the promotion did not happen, that read is of freed
+// memory — which is not a crash but a wrong answer, the same shape as the two
+// use-after-frees this engine shipped and had to have found by audit. So the
+// assertions read contents, never lengths.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// A string borrow crossing a ternary, source overwritten afterwards.
+function viaTernary(flag: bool): int32 {
+    let s = "1.2.3".slice(0, 5);
+    const t = flag ? s : "9.9";
+    s = "zzzzzzzzz";
+    return t.indexOf(".");
+}
+
+/// The same across an `if`/`else` merge rather than a ternary, and with the
+/// source overwritten inside a loop so a stale pointer has time to be reused.
+function viaBranch(flag: bool, n: int32): int32 {
+    let s = "4.5.6".slice(0, 5);
+    let t = "";
+    if (flag) {
+        t = s;
+    } else {
+        t = "8.8";
+    }
+    let i = 0;
+    while (i < n) {
+        s = `q${i}`;
+        i += 1;
+    }
+    return t.indexOf(".");
+}
+
+/// An *opaque* — its handle is its identity, so a stale one is a stale name
+/// rather than a stale pointer, and it must be cloned rather than copied.
+function viaOpaque(flag: bool): int32 {
+    let b = bytes.encodeUtf8("abcdef");
+    const c = flag ? b : bytes.encodeUtf8("xy");
+    b = bytes.encodeUtf8("zzzzzzzzzzzzzzzz");
+    return c.length;
+}
+
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = viaTernary(i % 2 == 0)
+            + viaBranch(i % 2 == 0, 3)
+            + viaOpaque(i % 2 == 0);
+        i += 1;
+    }
+    return acc;
+}
+
+// Hot enough that the promoted path is what runs.
+console.log(`drive       ${drive(200000)}`);
+// Then each read back on its own, both ways through the merge.
+console.log(`viaTernary  ${viaTernary(true)} ${viaTernary(false)}`);
+console.log(`viaBranch   ${viaBranch(true, 3)} ${viaBranch(false, 3)}`);
+console.log(`viaOpaque   ${viaOpaque(true)} ${viaOpaque(false)}`);

@@ -595,9 +595,9 @@ struct Plan {
     str_split_at: HashSet<usize>,
     /// Stack entries that must change type on the way into a labelled block,
     /// keyed by the block's own pc — a *fall-through* edge. See `coerce_edge`.
-    coerce_fall: HashMap<usize, Vec<(usize, Ty)>>,
+    coerce_fall: HashMap<usize, Vec<(usize, EdgeFix)>>,
     /// The same for a *jump* edge, keyed by the jump instruction's pc.
-    coerce_jump: HashMap<usize, Vec<(usize, Ty)>>,
+    coerce_jump: HashMap<usize, Vec<(usize, EdgeFix)>>,
     /// `s.codePointAt(i)`: a span and an index, straight to a pure shim.
     str_cp_at: HashSet<usize>,
     /// `s.slice(a, b)` / `s.substring(a, b)` / `s.charAt(a)` by id — the arena
@@ -924,8 +924,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
     let mut str_split_at: HashSet<usize> = HashSet::new();
-    let mut coerce_fall: HashMap<usize, Vec<(usize, Ty)>> = HashMap::new();
-    let mut coerce_jump: HashMap<usize, Vec<(usize, Ty)>> = HashMap::new();
+    let mut coerce_fall: HashMap<usize, Vec<(usize, EdgeFix)>> = HashMap::new();
+    let mut coerce_jump: HashMap<usize, Vec<(usize, EdgeFix)>> = HashMap::new();
     let mut str_cp_at: HashSet<usize> = HashSet::new();
     let mut str_sub_at: HashMap<usize, (i64, bool)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
@@ -1001,7 +1001,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     if h.len() != want.len() {
                         return None;
                     }
-                    let mut fix: Vec<(usize, Ty)> = Vec::new();
+                    let mut fix: Vec<(usize, EdgeFix)> = Vec::new();
                     for (i, (a, b)) in h.iter().zip(want).enumerate() {
                         match coerce_edge(*b, *a) {
                             Some(None) => {}
@@ -2270,18 +2270,28 @@ fn record_block(
     stack: &[TSlot],
     // Where a jump's operands must change type to match a block already
     // recorded by another predecessor. Keyed by the *jump's* pc.
-    coerce: &mut HashMap<usize, Vec<(usize, Ty)>>,
+    coerce: &mut HashMap<usize, Vec<(usize, EdgeFix)>>,
     pc: usize,
 ) -> Option<()> {
-    // A callee marker cannot cross an edge: it is not a value and has nothing to
-    // be passed as. Neither can a borrow rooted in a re-assignable local — a
-    // block parameter has no provenance, so the guard that keeps such a borrow
-    // from dangling could not follow it.
-    if stack.iter().any(|v| matches!(prov(*v), Prov::FromSlot(_))) {
-        return None;
-    }
     let tys: Option<Vec<Ty>> = stack.iter().map(|s| tval(*s)).collect();
     let tys = tys?;
+    // A borrow rooted in a re-assignable local used to be refused here: a block
+    // parameter has no provenance, so the guard that keeps such a borrow from
+    // dangling cannot follow it across. Give it a reference of its own instead
+    // and the question does not arise — what crosses no longer depends on the
+    // slot it came from. An array is still refused: it has no handle to own.
+    let mut own: Vec<(usize, EdgeFix)> = Vec::new();
+    for (i, v) in stack.iter().enumerate() {
+        if matches!(prov(*v), Prov::FromSlot(_)) {
+            match tval(*v) {
+                Some(Ty::Str | Ty::Val | Ty::StrArr | Ty::Obj(_)) => own.push((i, EdgeFix::Own)),
+                _ => return None,
+            }
+        }
+    }
+    if !own.is_empty() {
+        coerce.entry(pc).or_default().extend(own);
+    }
     match map.get(&target) {
         Some(have) if *have != tys => {
             // Another predecessor got here first and fixed the shape. This one
@@ -2289,7 +2299,7 @@ fn record_block(
             if have.len() != tys.len() {
                 return None;
             }
-            let mut fix: Vec<(usize, Ty)> = Vec::new();
+            let mut fix: Vec<(usize, EdgeFix)> = Vec::new();
             for (i, (a, b)) in tys.iter().zip(have).enumerate() {
                 match coerce_edge(*b, *a) {
                     Some(None) => {}
@@ -3257,6 +3267,23 @@ fn flatten(stack: &[SlotV]) -> Option<Vec<ClValue>> {
 /// false)` in `std:semver` among them, which took `Version.parse` down with it.
 /// The checker has already established the program is well typed, so this only
 /// has to agree about representation, which is the same rule `Return` uses.
+/// What a stack entry must have done to it on the way into a merge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EdgeFix {
+    /// A nullable number where a number is wanted: guard, then reduce.
+    Narrow,
+    /// A number where a nullable is wanted: sign-extend. Free.
+    Widen,
+    /// A borrow rooted in a re-assignable local, given a reference of its own.
+    ///
+    /// A block parameter has no provenance, so the guard that keeps such a
+    /// borrow from dangling cannot follow it across the edge — which is why this
+    /// used to be a refusal. Making it *owned* removes the question instead: the
+    /// value crossing no longer depends on the slot it came from, so there is
+    /// nothing left for an overwrite to invalidate.
+    Own,
+}
+
 /// Can a value of type `have` become `want` on the way into a merge, and how?
 ///
 /// `Some(None)` means it already fits; `Some(Some(t))` means emit a conversion
@@ -3269,7 +3296,7 @@ fn flatten(stack: &[SlotV]) -> Option<Vec<ClValue>> {
 /// costs the whole function — and a function that leaves Tier 1 runs about 51x
 /// slower on compute-shaped work, which is why this is worth a conversion rather
 /// than a refusal.
-fn coerce_edge(want: Ty, have: Ty) -> Option<Option<Ty>> {
+fn coerce_edge(want: Ty, have: Ty) -> Option<Option<EdgeFix>> {
     if arg_fits(want, have) {
         return Some(None);
     }
@@ -3277,9 +3304,9 @@ fn coerce_edge(want: Ty, have: Ty) -> Option<Option<Ty>> {
         // Narrowing: guard against the sentinel, then reduce. The guard is not
         // for well-typed code — the checker has already proved it non-null — it
         // is because a silent `i64::MIN` would be a wrong answer, not a bail.
-        (Ty::I32, Ty::I32Opt) => Some(Some(Ty::I32)),
+        (Ty::I32, Ty::I32Opt) => Some(Some(EdgeFix::Narrow)),
         // Widening is free and always safe: every `int32` is an `int32?`.
-        (Ty::I32Opt, Ty::I32 | Ty::Bool) => Some(Some(Ty::I32Opt)),
+        (Ty::I32Opt, Ty::I32 | Ty::Bool) => Some(Some(EdgeFix::Widen)),
         _ => None,
     }
 }
@@ -3518,7 +3545,15 @@ fn translate(
         };
         if let Some(&blk) = blocks.get(&pc) {
             if reachable {
-                coerce_stack(b, ctx, pc, &mut stack, p.coerce_fall.get(&pc));
+                coerce_stack(
+                    b,
+                    &shim,
+                    arena_ptr,
+                    ctx,
+                    pc,
+                    &mut stack,
+                    p.coerce_fall.get(&pc),
+                );
                 let args = flatten(&stack)?;
                 b.ins().jump(blk, &args);
             }
@@ -5149,7 +5184,15 @@ fn translate(
                 stack.push(SlotV::Val(c, Ty::Bool));
             }
             Op::Jump(t) => {
-                coerce_stack(b, ctx, pc, &mut stack, p.coerce_jump.get(&pc));
+                coerce_stack(
+                    b,
+                    &shim,
+                    arena_ptr,
+                    ctx,
+                    pc,
+                    &mut stack,
+                    p.coerce_jump.get(&pc),
+                );
                 let args = flatten(&stack)?;
                 b.ins().jump(blocks[&t], &args);
                 reachable = false;
@@ -5158,7 +5201,15 @@ fn translate(
                 let (v, vt) = scalar(stack.pop()?)?;
                 let cond = truthy(b, v, vt);
                 let fall = b.create_block();
-                coerce_stack(b, ctx, pc, &mut stack, p.coerce_jump.get(&pc));
+                coerce_stack(
+                    b,
+                    &shim,
+                    arena_ptr,
+                    ctx,
+                    pc,
+                    &mut stack,
+                    p.coerce_jump.get(&pc),
+                );
                 let taken = flatten(&stack)?;
                 if matches!(op, Op::JumpIfFalse(_)) {
                     b.ins().brif(cond, fall, &[], blocks[&t], &taken);
@@ -5387,23 +5438,53 @@ fn box_arg(
 /// not.
 /// Apply the edge coercions `plan` recorded for this pc, in place, before the
 /// stack is flattened into block arguments. See `coerce_edge`.
+#[allow(clippy::too_many_arguments)]
 fn coerce_stack(
     b: &mut FunctionBuilder,
+    shim: &ShimRefs,
+    arena_ptr: ClValue,
     ctx: Ctx,
     pc: usize,
     stack: &mut [SlotV],
-    fixes: Option<&Vec<(usize, Ty)>>,
+    fixes: Option<&Vec<(usize, EdgeFix)>>,
 ) -> Option<()> {
-    for &(i, to) in fixes? {
-        let (v, from) = scalar(*stack.get(i)?)?;
-        let out = match to {
+    for &(i, fix) in fixes? {
+        let cur = *stack.get(i)?;
+        stack[i] = match fix {
             // The sentinel is not a number: guard, then narrow.
-            Ty::I32 => unbox_num(b, ctx, pc, v),
-            // …and widening is the same sign-extend a slot store does.
-            Ty::I32Opt => convert(b, v, from, Ty::I64),
-            _ => return None,
+            EdgeFix::Narrow => {
+                let (v, _) = scalar(cur)?;
+                SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32)
+            }
+            // Widening is the same sign-extend a slot store does.
+            EdgeFix::Widen => {
+                let (v, from) = scalar(cur)?;
+                SlotV::Val(convert(b, v, from, Ty::I64), Ty::I32Opt)
+            }
+            // A borrow given a reference of its own, so that what crosses the
+            // edge no longer depends on the slot it came from. A string is
+            // copied (`own_str` hands back the copy's address as well as its
+            // handle); an opaque and an object take a second arena reference.
+            EdgeFix::Own => match cur {
+                SlotV::Str(ptr, len, _) => {
+                    let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                    b.ins().call(shim.own_str, &[arena_ptr, ptr, len, out]);
+                    let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                    let h = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                    SlotV::Str(d, len, h)
+                }
+                SlotV::ValRef(v, _) => {
+                    let c = b.ins().call(shim.clone_val, &[arena_ptr, v]);
+                    let h = b.inst_results(c)[0];
+                    SlotV::ValRef(h, h)
+                }
+                SlotV::Obj(ptr, fields, _) => {
+                    let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
+                    SlotV::Obj(ptr, fields, b.inst_results(c)[0])
+                }
+                _ => return None,
+            },
         };
-        stack[i] = SlotV::Val(out, to);
     }
     Some(())
 }

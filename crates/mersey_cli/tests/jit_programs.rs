@@ -452,3 +452,24 @@ fn nullable_merges_agree_across_the_tier_boundary() {
     // The widening direction, and a null that must survive as null.
     assert!(out.contains("orNull   7 97 null"), "{out}");
 }
+
+/// A borrow crossing a block edge whose source is then overwritten. This was
+/// refused, and soundly: a borrow rooted in a re-assignable local lives only as
+/// long as that local, and a block parameter has no provenance to carry the
+/// guard across. Giving the borrow a reference of its own before it crosses
+/// removes the question instead of tracking it.
+///
+/// Each case overwrites the source *after* the merge and then reads what
+/// crossed, so a missing promotion is a read of freed memory — a wrong answer
+/// rather than a crash, which is the shape of the two use-after-frees this
+/// engine has shipped. The assertions read contents, never lengths.
+#[test]
+fn borrows_across_edges_agree_across_the_tier_boundary() {
+    check("borrow-across-edge.mersey");
+    let out = run("borrow-across-edge.mersey", true);
+    // Both ways through the merge: the borrowed arm and the constant arm.
+    assert!(out.contains("viaTernary  1 1"), "{out}");
+    assert!(out.contains("viaBranch   1 1"), "{out}");
+    // An opaque, whose handle is its identity rather than a pointer.
+    assert!(out.contains("viaOpaque   6 2"), "{out}");
+}
