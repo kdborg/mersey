@@ -500,6 +500,8 @@ struct Plan {
     /// from compiled code, and each read would otherwise park another handle in
     /// the arena.
     opaque_globals: HashMap<u16, &'static str>,
+    /// Name ids bound to a top-level *string*, read (and parked) once at entry.
+    str_globals: HashMap<u16, &'static str>,
     /// `CallMethod` sites that are a native call, and the full member name.
     native_at: HashMap<usize, (&'static str, u32)>,
     /// `random.fill(buf)` sites, lowered to a direct shim rather than the general
@@ -793,6 +795,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut getter_pc: HashSet<usize> = HashSet::new();
     let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
+    let mut str_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut native_at: HashMap<usize, (&'static str, u32)> = HashMap::new();
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
@@ -944,6 +947,12 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
                         stack.push(TSlot::Val(Ty::Val, Prov::Stable));
+                    }
+                    NameKind::StrGlobal => {
+                        str_globals
+                            .entry(ni)
+                            .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
+                        stack.push(TSlot::Val(Ty::Str, Prov::Stable));
                     }
                     NameKind::Web => {
                         web_globals
@@ -1626,6 +1635,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         getter_pc,
         std_ns_names,
         opaque_globals,
+        str_globals,
         native_at,
         rand_fill_at,
         str_method_at,
@@ -1719,6 +1729,7 @@ struct Shims {
     global_web: FuncId,
     web_call_num: FuncId,
     global_val: FuncId,
+    global_str: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
     str_eq: FuncId,
@@ -1784,6 +1795,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_global_web", heap::global_web as *const u8);
     builder.symbol("msy_web_call_num", heap::web_call_num as *const u8);
     builder.symbol("msy_global_val", heap::global_val as *const u8);
+    builder.symbol("msy_global_str", heap::global_str as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
     builder.symbol("msy_str_eq", heap::str_eq as *const u8);
@@ -1983,6 +1995,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     let read_osr = read;
 
     Some(Rc::new(JitCode {
+        scope: root.scope.clone(),
         kind: match root_ret {
             Ty::I64 => JitKind::I64,
             Ty::F64 => JitKind::F64,
@@ -2127,6 +2140,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         web_call_num: one("msy_web_call_num", Some(types::I64), 6)?,
         // (arena, name_ptr, name_len) -> arena handle, 0 if not an opaque
         global_val: one("msy_global_val", Some(types::I64), 3)?,
+        // (arena, name_ptr, name_len, out) -> writes (data, len)
+        global_str: one("msy_global_str", None, 4)?,
         // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
         native_call: one("msy_native_call", Some(types::I64), 6)?,
         // (arena, handle) -> 0 ok / 1 threw
@@ -2485,6 +2500,7 @@ fn translate(
         global_web: module.declare_func_in_func(shims.global_web, b.func),
         web_call_num: module.declare_func_in_func(shims.web_call_num, b.func),
         global_val: module.declare_func_in_func(shims.global_val, b.func),
+        global_str: module.declare_func_in_func(shims.global_str, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
         str_eq: module.declare_func_in_func(shims.str_eq, b.func),
@@ -2551,6 +2567,28 @@ fn translate(
     // The same reasoning as the web-global hoist above, and a stronger reason:
     // `global_val` parks the value in the arena, so reading it per iteration
     // would leak a handle per iteration.
+    // Read once at entry, as the opaque globals are: the interpreter parks the
+    // value so the buffer outlives any reassignment during the call, and this is
+    // a borrow of it (handle 0 — nothing here releases it).
+    let str_globals: HashMap<u16, (ClValue, ClValue)> = p
+        .str_globals
+        .iter()
+        .map(|(&ni, name)| {
+            let (nptr, nlen) = str_const(b, name);
+            let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                16,
+                3,
+            ));
+            let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+            b.ins()
+                .call(shim.global_str, &[arena_ptr, nptr, nlen, out_ptr]);
+            let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+            let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+            (ni, (d, l))
+        })
+        .collect();
+
     let opaque_handles: HashMap<u16, ClValue> = p
         .opaque_globals
         .iter()
@@ -2734,6 +2772,9 @@ fn translate(
                     stack.push(SlotV::MathNs);
                 } else if p.std_ns_names.contains_key(&ni) {
                     stack.push(SlotV::StdNs);
+                } else if let Some(&(d, l)) = str_globals.get(&ni) {
+                    let zero = b.ins().iconst(types::I64, 0);
+                    stack.push(SlotV::Str(d, l, zero));
                 } else if let Some(&h) = opaque_handles.get(&ni) {
                     // Borrowed: the global owns it, so this value's own handle
                     // is 0 and nothing here releases it.
@@ -3944,6 +3985,7 @@ struct ShimRefs {
     global_web: cranelift_codegen::ir::FuncRef,
     web_call_num: cranelift_codegen::ir::FuncRef,
     global_val: cranelift_codegen::ir::FuncRef,
+    global_str: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
     str_eq: cranelift_codegen::ir::FuncRef,

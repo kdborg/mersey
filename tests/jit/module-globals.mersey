@@ -1,0 +1,19 @@
+// A compiled function reading a global of the module it was *written* in.
+//
+// `Interp::globals` is swapped to the module being *run*, so by the time a
+// function is hot enough to compile, it names the entry module's scope. The shims
+// that read a global asked there — and for a function belonging to any other
+// module the binding is simply not present, so the shim answered "absent" and the
+// compiled body bailed to the interpreter on every iteration. Silently, and at
+// exactly interpreted speed: the answers were right, which is why this needed a
+// test that says what compiled and not only what it printed.
+
+import { console } from "std:console";
+import { bufSize, tableSpan } from "./module-globals-lib.mersey";
+
+// Hot enough that Tier 1 takes them.
+bufSize(300000);
+tableSpan(300000);
+
+console.log(`bufSize   ${bufSize(10)}`);
+console.log(`tableSpan ${tableSpan(10)}`);

@@ -1,0 +1,32 @@
+// The other half of `module-globals.mersey`. A module's top-level bindings live
+// in the module's own scope, which is the whole point of the test.
+import { bytes } from "std:bytes";
+
+const BUF: Bytes = bytes.alloc(16);
+const TABLE: string = "0123456789abcdef";
+
+/// Reads an opaque top-level binding of *this* module.
+export function bufSize(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + BUF.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// …and a string one, with a method on it, so it has to arrive as a string and
+/// not as something merely opaque.
+export function tableSpan(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + TABLE.length + TABLE.indexOf("a");
+        if (TABLE == "0123456789abcdef") {
+            acc = acc + 1;
+        }
+        i += 1;
+    }
+    return acc;
+}

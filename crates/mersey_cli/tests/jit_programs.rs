@@ -144,3 +144,18 @@ fn string_methods_and_equality_agree_across_the_tier_boundary() {
     assert!(out.contains("eq null  17"), "{out}");
     assert!(out.contains("eq mixed 18"), "{out}");
 }
+
+/// A compiled function reading a global of the module it was *written* in. The
+/// shims that read a global asked `Interp::globals`, which names the module being
+/// *run* — so for a function belonging to any other module the binding was simply
+/// absent, the shim answered so, and the compiled body bailed to the interpreter
+/// on every iteration. The answers stayed right and the speed stayed interpreted,
+/// which is why this asserts what *compiled*, not only what it printed.
+#[test]
+fn a_compiled_function_reads_its_own_modules_globals() {
+    check("module-globals.mersey");
+    let out = run("module-globals.mersey", true);
+    assert!(out.contains("bufSize   160"), "{out}");
+    // 16 units + indexOf("a") == 10 + 1 for the equality, ten times over.
+    assert!(out.contains("tableSpan 270"), "{out}");
+}

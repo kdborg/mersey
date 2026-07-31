@@ -1664,6 +1664,12 @@ pub struct Interp {
     /// The last few strings parked for a shim, so a *constant* receiver is parked
     /// once rather than copied on every call. See `jit_box_str`.
     jit_str_memo: Vec<(usize, u64)>,
+    /// The scope of the compiled code currently running, if any. `globals` is the
+    /// scope of the module being *run*, which is the wrong one for compiled code
+    /// belonging to any other module: its globals would not be found, the shim
+    /// would answer "absent", and the compiled body would bail on every iteration —
+    /// silently, and at exactly interpreted speed.
+    jit_scope: Option<Env>,
     /// A thrown value stashed by a compiled host call that failed: the shim
     /// cannot unwind through compiled code, so it records the error and traps,
     /// and `after_jit` raises this at the trapping instruction's position.
@@ -1926,6 +1932,13 @@ pub enum JitSlot {
 #[derive(Clone)]
 pub struct DefScope(Env);
 
+impl DefScope {
+    /// The scope itself. Crate-internal: outside it this is an opaque token.
+    pub(crate) fn env(&self) -> Env {
+        self.0.clone()
+    }
+}
+
 /// What a free name binds, as far as Tier 1 cares.
 pub enum NameKind {
     /// A `std:` namespace whose members go through the native shim.
@@ -1936,6 +1949,10 @@ pub enum NameKind {
     MathNs,
     /// An engine value carried opaquely by arena handle — a `Bytes`, a `Url`.
     Opaque,
+    /// A binding holding a string. Compiled code takes it as the three registers
+    /// any other string uses, so its methods and `==` work on it — which a
+    /// module-level `const` needs, that being how a lookup table is written.
+    StrGlobal,
     /// A binding currently holding a host object handle.
     Web,
     /// Anything else, including a name that does not resolve here.
@@ -2049,6 +2066,10 @@ pub trait JitEnv {
 /// call costs. Compiled code calls compiled code directly.
 pub struct JitCode {
     pub kind: JitKind,
+    /// Where this code's free names resolve — the scope its root was written in.
+    /// The interpreter makes it current for the duration of a compiled call, so
+    /// the shims that read a global read the right one. See `DefScope`.
+    pub scope: Option<DefScope>,
     /// Enter the root at the top, with its arguments. The arena owns everything
     /// the call allocates; the interpreter clears it when the call ends.
     #[allow(clippy::type_complexity)]
@@ -2153,6 +2174,7 @@ impl JitEnv for InterpEnv<'_> {
                 }
             }
             Some(Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_)) => NameKind::Opaque,
+            Some(Value::Str(_)) => NameKind::StrGlobal,
             Some(Value::JsRef(_)) => NameKind::Web,
             _ => NameKind::Other,
         }
@@ -2472,6 +2494,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         jit: None,
         jit_arena: Arena::default(),
         jit_str_memo: Vec::new(),
+        jit_scope: None,
         jit_host_error: None,
         jit_cache: HashMap::default(),
         call_counts: HashMap::default(),
@@ -4735,8 +4758,25 @@ impl Interp {
     /// A top-level binding whose value compiled code carries opaquely, parked in
     /// the arena so a handle names it. Handle 0 means "not one of those", and
     /// the caller bails.
+    /// A top-level binding holding a string, parked so its buffer outlives any
+    /// reassignment of the binding during the call. 0 if it is not one.
+    pub fn jit_global_str(&mut self, name: &str) -> u64 {
+        let env = self
+            .jit_scope
+            .clone()
+            .unwrap_or_else(|| self.globals.clone());
+        match env_get(&env, name) {
+            Some(v @ Value::Str(_)) => self.jit_arena.keep(v),
+            _ => 0,
+        }
+    }
+
     pub fn jit_global_val(&mut self, name: &str) -> u64 {
-        match env_get(&self.globals, name) {
+        let env = self
+            .jit_scope
+            .clone()
+            .unwrap_or_else(|| self.globals.clone());
+        match env_get(&env, name) {
             Some(v @ (Value::Bytes(_) | Value::UrlV(_) | Value::RegexV(_))) => {
                 self.jit_arena.keep(v)
             }
@@ -4844,7 +4884,8 @@ impl Interp {
     /// a host object — impossible for a `JsRef`-typed binding, but the web call
     /// on handle 0 would simply fail and be raised like any host error).
     pub fn jit_global_web(&self, name: &str) -> i64 {
-        match env_get(&self.globals, name) {
+        let env = self.jit_scope.as_ref().unwrap_or(&self.globals);
+        match env_get(env, name) {
             Some(Value::JsRef(h)) => h,
             _ => 0,
         }
@@ -5357,9 +5398,15 @@ impl Interp {
         let wb = self.host.web_bind_raw();
         self.jit_arena.interp = Some(ip);
         self.jit_arena.web_bind = wb;
+        // The scope this code's globals live in, current for the call.
+        let saved_scope = std::mem::replace(
+            &mut self.jit_scope,
+            compiled.code.scope.as_ref().map(|s| s.env()),
+        );
         let r = (compiled.code.call)(&jargs, &mut self.jit_arena);
         self.jit_arena.interp = None;
         self.jit_arena.web_bind = None;
+        self.jit_scope = saved_scope;
         self.jit_arena.clear();
         // Its handles named arena slots that have just gone.
         self.jit_str_memo.clear();
@@ -5513,9 +5560,15 @@ impl Interp {
         let wb = self.host.web_bind_raw();
         self.jit_arena.interp = Some(ip);
         self.jit_arena.web_bind = wb;
+        // The scope this code's globals live in, current for the call.
+        let saved_scope = std::mem::replace(
+            &mut self.jit_scope,
+            compiled.code.scope.as_ref().map(|s| s.env()),
+        );
         let r = (compiled.code.osr)(&locals, target, &mut self.jit_arena);
         self.jit_arena.interp = None;
         self.jit_arena.web_bind = None;
+        self.jit_scope = saved_scope;
         self.jit_arena.clear();
         // Its handles named arena slots that have just gone.
         self.jit_str_memo.clear();

@@ -513,6 +513,37 @@ pub(crate) unsafe extern "C" fn global_val(
     }
 }
 
+/// A top-level binding holding a string, as compiled code carries one. `out`
+/// receives (data, length); the arena entry keeping the buffer alive for the call
+/// is the interpreter's, so the value read here is a borrow and owns nothing.
+/// Both words are 0 when the binding holds no string.
+///
+/// # Safety
+/// As `global_val`; `out` names two writable words.
+pub(crate) unsafe extern "C" fn global_str(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let h = match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_global_str(name),
+            None => 0,
+        };
+        let (ptr, len) = match (*arena).get(h) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                (units.as_ptr() as u64, units.len() as u64)
+            }
+            _ => (0, 0),
+        };
+        *out = ptr;
+        *out.add(1) = len;
+    }
+}
+
 /// A `std:` native call — `random.fill`, `bytes.encodeUtf8`, `parse.url`.
 ///
 /// The name arrives already joined ("random.fill"), because the compiler knows
