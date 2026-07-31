@@ -593,6 +593,11 @@ struct Plan {
     str_search_at: HashMap<usize, (i64, Ty)>,
     /// `s.split(sep)`: two spans straight to a shim that parks the array.
     str_split_at: HashSet<usize>,
+    /// Stack entries that must change type on the way into a labelled block,
+    /// keyed by the block's own pc — a *fall-through* edge. See `coerce_edge`.
+    coerce_fall: HashMap<usize, Vec<(usize, Ty)>>,
+    /// The same for a *jump* edge, keyed by the jump instruction's pc.
+    coerce_jump: HashMap<usize, Vec<(usize, Ty)>>,
     /// `s.codePointAt(i)`: a span and an index, straight to a pure shim.
     str_cp_at: HashSet<usize>,
     /// `s.slice(a, b)` / `s.substring(a, b)` / `s.charAt(a)` by id — the arena
@@ -919,6 +924,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
     let mut str_split_at: HashSet<usize> = HashSet::new();
+    let mut coerce_fall: HashMap<usize, Vec<(usize, Ty)>> = HashMap::new();
+    let mut coerce_jump: HashMap<usize, Vec<(usize, Ty)>> = HashMap::new();
     let mut str_cp_at: HashSet<usize> = HashSet::new();
     let mut str_sub_at: HashMap<usize, (i64, bool)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
@@ -990,11 +997,20 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // arriving here after a `Return` or a `Jump` is the ordinary case.
                 if reachable {
                     let have: Option<Vec<Ty>> = stack.iter().map(|s| tval(*s)).collect();
-                    match have {
-                        Some(h)
-                            if h.len() == want.len()
-                                && h.iter().zip(want).all(|(a, b)| arg_fits(*b, *a)) => {}
-                        _ => return None,
+                    let h = have?;
+                    if h.len() != want.len() {
+                        return None;
+                    }
+                    let mut fix: Vec<(usize, Ty)> = Vec::new();
+                    for (i, (a, b)) in h.iter().zip(want).enumerate() {
+                        match coerce_edge(*b, *a) {
+                            Some(None) => {}
+                            Some(Some(t)) => fix.push((i, t)),
+                            None => return None,
+                        }
+                    }
+                    if !fix.is_empty() {
+                        coerce_fall.insert(pc, fix);
                     }
                 }
                 stack = want.iter().map(|t| TSlot::Val(*t, Prov::Stable)).collect();
@@ -2137,7 +2153,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 reachable = false;
             }
             Op::Jump(t) => {
-                record_block(&mut block_types, t, &stack)?;
+                record_block(&mut block_types, t, &stack, &mut coerce_jump, pc)?;
                 reachable = false;
             }
             Op::JumpIfFalse(t) | Op::JumpIfTrue(t) => {
@@ -2145,7 +2161,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 if !c.is_num() {
                     return None;
                 }
-                record_block(&mut block_types, t, &stack)?;
+                record_block(&mut block_types, t, &stack, &mut coerce_jump, pc)?;
             }
             _ => return None,
         }
@@ -2196,6 +2212,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         str_method_at,
         str_search_at,
         str_split_at,
+        coerce_fall,
+        coerce_jump,
         str_cp_at,
         str_sub_at,
         val_method_at,
@@ -2246,7 +2264,15 @@ fn assignable(v: Ty, t: Ty) -> bool {
 
 /// The operand-stack types at a jump target. Every edge into a block has to
 /// agree about them — a block parameter has one type.
-fn record_block(map: &mut HashMap<usize, Vec<Ty>>, target: usize, stack: &[TSlot]) -> Option<()> {
+fn record_block(
+    map: &mut HashMap<usize, Vec<Ty>>,
+    target: usize,
+    stack: &[TSlot],
+    // Where a jump's operands must change type to match a block already
+    // recorded by another predecessor. Keyed by the *jump's* pc.
+    coerce: &mut HashMap<usize, Vec<(usize, Ty)>>,
+    pc: usize,
+) -> Option<()> {
     // A callee marker cannot cross an edge: it is not a value and has nothing to
     // be passed as. Neither can a borrow rooted in a re-assignable local — a
     // block parameter has no provenance, so the guard that keeps such a borrow
@@ -2257,7 +2283,25 @@ fn record_block(map: &mut HashMap<usize, Vec<Ty>>, target: usize, stack: &[TSlot
     let tys: Option<Vec<Ty>> = stack.iter().map(|s| tval(*s)).collect();
     let tys = tys?;
     match map.get(&target) {
-        Some(have) if *have != tys => None,
+        Some(have) if *have != tys => {
+            // Another predecessor got here first and fixed the shape. This one
+            // may still be able to join it — see `coerce_edge`.
+            if have.len() != tys.len() {
+                return None;
+            }
+            let mut fix: Vec<(usize, Ty)> = Vec::new();
+            for (i, (a, b)) in tys.iter().zip(have).enumerate() {
+                match coerce_edge(*b, *a) {
+                    Some(None) => {}
+                    Some(Some(t)) => fix.push((i, t)),
+                    None => return None,
+                }
+            }
+            if !fix.is_empty() {
+                coerce.insert(pc, fix);
+            }
+            Some(())
+        }
         _ => {
             map.insert(target, tys);
             Some(())
@@ -3213,6 +3257,33 @@ fn flatten(stack: &[SlotV]) -> Option<Vec<ClValue>> {
 /// false)` in `std:semver` among them, which took `Version.parse` down with it.
 /// The checker has already established the program is well typed, so this only
 /// has to agree about representation, which is the same rule `Return` uses.
+/// Can a value of type `have` become `want` on the way into a merge, and how?
+///
+/// `Some(None)` means it already fits; `Some(Some(t))` means emit a conversion
+/// to `t`; `None` means it cannot.
+///
+/// The pair that matters is `int32` against `int32?`, which is what
+/// `x == null ? 0 : x` leaves on the two arms of a ternary: the checker narrowed
+/// `x` in the else-branch, but the tier's slot type did not follow it, so one arm
+/// is a plain number and the other still carries the sentinel. Refusing that
+/// costs the whole function — and a function that leaves Tier 1 runs about 51x
+/// slower on compute-shaped work, which is why this is worth a conversion rather
+/// than a refusal.
+fn coerce_edge(want: Ty, have: Ty) -> Option<Option<Ty>> {
+    if arg_fits(want, have) {
+        return Some(None);
+    }
+    match (want, have) {
+        // Narrowing: guard against the sentinel, then reduce. The guard is not
+        // for well-typed code — the checker has already proved it non-null — it
+        // is because a silent `i64::MIN` would be a wrong answer, not a bail.
+        (Ty::I32, Ty::I32Opt) => Some(Some(Ty::I32)),
+        // Widening is free and always safe: every `int32` is an `int32?`.
+        (Ty::I32Opt, Ty::I32 | Ty::Bool) => Some(Some(Ty::I32Opt)),
+        _ => None,
+    }
+}
+
 fn arg_fits(want: Ty, have: Ty) -> bool {
     want == have || (want.is_int() && have.is_int() && want.cl() == have.cl())
 }
@@ -3447,6 +3518,7 @@ fn translate(
         };
         if let Some(&blk) = blocks.get(&pc) {
             if reachable {
+                coerce_stack(b, ctx, pc, &mut stack, p.coerce_fall.get(&pc));
                 let args = flatten(&stack)?;
                 b.ins().jump(blk, &args);
             }
@@ -5077,6 +5149,7 @@ fn translate(
                 stack.push(SlotV::Val(c, Ty::Bool));
             }
             Op::Jump(t) => {
+                coerce_stack(b, ctx, pc, &mut stack, p.coerce_jump.get(&pc));
                 let args = flatten(&stack)?;
                 b.ins().jump(blocks[&t], &args);
                 reachable = false;
@@ -5085,6 +5158,7 @@ fn translate(
                 let (v, vt) = scalar(stack.pop()?)?;
                 let cond = truthy(b, v, vt);
                 let fall = b.create_block();
+                coerce_stack(b, ctx, pc, &mut stack, p.coerce_jump.get(&pc));
                 let taken = flatten(&stack)?;
                 if matches!(op, Op::JumpIfFalse(_)) {
                     b.ins().brif(cond, fall, &[], blocks[&t], &taken);
@@ -5311,6 +5385,29 @@ fn box_arg(
 /// narrow. The guard is not for well-typed code — the checker narrowed this value
 /// to get here — but a silent `i64::MIN` would be a wrong answer, and a bail is
 /// not.
+/// Apply the edge coercions `plan` recorded for this pc, in place, before the
+/// stack is flattened into block arguments. See `coerce_edge`.
+fn coerce_stack(
+    b: &mut FunctionBuilder,
+    ctx: Ctx,
+    pc: usize,
+    stack: &mut [SlotV],
+    fixes: Option<&Vec<(usize, Ty)>>,
+) -> Option<()> {
+    for &(i, to) in fixes? {
+        let (v, from) = scalar(*stack.get(i)?)?;
+        let out = match to {
+            // The sentinel is not a number: guard, then narrow.
+            Ty::I32 => unbox_num(b, ctx, pc, v),
+            // …and widening is the same sign-extend a slot store does.
+            Ty::I32Opt => convert(b, v, from, Ty::I64),
+            _ => return None,
+        };
+        stack[i] = SlotV::Val(out, to);
+    }
+    Some(())
+}
+
 fn unbox_num(b: &mut FunctionBuilder, ctx: Ctx, pc: usize, v: ClValue) -> ClValue {
     let is_null = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
     guard(b, ctx, is_null, R_TAG, pc, None);

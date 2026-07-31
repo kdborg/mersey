@@ -1,0 +1,64 @@
+// A nullable number meeting a plain one at a merge, on both tiers.
+//
+// `x == null ? 0 : x` is how parsing code is written, and the tier refused it.
+// The checker narrows `x` to `int32` in the else-arm, but a slot's type does not
+// follow that narrowing — so one arm of the ternary arrives at the merge as an
+// `int32` and the other still carries the sentinel, and the two disagree about
+// what the merged value is.
+//
+// Refusing cost the whole function, and a function that leaves Tier 1 runs
+// around 51x slower on compute-shaped work — which is the reason this is a
+// conversion now rather than a refusal. Both directions are converted: a
+// nullable arriving where a number is expected is guarded against the sentinel
+// and narrowed, and a number arriving where a nullable is expected is
+// sign-extended, which is free.
+//
+// The guard is the part worth pinning. It is not there for well-typed code —
+// the checker has already proved the value non-null on that path — it is there
+// because reading `i64::MIN` as a number would be a wrong answer rather than a
+// bail. So every case below is also run for a *null* input, where the arm that
+// carries the sentinel is the one actually taken.
+
+import { console } from "std:console";
+
+/// The nullable arm meets a constant. The merge is recorded as `int32` by the
+/// constant arm, so the nullable one narrows.
+function digitOr(s: string, at: int32): int32 {
+    const c = s.codePointAt(at);
+    return c == null ? 0 : c;
+}
+
+/// The other way round: the merge is `int32?` and the constant arm widens.
+function orNull(s: string, at: int32, flag: bool): int32? {
+    const c = s.codePointAt(at);
+    return flag ? 7 : c;
+}
+
+/// The same meeting inside a condition rather than a return, so the merged
+/// value is consumed by arithmetic instead of handed straight back.
+function weigh(s: string, at: int32): int32 {
+    const c = s.codePointAt(at);
+    const w = c == null ? 1 : c;
+    return w * 2 + 1;
+}
+
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + digitOr("abc", i % 5) + weigh("abc", i % 5);
+        const v = orNull("abc", i % 5, i % 2 == 0);
+        if (v != null) {
+            acc = acc + v;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive    ${drive(200000)}`);
+// In range, then past the end — the second is where the sentinel arm is taken
+// and the guard has to hold.
+console.log(`digitOr  ${digitOr("abc", 0)} ${digitOr("abc", 9)}`);
+console.log(`weigh    ${weigh("abc", 0)} ${weigh("abc", 9)}`);
+console.log(`orNull   ${orNull("abc", 0, true)} ${orNull("abc", 0, false)} ${orNull("abc", 9, false)}`);

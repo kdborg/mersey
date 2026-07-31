@@ -433,3 +433,22 @@ fn string_subranges_agree_across_the_tier_boundary() {
     // Entirely past the end: empty strings, and null from `codePointAt`.
     assert!(out.contains("past  [|||||null]"), "{out}");
 }
+
+/// A nullable number meeting a plain one at a merge. `x == null ? 0 : x` is how
+/// parsing code is written: the checker narrows `x` in the else-arm, but a slot's
+/// type does not follow that narrowing, so the two arms disagree about what the
+/// merged value is and the tier refused the whole function. It converts now —
+/// narrowing with a guard in one direction, sign-extending in the other.
+///
+/// The guard is the part that needs pinning, so every case is also run past the
+/// end of the string, where the arm carrying the sentinel is the one taken.
+#[test]
+fn nullable_merges_agree_across_the_tier_boundary() {
+    check("nullable-merge.mersey");
+    let out = run("nullable-merge.mersey", true);
+    // In range, then out of range — 'a' is 97, and absent falls to the constant.
+    assert!(out.contains("digitOr  97 0"), "{out}");
+    assert!(out.contains("weigh    195 3"), "{out}");
+    // The widening direction, and a null that must survive as null.
+    assert!(out.contains("orNull   7 97 null"), "{out}");
+}
