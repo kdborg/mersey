@@ -52,12 +52,36 @@ length).
 
 **Strings.** As a parameter, a return, a local, a field, an array element, and a
 receiver. Three registers: data pointer, length, and the arena handle that owns
-it — nonzero only for a string this value *built*. Twenty methods are emitted,
-reaching the interpreter's own `call_member` by handle; `==` needs no arena at
-all, being a comparison of code units. A string *field* is read as a borrow and
-written as a **copy**, which is the only reason a string may be stored into a
-field when an object may not: the field takes its own units rather than sharing a
-reference, so there is no ownership to hand over.
+it — nonzero only for a string this value *built*. A string *field* is read as a
+borrow and written as a **copy**, which is the only reason a string may be stored
+into a field when an object may not: the field takes its own units rather than
+sharing a reference, so there is no ownership to hand over.
+
+Their **methods reach the engine in two ways**, and the difference is most of
+what they cost.
+
+Most go by arena handle to the interpreter's own `call_member`: the receiver is
+cloned out of the arena as a `Value`, each argument is boxed into an arena slot,
+a `Vec` is built to hold them, and the method is found by comparing its name.
+That is the general path and it is what a `toUpperCase` or a `replace` needs.
+
+The ones a loop actually sits on do not go that way at all. `indexOf`,
+`lastIndexOf`, `contains`, `startsWith`, `endsWith`, `split`, `slice`,
+`substring`, `charAt` and `codePointAt` are functions of the receiver's *span*
+and one or two more values, so they call a shim over exactly that, keyed by an id
+fixed at compile time — no arena, no `Value`, no argument vector, no name. Only
+`split` and the three subrange methods touch the arena at all, and only to own a
+result they had to allocate. Measured against the general path: 4.8x on
+`indexOf`, 7.2x on `startsWith`, 6.2x on `codePointAt`, about 4x on `slice`.
+
+The searching and bounds arithmetic underneath is the interpreter's own
+(`find_units`, `slice_units`, and their siblings), called from both tiers, so
+there is one implementation to disagree with rather than two. What the
+`tests/jit/string-*.mersey` programs pin is everything *around* it — which
+argument is which, an empty needle, an index past the end, one that lands inside
+a surrogate pair — because that is what two routes to one rule get wrong.
+
+`==` needs no arena either, being a comparison of code units.
 
 **Engine primitives** — `Bytes`, `Url`, `Regex`. One arena handle. As parameters,
 returns and fields; indexed (`b[i]`), measured (`.length`), and passed to natives.
