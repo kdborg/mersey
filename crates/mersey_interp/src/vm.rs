@@ -3219,6 +3219,22 @@ fn exec(
                     push_inline!(c, cchunk, n, at);
                     continue;
                 }
+                // A string method that reads only the code units, answered with
+                // the arguments where they already are. `split_args` moves them
+                // into a fresh `Vec` for the general path, which is a heap
+                // allocation per `indexOf`, per `slice`, per `codePointAt` — in
+                // parsing code, most of the calls there are.
+                if let Value::Str(rc) = &stack[at] {
+                    let rc = rc.clone();
+                    if let Some(r) =
+                        crate::str_member_units(&rc, &chunk.names[ni as usize], &stack[at + 1..])
+                    {
+                        let v = throwing!(r);
+                        stack.truncate(at);
+                        stack.push(v);
+                        continue;
+                    }
+                }
                 let args = split_args(stack, n);
                 let recv = stack.pop().expect("recv");
                 let v = throwing!(i.call_member(&recv, &chunk.names[ni as usize], args));

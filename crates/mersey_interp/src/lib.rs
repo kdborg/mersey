@@ -8139,92 +8139,7 @@ impl Interp {
                 // the price of the most expensive one: a `slice` or a `charAt` cost
                 // as much as a `toUpperCase`. Measured on a 46-char string, that is
                 // ~250ns a call — which is most of what URL parsing spends.
-                let units_only: Option<VResult> = match name {
-                    "toString" => Some(Ok(Value::Str(s.clone()))),
-                    "substring" => Some(Ok(Value::Str(Rc::new(substring_units(
-                        s,
-                        args.first().and_then(as_i64).unwrap_or(0),
-                        args.get(1).and_then(as_i64),
-                    ))))),
-                    "concat" => Some({
-                        let mut out: Vec<u16> = s.to_vec();
-                        for a in &args {
-                            match a {
-                                Value::Str(other) => out.extend(other.iter()),
-                                other => out.extend(utf16(&to_display(other))),
-                            }
-                        }
-                        Ok(Value::Str(Rc::new(out)))
-                    }),
-                    "charAt" => Some(Ok(Value::Str(Rc::new(char_at_units(
-                        s,
-                        args.first().and_then(as_i64).unwrap_or(0),
-                    ))))),
-                    "codePointAt" => Some(Ok(code_point_at_units(
-                        s,
-                        args.first().and_then(as_i64).unwrap_or(0),
-                    )
-                    .map(|c| Value::I32(c as i32))
-                    .unwrap_or(Value::Null))),
-                    "at" => Some({
-                        // Char-returning: the code point at code-unit i.
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        Ok(resolve_at(i, s.len())
-                            .and_then(|i| code_point_at(s, i))
-                            .map(Value::Char)
-                            .unwrap_or(Value::Null))
-                    }),
-                    "slice" => Some(Ok(Value::Str(Rc::new(slice_units(
-                        s,
-                        args.first().and_then(as_i64).unwrap_or(0),
-                        args.get(1).and_then(as_i64),
-                    ))))),
-                    "split" => Some({
-                        let sep: Vec<u16> = match args.first() {
-                            Some(Value::Str(a)) => a.to_vec(),
-                            Some(other) => utf16(&to_display(other)),
-                            None => Vec::new(),
-                        };
-                        let mut parts: Vec<Value> = Vec::new();
-                        split_units_into(s, &sep, &mut |p| {
-                            parts.push(Value::Str(Rc::new(p.to_vec())))
-                        });
-                        Ok(new_array(parts))
-                    }),
-                    // Searching, in code units — which is both the correct answer
-                    // and by far the cheaper one.
-                    //
-                    // These used to transcode the receiver *and* the needle to
-                    // UTF-8, run Rust's general two-way substring search, and then
-                    // count `chars()` up to the hit to convert the byte offset
-                    // back. That last step returned a **code point** index while
-                    // `length`, `slice` and `charAt` all speak code units, so the
-                    // two disagreed on any string holding a character outside the
-                    // BMP: `"😀a".indexOf("a")` gave 1 where JS gives 2, and
-                    // `s.slice(s.indexOf("a"))` then cut a surrogate pair in half
-                    // and produced a lone surrogate. Code-unit semantics are the
-                    // decided point (§3.4), and the units are right here.
-                    "indexOf" | "contains" | "lastIndexOf" | "startsWith" | "endsWith" => {
-                        let needle: Option<Vec<u16>> = match args.first() {
-                            Some(Value::Str(a)) => Some(a.to_vec()),
-                            Some(other) => Some(utf16(&to_display(other))),
-                            None => Some(Vec::new()),
-                        };
-                        needle.map(|n| {
-                            Ok(match name {
-                                "contains" => Value::Bool(find_units(s, &n, 0).is_some()),
-                                "startsWith" => Value::Bool(s.starts_with(&n[..])),
-                                "endsWith" => Value::Bool(s.ends_with(&n[..])),
-                                "lastIndexOf" => {
-                                    Value::I32(rfind_units(s, &n).map_or(-1, |i| i as i32))
-                                }
-                                _ => Value::I32(find_units(s, &n, 0).map_or(-1, |i| i as i32)),
-                            })
-                        })
-                    }
-                    _ => None,
-                };
-                if let Some(r) = units_only {
+                if let Some(r) = str_member_units(s, name, &args) {
                     return r;
                 }
                 let text: String = utf16_to_string(s);
@@ -10502,6 +10417,106 @@ pub fn rfind_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
         }
         i -= 1;
     }
+}
+
+/// The string methods that read only the code units, answered from a *slice* of
+/// arguments.
+///
+/// Split out of `call_member` so both callers can reach it without building a
+/// `Vec<Value>`. The VM has the arguments on its operand stack already and used
+/// to `split_off` them into a fresh vector for every call — a heap allocation per
+/// `indexOf`, per `slice`, per `codePointAt`, which in parsing code is most of
+/// the calls there are. Nothing in here can throw or needs `&mut self`, which is
+/// what makes answering from a borrow possible at all.
+///
+/// `None` means "not one of these" and the caller falls through to the general
+/// path, which still transcodes for the methods that genuinely need Unicode.
+pub(crate) fn str_member_units(rc: &Rc<Vec<u16>>, name: &str, args: &[Value]) -> Option<VResult> {
+    let s: &[u16] = rc;
+    let units_only: Option<VResult> = match name {
+        "toString" => Some(Ok(Value::Str(rc.clone()))),
+        "substring" => Some(Ok(Value::Str(Rc::new(substring_units(
+            s,
+            args.first().and_then(as_i64).unwrap_or(0),
+            args.get(1).and_then(as_i64),
+        ))))),
+        "concat" => Some({
+            let mut out: Vec<u16> = s.to_vec();
+            for a in args {
+                match a {
+                    Value::Str(other) => out.extend(other.iter()),
+                    other => out.extend(utf16(&to_display(other))),
+                }
+            }
+            Ok(Value::Str(Rc::new(out)))
+        }),
+        "charAt" => Some(Ok(Value::Str(Rc::new(char_at_units(
+            s,
+            args.first().and_then(as_i64).unwrap_or(0),
+        ))))),
+        "codePointAt" => Some(Ok(code_point_at_units(
+            s,
+            args.first().and_then(as_i64).unwrap_or(0),
+        )
+        .map(|c| Value::I32(c as i32))
+        .unwrap_or(Value::Null))),
+        "at" => Some({
+            // Char-returning: the code point at code-unit i.
+            let i = args.first().and_then(as_i64).unwrap_or(0);
+            Ok(resolve_at(i, s.len())
+                .and_then(|i| code_point_at(s, i))
+                .map(Value::Char)
+                .unwrap_or(Value::Null))
+        }),
+        "slice" => Some(Ok(Value::Str(Rc::new(slice_units(
+            s,
+            args.first().and_then(as_i64).unwrap_or(0),
+            args.get(1).and_then(as_i64),
+        ))))),
+        "split" => Some({
+            let sep: Vec<u16> = match args.first() {
+                Some(Value::Str(a)) => a.to_vec(),
+                Some(other) => utf16(&to_display(other)),
+                None => Vec::new(),
+            };
+            let mut parts: Vec<Value> = Vec::new();
+            split_units_into(s, &sep, &mut |p| {
+                parts.push(Value::Str(Rc::new(p.to_vec())))
+            });
+            Ok(new_array(parts))
+        }),
+        // Searching, in code units — which is both the correct answer
+        // and by far the cheaper one.
+        //
+        // These used to transcode the receiver *and* the needle to
+        // UTF-8, run Rust's general two-way substring search, and then
+        // count `chars()` up to the hit to convert the byte offset
+        // back. That last step returned a **code point** index while
+        // `length`, `slice` and `charAt` all speak code units, so the
+        // two disagreed on any string holding a character outside the
+        // BMP: `"😀a".indexOf("a")` gave 1 where JS gives 2, and
+        // `s.slice(s.indexOf("a"))` then cut a surrogate pair in half
+        // and produced a lone surrogate. Code-unit semantics are the
+        // decided point (§3.4), and the units are right here.
+        "indexOf" | "contains" | "lastIndexOf" | "startsWith" | "endsWith" => {
+            let needle: Option<Vec<u16>> = match args.first() {
+                Some(Value::Str(a)) => Some(a.to_vec()),
+                Some(other) => Some(utf16(&to_display(other))),
+                None => Some(Vec::new()),
+            };
+            needle.map(|n| {
+                Ok(match name {
+                    "contains" => Value::Bool(find_units(s, &n, 0).is_some()),
+                    "startsWith" => Value::Bool(s.starts_with(&n[..])),
+                    "endsWith" => Value::Bool(s.ends_with(&n[..])),
+                    "lastIndexOf" => Value::I32(rfind_units(s, &n).map_or(-1, |i| i as i32)),
+                    _ => Value::I32(find_units(s, &n, 0).map_or(-1, |i| i as i32)),
+                })
+            })
+        }
+        _ => None,
+    };
+    units_only
 }
 
 /// Resolve an `at`-style index against a length: negative counts from the end,
