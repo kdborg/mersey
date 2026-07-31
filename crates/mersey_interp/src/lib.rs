@@ -1667,6 +1667,10 @@ pub struct Interp {
     /// The last few strings parked for a shim, so a *constant* receiver is parked
     /// once rather than copied on every call. See `jit_box_str`.
     jit_str_memo: Vec<(usize, u64)>,
+    /// A UTF-8 buffer reused across `parse.url` and its like, so converting an
+    /// argument does not allocate a `String` per call. Held rather than made
+    /// because a URL parsed in a loop is the shape that matters.
+    utf8_scratch: Vec<u8>,
     /// The scope of the compiled code currently running, if any. `globals` is the
     /// scope of the module being *run*, which is the wrong one for compiled code
     /// belonging to any other module: its globals would not be found, the shim
@@ -2550,6 +2554,7 @@ pub fn new_interp(host: Box<dyn Host>) -> Interp {
         jit: None,
         jit_arena: Arena::default(),
         jit_str_memo: Vec::new(),
+        utf8_scratch: Vec::new(),
         jit_scope: None,
         jit_host_error: None,
         jit_cache: HashMap::default(),
@@ -4736,6 +4741,22 @@ impl Interp {
         self.jit_host_error = Some(t);
     }
 
+    /// The same, from a `Value` the caller already holds — a heap cell's contents,
+    /// read in place. This is the fused `this.u.pathname`: the field read makes no
+    /// arena entry of its own, which is one `keep` and one `release` saved per
+    /// part read, and a `Value` clone with them.
+    ///
+    pub fn jit_prop_str_of(&mut self, v: &Value, name: &str) -> u64 {
+        match self.get_member(v, name) {
+            Ok(Some(s @ Value::Str(_))) => self.jit_arena.keep(s),
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
+        }
+    }
+
     /// A string-valued property of an opaque (`u.pathname` on a `Url`). The
     /// handle of the resulting string, 0 if the property is absent or is not a
     /// string, `u64::MAX` if reading it threw.
@@ -4909,13 +4930,29 @@ impl Interp {
                 })
             }
             3 => {
-                let text = self.want_string(args.first())?;
+                let Some(Value::Str(s)) = args.first() else {
+                    return self.type_error("parse.url needs a string");
+                };
+                // Converted into a buffer this interpreter keeps. `want_string`
+                // made a fresh `String` every call, which for a URL parsed in a
+                // loop is an allocation per URL for a value discarded immediately
+                // after. `resize` on an already-large buffer only moves its
+                // length. Three bytes per unit is the conversion's documented
+                // worst case.
+                let mut buf = std::mem::take(&mut self.utf8_scratch);
+                buf.resize(s.len().saturating_mul(3).max(1), 0);
+                let n = encoding_rs::mem::convert_utf16_to_utf8(s, &mut buf);
                 // Absolute URLs only: a relative reference is not a URL until
                 // you say what it is relative to, which this does not do.
-                let Ok(u) = url::Url::parse(text.trim()) else {
-                    return Ok(Value::Null);
+                let out = match std::str::from_utf8(&buf[..n]) {
+                    Ok(text) => match url::Url::parse(text.trim()) {
+                        Ok(u) => Ok(Value::UrlV(Rc::new(u))),
+                        Err(_) => Ok(Value::Null),
+                    },
+                    Err(_) => Ok(Value::Null),
                 };
-                Ok(Value::UrlV(Rc::new(u)))
+                self.utf8_scratch = buf;
+                out
             }
             _ => unreachable!("id is an index into NATIVE_FAST"),
         }

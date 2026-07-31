@@ -551,6 +551,9 @@ struct Plan {
     val_index_at: HashSet<usize>,
     /// String-valued property reads on an opaque (`u.pathname`).
     val_prop_str_at: HashMap<usize, &'static str>,
+    /// A `Ty::Val` field read whose *only* use is a string part of it, folded into
+    /// one read off the cell: (field slot, property name).
+    cell_prop_at: HashMap<usize, (u32, &'static str)>,
     /// `[]` and `a.push(v)` sites, which build an array as an opaque.
     array_at: HashSet<usize>,
     /// `GetMember` sites reading a numeric property off an opaque.
@@ -855,6 +858,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut unbox_at: HashMap<usize, u8> = HashMap::new();
     let mut val_index_at: HashSet<usize> = HashSet::new();
     let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
+    let mut cell_prop_at: HashMap<usize, (u32, &'static str)> = HashMap::new();
     let mut array_at: HashSet<usize> = HashSet::new();
     let mut val_prop_at: HashMap<usize, &'static str> = HashMap::new();
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
@@ -1289,6 +1293,25 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         }
                         let slot = cls.field_slot(name)?;
                         let t = g.field_ty(ci, slot as usize)?;
+                        // `this.u.pathname` — an opaque field whose next use is a
+                        // string part of it. Read straight off the cell: the
+                        // field's value never reaches the arena, which is one
+                        // `keep`, one `release` and a `Value` clone saved per
+                        // part. (The same fold the web tier does for a string
+                        // property immediately followed by `.length`.)
+                        if t == Ty::Val {
+                            if let Some(Op::GetMember(ni2, _)) = chunk.code.get(pc + 1) {
+                                let prop = chunk.names[*ni2 as usize].as_str();
+                                if VAL_STR_PROPS.contains(&prop) {
+                                    let nm: &'static str =
+                                        Box::leak(prop.to_string().into_boxed_str());
+                                    cell_prop_at.insert(pc, (slot, nm));
+                                    folded.insert(pc + 1);
+                                    stack.push(TSlot::Val(Ty::Str, Prov::Stable));
+                                    continue;
+                                }
+                            }
+                        }
                         field_at.insert(pc, (slot, t));
                         // A reference reached *through* a shaky base is exactly
                         // as shaky as the base.
@@ -1906,6 +1929,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         unbox_at,
         val_index_at,
         val_prop_str_at,
+        cell_prop_at,
         array_at,
         val_prop_at,
         field_at,
@@ -1994,6 +2018,7 @@ struct Shims {
     cell_set_str: FuncId,
     cell_val: FuncId,
     cell_set_val: FuncId,
+    cell_prop_str: FuncId,
     val_prop_str: FuncId,
     throw_error: FuncId,
     alloc: FuncId,
@@ -2074,6 +2099,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_cell_set_str", heap::cell_set_str as *const u8);
     builder.symbol("msy_cell_val", heap::cell_val as *const u8);
     builder.symbol("msy_cell_set_val", heap::cell_set_val as *const u8);
+    builder.symbol("msy_cell_prop_str", heap::cell_prop_str as *const u8);
     builder.symbol("msy_val_prop_str", heap::val_prop_str as *const u8);
     builder.symbol("msy_throw_error", heap::throw_error as *const u8);
     builder.symbol("msy_alloc", heap::alloc as *const u8);
@@ -2460,6 +2486,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         cell_val: one("msy_cell_val", Some(types::I64), 2)?,
         // (cell, arena, handle)
         cell_set_val: one("msy_cell_set_val", None, 3)?,
+        // (cell, arena, name_ptr, name_len, out) -> 0 ok / 1 threw
+        cell_prop_str: one("msy_cell_prop_str", Some(types::I64), 5)?,
         // (arena, handle, name_ptr, name_len, out) -> 0 ok / 1 threw
         val_prop_str: one("msy_val_prop_str", Some(types::I64), 5)?,
         // (arena, class_ptr, class_len, msg_ptr, msg_len)
@@ -2862,6 +2890,7 @@ fn translate(
         cell_set_str: module.declare_func_in_func(shims.cell_set_str, b.func),
         cell_val: module.declare_func_in_func(shims.cell_val, b.func),
         cell_set_val: module.declare_func_in_func(shims.cell_set_val, b.func),
+        cell_prop_str: module.declare_func_in_func(shims.cell_prop_str, b.func),
         val_prop_str: module.declare_func_in_func(shims.val_prop_str, b.func),
         throw_error: module.declare_func_in_func(shims.throw_error, b.func),
         alloc: module.declare_func_in_func(shims.alloc, b.func),
@@ -3363,6 +3392,33 @@ fn translate(
             // `length` on an opaque. This has to precede the generic
             // `GetMember` arm below, which matches every remaining member read
             // and would otherwise take this one and fail on it.
+            Op::GetMember(_, _) if p.cell_prop_at.contains_key(&pc) => {
+                let (slot, name) = *p.cell_prop_at.get(&pc)?;
+                let SlotV::Obj(_, base, _) = stack.pop()? else {
+                    return None;
+                };
+                let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
+                guard(b, ctx, null, R_NULL, pc, None);
+                let at = (slot as usize * repr::SIZE) as i32;
+                let cell = b.ins().iadd_imm(base, at as i64);
+                let (nptr, nlen) = str_const(b, name);
+                let out = b.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    24,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out, 0);
+                let call = b
+                    .ins()
+                    .call(shim.cell_prop_str, &[cell, arena_ptr, nptr, nlen, out_ptr]);
+                let status = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
+                let sh = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 16);
+                stack.push(SlotV::Str(d, l, sh));
+            }
             Op::GetMember(_, _) if p.val_prop_str_at.contains_key(&pc) => {
                 let name = *p.val_prop_str_at.get(&pc)?;
                 let SlotV::ValRef(h, owned) = stack.pop()? else {
@@ -4686,6 +4742,7 @@ struct ShimRefs {
     cell_set_str: cranelift_codegen::ir::FuncRef,
     cell_val: cranelift_codegen::ir::FuncRef,
     cell_set_val: cranelift_codegen::ir::FuncRef,
+    cell_prop_str: cranelift_codegen::ir::FuncRef,
     val_prop_str: cranelift_codegen::ir::FuncRef,
     throw_error: cranelift_codegen::ir::FuncRef,
     alloc: cranelift_codegen::ir::FuncRef,

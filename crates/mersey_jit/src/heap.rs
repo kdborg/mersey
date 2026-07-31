@@ -483,6 +483,46 @@ pub(crate) unsafe extern "C" fn throw_error(
     }
 }
 
+/// A string-valued property read straight off a heap cell (`this.u.pathname`),
+/// without the field's value being parked first. `out` receives (data, length,
+/// owning handle); 0, or 1 if it threw.
+///
+/// # Safety
+/// As `cell_obj`; `out` names three writable words.
+pub(crate) unsafe extern "C" fn cell_prop_str(
+    cell: *const Value,
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        let Some(ip) = (*arena).interp_ptr() else {
+            return 1;
+        };
+        let sh = (*ip).jit_prop_str_of(&*cell, name);
+        if sh == u64::MAX {
+            return 1;
+        }
+        match (*arena).get(sh) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                *out = units.as_ptr() as u64;
+                *out.add(1) = units.len() as u64;
+                *out.add(2) = sh;
+                0
+            }
+            _ => {
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0;
+                0
+            }
+        }
+    }
+}
+
 /// A string-valued property of an opaque (`u.pathname`). `out` receives
 /// (data, length, owning handle); 0, or 1 if it threw.
 ///
