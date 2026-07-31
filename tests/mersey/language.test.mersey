@@ -80,9 +80,32 @@ test("widening is real at run time, not just in the type checker", () => {
     assert(n / 2 == 3, "integer division still truncates");
 });
 
-test("strings are sequences of code points, not UTF-16 units", () => {
+test("strings are UTF-16, and every index speaks code units", () => {
     const s = "héllo";
-    assert(s.length == 5, "length counts code points");
+    assert(s.length == 5, "five code units");
+
+    // The case that tells the two apart: an emoji is one code *point* and two
+    // code *units*, and the engine counts units — the same answer JS gives.
+    // This test used to say "code points, not UTF-16 units" and assert against a
+    // pure-BMP string, where the two agree and so it could not tell.
+    const e = "😀a.b";
+    assert(e.length == 5, "the emoji is two units, not one");
+
+    // Searching returns a code-unit index, so it composes with `slice` and
+    // `charAt`. It did not: `indexOf` counted code points while `length` counted
+    // units, so this `slice` cut the surrogate pair in half and returned a lone
+    // surrogate followed by the rest.
+    assert(e.indexOf("a") == 2, "indexOf is a code-unit index");
+    assert(e.indexOf(".") == 3, "…and keeps counting in units");
+    assert(e.lastIndexOf("b") == 4, "as does lastIndexOf");
+    assert(e.slice(e.indexOf("a")) == "a.b", "so the two compose");
+
+    // Missing is -1, an empty needle matches at 0, and the ends are exact.
+    assert(e.indexOf("zz") == -1, "absent is -1");
+    assert(e.indexOf("") == 0, "an empty needle matches at the start");
+    assert(e.startsWith("😀"), "startsWith compares units");
+    assert(e.endsWith(".b"), "endsWith too");
+    assert(!e.startsWith("a"), "and does not match past the start");
 });
 
 test("classes are sealed: no prototypes, fixed layout", () => {

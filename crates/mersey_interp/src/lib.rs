@@ -8177,6 +8177,37 @@ impl Interp {
                         };
                         Ok(Value::Str(Rc::new(out)))
                     }),
+                    // Searching, in code units — which is both the correct answer
+                    // and by far the cheaper one.
+                    //
+                    // These used to transcode the receiver *and* the needle to
+                    // UTF-8, run Rust's general two-way substring search, and then
+                    // count `chars()` up to the hit to convert the byte offset
+                    // back. That last step returned a **code point** index while
+                    // `length`, `slice` and `charAt` all speak code units, so the
+                    // two disagreed on any string holding a character outside the
+                    // BMP: `"😀a".indexOf("a")` gave 1 where JS gives 2, and
+                    // `s.slice(s.indexOf("a"))` then cut a surrogate pair in half
+                    // and produced a lone surrogate. Code-unit semantics are the
+                    // decided point (§3.4), and the units are right here.
+                    "indexOf" | "contains" | "lastIndexOf" | "startsWith" | "endsWith" => {
+                        let needle: Option<Vec<u16>> = match args.first() {
+                            Some(Value::Str(a)) => Some(a.to_vec()),
+                            Some(other) => Some(utf16(&to_display(other))),
+                            None => Some(Vec::new()),
+                        };
+                        needle.map(|n| {
+                            Ok(match name {
+                                "contains" => Value::Bool(find_units(s, &n, 0).is_some()),
+                                "startsWith" => Value::Bool(s.starts_with(&n[..])),
+                                "endsWith" => Value::Bool(s.ends_with(&n[..])),
+                                "lastIndexOf" => {
+                                    Value::I32(rfind_units(s, &n).map_or(-1, |i| i as i32))
+                                }
+                                _ => Value::I32(find_units(s, &n, 0).map_or(-1, |i| i as i32)),
+                            })
+                        })
+                    }
                     _ => None,
                 };
                 if let Some(r) = units_only {
@@ -8191,27 +8222,8 @@ impl Interp {
                     }
                 };
                 match name {
-                    "indexOf" => {
-                        let needle = arg0();
-                        // Code-point index, not byte index (§3.4).
-                        Ok(Value::I32(match text.find(&needle) {
-                            Some(b) => text[..b].chars().count() as i32,
-                            None => -1,
-                        }))
-                    }
-                    "contains" => Ok(Value::Bool(text.contains(&arg0()))),
-                    "lastIndexOf" => {
-                        let needle = arg0();
-                        // Code-point index, not byte index (§3.4).
-                        Ok(Value::I32(match text.rfind(&needle) {
-                            Some(b) => text[..b].chars().count() as i32,
-                            None => -1,
-                        }))
-                    }
                     "trimStart" => Ok(Value::Str(Rc::new(utf16(text.trim_start())))),
                     "trimEnd" => Ok(Value::Str(Rc::new(utf16(text.trim_end())))),
-                    "startsWith" => Ok(Value::Bool(text.starts_with(&arg0()))),
-                    "endsWith" => Ok(Value::Bool(text.ends_with(&arg0()))),
                     "toUpperCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_uppercase()))))),
                     "toLowerCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_lowercase()))))),
                     "trim" => Ok(Value::Str(Rc::new(utf16(text.trim())))),
@@ -10408,6 +10420,55 @@ fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>
 /// the VM/JIT loop and count frames directly. It is deterministic by design —
 /// the same program throws at the same depth regardless of build or platform.
 const MAX_CALL_DEPTH: usize = 3_000;
+
+/// The first index at or after `from` where `needle`'s code units appear in
+/// `hay`, in **code units** — the same unit `length`, `slice` and `charAt` speak.
+///
+/// A plain scan. Rust's `str::find` builds a two-way searcher whose setup cost
+/// dominates for the short needles real code uses (a `"."`, a `"/"`), and it
+/// works on bytes this engine would have to transcode to reach. An empty needle
+/// matches at `from`, as JS has it.
+fn find_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(from.min(hay.len()));
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    let first = needle[0];
+    let last = hay.len() - needle.len();
+    let mut i = from;
+    while i <= last {
+        // One unit at a time to the first candidate, then the whole compare. For
+        // a one-unit needle the second half is free.
+        if hay[i] == first && hay[i..i + needle.len()] == *needle {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// …and the last such index. An empty needle matches at the end, as JS has it.
+fn rfind_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(hay.len());
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    let first = needle[0];
+    let mut i = hay.len() - needle.len();
+    loop {
+        if hay[i] == first && hay[i..i + needle.len()] == *needle {
+            return Some(i);
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
 
 /// Resolve an `at`-style index against a length: negative counts from the end,
 /// and anything outside the range is `None` rather than a panic or a wrap.
