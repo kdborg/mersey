@@ -8157,6 +8157,19 @@ impl Interp {
                         args.first().and_then(as_i64).unwrap_or(0),
                         args.get(1).and_then(as_i64),
                     ))))),
+                    "split" => Some({
+                        let sep: Vec<u16> = match args.first() {
+                            Some(Value::Str(a)) => a.to_vec(),
+                            Some(other) => utf16(&to_display(other)),
+                            None => Vec::new(),
+                        };
+                        Ok(new_array(
+                            split_units(s, &sep)
+                                .into_iter()
+                                .map(|p| Value::Str(Rc::new(p)))
+                                .collect(),
+                        ))
+                    }),
                     // Searching, in code units — which is both the correct answer
                     // and by far the cheaper one.
                     //
@@ -8248,17 +8261,6 @@ impl Interp {
                             k += 1;
                         }
                         Ok(Value::Str(Rc::new(out)))
-                    }
-                    "split" => {
-                        let sep = arg0();
-                        let parts: Vec<Value> = if sep.is_empty() {
-                            s.iter().map(|u| Value::Str(Rc::new(vec![*u]))).collect()
-                        } else {
-                            text.split(&sep as &str)
-                                .map(|p| Value::Str(Rc::new(utf16(p))))
-                                .collect()
-                        };
-                        Ok(new_array(parts))
                     }
                     _ => self.type_error(format!("no method `{name}` on string")),
                 }
@@ -10400,6 +10402,33 @@ fn find_in_chain<T>(class: &Rc<ClassDef>, f: impl Fn(&Rc<ClassDef>) -> Option<T>
 /// the VM/JIT loop and count frames directly. It is deterministic by design —
 /// the same program throws at the same depth regardless of build or platform.
 const MAX_CALL_DEPTH: usize = 3_000;
+
+/// `split`, over the code units.
+///
+/// The UTF-8 route transcoded the whole receiver, split *there*, and transcoded
+/// every piece back — two conversions and an allocation per piece on top of the
+/// piece itself. It was also lossy: `utf16_to_string` replaces an unpaired
+/// surrogate with U+FFFD, so splitting a WTF-16 string quietly rewrote the parts
+/// it handed back. Splitting the units has neither problem.
+///
+/// An empty separator gives one string per code unit, which is what JS does.
+pub fn split_units(s: &[u16], sep: &[u16]) -> Vec<Vec<u16>> {
+    if sep.is_empty() {
+        return s.iter().map(|u| vec![*u]).collect();
+    }
+    // Deliberately *not* pre-sized. Counting the separators first is a second
+    // search over the same units, and measured on a four-piece split that costs
+    // more than the reallocations it saves: 618ms became 667ms. The pieces
+    // themselves are the expense here, not the vector holding them.
+    let mut parts = Vec::new();
+    let mut last = 0usize;
+    while let Some(at) = find_units(s, sep, last) {
+        parts.push(s[last..at].to_vec());
+        last = at + sep.len();
+    }
+    parts.push(s[last..].to_vec());
+    parts
+}
 
 /// The first index at or after `from` where `needle`'s code units appear in
 /// `hay`, in **code units** — the same unit `length`, `slice` and `charAt` speak.
