@@ -21,15 +21,19 @@ offending Cranelift IR.
 
 Three things about the trace are worth knowing before reading one:
 
-- **It prints an op *before* attempting it**, so the last line is the op that
-  failed, not the last one that worked.
+- **The last `analyze` line is the op that failed** — ops are printed after the
+  decision to look at them, and one that is skipped says `(unreachable)` or
+  `(folded)`. This was not always true: the trailing `ReturnNull` every function
+  carries is unreachable after a `Return`, and it used to be printed anyway, so
+  it appeared as the cause of refusals it had nothing to do with.
 - **A refusal with no `analyze` lines at all is a signature failure** — `sig_of`
   declined before the body was read. That is a different bug from anything in the
   body.
-- **Watch all three layers.** The analysis can pass end to end, codegen can pass
-  end to end, and the function can still be refused when Cranelift rejects the
-  entry wrapper. Two of the nastiest bugs so far looked exactly like an ordinary
-  refusal from the outside.
+- **`analysis accepted every op` means look elsewhere.** The analysis can pass end
+  to end, codegen can pass end to end, and the function can still be refused when
+  Cranelift rejects the entry wrapper. Two of the nastiest bugs so far looked
+  exactly like an ordinary refusal from the outside. The three layers now say
+  which one declined, and both generated-code failures print their IR.
 - **A refusal at `Return` has two causes and the trace names which.** The body
   returned something with no shape, or the *signature* promised nothing because
   the declared return type resolved to nothing. The second prints
@@ -143,6 +147,18 @@ before the call returns, and wrong for anything that must outlive it. Those want
 `own_str`, which parks a copy the caller owns. Note that copying moves the data:
 a handle that names a copy while the pointer still names the original is a
 dangling read with extra steps, so `own_str` hands back both.
+
+**A callee's bytecode may not exist yet.** A function is compiled to bytecode on
+its first *call*, so a helper on a branch nothing has taken has no chunk — and a
+caller that merely names it cannot be compiled, because a call this tier cannot
+describe is a call it cannot make. Build it on demand. The cold branch never has
+to run; it only has to exist, which is how a validator is written.
+
+**A fall-through into a labelled block is a predecessor like any other.** It has
+to agree with the jumps that reach it, and it is easy to write the merge as
+"overwrite the stack with the recorded types" and never check. Where the two
+disagree about machine type Cranelift will catch it for you; where they agree —
+`Ty::Val` and `Ty::StrArr` are the same two registers — nothing will.
 
 **The status word is shared by the whole group.** A callee that reports something
 through it is not describing its own result, it is overwriting its caller's. Say
