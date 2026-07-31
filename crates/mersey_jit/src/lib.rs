@@ -591,6 +591,12 @@ struct Plan {
     /// receiver and the needle are already spans and the answer is a number, so
     /// none of the general member-call machinery applies. See `SEARCH_METHODS`.
     str_search_at: HashMap<usize, (i64, Ty)>,
+    /// `s.codePointAt(i)`: a span and an index, straight to a pure shim.
+    str_cp_at: HashSet<usize>,
+    /// `s.slice(a, b)` / `s.substring(a, b)` / `s.charAt(a)` by id — the arena
+    /// owns the result, but nothing else of the general path applies. The bool
+    /// says whether the second index was given.
+    str_sub_at: HashMap<usize, (i64, bool)>,
     /// Method calls on an *opaque* receiver — `a.push(v)` on an array built here.
     val_method_at: HashMap<usize, (&'static str, Ty)>,
     /// `CallMethod` sites that are a *static* call — the receiver is a class, so
@@ -910,6 +916,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut rand_fill_at: HashSet<usize> = HashSet::new();
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
+    let mut str_cp_at: HashSet<usize> = HashSet::new();
+    let mut str_sub_at: HashMap<usize, (i64, bool)> = HashMap::new();
     let mut val_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut static_at: HashSet<usize> = HashSet::new();
     let mut class_names: HashSet<u16> = HashSet::new();
@@ -1668,6 +1676,30 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     {
                         return None;
                     }
+                    // Numeric-argument methods that are a function of the units
+                    // and nothing else. Every argument has to be a plain number
+                    // for the shim to take it unboxed.
+                    let nums = arg_slots
+                        .iter()
+                        .all(|a| tval(*a).is_some_and(|t| matches!(t, Ty::I32 | Ty::Bool)));
+                    if nums {
+                        if name == "codePointAt" && n == 1 {
+                            str_cp_at.insert(pc);
+                            stack.push(TSlot::Val(ret, Prov::Stable));
+                            continue;
+                        }
+                        let sub = match name.as_str() {
+                            "slice" => Some(0),
+                            "substring" => Some(1),
+                            "charAt" if n == 1 => Some(2),
+                            _ => None,
+                        };
+                        if let Some(id) = sub {
+                            str_sub_at.insert(pc, (id, n == 2));
+                            stack.push(TSlot::Val(ret, Prov::Stable));
+                            continue;
+                        }
+                    }
                     // A search whose one argument is a string: two spans in, a
                     // number out, and nothing in between.
                     if let Some(id) = search_method(&name, n) {
@@ -2155,6 +2187,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         rand_fill_at,
         str_method_at,
         str_search_at,
+        str_cp_at,
+        str_sub_at,
         val_method_at,
         static_at,
         class_names,
@@ -2278,6 +2312,8 @@ struct Shims {
     str_str: FuncId,
     val_len: FuncId,
     str_search: FuncId,
+    str_code_point: FuncId,
+    str_sub: FuncId,
     box_str: FuncId,
     own_str: FuncId,
     box_num: FuncId,
@@ -2362,6 +2398,8 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_str_search", heap::str_search as *const u8);
+    builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
+    builder.symbol("msy_str_sub", heap::str_sub as *const u8);
     builder.symbol("msy_box_str", heap::box_str as *const u8);
     builder.symbol("msy_own_str", heap::own_str as *const u8);
     builder.symbol("msy_box_num", heap::box_num as *const u8);
@@ -2834,6 +2872,8 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
         str_search: one("msy_str_search", Some(types::I64), 5)?,
+        str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
+        str_sub: one("msy_str_sub", None, 7)?,
         box_str: one("msy_box_str", Some(types::I64), 4)?,
         own_str: one("msy_own_str", None, 4)?,
         // (arena, kind, bits) -> handle of a Value::I32 / Value::F64
@@ -3239,6 +3279,8 @@ fn translate(
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         str_search: module.declare_func_in_func(shims.str_search, b.func),
+        str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
+        str_sub: module.declare_func_in_func(shims.str_sub, b.func),
         own_str: module.declare_func_in_func(shims.own_str, b.func),
         box_num: module.declare_func_in_func(shims.box_num, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
@@ -4186,6 +4228,41 @@ fn translate(
             // handle back rather than copying, so only constants and borrows are
             // parked. Everything parked here is released the moment the call
             // returns; the result, when it is a string, is this value's to hold.
+            // `s.codePointAt(i)`: a span, an index, and a nullable number back.
+            Op::CallMethod(_, _) if p.str_cp_at.contains(&pc) => {
+                let (i, from) = scalar(stack.pop()?)?;
+                let SlotV::Str(sptr, slen, _) = stack.pop()? else {
+                    return None;
+                };
+                let i = convert(b, i, from, Ty::I64);
+                let call = b.ins().call(shim.str_code_point, &[sptr, slen, i]);
+                stack.push(SlotV::Val(b.inst_results(call)[0], Ty::I32Opt));
+            }
+            // `s.slice(a, b)` and friends: the arena owns the result, and nothing
+            // else of the general path is needed. A missing second index is
+            // `i64::MIN`, which is not a value `clamp` could confuse.
+            Op::CallMethod(_, _) if p.str_sub_at.contains_key(&pc) => {
+                let (id, has_b) = *p.str_sub_at.get(&pc)?;
+                let bv = if has_b {
+                    let (v, from) = scalar(stack.pop()?)?;
+                    convert(b, v, from, Ty::I64)
+                } else {
+                    b.ins().iconst(types::I64, i64::MIN)
+                };
+                let (av, afrom) = scalar(stack.pop()?)?;
+                let av = convert(b, av, afrom, Ty::I64);
+                let SlotV::Str(sptr, slen, _) = stack.pop()? else {
+                    return None;
+                };
+                let idv = b.ins().iconst(types::I64, id);
+                let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                b.ins()
+                    .call(shim.str_sub, &[arena_ptr, sptr, slen, av, bv, idv, out]);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                let h = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                stack.push(SlotV::Str(d, l, h));
+            }
             // `s.indexOf(t)` and its four siblings: both operands are already
             // spans in registers, so this is one call to a pure function — no
             // arena, no boxing, no name.
@@ -5282,6 +5359,8 @@ struct Ctx {
 /// The engine functions a compiled body may call, resolved.
 struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
+    str_code_point: cranelift_codegen::ir::FuncRef,
+    str_sub: cranelift_codegen::ir::FuncRef,
     own_str: cranelift_codegen::ir::FuncRef,
     cell_obj: cranelift_codegen::ir::FuncRef,
     cell_arr: cranelift_codegen::ir::FuncRef,

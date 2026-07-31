@@ -404,3 +404,32 @@ fn string_searches_agree_across_the_tier_boundary() {
     // Present twice, so first and last differ.
     assert!(out.contains("repeated  104100"), "{out}");
 }
+
+/// `slice`, `substring`, `charAt` and `codePointAt`. Compiled code reaches these
+/// through shims over the receiver's span now: `codePointAt` is a pure function
+/// of a span and an index, and the other three allocate their result but need
+/// nothing else the general path costs — no `Value` for the receiver, no arena
+/// slot per integer argument, no argument vector, no name comparison. Worth 6.2x
+/// on `codePointAt` and about 4x on `slice` and `substring`.
+///
+/// The bounds arithmetic is shared between the tiers, so what this pins is the
+/// edges — where two routes to one rule come apart.
+#[test]
+fn string_subranges_agree_across_the_tier_boundary() {
+    check("string-subrange.mersey");
+    let out = run("string-subrange.mersey", true);
+    // An index inside a surrogate pair gives a lone surrogate, not a character.
+    assert!(
+        out.contains("mid   [\u{fffd}a|\u{fffd}a.b|\u{fffd}a|\u{fffd}a|\u{fffd}|65533]"),
+        "{out}"
+    );
+    // Negative and past-the-end. Note this is *not* what JS does — a negative
+    // index clamps to 0 for `slice` and counts from the end for `charAt` — and
+    // it is pinned here so that changing it later is a decision, not a drift.
+    assert!(out.contains("neg   [abcd|abcd|abcd|abcd|c|99]"), "{out}");
+    // Bounds the wrong way round: `slice` gives nothing, `substring` swaps.
+    assert!(out.contains("rev   [|d|bc|bc|d|100]"), "{out}");
+    assert!(out.contains("zero  [|abcd|||a|97]"), "{out}");
+    // Entirely past the end: empty strings, and null from `codePointAt`.
+    assert!(out.contains("past  [|||||null]"), "{out}");
+}

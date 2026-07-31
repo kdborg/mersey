@@ -25,8 +25,9 @@
 use std::rc::Rc;
 
 use mersey_interp::{
-    alloc_instance, append_int_utf16, array_data, find_units, gc::GcCell, instance_slots,
-    rfind_units, Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
+    alloc_instance, append_int_utf16, array_data, char_at_units, code_point_at_units, find_units,
+    gc::GcCell, instance_slots, rfind_units, slice_units, substring_units, Arena, ClassDef,
+    Instance, Value, WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -954,6 +955,73 @@ pub(crate) unsafe extern "C" fn str_search(
             3 => i64::from(hay.starts_with(needle)),                  // startsWith
             _ => i64::from(hay.ends_with(needle)),                    // endsWith
         }
+    }
+}
+
+/// `s.codePointAt(i)`: a span and an index in, a nullable number out.
+///
+/// The same argument as `str_search` — nothing here allocates, throws, or needs
+/// the arena, so there is no reason to build a `Value` for the receiver, an
+/// arena slot for the index, or a vector to hold it. `i64::MIN` is null, which is
+/// how `Ty::I32Opt` says it everywhere else.
+///
+/// # Safety
+/// `sptr` names `slen` readable `u16`s, or `slen` is 0.
+pub(crate) unsafe extern "C" fn str_code_point(sptr: *const u16, slen: usize, i: i64) -> i64 {
+    unsafe {
+        let s = if slen == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(sptr, slen)
+        };
+        code_point_at_units(s, i).map_or(i64::MIN, i64::from)
+    }
+}
+
+/// `s.slice(a, b)`, `s.substring(a, b)` and `s.charAt(a)`: a span and one or two
+/// indices in, a new string out.
+///
+/// This one *does* allocate — a subrange of an `Rc<Vec<u16>>` needs a `Vec` of
+/// its own, there being no slice type for a Mersey string — and so it does need
+/// the arena to own the result. Everything else the general path costs is still
+/// avoidable: the receiver is not cloned into a `Value`, the indices are not each
+/// parked in an arena slot and released again, no vector is built to carry them,
+/// and no name is compared. `id` is 0 `slice`, 1 `substring`, 2 `charAt`; a `b`
+/// of `i64::MIN` means the argument was not given.
+///
+/// `out` receives (data pointer, length, arena handle).
+///
+/// # Safety
+/// `sptr` names `slen` readable `u16`s, or `slen` is 0; `out` names three
+/// writable words; `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn str_sub(
+    arena: *mut Arena,
+    sptr: *const u16,
+    slen: usize,
+    a: i64,
+    b: i64,
+    id: i64,
+    out: *mut u64,
+) {
+    unsafe {
+        let s = if slen == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(sptr, slen)
+        };
+        let bb = if b == i64::MIN { None } else { Some(b) };
+        let units = match id {
+            0 => slice_units(s, a, bb),
+            1 => substring_units(s, a, bb),
+            _ => char_at_units(s, a),
+        };
+        let rc = std::rc::Rc::new(units);
+        let data = rc.as_ptr() as u64;
+        let len = rc.len() as u64;
+        let h = (*arena).keep(Value::Str(rc));
+        *out = data;
+        *out.add(1) = len;
+        *out.add(2) = h;
     }
 }
 

@@ -8119,16 +8119,11 @@ impl Interp {
                 // ~250ns a call — which is most of what URL parsing spends.
                 let units_only: Option<VResult> = match name {
                     "toString" => Some(Ok(Value::Str(s.clone()))),
-                    "substring" => Some({
-                        let len = s.len() as i64;
-                        let norm = |v: i64| v.clamp(0, len) as usize;
-                        let a = norm(args.first().and_then(as_i64).unwrap_or(0));
-                        let b = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        // Bounds the wrong way round are swapped, not empty —
-                        // this is what distinguishes it from `slice`.
-                        let (start, end) = if a <= b { (a, b) } else { (b, a) };
-                        Ok(Value::Str(Rc::new(s[start..end].to_vec())))
-                    }),
+                    "substring" => Some(Ok(Value::Str(Rc::new(substring_units(
+                        s,
+                        args.first().and_then(as_i64).unwrap_or(0),
+                        args.get(1).and_then(as_i64),
+                    ))))),
                     "concat" => Some({
                         let mut out: Vec<u16> = s.to_vec();
                         for a in &args {
@@ -8139,24 +8134,16 @@ impl Interp {
                         }
                         Ok(Value::Str(Rc::new(out)))
                     }),
-                    "charAt" => Some({
-                        // The i-th UTF-16 code unit as a 1-unit string (JS).
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        let out: Vec<u16> = resolve_at(i, s.len())
-                            .and_then(|i| s.get(i).copied())
-                            .into_iter()
-                            .collect();
-                        Ok(Value::Str(Rc::new(out)))
-                    }),
-                    "codePointAt" => Some({
-                        // The code point starting at code-unit i (JS: combines a
-                        // surrogate pair).
-                        let i = args.first().and_then(as_i64).unwrap_or(0);
-                        Ok(resolve_at(i, s.len())
-                            .and_then(|i| code_point_at(s, i))
-                            .map(|c| Value::I32(c as i32))
-                            .unwrap_or(Value::Null))
-                    }),
+                    "charAt" => Some(Ok(Value::Str(Rc::new(char_at_units(
+                        s,
+                        args.first().and_then(as_i64).unwrap_or(0),
+                    ))))),
+                    "codePointAt" => Some(Ok(code_point_at_units(
+                        s,
+                        args.first().and_then(as_i64).unwrap_or(0),
+                    )
+                    .map(|c| Value::I32(c as i32))
+                    .unwrap_or(Value::Null))),
                     "at" => Some({
                         // Char-returning: the code point at code-unit i.
                         let i = args.first().and_then(as_i64).unwrap_or(0);
@@ -8165,18 +8152,11 @@ impl Interp {
                             .map(Value::Char)
                             .unwrap_or(Value::Null))
                     }),
-                    "slice" => Some({
-                        let len = s.len() as i64;
-                        let norm = |v: i64| v.clamp(0, len) as usize;
-                        let start = norm(args.first().and_then(as_i64).unwrap_or(0));
-                        let end = norm(args.get(1).and_then(as_i64).unwrap_or(len));
-                        let out: Vec<u16> = if start < end {
-                            s[start..end].to_vec()
-                        } else {
-                            Vec::new()
-                        };
-                        Ok(Value::Str(Rc::new(out)))
-                    }),
+                    "slice" => Some(Ok(Value::Str(Rc::new(slice_units(
+                        s,
+                        args.first().and_then(as_i64).unwrap_or(0),
+                        args.get(1).and_then(as_i64),
+                    ))))),
                     // Searching, in code units — which is both the correct answer
                     // and by far the cheaper one.
                     //
@@ -10472,6 +10452,63 @@ pub fn rfind_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
 
 /// Resolve an `at`-style index against a length: negative counts from the end,
 /// and anything outside the range is `None` rather than a panic or a wrap.
+/// `slice`, `substring`, `charAt` and `codePointAt`, over the code units.
+///
+/// Lifted out of `call_member` so that compiled code can reach them without one:
+/// they are pure functions of a span and one or two integers, and everything the
+/// general path does around them — cloning the receiver out of the arena as a
+/// `Value`, boxing each integer argument into an arena slot of its own,
+/// allocating a `Vec<Value>` for the arguments, dispatching by comparing the
+/// method name — is overhead they have no use for.
+///
+/// They live here rather than beside the shim precisely because there must be
+/// *one* of each: the two tiers reach them by different routes and have to agree
+/// down to the edge cases, and the surest way to guarantee that is to have only
+/// one implementation to disagree with.
+///
+/// Bounds are the interpreter's own, which are not always JS's: `slice` clamps a
+/// negative index to 0 where JS counts from the end. That is existing behaviour
+/// and is not changed here — this moves the code, it does not redecide it.
+pub fn slice_units(s: &[u16], a: i64, b: Option<i64>) -> Vec<u16> {
+    let len = s.len() as i64;
+    let norm = |v: i64| v.clamp(0, len) as usize;
+    let start = norm(a);
+    let end = norm(b.unwrap_or(len));
+    if start < end {
+        s[start..end].to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// As `slice_units`, except that bounds the wrong way round are swapped rather
+/// than giving nothing — which is the whole difference between the two.
+pub fn substring_units(s: &[u16], a: i64, b: Option<i64>) -> Vec<u16> {
+    let len = s.len() as i64;
+    let norm = |v: i64| v.clamp(0, len) as usize;
+    let a = norm(a);
+    let b = norm(b.unwrap_or(len));
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    s[start..end].to_vec()
+}
+
+/// The i-th code *unit* as a one-unit string, or empty. Note `resolve_at`: a
+/// negative index counts from the end here, where JS gives "".
+pub fn char_at_units(s: &[u16], i: i64) -> Vec<u16> {
+    resolve_at(i, s.len())
+        .and_then(|i| s.get(i).copied())
+        .into_iter()
+        .collect()
+}
+
+/// The code point starting at code-unit `i`, combining a surrogate pair as JS
+/// does. `None` when the index is out of range.
+pub fn code_point_at_units(s: &[u16], i: i64) -> Option<u32> {
+    resolve_at(i, s.len())
+        .and_then(|i| code_point_at(s, i))
+        .map(|c| c as u32)
+}
+
 fn resolve_at(i: i64, len: usize) -> Option<usize> {
     let i = if i < 0 { i + len as i64 } else { i };
     (i >= 0 && (i as usize) < len).then_some(i as usize)
