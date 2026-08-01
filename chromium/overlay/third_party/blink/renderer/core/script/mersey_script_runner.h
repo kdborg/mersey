@@ -275,6 +275,9 @@ class CORE_EXPORT MerseyScriptRunner final
     kGetReader,
     kEnqueue,
     kStart,
+    kTest,
+    kExec,
+    kInput,
   };
   // A digit-only interned name is an indexed access (`nodes[i]` crosses as a
   // property read of "42"): id = kIndexBase + the index. Above every WebId.

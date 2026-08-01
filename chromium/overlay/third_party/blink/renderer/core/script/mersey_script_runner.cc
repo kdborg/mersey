@@ -1511,6 +1511,15 @@ uint32_t MerseyScriptRunner::HostWebIntern(std::string_view name) {
   if (name == "getReader") return kGetReader;
   if (name == "enqueue") return kEnqueue;
   if (name == "start") return kStart;
+  // URLPattern. `exec` returns a URLPatternResult — every component, each with
+  // an input and a groups bag — and on the JSON tier that whole graph was
+  // serialised and parsed back once per iteration. Reflection hands back a
+  // *handle* instead (FillFromV8 refs anything non-scalar), so the result stays
+  // in V8 and only the two fields this reads ever cross. `pathname` is already
+  // interned for URL; reflection answers it for a component result.
+  if (name == "test") return kTest;
+  if (name == "exec") return kExec;
+  if (name == "input") return kInput;
   // A digit-only name is an indexed access (`nodes[i]`): id = kIndexBase + i.
   if (!name.empty() && name.size() <= 6) {
     bool digits = true;
@@ -2712,6 +2721,9 @@ const char* MerseyScriptRunner::NameForWebId(uint32_t id, std::string& scratch) 
     case kDispatchEvent: return "dispatchEvent";
     case kEncode: return "encode";
     case kDecode: return "decode";
+    case kTest: return "test";
+    case kExec: return "exec";
+    case kInput: return "input";
     case kPostMessage: return "postMessage";
     case kData: return "data";
     case kRead: return "read";

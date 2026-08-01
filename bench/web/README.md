@@ -235,6 +235,24 @@ touched them — which is what makes them a noise reading rather than a result:
 
 `json` is the caution worth keeping: 17% of 3.5ms is 0.6ms, so a percentage on a
 sub-5ms workload says almost nothing. Read those rows in absolute terms.
+
+### A stored baseline drifts; a back-to-back pair does not
+
+Over one long session of repeated suite runs, `xhr` climbed from 92ms to a
+steady 100–114 and stayed there — across separate windows, with disk at 84% and
+148 GiB free, and with no code change that could reach it (`xhr` uses `open`,
+`send`, `status`, `addEventListener`; none of them are interned, so none of them
+even reach the wide tier). The machine drifted; the recorded number did not.
+
+The way out is not more repeats of the new binary. It is to **rebuild the old
+one and measure the pair back to back**. Reverting one change and re-measuring
+gave `urlpattern` 231.8ms against 186.5 — a 19.5% difference — where the same
+change against the stored baseline read 15.9%, and told us in the same run that
+`xhr` was elevated *with the change reverted too*, which no amount of repeating
+the new binary could have shown.
+
+Use `results.*.json` to decide **what to investigate**. Use a rebuilt A/B on the
+same machine state to decide **what a change did**.
 | `websocket` | 41.4 / 41.7 / 43.9 / 44.4 | **7%** |
 
 So a 5% or even 10% move on an async or IPC-shaped workload (`bchannel`,
