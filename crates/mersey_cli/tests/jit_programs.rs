@@ -565,3 +565,23 @@ fn setters_agree_across_the_tier_boundary() {
     // number twice. That is the failure this direct call has to not have.
     assert!(out.contains("dispatch -1474736480 -1454936480"), "{out}");
 }
+
+/// What a compiled frame owns when it returns. Nothing swept a callee's frame —
+/// `jit_arena.clear()` runs when the outermost compiled call returns — so a
+/// `split` result parked in an inner function's local survived until then, one
+/// arena entry per call. The CLI `strings` benchmark peaked at 89 MB where the
+/// same program interpreted took 6.3, and it grew without bound with the work.
+///
+/// The dangerous half is the returned value: a local handed back is a borrow, so
+/// the return promotes it first and only then may the frame be swept. Get that
+/// order wrong and the caller reads the entry that was just freed — a wrong
+/// answer, not a crash — so these are contents, read after allocation churn.
+#[test]
+fn a_returning_frame_releases_what_it_owns() {
+    check("frame-sweep.mersey");
+    let out = run("frame-sweep.mersey", true);
+    assert!(out.contains("viaLocal  7-14 180"), "{out}");
+    // The early exit, and the value that crossed it.
+    assert!(out.contains("early     20 short"), "{out}");
+    assert!(out.contains("opaque    payload-9"), "{out}");
+}

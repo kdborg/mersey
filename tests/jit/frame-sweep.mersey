@@ -1,0 +1,83 @@
+// What a compiled frame owns when it returns.
+//
+// Nothing swept a callee's frame. `jit_arena.clear()` runs when the *outermost*
+// compiled call returns, so an inner function that parked a `split` result in a
+// local held it until then — one arena entry per call. A 50000-iteration parse
+// benchmark peaked at 89 MB where the same program interpreted took 6.3, and it
+// grew without bound with the work, which for a long-running server is not a
+// tuning question.
+//
+// The release is at the return, and the dangerous half of that is the returned
+// value itself: a local handed back is a *borrow* (a load carries handle 0), so
+// the return promotes it — copies a string, takes a second reference to an
+// opaque or an object — and only then may the frame be swept. Get that order
+// wrong and the caller is handed the entry that was just freed, which is a wrong
+// answer and not a crash. So every case here reads the result's **contents**
+// after the call, never its length, and reads it under enough allocation churn
+// that a freed entry would have been reused by the time it is looked at.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// A string built into a local, then returned. The local is what the sweep would
+/// release; the result is what the caller reads.
+function viaLocal(i: int32): string {
+    const s = `row-${i}-${i * 2}`;
+    const t = s.slice(4);
+    return t;
+}
+
+/// The same, but the local is returned through an *early* exit while a second
+/// owned local is still live — the shape that leaked.
+function early(t: string): string {
+    const parts = t.split(".");
+    if (parts.length != 3) {
+        return "short";
+    }
+    return parts[1];
+}
+
+/// An opaque built into a local and returned: a second arena reference rather
+/// than a copy, so a sweep in the wrong order takes the only one.
+function opaque(i: int32): Bytes {
+    const b = bytes.encodeUtf8(`payload-${i}`);
+    return b;
+}
+
+/// Allocation churn between the call and the read, so a freed entry would have
+/// been handed out again.
+function churn(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + `${i}`.length + bytes.encodeUtf8(`${i}`).length;
+        i += 1;
+    }
+    return acc;
+}
+
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const s = viaLocal(i % 100);
+        const e = early(i % 2 == 0 ? "1.2.3" : "nope");
+        const b = opaque(i % 100);
+        acc = acc + churn(2);
+        acc = acc + s.length + e.length + b.length;
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive     ${drive(200000)}`);
+// Then the contents, read after the call and after churn — the read a freed
+// entry would get wrong while every length above stayed right.
+const a = viaLocal(7);
+const c = churn(50);
+console.log(`viaLocal  ${a} ${c}`);
+const p = early("10.20.30");
+const q = early("nope");
+console.log(`early     ${p} ${q}`);
+const o = opaque(9);
+console.log(`opaque    ${bytes.decodeUtf8(o)}`);

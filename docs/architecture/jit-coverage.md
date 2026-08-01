@@ -314,6 +314,34 @@ the list takes neither option, which is the third and worst one. This is the sam
 bug as the paragraph above by a different route, and it reached a shipped release
 the same way.
 
+**A frame that returns has to let go of what it owns.** Nothing swept a callee's
+frame. `jit_arena.clear()` runs when the *outermost* compiled call returns, so a
+value a callee parked in a local — a `split` result, a built string — survived
+until then: one arena entry per call, for as long as the outer call ran. The CLI
+`strings` benchmark peaked at **89 MB where the same program interpreted took
+6.3**, and it grew without bound with the work, which for a long-running server
+is not a tuning question. It was invisible from the outside because nothing was
+*wrong*, only retained; both tiers printed the same answer.
+
+Two things make the fix subtle:
+
+- **Order.** A local handed back is a *borrow* — a load carries handle 0 — so the
+  return promotes it first (a string is copied, an opaque or object takes a second
+  reference), and only then may the frame be swept. Sweep first and the promotion
+  copies out of the entry it just freed, which is a wrong answer and not a crash.
+  `tests/jit/frame-sweep.mersey` reads contents back after allocation churn for
+  exactly this reason.
+- **Parameters are not the callee's.** The caller hands its handle over for the
+  duration and releases it the moment the call returns, so a callee that released
+  it too would release it twice. Parameter slots are excluded.
+
+The root is left alone: its frame is cleared wholesale on the way back to the
+interpreter, and its slots may hold references the OSR entry parked there.
+
+The cost is real and small: `strings` pays 8.6% (52.5 → 57.0 ms) for 10x the
+memory back, `url` *gains* (10.8 → 9.7 ms, 12.5 → 9.2 MB), and the rest are
+unchanged. Freeing 900k entries as you go is not free; retaining them is worse.
+
 **`box_str` and `own_str` are not interchangeable.** `box_str` answers from the
 interpreter's small memo, which owns what it parks and releases it when it
 displaces it — right for a receiver or an argument, which are finished with

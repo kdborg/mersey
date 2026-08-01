@@ -647,6 +647,9 @@ struct Plan {
     /// these are the slots whose interpreter values must be cloned *into* the
     /// arena so there is something to release.
     owned_slots: Vec<bool>,
+    /// The handle register of every owned, non-parameter slot — what a `return`
+    /// has to let go of. See where this is built for why a parameter is not here.
+    sweep: Vec<u32>,
     /// Bytecode positions of `arr.length`.
     length_at: Vec<usize>,
     /// Bytecode position of a `time.now()`/`time.monotonic()` → `true` for the
@@ -2292,11 +2295,31 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         var_at.push(n);
         n += t.width() as u32;
     }
+    // Every owned handle this frame still holds when it returns. A callee's
+    // frame is not swept by anything else: `jit_arena.clear()` runs when the
+    // *outermost* compiled call returns, so an inner function that parked a
+    // `split` result in a local held it for the whole of that outer call — one
+    // arena entry per call, 500k calls, 170 MB. The interpreter running the same
+    // program used 6 MB.
+    //
+    // Parameters are excluded because the *caller* owns them: it hands its handle
+    // over for the duration and releases it the moment the call returns, so
+    // releasing here as well would be releasing it twice.
+    let sweep: Vec<u32> = (0..n_slots)
+        .filter(|i| *i >= n_params && stored.get(*i).copied().unwrap_or(false))
+        .filter_map(|i| match slots[i] {
+            Ty::Obj(_) | Ty::Str => Some(var_at[i] + 2),
+            Ty::Val | Ty::StrArr => Some(var_at[i] + 1),
+            // An array has no handle to own, and a scalar nothing to release.
+            _ => None,
+        })
+        .collect();
     Some(Plan {
         chunk,
         n_params,
         n_slots,
         slots,
+        sweep,
         var_at,
         n_vars: n,
         entry_live,
@@ -5407,6 +5430,7 @@ fn translate(
                 let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
                 let l = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
                 let h = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                sweep_frame(b, p, shim.release, arena_ptr, is_root);
                 b.ins().return_(&[d, l, h]);
                 reachable = false;
             }
@@ -5434,6 +5458,7 @@ fn translate(
                     b.switch_to_block(done);
                     b.seal_block(done);
                     let h = b.block_params(done)[0];
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[ptr, fields, h]);
                     reachable = false;
                 }
@@ -5463,6 +5488,7 @@ fn translate(
                     b.seal_block(done);
                     let ptr = b.block_params(done)[0];
                     let h = b.block_params(done)[1];
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[ptr, len, h]);
                     reachable = false;
                 }
@@ -5486,16 +5512,19 @@ fn translate(
                     b.switch_to_block(done);
                     b.seal_block(done);
                     let h = b.block_params(done)[0];
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[v, h]);
                     reachable = false;
                 }
                 SlotV::Null if matches!(p.ret, Ty::Val | Ty::StrArr) => {
                     let z = b.ins().iconst(types::I64, 0);
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[z, z]);
                     reachable = false;
                 }
                 SlotV::Null if matches!(p.ret, Ty::Obj(_) | Ty::Str) => {
                     let z = b.ins().iconst(types::I64, 0);
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[z, z, z]);
                     reachable = false;
                 }
@@ -5503,6 +5532,7 @@ fn translate(
                 // is an ordinary `int32` and would come back as the number 0.
                 SlotV::Null if matches!(p.ret, Ty::I32Opt) => {
                     let n = b.ins().iconst(types::I64, i64::MIN);
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[n]);
                     reachable = false;
                 }
@@ -5517,19 +5547,20 @@ fn translate(
                     } else {
                         v
                     };
+                    sweep_frame(b, p, shim.release, arena_ptr, is_root);
                     b.ins().return_(&[v]);
                     reachable = false;
                 }
             },
             Op::ReturnNull => {
-                ret_null(b, p, state_ptr, is_root);
+                ret_null(b, p, state_ptr, is_root, shim.release, arena_ptr);
                 reachable = false;
             }
             _ => unreachable!("plan filtered"),
         }
     }
     if reachable {
-        ret_null(b, p, state_ptr, is_root);
+        ret_null(b, p, state_ptr, is_root, shim.release, arena_ptr);
     }
 
     b.switch_to_block(bail);
@@ -5554,10 +5585,18 @@ fn translate(
 /// call says null in its *registers* whenever its type has a representation for
 /// it — zeros for a reference, the sentinel for a nullable number — and touches
 /// the status only when there is no other way to say it.
-fn ret_null(b: &mut FunctionBuilder, p: &Plan, state_ptr: ClValue, is_root: bool) {
+fn ret_null(
+    b: &mut FunctionBuilder,
+    p: &Plan,
+    state_ptr: ClValue,
+    is_root: bool,
+    release: cranelift_codegen::ir::FuncRef,
+    arena_ptr: ClValue,
+) {
     if !p.void {
         if !is_root {
             if let Some(zs) = nulls_of(b, p.ret) {
+                sweep_frame(b, p, release, arena_ptr, is_root);
                 b.ins().return_(&zs);
                 return;
             }
@@ -5565,6 +5604,7 @@ fn ret_null(b: &mut FunctionBuilder, p: &Plan, state_ptr: ClValue, is_root: bool
         let n = b.ins().iconst(types::I64, ST_NULL);
         b.ins().store(MemFlags::trusted(), n, state_ptr, ST_STATUS);
     }
+    sweep_frame(b, p, release, arena_ptr, is_root);
     let zs = zeros_of(b, p.ret);
     b.ins().return_(&zs);
 }
@@ -5710,6 +5750,35 @@ fn dup_handle(
     b.switch_to_block(done);
     b.seal_block(done);
     b.block_params(done)[0]
+}
+
+/// Everything this frame still owns, let go of on the way out.
+///
+/// A callee's frame had nothing else sweeping it: `jit_arena.clear()` runs when
+/// the *outermost* compiled call returns, so a `split` result parked in an inner
+/// function's local survived until then — one arena entry per call. It cost
+/// 170 MB where the interpreter running the same program cost 6.
+///
+/// This has to come *after* a returned borrow has been promoted, not before: the
+/// promotion copies out of the entry the slot owns, and sweeping first would have
+/// it copy out of freed memory.
+///
+/// The root is left alone. Its frame is cleared wholesale on the way back to the
+/// interpreter, and its slots may hold references the OSR entry parked there.
+fn sweep_frame(
+    b: &mut FunctionBuilder,
+    p: &Plan,
+    release: cranelift_codegen::ir::FuncRef,
+    arena_ptr: ClValue,
+    is_root: bool,
+) {
+    if is_root {
+        return;
+    }
+    for at in &p.sweep {
+        let h = b.use_var(Variable::from_u32(*at));
+        release_if_owned(b, release, arena_ptr, h);
+    }
 }
 
 fn release_if_owned(
