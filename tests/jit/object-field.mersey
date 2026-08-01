@@ -148,7 +148,51 @@ function reassign(n: int32): int32 {
     return acc;
 }
 
+/// An array *from a call* into an array field. It arrives as an opaque handle,
+/// not as an address and a length — `ret_is_val_in` counts an array return as an
+/// opaque — so this is the store an opaque field gets. It only became possible
+/// once a returned opaque stopped handing back a released identity register; see
+/// `opaque-return.mersey`.
+class Cache {
+    private held: Leaf[] = [];
+    public refill(n: int32): void {
+        this.held = build(n);
+    }
+    public sum(): int32 {
+        let s = 0;
+        let i = 0;
+        while (i < this.held.length) {
+            s = s + this.held[i].tag;
+            i += 1;
+        }
+        return s;
+    }
+}
+
+function build(n: int32): Leaf[] {
+    const out: Leaf[] = [];
+    let i = 0;
+    while (i < n) {
+        out.push(new Leaf(i));
+        i += 1;
+    }
+    return out;
+}
+
+function cached(n: int32): int32 {
+    const c = new Cache();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        c.refill(4);
+        acc = acc + c.sum();
+        i += 1;
+    }
+    return acc;
+}
+
 console.log(`drive       ${drive(200000)}`);
+console.log(`cached      ${cached(50000)}`);
 console.log(`reassign    ${reassign(100000)}`);
 console.log(`collect     ${collect(20000)}`);
 console.log(`viaSub      ${viaSub(200000)}`);

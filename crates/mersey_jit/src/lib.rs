@@ -1670,17 +1670,18 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // back an array hands back a handle. That was the whole of
                     // why `this.created = applyOps(…)` still refused after the
                     // `Ty::Arr` case existed — the value was never that shape.
-                    // NOT `Ty::Val`, though a call handing back an array gives
-                    // exactly that (`ret_is_val_in` counts `FieldTy::Arr` as an
-                    // opaque). Accepting it and storing through `cell_set_val`
-                    // put something non-indexable in the cell — `this.snap[0]`
-                    // then raised "only arrays and strings are indexable" from
-                    // the interpreter, so the field held null rather than the
-                    // array. The handle is right where the opaque *field* store
-                    // uses it, so the difference is in what a compiled callee
-                    // leaves in those two registers, and that wants finding out
-                    // before this accepts it.
-                    matches!(v, Ty::Arr(ve) if ve == fe)
+                    // …and `Ty::Val`, which is what a *call* handing back an
+                    // array gives: `ret_is_val_in` counts `FieldTy::Arr` as an
+                    // opaque, so the value arrives as a handle rather than as an
+                    // address and a length.
+                    //
+                    // This was tried once and put null in the cell, which looked
+                    // like the store being wrong and was not: a returned opaque's
+                    // identity register held a handle the frame sweep had already
+                    // released. That is fixed at the `Return` (see
+                    // `tests/jit/opaque-return.mersey`), and with a live handle
+                    // the store is the same one an opaque field gets.
+                    matches!(v, Ty::Arr(ve) if ve == fe) || v == Ty::Val
                 } else if let Ty::Obj(fci) = t {
                     match v {
                         Ty::Obj(vci) => {
@@ -4279,9 +4280,9 @@ fn translate(
             Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Arr(_)))) => {
                 let (slot, _) = *p.field_at.get(&pc)?;
                 let v = stack.pop()?;
-                let SlotV::Arr(vptr, _, _, _) = v else {
+                if !matches!(v, SlotV::Arr(..) | SlotV::ValRef(..)) {
                     return None;
-                };
+                }
                 let SlotV::Obj(_, base, _) = stack.pop()? else {
                     return None;
                 };
@@ -4289,7 +4290,20 @@ fn translate(
                 guard(b, ctx, null, R_NULL, pc, None);
                 let at = (slot as usize * repr::SIZE) as i32;
                 let cell = b.ins().iadd_imm(base, at as i64);
-                b.ins().call(shim.cell_set_arr, &[cell, vptr]);
+                match v {
+                    // Address and length: take a reference through the pointer.
+                    SlotV::Arr(vptr, _, _, _) => {
+                        b.ins().call(shim.cell_set_arr, &[cell, vptr]);
+                    }
+                    // A handle, which is how an array comes back from a call.
+                    // The arena holds it and `cell_set_val` clones it in — the
+                    // same store an opaque field gets, because that is what this
+                    // is until the field's declared type says otherwise.
+                    SlotV::ValRef(h, _) => {
+                        b.ins().call(shim.cell_set_val, &[cell, arena_ptr, h]);
+                    }
+                    _ => return None,
+                }
                 stack.push(v);
             }
             Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Obj(_)))) => {

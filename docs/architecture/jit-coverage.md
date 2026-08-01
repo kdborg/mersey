@@ -361,6 +361,27 @@ The lesson is the ordinary one for this tier: a refusal names the op it stopped
 on, not the reason it will stop next time. Clearing one and re-tracing is the
 whole method.
 
+### An array from a call, and an open 3%
+
+The fourth store landed, and the failure that blocked it first time was not the
+store at all: a returned opaque was handing back a released identity register
+(above). With that fixed, `Ty::Val` into an array field is the same `cell_set_val`
+an opaque field gets.
+
+The measurement is a trade, both halves taken back to back:
+
+| | compiled | ms |
+|---|---|---|
+| a probe whose callee compiles | 2 → **3** methods | 0.07 → **0.06** |
+| `reconcile` | 8 → 8, unchanged | 62.2 → **64.2** |
+
+**The 3% on `reconcile` is unexplained and should not be waved through.**
+Accepting a shape in the analysis has no business costing runtime when no
+function newly compiles, and the compiled/refused counts are 8/8 either way —
+but *which* eight is not something the counts can tell you, and that is the
+thing to check. It is shipped because it is correct and demonstrably pays where
+the shape is reachable, not because the number is understood.
+
 ### The first of those, in the parts that already exist
 
 `push` is not missing. `jit_array_push(h, kind, bits)` takes the array **by

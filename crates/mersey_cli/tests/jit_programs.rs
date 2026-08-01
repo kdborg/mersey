@@ -613,6 +613,10 @@ fn an_object_stored_into_a_field_agrees_across_the_tier_boundary() {
     // An array stored into an array field, overwritten every iteration: a leak
     // grows without bound and an over-eager free is read straight back.
     assert!(out.contains("reassign    500000"), "{out}");
+    // An array *from a call* into an array field: it arrives as an opaque handle
+    // rather than an address and a length, and only works because a returned
+    // opaque no longer hands back a released identity register.
+    assert!(out.contains("cached      300000"), "{out}");
 }
 
 /// An opaque returned from a compiled function, used by its caller — a
