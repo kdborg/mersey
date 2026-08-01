@@ -185,6 +185,31 @@ accidental O(n²) or a leaked handle table, not 5% noise. Baselines are
 machine-relative: after moving to new hardware, `--update` once. Don't run it
 concurrently with builds or other benchmarks.
 
+**Baselines are per platform, and a workload with none is not run at all.** The
+file is `{"linux": {…}, "macos": {…}}`, and the no-`--update` path takes its
+workload list from the current platform's section — so a platform that has never
+been baselined gates *nothing*, silently and with a zero exit. macOS carried two
+of twenty-nine for a while, which meant the whole engine leg was passing there
+without running. It now carries twenty-eight.
+
+Three of the Linux twenty-nine have no macOS baseline, and the reasons divide:
+
+| workload | why | engine's fault? |
+|---|---|---|
+| `urlpattern` | `URLPattern is not a constructor` | no — Node 20 on this host has no `URLPattern` |
+| `websocket` | `WebSocket is not a constructor` | no — same, no global `WebSocket` |
+| `locks` | `stale handle 1` from the bridge | **unresolved** — reproduces at `6c69de6`, so not from the frame sweep or the setter, but not yet explained |
+
+The first two want a newer Node, not engine work. The third is a real question
+about handle lifetime under a closure that crosses into the host and a promise
+that chains the next iteration; it is recorded here rather than fixed because it
+predates the work that found it.
+
+When extending a platform's coverage, filter with `PERF_WL` to the workloads you
+are *adding*: `--update` merges `{...baselines, ...fresh}`, so re-running it over
+a workload that already has a baseline silently re-records it at today's number
+and erases whatever signal it held.
+
 ### What a number here can actually resolve
 
 The fork runners (`run-native-*.mjs`) take `n=3` per workload, and for some

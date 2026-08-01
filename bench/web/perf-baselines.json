@@ -176,6 +176,84 @@
     }
   },
   "macos": {
+    "bchannel": {
+      "ms": 16.5,
+      "rss": 38449,
+      "heap": 14942208,
+      "checksum": 5890
+    },
+    "blob": {
+      "ms": 204.8,
+      "rss": 101865,
+      "heap": 10682368,
+      "checksum": 198890
+    },
+    "calls": {
+      "ms": 27323.19,
+      "rss": 23184,
+      "heap": 2293760,
+      "checksum": 452320592
+    },
+    "canvas": {
+      "ms": 61.48,
+      "rss": 42257,
+      "heap": 10682368,
+      "checksum": 20000
+    },
+    "compression": {
+      "ms": 80.41,
+      "rss": 56403,
+      "heap": 14942208,
+      "checksum": 8690
+    },
+    "compute": {
+      "ms": 44422.74,
+      "rss": 21776,
+      "heap": 2293760,
+      "checksum": 1765835917
+    },
+    "crypto": {
+      "ms": 106.9,
+      "rss": 40417,
+      "heap": 10682368,
+      "checksum": 320000
+    },
+    "cssom": {
+      "ms": 115.25,
+      "rss": 42161,
+      "heap": 10747904,
+      "checksum": 48000
+    },
+    "dom": {
+      "ms": 85.79,
+      "rss": 89369,
+      "heap": 10682368,
+      "checksum": 10000
+    },
+    "encoding": {
+      "ms": 74.24,
+      "rss": 49571,
+      "heap": 10682368,
+      "checksum": 437780
+    },
+    "events": {
+      "ms": 71.52,
+      "rss": 42513,
+      "heap": 14942208,
+      "checksum": 10000
+    },
+    "fcompute": {
+      "ms": 17139.18,
+      "rss": 23184,
+      "heap": 2293760,
+      "checksum": "true"
+    },
+    "fetch": {
+      "ms": 57.48,
+      "rss": 72801,
+      "heap": 14942208,
+      "checksum": 20990
+    },
     "frameworkui": {
       "ms": 688.52,
       "rss": 130406,
@@ -187,6 +265,84 @@
       "rss": 56323,
       "heap": 14942208,
       "checksum": -413913408
+    },
+    "geometry": {
+      "ms": 229.05,
+      "rss": 61203,
+      "heap": 10682368,
+      "checksum": 95000
+    },
+    "idb": {
+      "ms": 21.05,
+      "rss": 50913,
+      "heap": 14942208,
+      "checksum": 4390
+    },
+    "json": {
+      "ms": 16.68,
+      "rss": 26752,
+      "heap": 10682368,
+      "checksum": 848890
+    },
+    "mathk": {
+      "ms": 7559.46,
+      "rss": 33472,
+      "heap": 2293760,
+      "checksum": "true"
+    },
+    "msgchannel": {
+      "ms": 18.02,
+      "rss": 39601,
+      "heap": 14942208,
+      "checksum": 5890
+    },
+    "query": {
+      "ms": 94.09,
+      "rss": 41041,
+      "heap": 11337728,
+      "checksum": 214900
+    },
+    "sse": {
+      "ms": 33.46,
+      "rss": 61345,
+      "heap": 14942208,
+      "checksum": 14890
+    },
+    "storage": {
+      "ms": 102.64,
+      "rss": 44769,
+      "heap": 10682368,
+      "checksum": 208890
+    },
+    "streams": {
+      "ms": 48.67,
+      "rss": 44321,
+      "heap": 14942208,
+      "checksum": 18890
+    },
+    "timers": {
+      "ms": 86.15,
+      "rss": 43121,
+      "heap": 10682368,
+      "checksum": 20000
+    },
+    "url": {
+      "ms": 125.63,
+      "rss": 58980,
+      "heap": 10682368,
+      "checksum": 537780
+    },
+    "worker": {
+      "ms": 27.63,
+      "rss": 66625,
+      "heap": 14942208,
+      "checksum": 7890
+    },
+    "xhr": {
+      "ms": 57.56,
+      "rss": 72194,
+      "heap": 14942208,
+      "checksum": 20990
     }
   }
 }
