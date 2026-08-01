@@ -1498,6 +1498,19 @@ uint32_t MerseyScriptRunner::HostWebIntern(std::string_view name) {
   if (name == "translate") return kTranslate;
   if (name == "scale") return kScale;
   if (name == "DOMMatrix") return kCtorDOMMatrix;
+  // MessageChannel and the streams reader. Neither has a native kind, so these
+  // names have no case below and are answered by reflection — which is the
+  // point: the wide tier reaches V8 directly, where an un-interned name went
+  // out as a JSON round trip in both directions. Safe to add only because the
+  // tails above now fall back rather than answering null.
+  if (name == "postMessage") return kPostMessage;
+  if (name == "data") return kData;
+  if (name == "read") return kRead;
+  if (name == "value") return kValue;
+  if (name == "done") return kDone;
+  if (name == "getReader") return kGetReader;
+  if (name == "enqueue") return kEnqueue;
+  if (name == "start") return kStart;
   // A digit-only name is an indexed access (`nodes[i]`): id = kIndexBase + i.
   if (!name.empty() && name.size() <= 6) {
     bool digits = true;
@@ -1676,6 +1689,21 @@ void MerseyScriptRunner::HostWebGetU16(int64_t target,
         }
       }
       break;
+    default:
+      // An interned name with no case here at all. It cannot be an *unknown*
+      // name — those decline in HostWebIntern and never reach this tier — so it
+      // is one this fork interned to keep off JSON and answers reflectively, or
+      // does not answer. Either way the JSON tier is the right home, because a
+      // null reply here is indistinguishable from the property *being* null:
+      // `read_msy_reply` always returns `Some`, so the engine takes it and does
+      // not retry.
+      //
+      // This is `default:` and not the code after the switch on purpose. A
+      // `break` from a case above means "handled, no value" — several of them
+      // do their work and then break — and routing those to JSON would run the
+      // effect a second time.
+      GetViaJson(target, id, out);
+      return;
   }
   FillNull(out);
 }
@@ -2085,6 +2113,14 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
       }
       break;
     }
+    default:
+      // As in HostWebGetU16, and `default:` for the same reason: `case
+      // kFillRect` does the fill and then breaks, so sending a break here to
+      // the JSON tier drew the rectangle twice — and measured 13x slower while
+      // every checksum stayed green, because the workload never reads back what
+      // it drew.
+      CallViaJson(target, id, args, argc, out);
+      return;
   }
   FillNull(out);
 }
@@ -2672,6 +2708,14 @@ const char* MerseyScriptRunner::NameForWebId(uint32_t id, std::string& scratch) 
     case kDispatchEvent: return "dispatchEvent";
     case kEncode: return "encode";
     case kDecode: return "decode";
+    case kPostMessage: return "postMessage";
+    case kData: return "data";
+    case kRead: return "read";
+    case kValue: return "value";
+    case kDone: return "done";
+    case kGetReader: return "getReader";
+    case kEnqueue: return "enqueue";
+    case kStart: return "start";
     case kM41: return "m41";
     case kM42: return "m42";
     case kMatrixA: return "a";

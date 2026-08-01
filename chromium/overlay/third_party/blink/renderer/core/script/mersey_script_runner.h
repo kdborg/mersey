@@ -266,6 +266,15 @@ class CORE_EXPORT MerseyScriptRunner final
     kTranslate,
     kScale,
     kCtorDOMMatrix,
+    // Reflection answers these; interning them is what keeps them off JSON.
+    kPostMessage,
+    kData,
+    kRead,
+    kValue,
+    kDone,
+    kGetReader,
+    kEnqueue,
+    kStart,
   };
   // A digit-only interned name is an indexed access (`nodes[i]` crosses as a
   // property read of "42"): id = kIndexBase + the index. Above every WebId.

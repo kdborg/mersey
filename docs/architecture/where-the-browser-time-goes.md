@@ -108,6 +108,51 @@ that has interned a name but cannot answer for *this* receiver falls to the
 JSON tier rather than to null. `a` needed the same care on the read side,
 being a name anything may carry.
 
+### `break` in that switch means "handled", not "unhandled"
+
+Applying the same treatment to `msgchannel` and `streams` needed one more thing.
+Their hot names — `postMessage`, `data`, `read`, `value`, `done` — are not
+interned by the fork, and an un-interned name declines at `HostWebIntern` and
+cannot use the wide tier at all, so it goes out as JSON in both directions.
+Neither interface has a native kind, so both are reflective `kJs`: interning the
+names alone is enough to route them through V8 directly.
+
+But interning `data` is not safe on its own, because `kEvent` *is* a native kind
+with no case for it, and an unanswered case returns null that the engine takes as
+the value. So the tier needs a fallback — and the obvious placement of it is
+wrong. Putting it after the switch cost **13x on `canvas`**:
+
+    case kFillRect: {
+      if (…) { fill(…); }     // does the work
+      break;                  // …and breaks. `break` meant "handled, no value".
+    }
+
+Several cases are written that way — `kFillRect`, `kAppendChild`, `kSetItem` —
+so a fallback after the switch runs the effect **a second time**. Every rectangle
+drawn twice, every storage key set twice. Measured: `canvas` 5.7 → 77.6ms, `dom`
+15.9 → 76.2, `storage` 137.5 → 314.8.
+
+**All thirty checksums stayed green through that.** These workloads do not read
+back what they write, so doing it twice is invisible to the correctness proof.
+Only the timings showed it, which is the argument for running the whole suite
+against a snapshot rather than the workloads you meant to touch.
+
+The fallback belongs in `default:`, where it catches an id with *no case* — which
+can only be a name this fork interned deliberately — and leaves `break` meaning
+what every existing case already assumed. Results after that:
+
+| | before | after |
+|---|---|---|
+| `streams` | 90.78 | **66.87** (−26%) |
+| `frameworkui2` | 49.90 | 43.59 (−13%, at its 12% noise floor) |
+| `msgchannel` | 51.94 | 48.56 (−6%) |
+| `canvas` / `dom` / `storage` | 5.68 / 15.93 / 137.50 | 5.90 / 16.16 / 138.50 |
+
+A receiver a case cannot answer for still falls to null — `kFillRect` on a
+non-canvas, say. That is pre-existing, it needs a per-case audit rather than a
+blanket change, and it is the same latent shape the `translate` work above had to
+handle explicitly.
+
 The lesson generalises past `DOMMatrix`. Before writing `web_bind` for an
 interface, check which tier its calls are actually landing on — the rows at
 20–61x above (`msgchannel`, `streams`, `frameworkui2`) are worth that check
