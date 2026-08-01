@@ -375,12 +375,25 @@ The measurement is a trade, both halves taken back to back:
 | a probe whose callee compiles | 2 → **3** methods | 0.07 → **0.06** |
 | `reconcile` | 8 → 8, unchanged | 62.2 → **64.2** |
 
-**The 3% on `reconcile` is unexplained and should not be waved through.**
-Accepting a shape in the analysis has no business costing runtime when no
-function newly compiles, and the compiled/refused counts are 8/8 either way —
-but *which* eight is not something the counts can tell you, and that is the
-thing to check. It is shipped because it is correct and demonstrably pays where
-the shape is reachable, not because the number is understood.
+**That 3% was not real, and finding out cost less than believing it would
+have.** Dumping every compiled and refused function with its opening ops and
+diffing the two builds gives *identical sets* — same functions, same op
+sequences, same counts. So the machine code is the same and the only difference
+is an analysis path taken for a shape `reconcile` never contains: there is no
+mechanism for a runtime difference.
+
+Re-measured at 7 warm samples a side instead of 3: medians 62.89 and 63.26, a
+0.6% gap, ranges overlapping (61.85–63.97 against 63.12–63.65). Noise.
+
+Two things worth keeping from that:
+
+- **A same-window A/B is not automatically enough.** Three samples a side with
+  the cold run discarded produced two non-overlapping groups — 62.2/62.4/62.5
+  against 63.5/63.8/65.2 — and still said the wrong thing. On this machine a 3%
+  claim needs more than three readings.
+- **When there is no mechanism, look for one before believing the number.**
+  Comparing *which* functions compile, not how many, took one command and
+  settled it. The counts were 8/8 either way and could not have.
 
 ### The first of those, in the parts that already exist
 
