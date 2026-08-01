@@ -971,6 +971,63 @@ pub unsafe extern "C" fn msy_context_invoke(ctx: *mut MsyContext, cb: u32) -> u3
     }
 }
 
+/// Invoke a Mersey closure with typed arguments (ABI v11).
+///
+/// The JSON door (`msy_context_invoke_args`) is still there and still correct;
+/// this one carries the same information without the string. A host reduces a
+/// callback's arguments to scalars and handles *before* it can serialise them,
+/// so the JSON was only ever a transport — one `JSONArray` built, one string
+/// allocated and UTF-8 encoded, one parse on the other side, per callback. Every
+/// promise in an async workload pays that.
+///
+/// # Safety
+/// `ctx` valid; `args` points to `argc` readable `MsyArg16`, each string
+/// argument pointing at `str16_len` readable UTF-16 units for the duration of
+/// the call. May be called re-entrantly from inside a host hook.
+#[no_mangle]
+pub unsafe extern "C" fn msy_context_invoke16(
+    ctx: *mut MsyContext,
+    cb: u32,
+    args: *const MsyArg16,
+    argc: usize,
+) -> u32 {
+    let Some(ctx) = ctx.as_ref() else { return 2 };
+    let items: Vec<mersey_interp::Value> = if args.is_null() || argc == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(args, argc)
+            .iter()
+            .map(|a| msy_arg16_to_value(a))
+            .collect()
+    };
+    match ctx.interp().invoke_callback_args(cb, items) {
+        Ok(()) => 0,
+        Err(t) => {
+            let msg = ctx.interp().describe_thrown(&t);
+            ctx.report(&msg);
+            2
+        }
+    }
+}
+
+/// One `MsyArg16` as the engine's own value. The kinds are the wide tier's:
+/// 0 string, 1 number, 2 host handle, 3 bool, anything else null.
+///
+/// # Safety
+/// A kind-0 argument's `str16` must point at `str16_len` readable units.
+unsafe fn msy_arg16_to_value(a: &MsyArg16) -> mersey_interp::Value {
+    match a.kind {
+        0 if !a.str16.is_null() => mersey_interp::Value::Str(std::rc::Rc::new(
+            std::slice::from_raw_parts(a.str16, a.str16_len).to_vec(),
+        )),
+        0 => mersey_interp::Value::Str(std::rc::Rc::new(Vec::new())),
+        1 => mersey_interp::Value::F64(a.num),
+        2 => mersey_interp::Value::JsRef(a.num as i64),
+        3 => mersey_interp::Value::Bool(a.num != 0.0),
+        _ => mersey_interp::Value::Null,
+    }
+}
+
 /// # Safety
 /// `ctx` valid; `args` points to `len` readable bytes of a JSON array. May be
 /// called re-entrantly from inside a host hook.

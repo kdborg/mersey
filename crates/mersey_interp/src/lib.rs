@@ -56,7 +56,7 @@ use webjson::Json;
 /// `MSY_ABI_VERSION` references this, and the language surfaces it as
 /// `Mersey.abiVersion` (via `std:mersey`), so a program, the C header, and the
 /// engine cannot disagree about which host contract they speak.
-pub const ABI_VERSION: u32 = 10;
+pub const ABI_VERSION: u32 = 11;
 
 /// SHA-256 (FIPS 180-4), a dependency-free reference implementation. Returns the
 /// 32-byte digest. Exposed to the language as `std:hash`'s `sha256`, and reused
@@ -9505,6 +9505,19 @@ impl Interp {
             Some(Json::Arr(items)) => items.iter().map(|i| self.from_web(i)).collect(),
             _ => Vec::new(),
         };
+        self.invoke_callback_args(id, args)
+    }
+
+    /// The same, with the arguments already values.
+    ///
+    /// A host that calls back into a Mersey closure had only the JSON door: it
+    /// built a `JSONArray`, serialised it, and the engine parsed it again — for
+    /// arguments that were *already* reduced to scalars and handles before the
+    /// string was built. Nothing in that round trip carries information the
+    /// typed form does not, and every promise callback in an async workload pays
+    /// for it. `streams` spends about 37us per chunk where its JavaScript twin
+    /// spends 0.76.
+    pub fn invoke_callback_args(&mut self, id: u32, args: Vec<Value>) -> Result<(), Thrown> {
         let cb = match self.callbacks.get(id as usize) {
             Some(v) => v.clone(),
             None => return self.type_error(format!("unknown callback #{id}")),

@@ -40,7 +40,7 @@ extern "C" {
 
 /* Bumped whenever the table layout or a contract below changes. Check it
  * before installing a table; a mismatch means "do not use this engine". */
-#define MSY_ABI_VERSION 10u
+#define MSY_ABI_VERSION 11u
 uint32_t msy_abi_version(void);
 
 typedef struct msy_context msy_context;
@@ -290,6 +290,15 @@ uint32_t msy_context_invoke_args(msy_context *ctx, uint32_t cb,
                                  const char *args_json, size_t len);
 /* As above, with no arguments. */
 uint32_t msy_context_invoke(msy_context *ctx, uint32_t cb);
+/* As msy_context_invoke_args, with the arguments typed rather than serialised
+ * (ABI v11). A host reduces a callback's arguments to scalars and handles
+ * before it can build JSON out of them, so the string carried nothing the
+ * msy_arg16 form does not — one JSONArray, one UTF-8 encode and one parse per
+ * callback, which every promise in an async workload paid. Kinds are the wide
+ * tier's: 0 string, 1 number, 2 handle, 3 bool, 4 null. The JSON entry above
+ * remains and remains correct; prefer this one. */
+uint32_t msy_context_invoke16(msy_context *ctx, uint32_t cb,
+                              const msy_arg16 *args, size_t argc);
 /* The host is done with a callback (a listener was removed, a promise
  * settled): release its slot so the table doesn't grow for a page lifetime.
  * Callback ids are STABLE per Mersey closure (the same closure crosses with

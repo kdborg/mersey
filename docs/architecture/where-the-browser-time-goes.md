@@ -160,6 +160,45 @@ All thirty checksums are unchanged by that, which is worth saying explicitly: no
 receiver mismatch was silently answering null in a way any workload here could
 see. The value is that one cannot start to.
 
+### The callback direction had the same disease
+
+Recomputing the ratios after the tier work put `streams` at **49x** its
+JavaScript twin and `msgchannel` at **27x**, with JS twins of 1.5 and 1.9ms — so
+almost all of Mersey's 75 and 52ms was overhead. But not tier overhead: their
+names were interned by then. It was the *other* direction.
+
+`msy_context_invoke_args` took a JSON string. The fork built a `JSONArray` from
+a callback's arguments, serialised it, and the engine parsed it back — after
+already reducing every argument to a scalar or a handle. The string carried
+nothing the typed form does not, and every promise in an async workload paid for
+it. So `msy_context_invoke16` (ABI v11), the typed twin, with
+`Interp::invoke_callback_args` underneath both; the JSON door remains and
+remains correct.
+
+Measured as a **rebuilt A/B on one quiet machine state** — same engine binary,
+only the fork's call site differing:
+
+| | JSON | typed | |
+|---|---|---|---|
+| `streams` | 72.1 | **61.1** | −15.3% |
+| `sse` | 39.0 | **34.1** | −12.6% |
+| `msgchannel` | 50.5 | **46.0** | −8.9% |
+| `timers` | 44.6 | 45.7 | +2.5%, inside its 14% spread |
+
+Two traps, both of which produce wrong arguments rather than crashes:
+
+- **`msy_arg16` borrows its strings.** They must outlive the call, and the
+  vector holding them must have stopped reallocating before any pointer into it
+  is taken.
+- **A Blink `String` may be 8-bit.** Asking a Latin-1 string for
+  `Characters16()` yields garbage units, not a failure. Index and widen.
+
+And one that only cost time: the first version heap-allocated three vectors per
+callback, which made *zero-argument* callbacks — every `setTimeout` — slower
+than the JSON they replaced. `timers` measured +35% until those vectors got
+inline capacity. A typed path is only cheaper than building JSON if it does not
+allocate to say "no arguments".
+
 The lesson generalises past `DOMMatrix`. Before writing `web_bind` for an
 interface, check which tier its calls are actually landing on — the rows at
 20–61x above (`msgchannel`, `streams`, `frameworkui2`) are worth that check

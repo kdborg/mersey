@@ -18,5 +18,5 @@ test("Mersey.version is a valid semantic version", () => {
 test("Mersey.abiVersion is the host ABI version", () => {
     assert(Mersey.abiVersion > 0, "abiVersion is positive");
     // The single source of truth shared with mersey_capi / mersey.h.
-    assert(Mersey.abiVersion == 10, "abiVersion is 10");
+    assert(Mersey.abiVersion == 11, "abiVersion is 11");
 });

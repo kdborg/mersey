@@ -2383,27 +2383,72 @@ void MerseyScriptRunner::JsCallbackTrampoline(
   // resolved string in a handle would hand Mersey an object where it expects a
   // string — `text.length` would then be a property read on a JS string, which
   // the reflective read has to special-case for no reason.
-  auto arr = std::make_unique<JSONArray>();
+  // Typed, not serialised (ABI v11). The loop below already reduces every
+  // argument to a scalar or a handle — the JSON it used to build out of them
+  // carried nothing more, at the price of a JSONArray, a UTF-8 encode and a
+  // parse on the engine side, once per callback. Every promise in an async
+  // workload paid it: `streams` spends about 37us per chunk against its
+  // JavaScript twin's 0.76.
+  //
+  // The strings must outlive the call, so their UTF-16 is held here rather than
+  // in a temporary — `msy_arg16` borrows, it does not own.
+  // Inline capacity, not `reserve`. A zero-argument callback is the common case
+  // — every `setTimeout` fires one — and the first version of this heap-
+  // allocated three vectors to say so, which cost `timers` 35%. The typed path
+  // is only cheaper than building JSON if it does not allocate to do it.
+  Vector<msy_arg16, 4> args;
+  Vector<String, 4> strings;
   for (int i = 1; i < info.Length(); ++i) {
     v8::Local<v8::Value> a = info[i];
+    msy_arg16 arg = {};
     if (a.IsEmpty() || a->IsNullOrUndefined()) {
-      arr->PushValue(JSONValue::Null());
+      arg.kind = 4;
     } else if (a->IsBoolean()) {
-      arr->PushBoolean(a->IsTrue());
+      arg.kind = 3;
+      arg.num = a->IsTrue() ? 1 : 0;
     } else if (a->IsNumber()) {
-      arr->PushDouble(a.As<v8::Number>()->Value());
+      arg.kind = 1;
+      arg.num = a.As<v8::Number>()->Value();
     } else if (a->IsString()) {
-      arr->PushString(
+      strings.push_back(
           ToBlinkString<String>(isolate, a.As<v8::String>(), kExternalize));
+      arg.kind = 0;  // filled in below, once `strings` has stopped moving
     } else {
-      auto ref = std::make_unique<JSONObject>();
-      ref->SetDouble("__ref__",
-                     static_cast<double>(runner->AllocJsValue(isolate, a)));
-      arr->PushObject(std::move(ref));
+      arg.kind = 2;
+      arg.num = static_cast<double>(runner->AllocJsValue(isolate, a));
     }
+    args.push_back(arg);
   }
-  std::string args = arr->ToJSONString().Utf8();
-  msy_context_invoke_args(runner->context_, cb, args.data(), args.size());
+  // `strings` may reallocate while it grows, so the pointers are taken only
+  // once it is complete. A dangling `str16` here would be a wrong argument, not
+  // a crash, which is the harder kind to notice.
+  wtf_size_t next = 0;
+  Vector<std::u16string, 4> owned;
+  for (auto& arg : args) {
+    if (arg.kind != 0) {
+      continue;
+    }
+    // Not `Characters16()`: a Blink String may be 8-bit, and asking a Latin-1
+    // string for its 16-bit buffer is how you get garbage units rather than a
+    // failure. Indexing widens whichever form it is in.
+    const String& str = strings[next++];
+    std::u16string u;
+    u.reserve(str.length());
+    for (unsigned k = 0; k < str.length(); ++k) {
+      u.push_back(static_cast<char16_t>(str[k]));
+    }
+    owned.push_back(std::move(u));
+  }
+  next = 0;
+  for (auto& arg : args) {
+    if (arg.kind != 0) {
+      continue;
+    }
+    arg.str16 = reinterpret_cast<const uint16_t*>(owned[next].data());
+    arg.str16_len = owned[next].size();
+    ++next;
+  }
+  msy_context_invoke16(runner->context_, cb, args.data(), args.size());
 }
 
 v8::Local<v8::Value> MerseyScriptRunner::V8Callback(
