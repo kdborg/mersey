@@ -2066,6 +2066,9 @@ pub trait JitEnv {
     /// that *declares* the running method rather than from the receiver.
     fn super_method(&self, recv: &Rc<ClassDef>, chunk: &Rc<vm::Chunk>, name: &str)
         -> Option<JitFn>;
+
+    /// `super(…)`: the base constructor that call names.
+    fn super_ctor(&self, recv: &Rc<ClassDef>, chunk: &Rc<vm::Chunk>) -> Option<JitFn>;
     /// The body behind `o.name` when `name` is a getter. A getter is a call
     /// wearing a field's clothes, so Tier-1 compiles it as the zero-argument
     /// method it is; without this the whole enclosing function fell back to the
@@ -2201,6 +2204,10 @@ impl JitEnv for InterpEnv<'_> {
         name: &str,
     ) -> Option<JitFn> {
         self.i.super_method(recv, chunk, name)
+    }
+
+    fn super_ctor(&self, recv: &Rc<ClassDef>, chunk: &Rc<vm::Chunk>) -> Option<JitFn> {
+        self.i.super_ctor(recv, chunk)
     }
 
     fn error_class(&self, scope: Option<&DefScope>, name: &str) -> Option<&'static str> {
@@ -6231,6 +6238,73 @@ impl Interp {
             bind: None,
             scope: parent.env.clone().map(DefScope),
             ret_ty: data.ret_ty(),
+        })
+    }
+
+    /// `super(…)` from inside the constructor whose body is `chunk`.
+    ///
+    /// Resolved like `super_method` — from the class that *declares* the running
+    /// constructor, recovered by walking up from the receiver — and then up from
+    /// that class's parent to the first constructor, which is what
+    /// `Interp::super_call` does at run time.
+    ///
+    /// **Refuses a builtin error anywhere in that walk.** `class X extends Error`
+    /// is constructed by the engine and not by a Mersey constructor, and
+    /// `super_call` has an explicit case for it that sets the message. Treating
+    /// it as an ordinary constructor would not fail; it would quietly drop the
+    /// message, which is the shape of wrong answer this tier keeps having to be
+    /// protected from.
+    fn super_ctor(&self, recv: &Rc<ClassDef>, chunk: &Rc<vm::Chunk>) -> Option<JitFn> {
+        let mut c = Some(recv.clone());
+        let declaring = loop {
+            let k = c?;
+            let mine = k.ctor.as_ref().is_some_and(
+                |d| matches!(&*d.chunk.borrow(), Some(Some(ch)) if Rc::ptr_eq(ch, chunk)),
+            );
+            if mine {
+                break k;
+            }
+            c = k.parent.clone();
+        };
+        let mut search = declaring.parent.clone();
+        let target = loop {
+            let k = search?;
+            if k.is_builtin_error || k.is_host_backed() {
+                return None;
+            }
+            if k.ctor.is_some() {
+                break k;
+            }
+            search = k.parent.clone();
+        };
+        let data = target.ctor.clone()?;
+        if data.is_async {
+            return None;
+        }
+        if data.chunk.borrow().is_none() {
+            let module = self.current_module.clone();
+            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            *data.chunk.borrow_mut() = Some(out);
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.param_types(target.env.as_ref(), data.params),
+            chunk,
+            // The receiver is still the object being constructed.
+            this: Some(recv.clone()),
+            ret: None,
+            ret_bool: false,
+            ret_obj: None,
+            ret_str: false,
+            ret_val: false,
+            ret_numopt: false,
+            bind: None,
+            scope: target.env.clone().map(DefScope),
+            ret_ty: None,
         })
     }
 

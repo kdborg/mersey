@@ -513,4 +513,8 @@ fn super_methods_agree_across_the_tier_boundary() {
     assert!(out.contains("viaB  1400000"), "{out}");
     // The inherited case: 200000 * (5*2+1).
     assert!(out.contains("viaC  2200000"), "{out}");
+    // `class X extends Error` is constructed by the engine, so the tier refuses
+    // that `super(m)` rather than treating it as an ordinary base-constructor
+    // call — which would not fail, but would quietly drop the message.
+    assert!(out.contains("err   boom-7"), "{out}");
 }

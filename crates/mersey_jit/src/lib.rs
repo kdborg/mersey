@@ -1157,6 +1157,32 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 method_at.insert(pc, idx);
                 stack.push(TSlot::Val(s2.ret, Prov::Stable));
             }
+            // `super(…)` in a constructor: the base constructor, chosen the same
+            // way `super.m(…)` chooses a body, run on the object being built.
+            Op::SuperCall(argc) => {
+                let mut args: Vec<Ty> = Vec::new();
+                for _ in 0..argc {
+                    args.push(tval(stack.pop()?)?);
+                }
+                args.reverse();
+                let Some(Ty::Obj(ci)) = sig.this else {
+                    return None;
+                };
+                let cls = g.classes[ci as usize].clone();
+                let f = g.env.super_ctor(&cls, &chunk)?;
+                let idx = g.add(f)?;
+                let s2 = g.sigs[idx].clone();
+                if s2.this.is_none()
+                    || s2.params.len() != args.len()
+                    || !s2.params.iter().zip(&args).all(|(w, h)| arg_fits(*w, *h))
+                {
+                    return None;
+                }
+                method_at.insert(pc, idx);
+                // A constructor answers with nothing; the `Pop` that follows
+                // discards whatever the call leaves.
+                stack.push(TSlot::Val(s2.ret, Prov::Stable));
+            }
             Op::LoadName(ni) => {
                 let name = chunk.names[ni as usize].as_str();
                 // Resolved in *this function's* scope, not the globals — see
@@ -4759,8 +4785,8 @@ fn translate(
                 };
                 stack.push(SlotV::Val(r, Ty::F64));
             }
-            Op::Call(n) | Op::CallMethod(_, n) | Op::CallSuperMethod(_, n) => {
-                let is_super = matches!(op, Op::CallSuperMethod(..));
+            Op::Call(n) | Op::CallMethod(_, n) | Op::CallSuperMethod(_, n) | Op::SuperCall(n) => {
+                let is_super = matches!(op, Op::CallSuperMethod(..) | Op::SuperCall(_));
                 let is_method = is_super || matches!(op, Op::CallMethod(..));
                 let f = if is_method {
                     *p.method_at.get(&pc)?

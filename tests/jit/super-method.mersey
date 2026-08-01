@@ -64,7 +64,26 @@ function viaC(n: int32): int32 {
     return acc;
 }
 
+/// `class X extends Error` is constructed by the *engine*, not by a Mersey
+/// constructor — `super_call` has an explicit case for it that sets the message.
+/// So the tier refuses this `super(m)` rather than treating it as an ordinary
+/// base-constructor call, which would not fail but would quietly drop the
+/// message. The refusal is invisible from here; what is visible is that the
+/// message survives, which is the whole point of refusing.
+class MyErr extends Error {
+    public constructor(m: string) {
+        super(m);
+    }
+}
+
+function message(i: int32): string {
+    const e = new MyErr(`boom-${i}`);
+    return e.message;
+}
+
 console.log(`viaB  ${viaB(200000)}`);
 console.log(`viaC  ${viaC(200000)}`);
 // Read back one at a time: 3*2+1 and 5*2+1, both through `A.score`.
 console.log(`one   ${new B(3).score()} ${new C(5).score()}`);
+// The engine-constructed base: its message must arrive intact.
+console.log(`err   ${message(7)}`);
