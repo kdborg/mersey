@@ -5,6 +5,33 @@ browser's own JavaScript. Every row is the same workload written twice —
 line for line, same checksum — so the ratio is the language boundary and
 nothing else.
 
+## Read every ratio here with this first
+
+**The fork is built with `dcheck_always_on = true`, and stock Chromium is not.**
+Nothing in `chromium/args.arm64.gn` asks for that — it says `is_debug = false`
+and nothing about DCHECKs — but Chromium defaults `dcheck_always_on` to *true*
+for any non-official release build, so a config that reads like a release build
+is not one. `gn args out/mersey-arm64 --list=dcheck_always_on` says `true`.
+
+Profiling the renderer during `streams` is what surfaced it. Under the idle
+frames, the top of the profile is V8 *verification* code —
+`Heap::ExternalStringTable::Contains`, `Heap::IsFreeSpaceValid`,
+`FreeList::IsVeryLong` — which a release build does not run at all. The first of
+those is specifically the string-externalisation path this bridge touches on
+every crossing that carries a string.
+
+So every fork-vs-JS ratio below compares a DCHECK-enabled fork against an
+official stock build, and overstates the gap by however much DCHECKs cost. That
+number is being measured (a `dcheck_always_on = false` build takes a while) and
+this note will carry it when it lands.
+
+What this does **not** touch: every improvement recorded in this file was
+measured as an A/B on the same binary with the same flags, so the deltas hold —
+`geometry` 79.7 → 23.9ms, `urlpattern` 231.8 → 186.3, `streams` 72.1 → 61.1, all
+on identical checksums. What it does touch is the *framing*: how far behind the
+fork actually is, and possibly which workload deserves attention next, since
+there is no reason to expect DCHECK cost to fall evenly across them.
+
 ## The shape of it
 
 | | ratio to Chromium's JS |
