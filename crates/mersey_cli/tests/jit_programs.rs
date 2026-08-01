@@ -473,3 +473,24 @@ fn borrows_across_edges_agree_across_the_tier_boundary() {
     // An opaque, whose handle is its identity rather than a pointer.
     assert!(out.contains("viaOpaque   6 2"), "{out}");
 }
+
+/// A `std:` native's result returned where a string was promised. The tier does
+/// not know what a native returns, so every native's result is an opaque arena
+/// handle — fine until the function hands it back, at which point an opaque met a
+/// promised string and the whole function was refused.
+///
+/// The value *is* a string; only its label was missing, so the return re-labels
+/// it: same arena entry, same single owner. What makes that safe is that the
+/// shim checks, and bails to the interpreter if the handle names anything else —
+/// a slow answer rather than a wrong one. `null` is not such a case: it is a
+/// string-shaped nothing and must come back as null, which the invalid-UTF-8
+/// case exercises.
+#[test]
+fn native_string_returns_agree_across_the_tier_boundary() {
+    check("native-string-return.mersey");
+    let out = run("native-string-return.mersey", true);
+    assert!(out.contains("decoded   héllo 5"), "{out}");
+    assert!(out.contains("empty     [] 0"), "{out}");
+    // A decode that fails must be null, not a bail and not an empty string.
+    assert!(out.contains("invalid   null"), "{out}");
+}

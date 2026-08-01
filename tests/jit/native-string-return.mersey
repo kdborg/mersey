@@ -1,0 +1,64 @@
+// A `std:` native's result returned where a string was promised.
+//
+// The tier does not know what a native returns, so every native's result is
+// carried as an opaque arena handle. That is fine until the function hands it
+// back: `return bytes.decodeUtf8(b)` from something declared `string?` had an
+// opaque where a string was promised, and the whole function was refused — which
+// costs about 51x on anything hot, since a refused function leaves Tier 1
+// entirely.
+//
+// The value *is* a string; only its label was missing. So the return re-labels
+// it: same arena entry, same single owner, three registers instead of one. What
+// makes that safe rather than hopeful is that the shim checks — if the handle
+// names anything but a string it bails to the interpreter, so a mistake in the
+// reasoning is a slow answer and not a wrong one.
+//
+// `null` is not such a mistake: `decodeUtf8` returns `string?`, and a null is a
+// string-shaped nothing that must come back as null rather than as a bail. The
+// invalid-UTF-8 case below is what produces one.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// The shape that was refused: a constant on one path, a native's result on the
+/// other, both promised as `string?`.
+function decode(b: Bytes, empty: bool): string? {
+    if (empty) {
+        return "";
+    }
+    return bytes.decodeUtf8(b);
+}
+
+/// The null path, reached with bytes that are not valid UTF-8.
+function decodeBad(b: Bytes): string? {
+    return bytes.decodeUtf8(b);
+}
+
+function drive(n: int32): int32 {
+    const good = bytes.encodeUtf8("héllo");
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const s = decode(good, i % 2 == 0);
+        if (s != null) {
+            acc = acc + s.length;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+const good = bytes.encodeUtf8("héllo");
+// A lone 0xFF is not valid UTF-8, so the decode gives null.
+const bad = bytes.alloc(1);
+bad[0] = 255;
+
+console.log(`drive     ${drive(200000)}`);
+// The native's result, and the constant arm, read back one at a time.
+const a = decode(good, false);
+const e = decode(good, true);
+console.log(`decoded   ${a == null ? "null" : a} ${a == null ? -1 : a.length}`);
+console.log(`empty     [${e == null ? "null" : e}] ${e == null ? -1 : e.length}`);
+// …and a null that must survive as null rather than bailing or throwing.
+const z = decodeBad(bad);
+console.log(`invalid   ${z == null ? "null" : z}`);

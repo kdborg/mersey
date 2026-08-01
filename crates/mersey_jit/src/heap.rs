@@ -1063,6 +1063,52 @@ pub(crate) unsafe extern "C" fn str_split(
     }
 }
 
+/// An arena handle re-presented as a string: `out` gets (data, length, handle).
+///
+/// Every `std:` native's result is an opaque handle, because the tier does not
+/// know what a native returns — so `return bytes.decodeUtf8(b)` from a function
+/// declared `string?` had an opaque where a string was promised, and the whole
+/// function was refused. The value *is* a string; only its label was missing.
+///
+/// The handle is unchanged: the arena entry already belongs to the value being
+/// returned, so this re-labels rather than transfers, and there is exactly one
+/// owner before and after.
+///
+/// Returns 1 — bail — if the handle names anything but a string. The checker
+/// says that cannot happen in a well-typed program, and this is what makes a
+/// mistake in that reasoning a bail to the interpreter rather than a wrong
+/// answer. A null (handle 0) is an ordinary answer, not a failure: it is a
+/// string-shaped nothing, which is what `string?` means.
+///
+/// # Safety
+/// `out` names three writable words; `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn val_to_str(arena: *mut Arena, h: u64, out: *mut u64) -> i64 {
+    unsafe {
+        if h == 0 {
+            *out = 0;
+            *out.add(1) = 0;
+            *out.add(2) = 0;
+            return 0;
+        }
+        match (*arena).get(h) {
+            Some(Value::Str(rc)) => {
+                let units: &[u16] = rc;
+                *out = units.as_ptr() as u64;
+                *out.add(1) = units.len() as u64;
+                *out.add(2) = h;
+                0
+            }
+            Some(Value::Null) | None => {
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0;
+                0
+            }
+            _ => 1,
+        }
+    }
+}
+
 /// A string parked in the arena as an entry the *caller* owns.
 ///
 /// Not `box_str`: that one answers from the interpreter's small memo, which owns

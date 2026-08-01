@@ -618,6 +618,8 @@ struct Plan {
     unbox_at: HashMap<usize, u8>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
     val_index_at: HashMap<usize, bool>,
+    /// `Return` sites handing back a native's opaque where a string is promised.
+    val_ret_str: HashSet<usize>,
     /// String-valued property reads on an opaque (`u.pathname`).
     val_prop_str_at: HashMap<usize, &'static str>,
     /// A `Ty::Val` field read whose *only* use is a string part of it, folded into
@@ -924,6 +926,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut str_method_at: HashMap<usize, (&'static str, Ty)> = HashMap::new();
     let mut str_search_at: HashMap<usize, (i64, Ty)> = HashMap::new();
     let mut str_split_at: HashSet<usize> = HashSet::new();
+    let mut val_ret_str: HashSet<usize> = HashSet::new();
     let mut coerce_fall: HashMap<usize, Vec<(usize, EdgeFix)>> = HashMap::new();
     let mut coerce_jump: HashMap<usize, Vec<(usize, EdgeFix)>> = HashMap::new();
     let mut str_cp_at: HashSet<usize> = HashSet::new();
@@ -2116,6 +2119,14 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // A string leaves owned, exactly as an object does — and so
                     // does an opaque.
                     (Some(Ty::Str), Ty::Str) => {}
+                    // A `std:` native's result is an opaque, because the tier
+                    // does not know what a native returns. Returning one where a
+                    // string was promised is a re-label, not a conversion — see
+                    // `heap::val_to_str`, which bails if the value is not in fact
+                    // a string.
+                    (Some(Ty::Str), Ty::Val) => {
+                        val_ret_str.insert(pc);
+                    }
                     (Some(Ty::Val), Ty::Val) => {}
                     // A *known* string array where an opaque one was promised: the
                     // caller stops knowing what the elements are, which is a
@@ -2212,6 +2223,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         str_method_at,
         str_search_at,
         str_split_at,
+        val_ret_str,
         coerce_fall,
         coerce_jump,
         str_cp_at,
@@ -2375,6 +2387,7 @@ struct Shims {
     str_str: FuncId,
     val_len: FuncId,
     str_search: FuncId,
+    val_to_str: FuncId,
     str_split: FuncId,
     str_code_point: FuncId,
     str_sub: FuncId,
@@ -2462,6 +2475,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_str", heap::str_str as *const u8);
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_str_search", heap::str_search as *const u8);
+    builder.symbol("msy_val_to_str", heap::val_to_str as *const u8);
     builder.symbol("msy_str_split", heap::str_split as *const u8);
     builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
     builder.symbol("msy_str_sub", heap::str_sub as *const u8);
@@ -2937,6 +2951,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         val_len: one("msy_val_len", Some(types::I64), 2)?,
         // (arena, ptr, len) -> handle of a Value::Str
         str_search: one("msy_str_search", Some(types::I64), 5)?,
+        val_to_str: one("msy_val_to_str", Some(types::I64), 3)?,
         str_split: one("msy_str_split", Some(types::I64), 5)?,
         str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
         str_sub: one("msy_str_sub", None, 7)?,
@@ -3389,6 +3404,7 @@ fn translate(
         val_len: module.declare_func_in_func(shims.val_len, b.func),
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         str_search: module.declare_func_in_func(shims.str_search, b.func),
+        val_to_str: module.declare_func_in_func(shims.val_to_str, b.func),
         str_split: module.declare_func_in_func(shims.str_split, b.func),
         str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
         str_sub: module.declare_func_in_func(shims.str_sub, b.func),
@@ -5219,6 +5235,21 @@ fn translate(
                 b.switch_to_block(fall);
                 b.seal_block(fall);
             }
+            Op::Return if p.val_ret_str.contains(&pc) => {
+                let SlotV::ValRef(v, _) = stack.pop()? else {
+                    return None;
+                };
+                let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                let call = b.ins().call(shim.val_to_str, &[arena_ptr, v, out]);
+                let bad = b.inst_results(call)[0];
+                let wrong = b.ins().icmp_imm(IntCC::NotEqual, bad, 0);
+                guard(b, ctx, wrong, R_TAG, pc, None);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                let h = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                b.ins().return_(&[d, l, h]);
+                reachable = false;
+            }
             Op::Return => match stack.pop()? {
                 // An object leaves owned. A fresh one hands over its handle; a
                 // borrow takes an arena reference of its own first — the caller
@@ -5565,6 +5596,7 @@ struct Ctx {
 /// The engine functions a compiled body may call, resolved.
 struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
+    val_to_str: cranelift_codegen::ir::FuncRef,
     str_split: cranelift_codegen::ir::FuncRef,
     str_code_point: cranelift_codegen::ir::FuncRef,
     str_sub: cranelift_codegen::ir::FuncRef,
