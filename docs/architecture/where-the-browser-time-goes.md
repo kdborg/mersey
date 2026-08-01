@@ -68,6 +68,23 @@ magnitude does not. `streams` at 11.5x is the worst row and worth work;
 `urlpattern` at 2.6x is close enough that the tier work already done on it was
 most of what there was.
 
+Where that leaves the work, in the order the corrected numbers argue for:
+
+1. **`frameworkui2` (10.6x)** is the interesting one, because it is *already* on
+   the best path there is: everything batches through `dom.apply`, one crossing
+   per render. Ten renders take 26.8ms against JavaScript's 2.5ms, so 2.7ms a
+   render against 0.25 — and none of that is crossing count. It is either the
+   Mersey-side reconciler or the host applying the op buffer. If Tier 1 declines
+   `render`, that is a compile-coverage gap, and those have been worth far more
+   than tier tweaks.
+2. **`streams` (11.5x)** is the worst row but the least tractable: 17.6ms for
+   2000 chunks over roughly seven crossings each is about 1.25us a crossing,
+   which is the V8 entry the section above describes. `web_bind` is the stated
+   answer to that and it is aimed at *numeric* APIs; a stream reader is not one,
+   so this needs a design answer rather than more measurement.
+3. Everything else is at 6.9x or below, and four workloads are already ahead of
+   the browser's own JavaScript.
+
 ## Why a crossing costs that
 
 The bridge has tiers of decreasing cost (see `browser-integration.md`).
@@ -234,6 +251,32 @@ interface, check which tier its calls are actually landing on — the worst rows
 (`streams`, `frameworkui2`, `msgchannel`) are worth that check first, because a
 JSON round trip and a missing typed binding look identical from the outside and
 cost very differently to fix.
+
+## Diagnosing the fork: what works and what does not
+
+Worth writing down, because three plausible routes to a fork-side diagnostic all
+failed and the fourth is the only one that has ever worked.
+
+- **`sample` on a hand-launched fork** — the workload does not run. Both builds
+  behave the same way, so it is the invocation and not the binary; the process
+  sits at under 1% CPU and never prints its `RESULT`. Two attempts, no diagnosis.
+- **`MERSEY_JIT_TRACE=1` through `run-native-chromium.mjs`** — no `jit:` lines.
+  The runner spawns the *browser* process and the engine runs in a renderer
+  child, so the variable does not arrive where the tracer reads it.
+- **The engine leg (`run-engine.mjs`) as a stand-in** — it is the WASM engine,
+  which has no compile tier at all, so it cannot answer a Tier 1 question about
+  the fork even though it runs the same workloads.
+
+What works is the benchmark runner itself, end to end: it launches, the workload
+runs, the number comes back. So a fork measurement is available and a fork
+*introspection* is not, which is the wrong way round for optimisation work.
+
+The way through, when the next question needs it, is probably to run the
+Mersey-side half natively: `frameworkui2`'s reconciler is ordinary engine work
+(a `Map`, arrays, template strings, class methods) with a single `dom.apply` at
+the end, so a CLI twin with that one call stubbed would answer "does Tier 1
+compile this" with the full tracer available — and would iterate in seconds
+rather than in browser launches.
 
 ## What this table is not
 
