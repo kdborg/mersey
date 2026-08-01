@@ -1,0 +1,139 @@
+// `o.p = v` where `p` is a setter.
+//
+// A getter has been a call this tier compiles for a while — `o.p` is a field
+// read's syntax over a method call's body, and bailing on it cost the whole
+// enclosing function. The setter is the same instruction the other way round and
+// was simply never written, so a class with both compiled its reads and dropped
+// the function on its writes. Nothing in the refusal histogram showed that,
+// because the histogram counts what a function *does*, not what it was refused
+// for.
+//
+// The part that is not symmetric is ownership. A getter's result is a value
+// arriving; a setter's argument is a value the caller still needs afterwards,
+// because `o.p = v` evaluates to `v`. The call path releases every argument once
+// the callee returns, so what it is handed has to be a duplicate. If it is not,
+// the value the assignment answers with is freed memory — right length, wrong
+// contents, the same shape as the two use-after-frees this tier has shipped. So
+// the string case below reads *contents* back, never a length.
+
+import { console } from "std:console";
+
+class Cell {
+    private v: int32 = 0;
+    private label: string = "";
+    public writes: int32 = 0;
+
+    public get value(): int32 {
+        return this.v;
+    }
+    public set value(n: int32) {
+        this.v = n * 2;
+        this.writes += 1;
+    }
+
+    /// A string-valued accessor: the case where the duplicate matters.
+    public get name(): string {
+        return this.label;
+    }
+    public set name(s: string) {
+        this.label = `<${s}>`;
+    }
+}
+
+/// The write, hot. `acc` reads through the *getter*, so both halves of the pair
+/// have to be right for the number to be.
+function drive(n: int32): int32 {
+    const c = new Cell();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        c.value = i;
+        acc = acc + c.value;
+        i += 1;
+    }
+    return acc + c.writes;
+}
+
+/// The assignment's own value, which is `v` and not whatever the setter returns.
+function chained(n: int32): int32 {
+    const c = new Cell();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const got = (c.value = i + 1);
+        acc = acc + got;
+        i += 1;
+    }
+    return acc;
+}
+
+/// A string through the setter, read back afterwards by contents. If the
+/// argument were handed over rather than duplicated, `s` here is released by the
+/// call and the concatenation reads freed units.
+function strings(n: int32): int32 {
+    const c = new Cell();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const s = `k${i % 7}`;
+        c.name = s;
+        // `s` after the assignment — the value the call would have released.
+        acc = acc + s.length + c.name.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// One string, read back as text rather than as a length.
+function text(i: int32): string {
+    const c = new Cell();
+    const s = `row-${i}`;
+    c.name = s;
+    return `${c.name}|${s}`;
+}
+
+/// The guard that keeps the direct call honest: a subclass that re-declares the
+/// accessor takes over what `o.p = v` means, so a `Base`-typed receiver holding a
+/// `Sub` must not be compiled to `Base`'s body. Refusing is what makes that true,
+/// and the refusal is invisible from here — what is visible is that the two
+/// numbers differ by exactly the two bodies' difference.
+class Base {
+    public v: int32 = 0;
+    public set step(n: int32) {
+        this.v = n + 1;
+    }
+    public get step(): int32 {
+        return this.v;
+    }
+}
+
+class Sub extends Base {
+    public override set step(n: int32) {
+        this.v = n + 100;
+    }
+    public override get step(): int32 {
+        return this.v;
+    }
+}
+
+function dispatch(o: Base, n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        o.step = i;
+        acc = acc + o.step;
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive    ${drive(200000)}`);
+console.log(`chained  ${chained(200000)}`);
+console.log(`strings  ${strings(200000)}`);
+// Then read back one at a time, cold.
+const c = new Cell();
+c.value = 21;
+console.log(`one      ${c.value} ${c.writes}`);
+console.log(`text     ${text(3)} ${text(11)}`);
+// 200000 apart: the two bodies differ by 99 per iteration.
+console.log(`dispatch ${dispatch(new Base(), 200000)} ${dispatch(new Sub(), 200000)}`);

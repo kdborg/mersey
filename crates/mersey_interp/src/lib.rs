@@ -2075,6 +2075,9 @@ pub trait JitEnv {
     /// interpreter the moment it read one.
     fn getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
 
+    /// …and the body behind `o.name = v` when `name` is a setter.
+    fn setter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn>;
+
     /// How many classes exist. Compiled code's dispatch is only static as long as
     /// the hierarchy it was compiled against is the whole hierarchy — and a
     /// dynamic `import()` can add to it.
@@ -2242,6 +2245,9 @@ impl JitEnv for InterpEnv<'_> {
     }
     fn getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_getter(cls, name)
+    }
+    fn setter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        self.i.direct_setter(cls, name)
     }
     fn n_classes(&self) -> usize {
         self.i.all_classes.len()
@@ -2718,6 +2724,18 @@ impl ClassDef {
         while let Some(k) = c {
             if let Some(g) = k.getters.get(name) {
                 return Some(g.clone());
+            }
+            c = k.parent.as_deref();
+        }
+        None
+    }
+
+    /// The setter body for `name`, walking the chain like `lookup_getter`.
+    pub fn lookup_setter(&self, name: &str) -> Option<Rc<FnData>> {
+        let mut c = Some(self);
+        while let Some(k) = c {
+            if let Some(s) = k.setters.get(name) {
+                return Some(s.clone());
             }
             c = k.parent.as_deref();
         }
@@ -6365,6 +6383,53 @@ impl Interp {
     /// getter's body is an ordinary zero-argument method body, so it compiles
     /// like one; the conditions are `direct_method`'s, plus the same
     /// no-one-below-overrides-it rule applied to accessors.
+    /// `o.name = v` when `name` is a setter — a call wearing an assignment's
+    /// clothes, exactly as a getter is a call wearing a field's. The getter side
+    /// of this was built and the setter side never was, so a class with both
+    /// compiled its reads and dropped the whole enclosing function on its writes.
+    fn direct_setter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        if cls.is_host_backed() {
+            return None;
+        }
+        if cls.field_slot(name).is_some() {
+            return None;
+        }
+        let data = cls.lookup_setter(name)?;
+        if data.is_async {
+            return None;
+        }
+        // As for a getter: a subclass that re-declares either accessor takes over
+        // what `o.name` means, so this receiver's body is not everyone's.
+        if self
+            .all_classes
+            .iter()
+            .any(|k| !Rc::ptr_eq(k, cls) && k.descends_from(cls) && k.declares_accessor(name))
+        {
+            return None;
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.param_types(cls.env.as_ref(), data.params),
+            chunk,
+            this: Some(cls.clone()),
+            // A setter answers with nothing; the assignment's own value is what
+            // the expression evaluates to, and that never leaves the caller.
+            ret: None,
+            ret_bool: false,
+            ret_obj: None,
+            ret_str: false,
+            ret_val: false,
+            ret_numopt: false,
+            bind: None,
+            scope: cls.env.clone().map(DefScope),
+            ret_ty: None,
+        })
+    }
+
     fn direct_getter(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         if cls.is_host_backed() {
             return None;

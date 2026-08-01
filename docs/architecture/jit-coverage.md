@@ -213,14 +213,42 @@ compile. The six that do not:
 
 | shape | stops at |
 |---|---|
-| a **setter** (`g.value = x`) | `SetMember` |
+| ~~a **setter** (`g.value = x`)~~ | ~~`SetMember`~~ — **done**, below |
 | a **static field** read (`G.made`) | `GetMember` |
 | **optional chaining** (`o?.value`) | `OnNullJump` |
 | **nullish coalescing** (`a ?? b`) | `NotNullJump` |
 | a **default parameter** | the callee has no describable signature |
 
-A getter compiles (there is a `getter` hook); its setter does not, which looks
-like an omission by symmetry rather than a difficulty.
+#### The setter — done
+
+A getter compiled and its setter did not, which looked like an omission by
+symmetry rather than a difficulty, and was. `o.p` is a field read's syntax over a
+method call's body; `o.p = v` is the same instruction the other way round. There
+is now a `setter` hook beside `getter`, a `ClassDef::lookup_setter` beside
+`lookup_getter`, and an arm in `Op::SetMember` that resolves the body, checks the
+one parameter, and lets the ordinary call path take the stack — which is already
+the right shape, receiver then value.
+
+Two things are *not* symmetric with the getter:
+
+- **The value has to outlive the call.** `o.p = v` evaluates to `v`, and the call
+  path releases every argument once the callee returns. So the setter is handed a
+  **duplicate** — a cloned arena handle for a string, an opaque or an object,
+  nothing at all for a scalar. Hand it the original and the assignment's own
+  value is freed memory: right length, wrong contents, the same shape as the two
+  use-after-frees this tier has already shipped. `tests/jit/setter.mersey` reads
+  the string case back as *contents* for that reason.
+- **The call answers with nothing.** `sig.void` is required, and the placeholder
+  result is dropped rather than left on the stack.
+
+The subclass guard is the getter's, unchanged: a subclass that re-declares either
+accessor takes over what `o.p` means, so the direct call is refused. The probe
+covers it — a `Base`-typed receiver holding a `Sub` prints the subclass's number.
+
+Nothing in `std/` or the benchmarks uses a setter, so this moves no existing
+measurement; what it moves is any user code that does, by the usual factor,
+because a refused *write* refused the whole enclosing function. The probe runs
+0.15s → 0.02s.
 
 `a ?? b` has been **attempted twice and reverted twice**. What each attempt
 established is worth more than the attempts:
@@ -249,7 +277,7 @@ Next attempt should start by checking whether `coerce_jump`'s entry for the
 `insert` and may be replacing it.
 
 Ranked by how much ordinary code they cover, `?.` and `??` are first — they are
-how nullable values are read at all — then the setter, then statics.
+how nullable values are read at all — then statics.
 
 ## Traps, each of which has bitten more than once
 

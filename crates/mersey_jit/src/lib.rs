@@ -567,6 +567,9 @@ struct Plan {
     /// emits it — a getter *is* a zero-argument method, so it needs no
     /// machinery of its own. The target function lives in `method_at`.
     getter_pc: HashSet<usize>,
+    /// `o.p = v` where `p` is a *setter*: a call in an assignment's clothes,
+    /// exactly as `getter_pc` is a call in a field read's.
+    setter_pc: HashSet<usize>,
     /// `LoadName` sites that name a `std:` namespace routed through the native
     /// shim, and the namespace's name.
     std_ns_names: HashMap<u16, &'static str>,
@@ -917,6 +920,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut callee: HashMap<u16, usize> = HashMap::new();
     let mut method_at: HashMap<usize, usize> = HashMap::new();
     let mut getter_pc: HashSet<usize> = HashSet::new();
+    let mut setter_pc: HashSet<usize> = HashSet::new();
     let mut std_ns_names: HashMap<u16, &'static str> = HashMap::new();
     let mut opaque_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut str_globals: HashMap<u16, &'static str> = HashMap::new();
@@ -1596,6 +1600,34 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     return None;
                 };
                 let cls = g.classes[ci as usize].clone();
+                // The mirror of the getter above, and absent for no better reason
+                // than that it was never written: a class with both compiled its
+                // reads and dropped the whole enclosing function on its writes.
+                if cls.is_accessor(name) && !cls.is_host_backed() {
+                    let f = g.env.setter(&cls, name)?;
+                    let idx = g.add(f)?;
+                    let sig = g.sigs[idx].clone();
+                    // One parameter, and it answers with nothing — the value of
+                    // `o.p = v` is `v`, never whatever the setter's body returns.
+                    if sig.params.len() != 1 || !sig.void {
+                        return None;
+                    }
+                    if !arg_fits(sig.params[0], v) {
+                        if v == Ty::I32Opt && sig.params[0] == Ty::I32 {
+                            unbox_at.insert(pc, 1);
+                        } else {
+                            return None;
+                        }
+                    }
+                    method_at.insert(pc, idx);
+                    setter_pc.insert(pc);
+                    g.writes = true;
+                    // What the assignment evaluates to is the value that went in,
+                    // with the provenance it already had — not a fresh `Stable`,
+                    // which would be a claim this arm has no way to keep.
+                    stack.push(vslot);
+                    continue;
+                }
                 if cls.is_accessor(name) || cls.is_host_backed() {
                     return None;
                 }
@@ -2271,6 +2303,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         callee,
         method_at,
         getter_pc,
+        setter_pc,
         std_ns_names,
         opaque_globals,
         str_globals,
@@ -3612,9 +3645,15 @@ fn translate(
         // A getter read, restated as the zero-argument method call it is, so the
         // ordinary call path below emits it. Analysis put the target in
         // `method_at`, which is where that path looks.
-        let op = &match (*op, p.getter_pc.contains(&pc)) {
-            (Op::GetMember(ni, _), true) => Op::CallMethod(ni, 0),
-            (other, _) => other,
+        let op = &match (*op, p.getter_pc.contains(&pc), p.setter_pc.contains(&pc)) {
+            (Op::GetMember(ni, _), true, _) => Op::CallMethod(ni, 0),
+            // The stack a setter leaves — receiver, then value — is already the
+            // stack a one-argument method call wants, so the call arm below can
+            // take it whole. What it cannot take is the *ownership*: that arm
+            // releases every argument once the callee returns, and the value has
+            // to outlive it. So the argument is a duplicate, made there.
+            (Op::SetMember(ni, _), _, true) => Op::CallMethod(ni, 1),
+            (other, _, _) => other,
         };
         if let Some(&blk) = blocks.get(&pc) {
             if reachable {
@@ -4820,6 +4859,32 @@ fn translate(
                 } else {
                     0 // filled below from the callee marker
                 };
+                // A setter's value: kept back here, duplicated for the call, and
+                // pushed again once the call is done. Duplicated rather than
+                // shared because the call releases what it was handed, and a
+                // string or an object released underneath the assignment's own
+                // value is a wrong answer rather than a crash — the same shape as
+                // the two use-after-frees this tier has already shipped.
+                let kept = if p.setter_pc.contains(&pc) {
+                    let v = stack.pop()?;
+                    let dup = match v {
+                        SlotV::Str(ptr, len, h) => {
+                            SlotV::Str(ptr, len, dup_handle(b, shim.clone_val, arena_ptr, h))
+                        }
+                        SlotV::ValRef(a, h) => {
+                            SlotV::ValRef(a, dup_handle(b, shim.clone_val, arena_ptr, h))
+                        }
+                        SlotV::Obj(ptr, fields, h) => {
+                            SlotV::Obj(ptr, fields, dup_handle(b, shim.clone_val, arena_ptr, h))
+                        }
+                        // A scalar owns nothing, so there is nothing to duplicate.
+                        other => other,
+                    };
+                    stack.push(dup);
+                    Some(v)
+                } else {
+                    None
+                };
                 let mut args: Vec<SlotV> = Vec::with_capacity(n as usize);
                 for _ in 0..n {
                     args.push(stack.pop()?);
@@ -4960,6 +5025,12 @@ fn translate(
                 b.ins().brif(failed, bail, &[], cont, &[]);
                 b.switch_to_block(cont);
                 b.seal_block(cont);
+                if let Some(v) = kept {
+                    // The setter answered with nothing; the assignment answers
+                    // with the value it was given.
+                    stack.push(v);
+                    continue;
+                }
                 match callee.ret {
                     // An object comes back owned: the callee cloned or allocated
                     // it, and its handle is now this frame's to spend.

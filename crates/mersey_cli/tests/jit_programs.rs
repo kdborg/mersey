@@ -536,3 +536,32 @@ fn array_literals_of_references_agree_across_the_tier_boundary() {
     assert!(out.contains("strs  600000"), "{out}");
     assert!(out.contains("opq   400000"), "{out}");
 }
+
+/// A *setter*. Its twin the getter has been a compiled call for a while — `o.p`
+/// is a field read's syntax over a method call's body — and the write side was
+/// simply never written, so a class with both compiled its reads and dropped the
+/// whole enclosing function on its writes. Not visible in any refusal histogram:
+/// those count what a function does, not what it was refused for.
+///
+/// The asymmetry is ownership. `o.p = v` evaluates to `v`, and the call path
+/// releases every argument once the callee returns, so the setter is handed a
+/// *duplicate* — otherwise the assignment's own value is freed memory, which is a
+/// wrong answer and not a crash. Hence `text`, which reads contents back rather
+/// than a length.
+#[test]
+fn setters_agree_across_the_tier_boundary() {
+    check("setter.mersey");
+    let out = run("setter.mersey", true);
+    // The setter doubles, so `c.value = 21` reads back as 42, once.
+    assert!(out.contains("one      42 1"), "{out}");
+    // The string that crossed the call, and the string the caller kept.
+    assert!(
+        out.contains("text     <row-3>|row-3 <row-11>|row-11"),
+        "{out}"
+    );
+    assert!(out.contains("strings  1200000"), "{out}");
+    // The two accessor bodies differ by 99 per iteration, so a `Base`-typed
+    // receiver holding a `Sub` compiled to `Base`'s body would print the first
+    // number twice. That is the failure this direct call has to not have.
+    assert!(out.contains("dispatch -1474736480 -1454936480"), "{out}");
+}
