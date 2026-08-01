@@ -169,10 +169,27 @@ shapes that leave Tier 1 and were invisible to that histogram. Each costs about
 51x on anything hot, because a function that leaves the tier leaves it whole.
 
 **`try`/`catch` (`PushHandler`).** Any function with error handling is
-interpreted entire. This is the hardest of the three and not obviously worth
-doing: the tier's trap model bails to the interpreter and lets it re-run the
-call, which is only sound while nothing has been written — and a `try` block
-exists to contain code that writes.
+interpreted entire.
+
+Counted before assuming: `try` appears **zero times in any benchmark** and twice
+in the whole standard library, both in `std/test.mersey` — the test harness,
+which is cold by construction. (The first count said otherwise because `try {`
+is a substring of `Entry {`.) So there is no evidence today that it sits on a hot
+path, and that is the argument against doing it now rather than any argument
+about difficulty.
+
+The difficulty is real too. The trap model bails and lets the interpreter re-run
+the call, which is sound only while nothing has been written — and a `try` block
+exists to contain code that writes. Doing it properly means **deoptimisation**:
+bailing out of compiled code mid-function with the slot values handed back and a
+resume pc, so the interpreter can continue with the handler stack intact. The
+machinery is half-present — the entry wrapper already marshals slots *in* for
+OSR, and this is that in reverse — but a bail today discards compiled state
+rather than exporting it, so the export is the new part.
+
+Worth revisiting when a real workload shows a `try` in a hot function, and not
+before: it is a large piece of work whose benefit nothing here can currently
+measure.
 
 **`super.method()` (`CallSuperMethod`).** A super call is *statically* bound, so
 it wants the direct-call path the tier already has, not virtual dispatch. The
