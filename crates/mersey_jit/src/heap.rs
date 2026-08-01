@@ -314,6 +314,31 @@ pub(crate) unsafe extern "C" fn cell_set_obj(cell: *mut Value, p: *const GcCell<
     unsafe { *cell = Value::Instance(rc) };
 }
 
+/// Write an array into a heap cell (`this.snap = make(n)`).
+///
+/// `cell_set_obj`'s twin, and the same order for the same reason: take the new
+/// reference before assigning through the cell, because the assignment drops
+/// what the field held, and a field assigned from itself would otherwise free
+/// the array being stored.
+///
+/// An array crosses this tier as `Rc::as_ptr` of its `GcCell`, exactly as an
+/// instance does — see `jit_arg`'s `JitArg::Ptr(Rc::as_ptr(a))` — so there is no
+/// third representation to invent here.
+///
+/// # Safety
+/// `cell` addresses a live `Value` inside an object the caller holds an `Rc` to,
+/// and `p` is null or an `Rc`-managed array the caller holds a reference to for
+/// the duration of the call.
+pub(crate) unsafe extern "C" fn cell_set_arr(cell: *mut Value, p: *const GcCell<Vec<Value>>) {
+    if p.is_null() {
+        unsafe { *cell = Value::Null };
+        return;
+    }
+    unsafe { Rc::increment_strong_count(p) };
+    let rc = unsafe { Rc::from_raw(p) };
+    unsafe { *cell = Value::Array(rc) };
+}
+
 /// Allocate an instance of `cls`, owned by the arena.
 ///
 /// This is `new`, minus the constructor (which is compiled code's next call):

@@ -112,7 +112,44 @@ function collect(n: int32): int32 {
     return acc + bag.tagAt(0) + bag.tagAt(n - 1);
 }
 
+/// An array stored into an array field. `cell_set_arr` is `cell_set_obj`'s twin
+/// — an array crosses this tier as `Rc::as_ptr` of its cell, exactly as an
+/// instance does — and it takes the new reference before dropping the old for
+/// the same reason. `reassign` overwrites the field repeatedly so a leak grows
+/// and an over-eager free is read back.
+class Shelf {
+    private rows: Leaf[] = [];
+    public fill(n: int32): void {
+        const out: Leaf[] = [];
+        let i = 0;
+        while (i < n) {
+            out.push(new Leaf(i));
+            i += 1;
+        }
+        this.rows = out;
+    }
+    public at(i: int32): int32 {
+        return this.rows[i].tag;
+    }
+    public size(): int32 {
+        return this.rows.length;
+    }
+}
+
+function reassign(n: int32): int32 {
+    const s = new Shelf();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        s.fill(3);
+        acc = acc + s.at(2) + s.size();
+        i += 1;
+    }
+    return acc;
+}
+
 console.log(`drive       ${drive(200000)}`);
+console.log(`reassign    ${reassign(100000)}`);
 console.log(`collect     ${collect(20000)}`);
 console.log(`viaSub      ${viaSub(200000)}`);
 console.log(`churn       ${churn(200000)}`);

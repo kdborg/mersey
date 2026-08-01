@@ -1658,7 +1658,13 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // price of declining it: a constructor that keeps a reference
                 // could not compile, so no `new` of that class could, so no
                 // function building one could. See `heap::cell_set_obj`.
-                let ok = if let Ty::Obj(fci) = t {
+                let ok = if let Ty::Arr(fe) = t {
+                    // An array into an array field. Same shape as the object
+                    // store below and the same shim pattern — an array crosses
+                    // as `Rc::as_ptr` of its cell, so there is a reference to
+                    // take and one to drop, and nothing else to represent.
+                    matches!(v, Ty::Arr(ve) if ve == fe)
+                } else if let Ty::Obj(fci) = t {
                     match v {
                         Ty::Obj(vci) => {
                             vci == fci
@@ -2504,6 +2510,7 @@ struct Shims {
     cell_str: FuncId,
     cell_set_str: FuncId,
     cell_set_obj: FuncId,
+    cell_set_arr: FuncId,
     cell_val: FuncId,
     cell_set_val: FuncId,
     cell_prop_str: FuncId,
@@ -2593,6 +2600,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_cell_str", heap::cell_str as *const u8);
     builder.symbol("msy_cell_set_str", heap::cell_set_str as *const u8);
     builder.symbol("msy_cell_set_obj", heap::cell_set_obj as *const u8);
+    builder.symbol("msy_cell_set_arr", heap::cell_set_arr as *const u8);
     builder.symbol("msy_cell_val", heap::cell_val as *const u8);
     builder.symbol("msy_cell_set_val", heap::cell_set_val as *const u8);
     builder.symbol("msy_cell_prop_str", heap::cell_prop_str as *const u8);
@@ -3041,6 +3049,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (cell, ptr, len)
         cell_set_str: one("msy_cell_set_str", None, 3)?,
         cell_set_obj: one("msy_cell_set_obj", None, 2)?,
+        cell_set_arr: one("msy_cell_set_arr", None, 2)?,
         // (cell, arena) -> handle, 0 for null
         cell_val: one("msy_cell_val", Some(types::I64), 2)?,
         // (cell, arena, handle)
@@ -3554,6 +3563,7 @@ fn translate(
         cell_str: module.declare_func_in_func(shims.cell_str, b.func),
         cell_set_str: module.declare_func_in_func(shims.cell_set_str, b.func),
         cell_set_obj: module.declare_func_in_func(shims.cell_set_obj, b.func),
+        cell_set_arr: module.declare_func_in_func(shims.cell_set_arr, b.func),
         cell_val: module.declare_func_in_func(shims.cell_val, b.func),
         cell_set_val: module.declare_func_in_func(shims.cell_set_val, b.func),
         cell_prop_str: module.declare_func_in_func(shims.cell_prop_str, b.func),
@@ -4247,6 +4257,22 @@ fn translate(
                 let at = (slot as usize * repr::SIZE) as i32;
                 let cell = b.ins().iadd_imm(base, at as i64);
                 b.ins().call(shim.cell_set_val, &[cell, arena_ptr, h]);
+                stack.push(v);
+            }
+            Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Arr(_)))) => {
+                let (slot, _) = *p.field_at.get(&pc)?;
+                let v = stack.pop()?;
+                let SlotV::Arr(vptr, _, _, _) = v else {
+                    return None;
+                };
+                let SlotV::Obj(_, base, _) = stack.pop()? else {
+                    return None;
+                };
+                let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
+                guard(b, ctx, null, R_NULL, pc, None);
+                let at = (slot as usize * repr::SIZE) as i32;
+                let cell = b.ins().iadd_imm(base, at as i64);
+                b.ins().call(shim.cell_set_arr, &[cell, vptr]);
                 stack.push(v);
             }
             Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Obj(_)))) => {
@@ -5930,6 +5956,7 @@ struct ShimRefs {
     cell_str: cranelift_codegen::ir::FuncRef,
     cell_set_str: cranelift_codegen::ir::FuncRef,
     cell_set_obj: cranelift_codegen::ir::FuncRef,
+    cell_set_arr: cranelift_codegen::ir::FuncRef,
     cell_val: cranelift_codegen::ir::FuncRef,
     cell_set_val: cranelift_codegen::ir::FuncRef,
     cell_prop_str: cranelift_codegen::ir::FuncRef,

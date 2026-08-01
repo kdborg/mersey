@@ -311,16 +311,22 @@ is compiled. 12.8x Bun is the worst row in the CLI arena by a wide margin, and
 it is not a string problem or an allocation problem — it is this one refusal,
 reached through every constructor that holds a reference.
 
-**The store and the push are done.** `reconcile` went 4 compiled / 11 refused to
-**8 / 8**, and 69.5ms to 67.7 — the first movement on it, and small, because
-four refusals still stand between here and a compiled `render`:
+**Three of them are done** — the object store, the object push, and the array
+store. `reconcile` went 4 compiled / 11 refused to **8 / 8**, and **69.5ms to
+63.0**, on identical checksums throughout. What still stands between here and a
+compiled `render`:
 
 | stops at | what it is |
 |---|---|
-| `SetMember` on a 10-op method | an array *of objects* stored into a field |
 | `StoreName` on a 32-op function | a module-level `let` written from a function |
 | `CallMethod` ×4, 21–40 ops | `Batch`'s own methods |
 | `NewNamed` on `render` (222) and `work` (164) | downstream of all of the above |
+
+All three of the finished ones were the same shape underneath: take a reference,
+then drop the old one, in that order, through a cell the tier already knew how
+to address. `cell_set_obj` and `cell_set_arr` are twins because an instance and
+an array both cross this tier as `Rc::as_ptr` of their cell, so there was never
+a third representation to invent.
 
 **The store itself is done** — `heap::cell_set_obj`, and `Op::SetMember` now
 takes an object whose class is the field's or below it. `Entry`'s constructor
