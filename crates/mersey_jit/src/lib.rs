@@ -3030,6 +3030,9 @@ const VAL_METHODS: &[(&str, Ty, u8, u8)] = &[
     ("remove", Ty::Bool, 1, 1),
     ("keys", Ty::Val, 0, 0),
     ("values", Ty::Val, 0, 0),
+    // `entries` sat outside this list beside its two siblings for no reason
+    // anyone recorded. It is the one a keyed reconciler actually iterates.
+    ("entries", Ty::Val, 0, 0),
 ];
 
 /// String-valued properties of an opaque. Only `Url`'s parts are here, because

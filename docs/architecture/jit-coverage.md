@@ -360,9 +360,30 @@ follows the contract every other shim follows — stash on `jit_host_error`, han
 back a null instance, let the caller's guard bail — rather than inventing one.
 
 Neutral on `reconcile` (60.33ms against 60.59, six samples a side) because
-`render` refuses one op later, at `nodes.entries()`: `VAL_METHODS` lists `keys`
-and `values` and not `entries`. The gain is the coverage, not that number — any
+`render` refuses one op later. The gain is the coverage, not that number — any
 class owning a collection was unconstructible from compiled code before this.
+
+`entries` followed, a one-line omission: `VAL_METHODS` listed `keys` and
+`values` and not the third, which is the one a keyed reconciler iterates.
+
+### Seven refusals deep, and what that says
+
+`render` is 222 ops, and clearing one refusal has revealed the next every time:
+
+    object into a field → object push → array into a field → array from a call
+      → module-level write → push argument by depth → `new` with initializers
+      → `entries` → `BindPattern`
+
+Each was real, each is fixed, and each was invisible until the one before it
+went. That is this file's own method working — *"a refusal names the op it
+stopped on, not the reason it will stop next time"* — but it is also a fair
+signal about scale: a function this size is not one fix from compiling, and the
+value has been in the gaps themselves. Every one of them was general (any class
+owning a collection; any module-level counter; any `xs.push(obj)`), which is why
+they were worth taking one at a time rather than special-casing the workload.
+
+`BindPattern` is next: `for (const [id, entry] of nodes.entries())` binds two
+slots from a pair, and the tier has no case for it.
 
 `tests/jit/dynamic-init.mersey` builds two instances per iteration and checks
 they report 2 and 1, never 3 and 3. That is the property that makes a computed
