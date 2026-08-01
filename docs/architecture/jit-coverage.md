@@ -116,6 +116,28 @@ the interpreter builds the error, the compiled body traps), and **free names
 resolved in the scope the function was written in** rather than the scope that
 happens to be running.
 
+## Values that change shape at a boundary
+
+Three of these used to be refusals, and the reason they are not is the same in
+each case: the value was already what the other side wanted, and only its label
+had to change.
+
+**A merge whose arms disagree.** `x == null ? 0 : x` — the checker narrows `x` in
+the else-arm but a slot's type does not follow, so one arm arrives as `int32` and
+the other still carries the sentinel. The narrower side is guarded and reduced;
+the wider side sign-extends, which is free.
+
+**A borrow crossing an edge.** A borrow rooted in a re-assignable local lives only
+as long as that local, and a block parameter has no provenance to carry the guard
+across — so instead the borrow is given a reference of its *own* before it
+crosses, and the question stops existing. Strings copy, opaques and objects take a
+second arena reference. An array cannot: it has no handle to own.
+
+**A native's result returned as a string.** Every `std:` native's result is an
+opaque handle, because the tier does not know what a native returns. Handing one
+back where a string was promised re-labels it — same entry, same owner — and the
+shim checks, so a value that is not a string bails rather than being read wrongly.
+
 ## What it still refuses, and why
 
 Containers crossing a boundary in ways their *element type* matters for. An array
@@ -124,10 +146,18 @@ index read off one assumes a number and bails when it is not. Two exceptions
 carry the element type: `split`'s result, and a local declared `string[]` —
 both `Ty::StrArr`.
 
-Also absent: writing a top-level binding, nested arrays, `bool?` (a bool has no
-spare value to spend on null, and reading one back as the 0 or 1 it travels in
-would be a wrong answer rather than a bail), and a function with **no declared
-return type** — the tier does not infer one from the body.
+`push` on a **typed** array (`Ty::Arr`), which is a representation problem rather
+than a missing case: that shape caches the element buffer's address and its
+length, and a push moves both. Supporting it needs a handle for an array the tier
+holds only by address, and an invalidation of the cached pair afterwards.
+
+`bool?`, which cannot borrow the nullable-number representation even though the
+boundary would convert a returned `I32` back to a `Bool`: as a *field* or a
+parameter it would be carried as a number, and a `bool?` field write would store
+`1` where `true` belongs. It needs a type of its own, not a shortcut.
+
+Also absent: writing a top-level binding, nested arrays, and a function with **no
+declared return type** — the tier does not infer one from the body.
 
 ## Traps, each of which has bitten more than once
 

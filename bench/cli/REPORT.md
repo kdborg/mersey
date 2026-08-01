@@ -6,22 +6,22 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 86.76 | 94.78 | 94.71 | 86.58 |
-| calls | 119.79 | 30.51 | 27.75 | 21.71 |
-| fcompute | 101.18 | 101.19 | 102.52 | 101.06 |
-| mathk | 13.15 | 13.79 | 13.44 | 12.41 |
-| url | 8.43 | 7.17 | 10.75 | 9.73 |
-| encoding | 4.29 | 1.57 | 4.04 | 1.46 |
-| crypto | 18.3 | 0.48 | 1.51 | 0.5 |
-| json | 3.8 | 1.25 | 1.42 | 0.73 |
-| strings | 25.77 | 14.18 | 14.84 | 46.73 |
+| compute | 86.75 | 94.73 | 94.76 | 86.6 |
+| calls | 120.13 | 30.64 | 27.77 | 21.73 |
+| fcompute | 101.16 | 101.16 | 102.6 | 100.73 |
+| mathk | 13.15 | 13.8 | 12.93 | 12.48 |
+| url | 8.53 | 7.14 | 10.71 | 9.51 |
+| encoding | 4.39 | 1.58 | 4.08 | 1.44 |
+| crypto | 18.39 | 0.47 | 1.52 | 0.52 |
+| json | 3.81 | 1.28 | 1.42 | 0.72 |
+| strings | 25.31 | 13.71 | 14.48 | 45.92 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
 | compute | 120 | 110 | 110 | 90 |
-| calls | 140 | 30 | 30 | 20 |
+| calls | 140 | 40 | 30 | 20 |
 | fcompute | 120 | 110 | 110 | 100 |
 | mathk | 30 | 20 | 20 | 10 |
 | url | 30 | 10 | 20 | 10 |
@@ -34,12 +34,12 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.7 | 29 | 34.9 | 5.9 |
-| calls | 38.9 | 31.1 | 34.9 | 5.9 |
-| fcompute | 40.5 | 29 | 36.9 | 5.9 |
-| mathk | 39.8 | 30.7 | 36.9 | 5.9 |
-| url | 43.2 | 38.2 | 41.8 | 11.9 |
+| compute | 38.7 | 29.1 | 34.8 | 6 |
+| calls | 38.8 | 31.1 | 34.8 | 6 |
+| fcompute | 40.6 | 29 | 36.8 | 5.9 |
+| mathk | 39.8 | 30.7 | 36.8 | 6 |
+| url | 43 | 38.2 | 41.7 | 12 |
 | encoding | 42 | 30.7 | 38.3 | 7.4 |
-| crypto | 48.2 | 26.9 | 35.3 | 5.9 |
-| json | 40.5 | 29.3 | 36.8 | 5.9 |
-| strings | 41.8 | 52 | 39.3 | 85.2 |
+| crypto | 48.1 | 26.9 | 35.3 | 6 |
+| json | 40.5 | 29.3 | 36.8 | 6 |
+| strings | 41.7 | 52 | 39.3 | 85.2 |
