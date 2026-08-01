@@ -663,5 +663,8 @@ fn a_module_level_let_written_from_a_function_agrees_across_the_tier_boundary() 
     // Pushing a module-level `const` onto an array field: the lookahead that
     // decides to read the receiver as an opaque has to recognise `LoadName` as
     // an argument, not only a slot or a literal.
-    assert!(out.contains("emit   360000"), "{out}");
+    // …and one whose argument is itself a call, which no list of op kinds can
+    // recognise: finding the `push` that owns a receiver needs the verifier's
+    // stack depth at each pc.
+    assert!(out.contains("emit   640000"), "{out}");
 }

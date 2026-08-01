@@ -1593,7 +1593,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         // would invalidate. `load_cell`'s `Ty::Val` case already
                         // does this and hands back an owned handle, and
                         // `jit_array_push` already takes one.
-                        let t = if matches!(t, Ty::Arr(_)) && feeds_a_push(&chunk, pc) {
+                        let t = if matches!(t, Ty::Arr(_)) && feeds_a_push(&chunk, &depths, pc) {
                             Ty::Val
                         } else {
                             t
@@ -3544,30 +3544,35 @@ fn coerce_edge(want: Ty, have: Ty) -> Option<Option<EdgeFix>> {
 ///
 /// The choice has to be made here rather than at the call, because codegen is
 /// keyed by pc and this read is emitted before the call is seen — and a `TSlot`
-/// carries no origin pc to look back through. So: a bounded scan forward for a
-/// `push` whose intervening ops are exactly its arguments. Conservative by
-/// construction; anything it does not recognise keeps the `Ty::Arr` it had.
-fn feeds_a_push(chunk: &Chunk, pc: usize) -> bool {
-    // `receiver.push(a)` is the only arity `VAL_METHODS` lists, so at most one
-    // argument sits between the read and the call.
-    let mut at = pc + 1;
-    let end = (pc + 6).min(chunk.code.len());
-    while at < end {
-        match chunk.code.get(at) {
-            // The argument. Only shapes that push exactly one value and cannot
-            // themselves be the receiver of something else.
-            //
-            // `LoadName` belongs here: `this.ops.push(OP_APPEND)` reads a
-            // module-level `const`, and leaving it out was why every one of
-            // `Batch`'s four op-emitting methods still refused after the
-            // receiver fix. A name that turns out to be a namespace marker
-            // rather than a value is caught by the push's own argument check, so
-            // widening the scan cannot let a bad one through.
-            Some(Op::LoadSlot(_)) | Some(Op::Const(_)) | Some(Op::LoadName(_)) => at += 1,
-            Some(Op::CallMethod(ni, 1)) => {
-                return chunk.names.get(*ni as usize).map(String::as_str) == Some("push");
+/// carries no origin pc to look back through.
+///
+/// This was first written as a scan for a *literal* argument between the read
+/// and the call, which is how `this.ops.push(OP_APPEND)` was missed until
+/// `LoadName` joined the list. The list was the wrong idea: the question is
+/// whether a later `push` finds *this* value as its receiver, and the verifier
+/// already answers it. `analyze` gives the stack depth at every pc, so the
+/// receiver is ours exactly when the call's depth is the depth just after this
+/// read plus its arguments — and any op that takes the depth *below* that has
+/// consumed the receiver first, so the scan can stop. That covers
+/// `push(this.str(tag))`, whose argument is a whole call, and anything else
+/// shaped like it, without a list to keep adding to.
+fn feeds_a_push(chunk: &Chunk, depths: &[Option<i32>], pc: usize) -> bool {
+    let Some(Some(after)) = depths.get(pc + 1).copied() else {
+        return false;
+    };
+    for at in pc + 1..chunk.code.len() {
+        let Some(Some(d)) = depths.get(at).copied() else {
+            return false; // unreachable from here: nothing to say
+        };
+        if d < after {
+            return false; // the receiver was consumed by something that is not a push
+        }
+        if let Some(Op::CallMethod(ni, argc)) = chunk.code.get(at) {
+            if d == after + i32::from(*argc)
+                && chunk.names.get(*ni as usize).map(String::as_str) == Some("push")
+            {
+                return true;
             }
-            _ => return false,
         }
     }
     false

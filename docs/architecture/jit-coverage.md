@@ -319,19 +319,45 @@ compiled `render`:
 | stops at | what it is |
 |---|---|
 | ~~`StoreName`~~ | ~~a module-level `let` written from a function~~ — **done** |
-| `CallMethod` ×2, 23 and 40 ops | `push(this.str(tag))` — an argument that is itself a call |
-| `NewNamed` on `render` (222) and `work` (164) | downstream of those |
+| `NewNamed` on `render` (222) and `work` (164) | `new` of a class with a computed field initializer |
 
-Two of `Batch`'s four went with one word: `feeds_a_push` did not recognise
-`LoadName` as an argument, so `this.ops.push(OP_APPEND)` — a module-level
-`const` — kept the receiver in the shape a push cannot use. **12 compiled / 4
-refused, and neutral on time** (59.31ms against 59.29, six samples a side).
+`Batch`'s four methods went in two steps, and the second is the interesting one.
+First `feeds_a_push` did not recognise `LoadName` as an argument, so
+`this.ops.push(OP_APPEND)` kept the receiver in the shape a push cannot use —
+one word, 12/4, neutral on time. Then `this.ops.push(this.str(tag))`, whose
+argument is a whole call, which no list of op kinds can recognise.
 
-The last two want something different in kind. `this.ops.push(this.str(tag))`
-has a *call* for an argument, and a bounded scan over `LoadSlot`/`Const`/
-`LoadName` cannot see through one to find where the receiver's `push` lands.
-That needs real stack-effect simulation, and adding a fourth op to the list
-would be imitating the last fix rather than doing this one.
+The list was the wrong idea. The question is whether a later `push` finds *this*
+value as its receiver, and the verifier already answers it: `vm::analyze` gives
+the stack depth at every pc, and the JIT already calls it. The receiver is ours
+exactly when the call's depth is the depth just after the read plus its
+arguments, and any op taking the depth below that has consumed the receiver
+first, so the scan stops there. **14 compiled / 2 refused, 59.30ms → 56.71**
+(−4.4%, six samples a side, non-overlapping).
+
+### The last one: `new` of a class that initializes a field
+
+`render` and `work` refuse on `new Batch(…)`, and the reason is one condition in
+`class_for_new`:
+
+    if !cls.dynamic_inits.is_empty() || cls.is_host_backed() || cls.is_builtin_error {
+        return None;   // "the shim that allocates for compiled code has no evaluator"
+    }
+
+`private readonly ops: int32[] = []` is a computed initializer — a fresh array
+per instance — and `Batch` has three. So does almost any class that owns a
+collection, which makes this a wide refusal, not a corner.
+
+The stated reason is no longer quite true: `heap::alloc` takes the arena, and
+the arena carries `interp_ptr`, so the evaluator is reachable. What it needs is
+`alloc_instance` plus the `dynamic_inits` loop the interpreter already runs at
+`new` — same scope, same `this` binding.
+
+What makes it more than a copy: those initializers evaluate arbitrary Mersey
+expressions *during instance construction*, which can re-enter compiled code,
+and the shim has to signal a throw rather than return a half-built instance.
+That is a reentrancy question on the most safety-critical path here, and it
+wants doing deliberately.
 
 The module-level write was the read's mirror and nothing more.
 `NameKind::NumGlobal` already told the tier which register a binding holds and

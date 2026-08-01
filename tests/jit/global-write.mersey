@@ -57,6 +57,13 @@ class Ops {
     public emit(): void {
         this.out.push(TAG_A);
         this.out.push(TAG_B);
+        // The argument is itself a call. No list of op kinds can recognise this
+        // — finding the `push` that owns a receiver needs the verifier's stack
+        // depth at each pc, which is what `feeds_a_push` reads.
+        this.out.push(this.wrap(TAG_A));
+    }
+    private wrap(v: int32): int32 {
+        return v * 2;
     }
     public total(): int32 {
         let s = 0;
