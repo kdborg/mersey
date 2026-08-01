@@ -222,13 +222,31 @@ compile. The six that do not:
 A getter compiles (there is a `getter` hook); its setter does not, which looks
 like an omission by symmetry rather than a difficulty.
 
-`a ?? b` was **attempted and reverted**. The shape looks like it should fall out
-of what is already there: the value jumps to the merge when it is not null, the
-fall-through evaluates `b`, and the two arms meet as `int32?` against `int32`,
-which `coerce_edge` settles. Implemented that way it gave wrong answers — on the
-*null* path only; the non-null path was correct — and the cause was not isolated
-before reverting. Worth another attempt from a clean start, knowing the fault is
-in the fall-through arm and not in the jump.
+`a ?? b` has been **attempted twice and reverted twice**. What each attempt
+established is worth more than the attempts:
+
+- The shape looks like it falls out of what is already there — the value jumps to
+  the merge when it is not null, the fall-through evaluates `b`, and the two arms
+  meet as `int32?` against `int32`, which `coerce_edge` settles. It does not.
+- Recording the *nullable* type on the jump edge is wrong twice over: `x ?? 3` is
+  an `int32`, not an `int32?`, so `const v = x ?? 3` cannot store the result into
+  its own slot and the function is refused at the `StoreSlot`. The jump is taken
+  *because* the value is not null, so the non-nullable form is what crosses.
+  Narrowing there makes it compile.
+- It still gives wrong answers, and only for `Ty::I32Opt` — **the string and
+  reference cases are correct**, which is the strongest clue there is, because a
+  reference needs no coercion at the edge and a nullable number does.
+- The wrong value is exactly **0**, which is `i64::MIN as i32`. That is the
+  sentinel being *reduced* rather than the null path being taken — so the fault
+  is that the narrowing coercion is not being applied on the edge where it was
+  recorded, not that the branch goes the wrong way.
+- The wrongness only appears once the loop is hot enough to leave the
+  interpreter: the totals are exactly the pre-OSR iterations' worth, which is why
+  a small `n` looks fine. Any probe for this must be hot.
+
+Next attempt should start by checking whether `coerce_jump`'s entry for the
+`NotNullJump` pc survives to codegen — `record_block` writes the same map with
+`insert` and may be replacing it.
 
 Ranked by how much ordinary code they cover, `?.` and `??` are first — they are
 how nullable values are read at all — then the setter, then statics.
