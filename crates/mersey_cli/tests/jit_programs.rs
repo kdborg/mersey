@@ -690,3 +690,23 @@ fn constructing_a_class_with_computed_field_initializers_agrees_across_the_tier_
     assert!(out.contains("sized     3200000"), "{out}");
     assert!(out.contains("one       1 32"), "{out}");
 }
+
+/// `const [a, b] = pair`, lowered to slots rather than bound into a scope.
+///
+/// `bind_target` had one slot path — a plain name — and sent everything else to
+/// `Op::BindPattern`, which binds into an environment: a scope allocation per
+/// destructure at Tier 0, and `needs_env` on the chunk, which stopped Tier 1
+/// compiling the enclosing function at all.
+///
+/// `arrays` is the guard on the narrowing: a pattern with defaults keeps the
+/// general path and must still see the present values, not the defaults.
+#[test]
+fn array_destructuring_agrees_across_the_tier_boundary() {
+    check("destructure.mersey");
+    let out = run("destructure.mersey", true);
+    assert!(out.contains("pairs      198675"), "{out}");
+    // 3, 4 from the plain pattern; 3, 4 again from the defaulted one — 9s only
+    // if a present element were mistaken for a missing one.
+    assert!(out.contains("arrays     3434"), "{out}");
+    assert!(out.contains("repeated   7700000"), "{out}");
+}

@@ -1,0 +1,57 @@
+// `const [a, b] = pair`, lowered to slots.
+//
+// `bind_target` had one slot path — a plain name — and sent everything else to
+// `Op::BindPattern`, which binds into an *environment*. That costs a scope
+// allocation per destructure at Tier 0, and it sets `needs_env` on the chunk,
+// which is what stopped Tier 1 compiling the enclosing function at all. So
+// `for (const [id, entry] of map.entries())` — how every keyed reconciler is
+// written — took its whole function down with it.
+//
+// An array pattern whose elements are all plain names is index-and-store, the
+// same two ops a named binding compiles to. A default or a rest keeps the
+// general path: a default is an expression to evaluate on a missing element and
+// a rest is a fresh array, neither of which is two ops.
+
+import { console } from "std:console";
+
+/// The shape that matters: destructuring a map's entries in a hot loop.
+function pairs(n: int32): int32 {
+    const m = new Map<int32, int32>();
+    let i = 0;
+    while (i < n) {
+        m.set(i % 50, i * 2);
+        i += 1;
+    }
+    let acc = 0;
+    for (const [k, v] of m.entries()) {
+        acc = acc + k + v;
+    }
+    return acc;
+}
+
+/// A plain array, and the same with defaults — which must still take the
+/// general path and must still see the *present* values, not the defaults.
+function arrays(): int32 {
+    const xs: int32[] = [3, 4, 5];
+    const [a, b] = xs;
+    const [c = 9, d = 9] = xs;
+    return a * 1000 + b * 100 + c * 10 + d;
+}
+
+/// Destructuring inside a loop body, so the binding is fresh each iteration and
+/// the slot is not carrying the previous one.
+function repeated(n: int32): int32 {
+    const xs: int32[] = [7, 11];
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const [p, q] = xs;
+        acc = acc + p * q;
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`pairs      ${pairs(2000)}`);
+console.log(`arrays     ${arrays()}`);
+console.log(`repeated   ${repeated(100000)}`);

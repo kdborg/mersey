@@ -1850,6 +1850,37 @@ impl C {
     fn bind_target(&mut self, p: &'static Pattern) {
         match p {
             Pattern::Name(n) => self.declare_typed(n),
+            // `const [a, b] = pair` where every element is a plain name: index
+            // and store, the same two ops a named binding compiles to. The
+            // general path binds into an *environment* — which is a scope
+            // allocation per destructure at Tier 0, and sets `needs_env` on the
+            // chunk, which is what stops Tier 1 compiling the enclosing function
+            // at all. `for (const [id, entry] of map.entries())` is the shape
+            // that costs, and it is the one every keyed reconciler is written
+            // with.
+            //
+            // Defaults and a rest element keep the general path: a default is an
+            // expression to evaluate on a missing element, and a rest is a fresh
+            // array, neither of which is two ops.
+            Pattern::Array { elems, rest: None }
+                if !elems.is_empty()
+                    && elems
+                        .iter()
+                        .all(|e| e.default.is_none() && matches!(e.target, Pattern::Name(_))) =>
+            {
+                for (k, e) in elems.iter().enumerate() {
+                    // The value stays on the stack until the last element has
+                    // taken its own copy.
+                    self.emit(Op::Dup);
+                    let c = self.konst(Value::I32(k as i32));
+                    self.emit(Op::Const(c));
+                    self.emit(Op::IndexGet);
+                    if let Pattern::Name(n) = &e.target {
+                        self.declare_typed(n);
+                    }
+                }
+                self.emit(Op::Pop);
+            }
             other => {
                 let i = self.patterns.len() as u16;
                 self.patterns.push(other);

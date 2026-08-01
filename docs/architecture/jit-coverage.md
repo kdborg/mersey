@@ -382,8 +382,20 @@ value has been in the gaps themselves. Every one of them was general (any class
 owning a collection; any module-level counter; any `xs.push(obj)`), which is why
 they were worth taking one at a time rather than special-casing the workload.
 
-`BindPattern` is next: `for (const [id, entry] of nodes.entries())` binds two
-slots from a pair, and the tier has no case for it.
+`BindPattern` turned out not to be a tier gap at all — it binds into an
+*environment*, and its presence sets `needs_env`, so the enclosing function was
+refused before the op was ever reached. The fix is in the bytecode compiler, not
+here: `bind_target` now lowers an array pattern of plain names to index-and-store,
+the same two ops a named binding compiles to. Tier 0 gains the scope allocation
+it no longer makes; **`reconcile` 57.10ms → 56.31**. Defaults and rest keep the
+general path.
+
+That is worth noticing as a kind: seven of these gaps were the tier refusing a
+shape it could have taken, and this one was the *bytecode* handing it a shape
+nothing could take. Reading a refusal as "the tier needs a case for this" would
+have been wrong here.
+
+`render` now stops at `IndexGet` on the pair — the ninth link.
 
 `tests/jit/dynamic-init.mersey` builds two instances per iteration and checks
 they report 2 and 1, never 3 and 3. That is the property that makes a computed
