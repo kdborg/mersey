@@ -1130,6 +1130,33 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     return None;
                 }
             }
+            // `super.m(…)`: one body, chosen statically, called on this frame's
+            // own receiver. Not virtual — see `super_method` — so none of the
+            // override reasoning an ordinary method call needs applies.
+            Op::CallSuperMethod(ni, argc) => {
+                let name = chunk.names[ni as usize].to_string();
+                let mut args: Vec<Ty> = Vec::new();
+                for _ in 0..argc {
+                    args.push(tval(stack.pop()?)?);
+                }
+                args.reverse();
+                let recv = sig.this.as_ref()?;
+                let Ty::Obj(ci) = recv else { return None };
+                let cls = g.classes[*ci as usize].clone();
+                let f = g.env.super_method(&cls, &chunk, &name)?;
+                let idx = g.add(f)?;
+                let s2 = g.sigs[idx].clone();
+                if s2.this.is_none()
+                    || s2.params.len() != args.len()
+                    || !s2.params.iter().zip(&args).all(|(w, h)| arg_fits(*w, *h))
+                {
+                    return None;
+                }
+                // No marker is needed: codegen recognises the opcode, and only
+                // a site this pass accepted can reach it.
+                method_at.insert(pc, idx);
+                stack.push(TSlot::Val(s2.ret, Prov::Stable));
+            }
             Op::LoadName(ni) => {
                 let name = chunk.names[ni as usize].as_str();
                 // Resolved in *this function's* scope, not the globals — see
@@ -4732,8 +4759,9 @@ fn translate(
                 };
                 stack.push(SlotV::Val(r, Ty::F64));
             }
-            Op::Call(n) | Op::CallMethod(_, n) => {
-                let is_method = matches!(op, Op::CallMethod(..));
+            Op::Call(n) | Op::CallMethod(_, n) | Op::CallSuperMethod(_, n) => {
+                let is_super = matches!(op, Op::CallSuperMethod(..));
+                let is_method = is_super || matches!(op, Op::CallMethod(..));
                 let f = if is_method {
                     *p.method_at.get(&pc)?
                 } else {
@@ -4767,7 +4795,15 @@ fn translate(
                     // sees exactly the shape a plain `Op::Call` leaves.
                 }
                 let is_method = is_method && !p.static_at.contains(&pc);
-                let (f, this) = if is_method {
+                let (f, this) = if is_super {
+                    // `super.m(…)` has no receiver on the stack: it runs on this
+                    // frame's own `this`, which cannot be null inside a method.
+                    let at = p.var_at[p.chunk.this_slot? as usize];
+                    let ptr = b.use_var(Variable::from_u32(at));
+                    let fields = b.use_var(Variable::from_u32(at + 1));
+                    let zero = b.ins().iconst(types::I64, 0);
+                    (f, Some(SlotV::Obj(ptr, fields, zero)))
+                } else if is_method {
                     let recv = stack.pop()?;
                     let SlotV::Obj(_, base, _) = recv else {
                         return None;

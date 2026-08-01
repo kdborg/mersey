@@ -1,0 +1,70 @@
+// `super.method()` on both tiers, including the case that makes it subtle.
+//
+// A super call is *statically* bound — it names one body and always that body —
+// so it wants the direct-call path the tier already has rather than virtual
+// dispatch. What it does not want is the `overridden_below` test that keeps an
+// ordinary method call honest: for `super` that test is not merely unnecessary,
+// it is wrong.
+//
+// The subtlety is which class it resolves *from*. Not the receiver's: the class
+// that **declares** the running method. Those are the same until a method is
+// inherited without being overridden, and then they differ — `C` below inherits
+// `B.score`, so compiling `B.score`'s body with a `C` receiver must still reach
+// `A.score`. Resolving from the receiver would find `B.score` again, which is
+// not a wrong number but an infinite regress, so `viaC` is the case worth having.
+
+import { console } from "std:console";
+
+class A {
+    public n: int32 = 0;
+    public constructor(n: int32) {
+        this.n = n;
+    }
+    public score(): int32 {
+        return this.n * 2;
+    }
+}
+
+class B extends A {
+    public constructor(n: int32) {
+        super(n);
+    }
+    public override score(): int32 {
+        return super.score() + 1;
+    }
+}
+
+/// Inherits `score` from `B` without overriding it, so the receiver's class and
+/// the declaring class differ inside that body.
+class C extends B {
+    public constructor(n: int32) {
+        super(n);
+    }
+}
+
+function viaB(n: int32): int32 {
+    const o = new B(3);
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + o.score();
+        i += 1;
+    }
+    return acc;
+}
+
+function viaC(n: int32): int32 {
+    const o = new C(5);
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + o.score();
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`viaB  ${viaB(200000)}`);
+console.log(`viaC  ${viaC(200000)}`);
+// Read back one at a time: 3*2+1 and 5*2+1, both through `A.score`.
+console.log(`one   ${new B(3).score()} ${new C(5).score()}`);

@@ -494,3 +494,23 @@ fn native_string_returns_agree_across_the_tier_boundary() {
     // A decode that fails must be null, not a bail and not an empty string.
     assert!(out.contains("invalid   null"), "{out}");
 }
+
+/// `super.method()`. A super call is statically bound — one body, always that
+/// body — so it takes the direct-call path rather than virtual dispatch, and the
+/// `overridden_below` test that keeps an ordinary method call honest is not
+/// merely unnecessary here but wrong.
+///
+/// The subtlety is which class it resolves *from*: the one that **declares** the
+/// running method, not the receiver's. `C` inherits `B.score` without overriding
+/// it, so compiling that body with a `C` receiver must still reach `A.score` —
+/// resolving from the receiver would find `B.score` again, an infinite regress
+/// rather than a wrong number.
+#[test]
+fn super_methods_agree_across_the_tier_boundary() {
+    check("super-method.mersey");
+    let out = run("super-method.mersey", true);
+    assert!(out.contains("one   7 11"), "{out}");
+    assert!(out.contains("viaB  1400000"), "{out}");
+    // The inherited case: 200000 * (5*2+1).
+    assert!(out.contains("viaC  2200000"), "{out}");
+}

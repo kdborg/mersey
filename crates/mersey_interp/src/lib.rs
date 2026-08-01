@@ -2061,6 +2061,11 @@ pub trait JitEnv {
 
     /// The class a top-level name binds, if it binds one.
     fn class_named(&self, scope: Option<&DefScope>, name: &str) -> Option<Rc<ClassDef>>;
+
+    /// `super.name(…)`: the one body that call names, resolved from the class
+    /// that *declares* the running method rather than from the receiver.
+    fn super_method(&self, recv: &Rc<ClassDef>, chunk: &Rc<vm::Chunk>, name: &str)
+        -> Option<JitFn>;
     /// The body behind `o.name` when `name` is a getter. A getter is a call
     /// wearing a field's clothes, so Tier-1 compiles it as the zero-argument
     /// method it is; without this the whole enclosing function fell back to the
@@ -2187,6 +2192,15 @@ impl JitEnv for InterpEnv<'_> {
 
     fn static_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
         self.i.direct_static(cls, name)
+    }
+
+    fn super_method(
+        &self,
+        recv: &Rc<ClassDef>,
+        chunk: &Rc<vm::Chunk>,
+        name: &str,
+    ) -> Option<JitFn> {
+        self.i.super_method(recv, chunk, name)
     }
 
     fn error_class(&self, scope: Option<&DefScope>, name: &str) -> Option<&'static str> {
@@ -6150,6 +6164,72 @@ impl Interp {
             ret_numopt: self.ret_is_numopt_in(cls.env.as_ref(), data.ret_ty()),
             bind: None,
             scope,
+            ret_ty: data.ret_ty(),
+        })
+    }
+
+    /// `super.name(…)` from inside a method of `recv`'s chain whose body is
+    /// `chunk`.
+    ///
+    /// Two things make this different from `direct_method`. It is **not
+    /// virtual**: `super` names one body and always that body, so the
+    /// `overridden_below` test that keeps an ordinary method call honest is not
+    /// merely unnecessary here, it is wrong.
+    ///
+    /// And it resolves from the class that **declares** the running method, not
+    /// from the receiver's class. Those differ whenever a method is inherited: a
+    /// `Grand extends Derived extends Base` running `Derived.score` must reach
+    /// `Base.score`, not `Derived.score` again — which is what resolving from the
+    /// receiver would give, and it would be an infinite regress rather than a
+    /// wrong number. The declaring class is not recorded anywhere, so it is
+    /// recovered here by walking up from the receiver to the first class whose
+    /// own method set holds this very chunk.
+    fn super_method(
+        &self,
+        recv: &Rc<ClassDef>,
+        chunk: &Rc<vm::Chunk>,
+        name: &str,
+    ) -> Option<JitFn> {
+        let mut c = Some(recv.clone());
+        let declaring = loop {
+            let k = c?;
+            let mine = k
+                .methods
+                .values()
+                .any(|d| matches!(&*d.chunk.borrow(), Some(Some(ch)) if Rc::ptr_eq(ch, chunk)));
+            if mine {
+                break k;
+            }
+            c = k.parent.clone();
+        };
+        let parent = declaring.parent.clone()?;
+        if parent.is_accessor(name) || parent.is_host_backed() {
+            return None;
+        }
+        let data = parent.lookup_method(name)?;
+        if data.is_async {
+            return None;
+        }
+        let chunk = data.chunk.borrow().clone()??;
+        if chunk.yields || chunk.needs_env || !chunk.simple_params {
+            return None;
+        }
+        Some(JitFn {
+            params: simple_param_names(data.params)?,
+            param_tys: self.param_types(parent.env.as_ref(), data.params),
+            chunk,
+            // The *receiver* still crosses as itself; only the body is chosen
+            // statically. A `super` call is not a call on the parent object —
+            // there is no parent object.
+            this: Some(recv.clone()),
+            ret: data.ret_num,
+            ret_bool: data.ret_bool,
+            ret_obj: self.ret_class_in(parent.env.as_ref(), data.ret_ty()),
+            ret_str: self.ret_is_str_in(parent.env.as_ref(), data.ret_ty()),
+            ret_val: self.ret_is_val_in(parent.env.as_ref(), data.ret_ty()),
+            ret_numopt: self.ret_is_numopt_in(parent.env.as_ref(), data.ret_ty()),
+            bind: None,
+            scope: parent.env.clone().map(DefScope),
             ret_ty: data.ret_ty(),
         })
     }
