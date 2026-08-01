@@ -1488,6 +1488,16 @@ uint32_t MerseyScriptRunner::HostWebIntern(std::string_view name) {
   if (name == "decode") return kDecode;
   if (name == "TextEncoder") return kCtorTextEncoder;
   if (name == "TextDecoder") return kCtorTextDecoder;
+  // DOMMatrix. `translate`, `scale` and `a` are not matrix-only names — a canvas
+  // context has the first two and any object may have the last — so each case
+  // checks the receiver's kind and falls through to the reflective and JSON
+  // tiers when it does not match. Interning a name is not a claim about type.
+  if (name == "m41") return kM41;
+  if (name == "m42") return kM42;
+  if (name == "a") return kMatrixA;
+  if (name == "translate") return kTranslate;
+  if (name == "scale") return kScale;
+  if (name == "DOMMatrix") return kCtorDOMMatrix;
   // A digit-only name is an indexed access (`nodes[i]`): id = kIndexBase + i.
   if (!name.empty() && name.size() <= 6) {
     bool digits = true;
@@ -1595,6 +1605,23 @@ void MerseyScriptRunner::HostWebGetU16(int64_t target,
         }
       }
       break;
+    case kM41:
+    case kM42:
+    case kMatrixA:
+      if (NativeObject* o = ObjectFor(target);
+          o && o->kind == NativeObject::Kind::kMatrix && o->matrix) {
+        FillNum(out, id == kM41   ? o->matrix->m41()
+                     : id == kM42 ? o->matrix->m42()
+                                  : o->matrix->a());
+        return;
+      }
+      // `a` is a name anything may carry, unlike `pathname` or `classList`, so
+      // this one does not fall out of the switch to FillNull the way the older
+      // cases do — on this tier a null reply is the property's *value*, and the
+      // engine will not retry. Reflection has already answered for plain JS
+      // objects by here; this is for the native kinds it does not cover.
+      GetViaJson(target, id, out);
+      return;
     case kTextContent:
       // The get direction (`li.textContent` in the query workload); the set
       // direction lives in HostWebSetU16.
@@ -1687,6 +1714,68 @@ void MerseyScriptRunner::HostWebSetU16(int64_t target,
         canvas->setHeight(px, ASSERT_NO_EXCEPTION);
       }
     }
+  }
+  FillNull(out);
+}
+
+// As `CallViaJson`, for a property read.
+void MerseyScriptRunner::GetViaJson(int64_t target,
+                                    uint32_t id,
+                                    msy_reply* out) {
+  std::string scratch;
+  const char* name = NameForWebId(id, scratch);
+  const std::string* reply = name ? HostWebGet(target, name) : nullptr;
+  if (reply) {
+    FillStr16(out, String::FromUtf8(*reply));
+    out->tag = 7;
+    return;
+  }
+  FillNull(out);
+}
+
+// The JSON tier, reached from inside the wide one. A case that has interned a
+// name but cannot answer for *this* receiver ends here rather than at FillNull.
+void MerseyScriptRunner::CallViaJson(int64_t target,
+                                     uint32_t id,
+                                     const msy_arg16* args,
+                                     size_t argc,
+                                     msy_reply* out) {
+  auto json_args = std::make_unique<JSONArray>();
+  for (size_t i = 0; i < argc; ++i) {
+    switch (args[i].kind) {
+      case 0:
+        json_args->PushString(Str16ToString(args[i].str16, args[i].str16_len));
+        break;
+      case 1:
+        json_args->PushDouble(args[i].num);
+        break;
+      case 2: {
+        auto ref = std::make_unique<JSONObject>();
+        ref->SetDouble("__ref__", args[i].num);
+        json_args->PushObject(std::move(ref));
+        break;
+      }
+      case 3:
+        json_args->PushBoolean(args[i].num != 0);
+        break;
+      case 5: {
+        auto cb = std::make_unique<JSONObject>();
+        cb->SetDouble("__cb__", args[i].num);
+        json_args->PushObject(std::move(cb));
+        break;
+      }
+      default:
+        json_args->PushValue(JSONValue::Null());
+    }
+  }
+  std::string scratch;
+  const char* name = NameForWebId(id, scratch);
+  const std::string* reply =
+      HostWebCall(target, name ? name : "", json_args->ToJSONString().Utf8());
+  if (reply) {
+    FillStr16(out, String::FromUtf8(*reply));
+    out->tag = 7;
+    return;
   }
   FillNull(out);
 }
@@ -1798,6 +1887,40 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
         }
       }
       break;
+    }
+    case kTranslate:
+    case kScale: {
+      // Blink's own geometry code, the same path the bindings take — reached
+      // with the arguments as doubles rather than through a JSON array built,
+      // serialised, and parsed again for two numbers. `scale` takes one
+      // argument to match what the JSON path did, so the two tiers agree.
+      NativeObject* obj = ObjectFor(target);
+      if (obj && obj->kind == NativeObject::Kind::kMatrix && obj->matrix) {
+        auto num_at = [&](size_t i, double def) {
+          return (argc > i && args[i].kind == 1) ? args[i].num : def;
+        };
+        DOMMatrix* result =
+            id == kTranslate
+                ? obj->matrix->translate(num_at(0, 0), num_at(1, 0))
+                : obj->matrix->scale(num_at(0, 1));
+        if (result) {
+          NativeObject next;
+          next.kind = NativeObject::Kind::kMatrix;
+          next.matrix = result;
+          FillRef(out, AllocObject(std::move(next)));
+          return;
+        }
+      }
+      // Not a matrix — a canvas context has `translate` and `scale` too. This
+      // has to reach the JSON tier rather than fall out of the switch, because
+      // falling out means FillNull, and a null reply on this tier is a *result*,
+      // not a signal: `read_msy_reply` always answers `Some`, so the engine
+      // would take the null for the call's value and never retry. Interning a
+      // name therefore commits this switch to answering for every receiver that
+      // name can appear on. Silently turning `ctx.translate(x, y)` into a no-op
+      // is what that costs when it is got wrong, and no benchmark here uses it.
+      CallViaJson(target, id, args, argc, out);
+      return;
     }
     case kContains: {
       if (NativeObject* obj = ObjectFor(target);
@@ -2001,6 +2124,12 @@ void MerseyScriptRunner::HostWebNewU16(uint32_t ctor_id,
     NativeObject obj;
     obj.kind = NativeObject::Kind::kEvent;
     obj.event = Event::Create(AtomicString(type));
+    FillRef(out, AllocObject(std::move(obj)));
+    return;
+  } else if (ctor_id == kCtorDOMMatrix) {
+    NativeObject obj;
+    obj.kind = NativeObject::Kind::kMatrix;
+    obj.matrix = DOMMatrix::Create();
     FillRef(out, AllocObject(std::move(obj)));
     return;
   } else if (ctor_id == kCtorTextEncoder || ctor_id == kCtorTextDecoder) {
@@ -2543,6 +2672,11 @@ const char* MerseyScriptRunner::NameForWebId(uint32_t id, std::string& scratch) 
     case kDispatchEvent: return "dispatchEvent";
     case kEncode: return "encode";
     case kDecode: return "decode";
+    case kM41: return "m41";
+    case kM42: return "m42";
+    case kMatrixA: return "a";
+    case kTranslate: return "translate";
+    case kScale: return "scale";
     case kSelfCall: return "";
     default: return nullptr;  // a constructor id: not a property name
   }

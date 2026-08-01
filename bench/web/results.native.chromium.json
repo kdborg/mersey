@@ -240,16 +240,6 @@
   {
     "browser": "chromium-fork",
     "impl": "native",
-    "wl": "canvas",
-    "ms": 5.594999998807907,
-    "rss": 352,
-    "checksum": 20000,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
     "wl": "compression",
     "ms": 106.73600000143051,
     "rss": 2416,
@@ -351,16 +341,6 @@
     "ms": 49.89599999785423,
     "rss": -16,
     "checksum": -413913408,
-    "platform": "macos",
-    "mem_metric": "footprint"
-  },
-  {
-    "browser": "chromium-fork",
-    "impl": "native",
-    "wl": "geometry",
-    "ms": 79.67700001597404,
-    "rss": -304,
-    "checksum": 95000,
     "platform": "macos",
     "mem_metric": "footprint"
   },
@@ -511,6 +491,26 @@
     "ms": 91.98199999332428,
     "rss": 1424,
     "checksum": 20990,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "geometry",
+    "ms": 23.810000002384186,
+    "rss": 368,
+    "checksum": 95000,
+    "platform": "macos",
+    "mem_metric": "footprint"
+  },
+  {
+    "browser": "chromium-fork",
+    "impl": "native",
+    "wl": "canvas",
+    "ms": 5.675000011920929,
+    "rss": 848,
+    "checksum": 20000,
     "platform": "macos",
     "mem_metric": "footprint"
   }

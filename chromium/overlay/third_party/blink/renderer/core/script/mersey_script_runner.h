@@ -256,6 +256,16 @@ class CORE_EXPORT MerseyScriptRunner final
     // The interned EMPTY name (ABI v8): the target handle is itself callable
     // (an imported `setTimeout(cb, ms)`, `fetch(url)`).
     kSelfCall,
+    // DOMMatrix (the `geometry` workload). Every one of its six crossings per
+    // iteration — the constructor, translate, scale, and the three reads — was
+    // landing on the JSON tier, which is why that workload measured 35x the
+    // browser's own JS while `compute` measured parity.
+    kM41,
+    kM42,
+    kMatrixA,
+    kTranslate,
+    kScale,
+    kCtorDOMMatrix,
   };
   // A digit-only interned name is an indexed access (`nodes[i]` crosses as a
   // property read of "42"): id = kIndexBase + the index. Above every WebId.
@@ -370,6 +380,15 @@ class CORE_EXPORT MerseyScriptRunner final
   // of it. These give that tier the same fallback, and return false when the
   // target is not reflective so the typed code keeps its fast path.
   static const char* NameForWebId(uint32_t id, std::string& scratch);
+  // The JSON tier, reached from inside the wide one: a case that interned a
+  // name but cannot answer for *this* receiver ends here rather than at
+  // FillNull, which the engine would read as the call's value.
+  void CallViaJson(int64_t target,
+                   uint32_t id,
+                   const msy_arg16* args,
+                   size_t argc,
+                   msy_reply* out);
+  void GetViaJson(int64_t target, uint32_t id, msy_reply* out);
   bool IsReflective(int64_t handle);
   void FillFromV8(msy_reply* out,
                   v8::Isolate* isolate,

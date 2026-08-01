@@ -27,8 +27,13 @@ code that matches V8's; the same tier cannot help `geometry`, because
 
 `geometry` is the clearest case. Per iteration it does `new DOMMatrix()`,
 `.translate(x, y)`, `.scale(2)`, and reads `m41`, `m42`, `a` — six
-crossings. It takes 79.7ms for 10,000 iterations against Chromium JS's
+crossings. It took 79.7ms for 10,000 iterations against Chromium JS's
 2.3ms, which is about **1.3µs per crossing**.
+
+**That number has been chased, and the diagnosis below was wrong.** See
+"What actually cost the 35x" at the end of this file: `geometry` is now
+**23.8–26.0ms**, a 3.1x improvement on the same checksum, and it needed no
+`web_bind` implementation at all.
 
 ## Why a crossing costs that
 
@@ -70,6 +75,44 @@ browser gap. It is worth scoping deliberately rather than starting at the
 edges: the interfaces to bind first are the ones this table already names —
 `DOMMatrix` (geometry), `MessagePort` (msgchannel), the streams reader, and
 whatever `frameworkui2`'s reconciler touches per row.
+
+## What actually cost the 35x
+
+`DOMMatrix` was not reaching the wide tier. It was not that the typed tier
+was missing — it was that the fork answered `translate`, `scale`, the three
+reads and the constructor from `HostWebCall`, the **JSON** path. Two doubles
+became a serialised JSON array, which was immediately parsed back, for a
+call into Blink's geometry code that does almost no work, and the reply went
+home as a JSON string the engine parsed again. Six of those per iteration is
+the 1.3µs.
+
+The repair was to intern the six names and give them cases on the tier that
+already carries doubles (`web_call_u16` / `web_get_u16` / `web_new_u16`).
+Measured on the same binary, same checksum (95000):
+
+| | ms, n=3 |
+|---|---|
+| before | 79.68 |
+| after | 25.95, 23.81 |
+
+`canvas` is the control and did not move (5.59 before, 5.92 / 5.68 after).
+
+**Interning a name is a commitment, not a hint.** `read_msy_reply` always
+answers `Some`, so a `FillNull` on the wide tier is the call's *value* — the
+engine takes it and does not retry the JSON path. `translate` and `scale`
+are canvas-context methods as well as matrix ones, so interning them without
+covering that receiver would have turned `ctx.translate(x, y)` into a silent
+no-op. No workload here uses canvas transforms, so nothing in this suite
+would have caught it. `CallViaJson` and `GetViaJson` exist for that: a case
+that has interned a name but cannot answer for *this* receiver falls to the
+JSON tier rather than to null. `a` needed the same care on the read side,
+being a name anything may carry.
+
+The lesson generalises past `DOMMatrix`. Before writing `web_bind` for an
+interface, check which tier its calls are actually landing on — the rows at
+20–61x above (`msgchannel`, `streams`, `frameworkui2`) are worth that check
+first, because a JSON round trip and a missing typed binding look identical
+from the outside and cost very differently to fix.
 
 ## What this table is not
 
