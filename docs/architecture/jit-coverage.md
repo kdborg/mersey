@@ -311,6 +311,19 @@ is compiled. 12.8x Bun is the worst row in the CLI arena by a wide margin, and
 it is not a string problem or an allocation problem — it is this one refusal,
 reached through every constructor that holds a reference.
 
+**The store itself is done** — `heap::cell_set_obj`, and `Op::SetMember` now
+takes an object whose class is the field's or below it. `Entry`'s constructor
+compiles. The cascade is not finished, so `reconcile` has not moved (69.3ms
+against a 69.5ms baseline — neutral, measured five runs a side and discarding
+the first, which is a cold relink and reads 30% high). Two refusals remain
+between here and `render`:
+
+- `this.items.push(n)` — an object pushed onto an array field.
+- `this.created = applyOps(…)` — an array *of objects* stored into a field.
+
+Both are the same question one level out, and until both are answered `render`
+still stops at `NewNamed` and the reconciler still interprets.
+
 It is also more tractable than when the comment was written. Releasing the old
 reference and taking the new one is exactly the discipline the frame sweep
 already needed (see "A frame that returns has to let go of what it owns"), and

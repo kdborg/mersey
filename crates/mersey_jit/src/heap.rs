@@ -284,6 +284,36 @@ pub(crate) unsafe extern "C" fn cell_set_str(cell: *mut Value, ptr: *const u16, 
     unsafe { *cell = v };
 }
 
+/// Write an object into a heap cell (`this.node = node`).
+///
+/// This is the store `Op::SetMember` used to refuse, and the refusal cost more
+/// than it looked: a constructor that keeps a reference could not compile, so
+/// every `new` of that class could not, so every function building one could
+/// not. A nine-op `Entry(node, v)` took a whole keyed reconciler with it.
+///
+/// The reasoning behind the refusal was right — one reference-counted value has
+/// to be released and another taken — and both halves are here. Taking is
+/// `increment_strong_count` then `from_raw`, exactly as `clone_obj` does it;
+/// releasing is the assignment through `cell`, which drops whatever the field
+/// held. Doing it in the other order would be a use-after-free when a field is
+/// assigned to itself.
+///
+/// # Safety
+/// `cell` addresses a live `Value` inside an object the caller holds an `Rc` to,
+/// and `p` is null or an `Rc`-managed instance the caller holds a reference to
+/// for the duration of the call.
+pub(crate) unsafe extern "C" fn cell_set_obj(cell: *mut Value, p: *const GcCell<Instance>) {
+    if p.is_null() {
+        unsafe { *cell = Value::Null };
+        return;
+    }
+    // Take first. `*cell = …` drops the old value, and if the field already held
+    // *this* object that drop would be the last reference.
+    unsafe { Rc::increment_strong_count(p) };
+    let rc = unsafe { Rc::from_raw(p) };
+    unsafe { *cell = Value::Instance(rc) };
+}
+
 /// Allocate an instance of `cls`, owned by the arena.
 ///
 /// This is `new`, minus the constructor (which is compiled code's next call):

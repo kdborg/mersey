@@ -1642,7 +1642,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // not do that. A string is different only because the field takes
                 // its own copy of the units rather than sharing a reference, so
                 // there is no ownership to hand over.
-                let ok = if t == Ty::Str {
+                // An object into an object field. This was refused, and the
+                // reason given — one reference-counted value released and
+                // another taken — was right about the work and wrong about the
+                // price of declining it: a constructor that keeps a reference
+                // could not compile, so no `new` of that class could, so no
+                // function building one could. See `heap::cell_set_obj`.
+                let ok = if let Ty::Obj(fci) = t {
+                    match v {
+                        Ty::Obj(vci) => {
+                            vci == fci
+                                || g.classes[vci as usize].descends_from(&g.classes[fci as usize])
+                        }
+                        _ => false,
+                    }
+                } else if t == Ty::Str {
                     v == Ty::Str
                 } else if t == Ty::Val {
                     // An opaque field takes the arena entry the value already
@@ -2471,6 +2485,7 @@ struct Shims {
     cell_arr: FuncId,
     cell_str: FuncId,
     cell_set_str: FuncId,
+    cell_set_obj: FuncId,
     cell_val: FuncId,
     cell_set_val: FuncId,
     cell_prop_str: FuncId,
@@ -2559,6 +2574,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_cell_arr", heap::cell_arr as *const u8);
     builder.symbol("msy_cell_str", heap::cell_str as *const u8);
     builder.symbol("msy_cell_set_str", heap::cell_set_str as *const u8);
+    builder.symbol("msy_cell_set_obj", heap::cell_set_obj as *const u8);
     builder.symbol("msy_cell_val", heap::cell_val as *const u8);
     builder.symbol("msy_cell_set_val", heap::cell_set_val as *const u8);
     builder.symbol("msy_cell_prop_str", heap::cell_prop_str as *const u8);
@@ -3006,6 +3022,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         cell_str: one("msy_cell_str", None, 2)?,
         // (cell, ptr, len)
         cell_set_str: one("msy_cell_set_str", None, 3)?,
+        cell_set_obj: one("msy_cell_set_obj", None, 2)?,
         // (cell, arena) -> handle, 0 for null
         cell_val: one("msy_cell_val", Some(types::I64), 2)?,
         // (cell, arena, handle)
@@ -3487,6 +3504,7 @@ fn translate(
         cell_arr: module.declare_func_in_func(shims.cell_arr, b.func),
         cell_str: module.declare_func_in_func(shims.cell_str, b.func),
         cell_set_str: module.declare_func_in_func(shims.cell_set_str, b.func),
+        cell_set_obj: module.declare_func_in_func(shims.cell_set_obj, b.func),
         cell_val: module.declare_func_in_func(shims.cell_val, b.func),
         cell_set_val: module.declare_func_in_func(shims.cell_set_val, b.func),
         cell_prop_str: module.declare_func_in_func(shims.cell_prop_str, b.func),
@@ -4180,6 +4198,24 @@ fn translate(
                 let at = (slot as usize * repr::SIZE) as i32;
                 let cell = b.ins().iadd_imm(base, at as i64);
                 b.ins().call(shim.cell_set_val, &[cell, arena_ptr, h]);
+                stack.push(v);
+            }
+            Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Obj(_)))) => {
+                let (slot, _) = *p.field_at.get(&pc)?;
+                let v = stack.pop()?;
+                let SlotV::Obj(vptr, _, _) = v else {
+                    return None;
+                };
+                let SlotV::Obj(_, base, _) = stack.pop()? else {
+                    return None;
+                };
+                let null = b.ins().icmp_imm(IntCC::Equal, base, 0);
+                guard(b, ctx, null, R_NULL, pc, None);
+                let at = (slot as usize * repr::SIZE) as i32;
+                let cell = b.ins().iadd_imm(base, at as i64);
+                // The shim takes its own reference before dropping the field's
+                // old one; the value on the stack keeps whatever it had.
+                b.ins().call(shim.cell_set_obj, &[cell, vptr]);
                 stack.push(v);
             }
             Op::SetMember(_, _) if matches!(p.field_at.get(&pc), Some((_, Ty::Str))) => {
@@ -5834,6 +5870,7 @@ struct ShimRefs {
     cell_arr: cranelift_codegen::ir::FuncRef,
     cell_str: cranelift_codegen::ir::FuncRef,
     cell_set_str: cranelift_codegen::ir::FuncRef,
+    cell_set_obj: cranelift_codegen::ir::FuncRef,
     cell_val: cranelift_codegen::ir::FuncRef,
     cell_set_val: cranelift_codegen::ir::FuncRef,
     cell_prop_str: cranelift_codegen::ir::FuncRef,

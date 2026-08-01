@@ -1,0 +1,96 @@
+// An object stored into a field.
+//
+// `Op::SetMember` refused this, and the reason was sound about the work — one
+// reference-counted value released and another taken — but the price of
+// declining was much larger than the store: a constructor that keeps a
+// reference could not compile, so no `new` of that class could, so no function
+// building one could. A nine-op `Entry(node, v)` took a whole keyed reconciler
+// with it (`bench/cli/reconcile`, 12.8x Bun).
+//
+// The order is the whole correctness argument. `cell_set_obj` takes its
+// reference *before* assigning through the cell, because the assignment drops
+// whatever the field held — and if the field already held this very object,
+// dropping first would free the thing being stored. `selfAssign` below is that
+// case, and it reads the object's contents back afterwards rather than its
+// identity, because a freed-then-reused cell can still compare equal.
+
+import { console } from "std:console";
+
+class Leaf {
+    public tag: int32;
+    public constructor(tag: int32) {
+        this.tag = tag;
+    }
+}
+
+class Sub extends Leaf {
+    public constructor(tag: int32) {
+        super(tag);
+    }
+}
+
+class Holder {
+    public leaf: Leaf;
+    public constructor(leaf: Leaf) {
+        this.leaf = leaf;
+    }
+    public swap(l: Leaf): void {
+        this.leaf = l;
+    }
+    /// The field assigned from itself: take-before-drop, or this frees it.
+    public selfAssign(): void {
+        this.leaf = this.leaf;
+    }
+}
+
+/// Hot, so the constructor and the setter both compile.
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const h = new Holder(new Leaf(i % 100));
+        h.swap(new Leaf(i % 7));
+        h.selfAssign();
+        acc = acc + h.leaf.tag;
+        i += 1;
+    }
+    return acc;
+}
+
+/// A subclass into a field typed as the base — the store the checker allows and
+/// the tier has to allow with it.
+function viaSub(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const h = new Holder(new Sub(i % 5));
+        acc = acc + h.leaf.tag;
+        i += 1;
+    }
+    return acc;
+}
+
+/// The old value must actually go. Overwrite the same field many times over one
+/// long-lived holder; if each store leaked its predecessor this grows without
+/// bound, and if it freed too eagerly the read below is of freed memory.
+function churn(n: int32): int32 {
+    const h = new Holder(new Leaf(0));
+    let i = 0;
+    while (i < n) {
+        h.swap(new Leaf(i % 13));
+        i += 1;
+    }
+    return h.leaf.tag;
+}
+
+console.log(`drive       ${drive(200000)}`);
+console.log(`viaSub      ${viaSub(200000)}`);
+console.log(`churn       ${churn(200000)}`);
+// Then read back one at a time, contents not identity.
+const a = new Leaf(41);
+const h = new Holder(a);
+h.selfAssign();
+h.selfAssign();
+console.log(`selfAssign  ${h.leaf.tag}`);
+h.swap(new Leaf(9));
+console.log(`swapped     ${h.leaf.tag} ${a.tag}`);

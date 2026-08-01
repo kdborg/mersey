@@ -585,3 +585,25 @@ fn a_returning_frame_releases_what_it_owns() {
     assert!(out.contains("early     20 short"), "{out}");
     assert!(out.contains("opaque    payload-9"), "{out}");
 }
+
+/// An object stored into a field — the store `Op::SetMember` refused, whose
+/// refusal cascaded: a constructor that keeps a reference could not compile, so
+/// no `new` of that class could, so no function building one could. A nine-op
+/// `Entry(node, v)` took a whole keyed reconciler with it.
+///
+/// The ordering is the correctness argument. `cell_set_obj` takes its reference
+/// before assigning through the cell, because the assignment drops whatever the
+/// field held — and if the field already held this object, dropping first would
+/// free the thing being stored. `selfAssign` is that case, and it reads contents
+/// back rather than identity, since a freed-then-reused cell can compare equal.
+#[test]
+fn an_object_stored_into_a_field_agrees_across_the_tier_boundary() {
+    check("object-field.mersey");
+    let out = run("object-field.mersey", true);
+    // Assigned from itself, twice, and still itself.
+    assert!(out.contains("selfAssign  41"), "{out}");
+    // The old value survives being displaced; the new one is what the field has.
+    assert!(out.contains("swapped     9 41"), "{out}");
+    // A subclass into a base-typed field.
+    assert!(out.contains("viaSub      400000"), "{out}");
+}
