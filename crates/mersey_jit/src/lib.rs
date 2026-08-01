@@ -1659,10 +1659,27 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // could not compile, so no `new` of that class could, so no
                 // function building one could. See `heap::cell_set_obj`.
                 let ok = if let Ty::Arr(fe) = t {
-                    // An array into an array field. Same shape as the object
-                    // store below and the same shim pattern — an array crosses
-                    // as `Rc::as_ptr` of its cell, so there is a reference to
-                    // take and one to drop, and nothing else to represent.
+                    // An array into an array field, in either of the two shapes
+                    // an array reaches here in. From a local or another field it
+                    // is `Ty::Arr` — address, elements, length — and crosses as
+                    // `Rc::as_ptr` of its cell, so there is a reference to take
+                    // and one to drop and nothing else to represent.
+                    //
+                    // From a *call* it is `Ty::Val`: `ret_is_val_in` already
+                    // counts `FieldTy::Arr` as an opaque, so a function handing
+                    // back an array hands back a handle. That was the whole of
+                    // why `this.created = applyOps(…)` still refused after the
+                    // `Ty::Arr` case existed — the value was never that shape.
+                    // NOT `Ty::Val`, though a call handing back an array gives
+                    // exactly that (`ret_is_val_in` counts `FieldTy::Arr` as an
+                    // opaque). Accepting it and storing through `cell_set_val`
+                    // put something non-indexable in the cell — `this.snap[0]`
+                    // then raised "only arrays and strings are indexable" from
+                    // the interpreter, so the field held null rather than the
+                    // array. The handle is right where the opaque *field* store
+                    // uses it, so the difference is in what a compiled callee
+                    // leaves in those two registers, and that wants finding out
+                    // before this accepts it.
                     matches!(v, Ty::Arr(ve) if ve == fe)
                 } else if let Ty::Obj(fci) = t {
                     match v {
