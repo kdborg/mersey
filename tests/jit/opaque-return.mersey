@@ -1,0 +1,66 @@
+// An opaque returned from a compiled function, used by its caller.
+//
+// This is a regression the frame sweep introduced and nothing caught for a day.
+// An opaque crosses in two registers — its identity and its ownership — and the
+// return promoted a *borrow* by cloning it into a fresh arena entry, then handed
+// back the **original** handle as the identity and the clone as the ownership.
+// That was harmless while a returning frame leaked its locals: the original was
+// still alive, so a caller reading the identity found it. Once the sweep began
+// releasing owned slots at the return, the original named a released entry and
+// the caller read nothing.
+//
+// The string arm of the same `Return` says this in a comment already — parking a
+// borrow makes a *new* thing and the caller must be given that one — and the
+// opaque arm had the same shape without the fix.
+//
+// Neither the differential fuzzer nor the tier-agreement programs would have
+// produced this: it needs a function that returns a container built into a
+// local, and a caller that then reads it. So it is written down here.
+
+import { console } from "std:console";
+
+class Row {
+    public id: int32;
+    public constructor(id: int32) {
+        this.id = id;
+    }
+}
+
+/// The array is built into a local, so `return out` is a borrow of that slot —
+/// the shape that promotes.
+function make(n: int32): Row[] {
+    const out: Row[] = [];
+    let i = 0;
+    while (i < n) {
+        out.push(new Row(i));
+        i += 1;
+    }
+    return out;
+}
+
+/// A string array, by the same route: `split` builds one and it leaves as a
+/// local's borrow.
+function parts(s: string): string[] {
+    const p = s.split(".");
+    return p;
+}
+
+/// The caller reads what it was handed. Before the fix this raised
+/// "host call failed" rather than answering.
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const a = make(3);
+        acc = acc + a.length;
+        const p = parts("a.b.c.d");
+        acc = acc + p.length;
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive   ${drive(100000)}`);
+// Read back one at a time, cold.
+console.log(`make    ${make(3).length} ${make(0).length}`);
+console.log(`parts   ${parts("a.b.c.d").length} ${parts("x").length}`);

@@ -614,3 +614,27 @@ fn an_object_stored_into_a_field_agrees_across_the_tier_boundary() {
     // grows without bound and an over-eager free is read straight back.
     assert!(out.contains("reassign    500000"), "{out}");
 }
+
+/// An opaque returned from a compiled function, used by its caller — a
+/// regression the frame sweep introduced and nothing caught for a day.
+///
+/// An opaque crosses in two registers, its identity and its ownership. The
+/// return promoted a borrow by cloning it into a fresh arena entry, then handed
+/// back the *original* handle as the identity and the clone as the ownership.
+/// Harmless while a returning frame leaked its locals — the original was still
+/// alive — and wrong the moment the sweep began releasing owned slots, because
+/// then the identity named a released entry. `drive` raised "host call failed"
+/// rather than answering.
+///
+/// Neither the fuzzer nor the other programs here would have produced it: it
+/// needs a function returning a container built into a local and a caller that
+/// reads it.
+#[test]
+fn an_opaque_returned_from_a_compiled_frame_survives_the_sweep() {
+    check("opaque-return.mersey");
+    let out = run("opaque-return.mersey", true);
+    assert!(out.contains("drive   700000"), "{out}");
+    assert!(out.contains("make    3 0"), "{out}");
+    // A `split` result leaves the same way.
+    assert!(out.contains("parts   4 1"), "{out}");
+}

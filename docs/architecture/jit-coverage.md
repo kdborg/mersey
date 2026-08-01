@@ -436,6 +436,25 @@ the list takes neither option, which is the third and worst one. This is the sam
 bug as the paragraph above by a different route, and it reached a shipped release
 the same way.
 
+**An opaque's two registers are identity and ownership, and a promoted borrow
+changes both.** The `Return` arm cloned a borrowed opaque into a fresh arena
+entry, then handed back the *original* handle as the identity and the clone as
+the ownership. That was harmless while a returning frame leaked its locals — the
+original was still alive — and became a released handle the moment the sweep
+below started letting them go. A compiled function returning an array built into
+a local made its caller raise "host call failed"; the interpreter answered
+correctly, and the bug was live for a day.
+
+The string arm of the same `Return` already said this, in a comment, about its
+data pointer: parking a borrow makes a *new* thing and the caller must be given
+that one. The opaque arm had the identical shape without the fix. Both registers
+now carry the owned handle.
+
+Note what it cost to find: neither the differential fuzzer nor the
+tier-agreement programs generate a function that returns a container built into
+a local *and* a caller that reads it, so nothing here would have produced it.
+`tests/jit/opaque-return.mersey` does now.
+
 **A frame that returns has to let go of what it owns.** Nothing swept a callee's
 frame. `jit_arena.clear()` runs when the *outermost* compiled call returns, so a
 value a callee parked in a local — a `split` result, a built string — survived

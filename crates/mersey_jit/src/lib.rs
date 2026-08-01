@@ -5624,6 +5624,15 @@ fn translate(
                 // some slot owns, so it takes a reference of its own first — the
                 // caller will `take` it out of the arena, which must not steal it
                 // from whoever still holds it.
+                //
+                // Both registers get the *owned* handle, not the original in one
+                // and the clone in the other. An opaque's two registers are its
+                // identity and its ownership, and after a promote the original
+                // names an entry this frame is about to sweep — so a caller
+                // reading the identity read a released handle. The string arm
+                // below says the same thing about its data pointer, and for the
+                // same reason: parking a borrow makes a *new* thing, and the
+                // caller must be given that one.
                 SlotV::ValRef(v, h) if matches!(p.ret, Ty::Val | Ty::StrArr) => {
                     let no_handle = b.ins().icmp_imm(IntCC::Equal, h, 0);
                     let is_real = b.ins().icmp_imm(IntCC::NotEqual, v, 0);
@@ -5641,7 +5650,7 @@ fn translate(
                     b.seal_block(done);
                     let h = b.block_params(done)[0];
                     sweep_frame(b, p, shim.release, arena_ptr, is_root);
-                    b.ins().return_(&[v, h]);
+                    b.ins().return_(&[h, h]);
                     reachable = false;
                 }
                 SlotV::Null if matches!(p.ret, Ty::Val | Ty::StrArr) => {
