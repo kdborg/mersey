@@ -159,6 +159,37 @@ parameter it would be carried as a number, and a `bool?` field write would store
 Also absent: writing a top-level binding, nested arrays, and a function with **no
 declared return type** — the tier does not infer one from the body.
 
+## Shapes that leave the tier, found by asking rather than by histogram
+
+The refusal histogram over `std:` ranks what the *standard library* does, and the
+standard library is not a representative program. Writing a probe of ordinary
+language constructs instead — inheritance, closures, `Map`, arrays of objects,
+`try`/`catch`, `switch`, template strings, nested loops — found three common
+shapes that leave Tier 1 and were invisible to that histogram. Each costs about
+51x on anything hot, because a function that leaves the tier leaves it whole.
+
+**`try`/`catch` (`PushHandler`).** Any function with error handling is
+interpreted entire. This is the hardest of the three and not obviously worth
+doing: the tier's trap model bails to the interpreter and lets it re-run the
+call, which is only sound while nothing has been written — and a `try` block
+exists to contain code that writes.
+
+**`super.method()` (`CallSuperMethod`).** A super call is *statically* bound, so
+it wants the direct-call path the tier already has, not virtual dispatch. The
+catch, worked out and recorded here because it is the whole difficulty: `super`
+resolves from the class that **declares** the running method, not from the
+receiver's class. For a method inherited by a further subclass those differ —
+compiling `Derived.score`'s chunk with a `Grand` receiver must still reach
+`Base.score`. `JitFn` carries the receiver (`this`) and not the declaring class,
+so this needs the declaring class threaded through `direct_method`, which already
+computes it internally as `defining`.
+
+**An array literal of objects (`ArrayPush1`).** `[new Base(1), new Base(2)]`.
+
+Ranked by how much ordinary code they cover, `try`/`catch` is first and hardest;
+`super` is the one where the mechanism already exists and only the resolution
+question is open.
+
 ## Traps, each of which has bitten more than once
 
 **Every width-assuming catch-all.** Adding a `Ty` wider than one register means
