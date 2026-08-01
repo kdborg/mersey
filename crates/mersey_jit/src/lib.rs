@@ -3556,7 +3556,14 @@ fn feeds_a_push(chunk: &Chunk, pc: usize) -> bool {
         match chunk.code.get(at) {
             // The argument. Only shapes that push exactly one value and cannot
             // themselves be the receiver of something else.
-            Some(Op::LoadSlot(_)) | Some(Op::Const(_)) => at += 1,
+            //
+            // `LoadName` belongs here: `this.ops.push(OP_APPEND)` reads a
+            // module-level `const`, and leaving it out was why every one of
+            // `Batch`'s four op-emitting methods still refused after the
+            // receiver fix. A name that turns out to be a namespace marker
+            // rather than a value is caught by the push's own argument check, so
+            // widening the scan cannot let a bad one through.
+            Some(Op::LoadSlot(_)) | Some(Op::Const(_)) | Some(Op::LoadName(_)) => at += 1,
             Some(Op::CallMethod(ni, 1)) => {
                 return chunk.names.get(*ni as usize).map(String::as_str) == Some("push");
             }

@@ -43,7 +43,44 @@ function again(n: int32): int32 {
     return seq;
 }
 
+/// Pushing a module-level `const` onto an array field. The receiver of a `push`
+/// is read as an opaque rather than as an address and a length, which a bounded
+/// lookahead decides — and that scan has to recognise `LoadName` as an argument,
+/// not just a slot or a literal. Leaving it out refused every op-emitting method
+/// in `bench/cli/reconcile`'s batch class, each of which is written exactly like
+/// `emit` below.
+const TAG_A: int32 = 7;
+const TAG_B: int32 = 11;
+
+class Ops {
+    private readonly out: int32[] = [];
+    public emit(): void {
+        this.out.push(TAG_A);
+        this.out.push(TAG_B);
+    }
+    public total(): int32 {
+        let s = 0;
+        let i = 0;
+        while (i < this.out.length) {
+            s = s + this.out[i];
+            i += 1;
+        }
+        return s;
+    }
+}
+
+function emitting(n: int32): int32 {
+    const o = new Ops();
+    let i = 0;
+    while (i < n) {
+        o.emit();
+        i += 1;
+    }
+    return o.total();
+}
+
 console.log(`bump   ${bump(200000)}`);
+console.log(`emit   ${emitting(20000)}`);
 console.log(`again  ${again(100000)}`);
 // Read back from the top level, which is interpreted — so these values only
 // agree if the compiled writes went to the real binding.

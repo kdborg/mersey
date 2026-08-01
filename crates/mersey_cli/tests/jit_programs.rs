@@ -660,4 +660,8 @@ fn a_module_level_let_written_from_a_function_agrees_across_the_tier_boundary() 
     // A second function writing the same binding sees the live value.
     assert!(out.contains("again  400000"), "{out}");
     assert!(out.contains("state  400000 600000 100000 true"), "{out}");
+    // Pushing a module-level `const` onto an array field: the lookahead that
+    // decides to read the receiver as an opaque has to recognise `LoadName` as
+    // an argument, not only a slot or a literal.
+    assert!(out.contains("emit   360000"), "{out}");
 }

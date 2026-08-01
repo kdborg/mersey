@@ -319,8 +319,19 @@ compiled `render`:
 | stops at | what it is |
 |---|---|
 | ~~`StoreName`~~ | ~~a module-level `let` written from a function~~ — **done** |
-| `CallMethod` ×4, 21–40 ops | `Batch`'s own methods |
+| `CallMethod` ×2, 23 and 40 ops | `push(this.str(tag))` — an argument that is itself a call |
 | `NewNamed` on `render` (222) and `work` (164) | downstream of those |
+
+Two of `Batch`'s four went with one word: `feeds_a_push` did not recognise
+`LoadName` as an argument, so `this.ops.push(OP_APPEND)` — a module-level
+`const` — kept the receiver in the shape a push cannot use. **12 compiled / 4
+refused, and neutral on time** (59.31ms against 59.29, six samples a side).
+
+The last two want something different in kind. `this.ops.push(this.str(tag))`
+has a *call* for an argument, and a bounded scan over `LoadSlot`/`Const`/
+`LoadName` cannot see through one to find where the receiver's `push` lands.
+That needs real stack-effect simulation, and adding a fourth op to the list
+would be imitating the last fix rather than doing this one.
 
 The module-level write was the read's mirror and nothing more.
 `NameKind::NumGlobal` already told the tier which register a binding holds and
