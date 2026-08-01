@@ -1,0 +1,83 @@
+// `new` for a class whose field initializers compute.
+//
+// `class_for_new` refused these outright — "field initializers that compute need
+// an evaluator, and the shim that allocates for compiled code has none" — which
+// was true when it was written and had stopped being true: the arena carries the
+// interpreter for the duration of a compiled call, so `heap::alloc` can reach
+// one. What it runs is the same `dynamic_inits` loop `new_named` runs, in the
+// same scope, with the same `this` binding, in the same order.
+//
+// The refusal was wide rather than a corner. `private readonly xs: N[] = []` is
+// a computed initializer, so *any* class owning a collection could not be
+// constructed from compiled code — which is what kept `bench/cli/reconcile`'s
+// `render` interpreted long after its callees compiled.
+//
+// Each case here reads the initialized field back after construction, because a
+// half-run initializer leaves a field holding its declared default rather than
+// failing, and that is a wrong answer rather than a crash.
+
+import { console } from "std:console";
+
+class Leaf {
+    public tag: int32;
+    public constructor(tag: int32) {
+        this.tag = tag;
+    }
+}
+
+/// The common one: a fresh container per instance.
+class Bag {
+    private readonly xs: Leaf[] = [];
+    private readonly seen: Map<int32, int32> = new Map<int32, int32>();
+    public add(l: Leaf): int32 {
+        this.xs.push(l);
+        this.seen.set(l.tag, l.tag);
+        return this.xs.length;
+    }
+    public size(): int32 {
+        return this.xs.length;
+    }
+}
+
+/// An initializer that computes from a constant expression rather than a literal.
+class Sized {
+    private readonly cap: int32 = 4 * 8;
+    public capacity(): int32 {
+        return this.cap;
+    }
+}
+
+/// Two instances must not share a container — the initializer runs per instance,
+/// which is the whole reason it cannot be folded into `initial_slots`.
+function separate(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const a = new Bag();
+        const b = new Bag();
+        a.add(new Leaf(1));
+        a.add(new Leaf(2));
+        b.add(new Leaf(3));
+        // 2 and 1, never 3 and 3.
+        acc = acc + a.size() * 10 + b.size();
+        i += 1;
+    }
+    return acc;
+}
+
+function sized(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + new Sized().capacity();
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`separate  ${separate(100000)}`);
+console.log(`sized     ${sized(100000)}`);
+// Read back one at a time, cold.
+const one = new Bag();
+one.add(new Leaf(9));
+console.log(`one       ${one.size()} ${new Sized().capacity()}`);

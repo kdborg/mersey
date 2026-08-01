@@ -1460,6 +1460,15 @@ pub struct Instance {
 /// it through a shim — the compiled `new` is this call plus a compiled
 /// constructor.
 ///
+impl ClassDef {
+    /// Does instantiating this class need an evaluator? A field initializer that
+    /// *computes* — `= []`, `= new Map()`, anything reading `this` — is not in
+    /// `initial_slots` and has to be run.
+    pub fn has_dynamic_inits(&self) -> bool {
+        !self.dynamic_inits.is_empty()
+    }
+}
+
 /// Only for classes whose initializers all fold (`dynamic_inits` empty): an
 /// initializer that computes needs an evaluator, and this has none.
 pub fn alloc_instance(cls: &Rc<ClassDef>) -> Value {
@@ -2261,10 +2270,11 @@ impl JitEnv for InterpEnv<'_> {
         let Some(Value::Class(cls)) = env_get(env, name) else {
             return None;
         };
-        // Field initializers that compute need an evaluator, and the shim that
-        // allocates for compiled code has none. Host-backed and built-in error
-        // classes construct through machinery of their own.
-        if !cls.dynamic_inits.is_empty() || cls.is_host_backed() || cls.is_builtin_error {
+        // Host-backed and built-in error classes construct through machinery of
+        // their own. Field initializers that compute used to be refused here for
+        // wanting an evaluator the allocating shim did not have — it reaches one
+        // through the arena's `interp_ptr` now (`jit_alloc_dynamic`).
+        if cls.is_host_backed() || cls.is_builtin_error {
             return None;
         }
         Some(cls)
@@ -5146,6 +5156,39 @@ impl Interp {
     /// Kinds match `NameKind::NumGlobal`: 0 `int32`, 1 `int64`, 2 `float64`,
     /// 3 `bool`. The binding's type is fixed, so the kind is decided at compile
     /// time even though the value is written live.
+    /// `new` for a class whose field initializers compute — the allocation plus
+    /// the `dynamic_inits` loop, which is the same one `new_named` runs and has
+    /// to stay that way: same scope (the class's), same `this` binding, same
+    /// order.
+    ///
+    /// Compiled code could not construct such a class at all, and that is most
+    /// classes owning a collection: `private readonly ops: int32[] = []` is a
+    /// computed initializer. `bench/cli/reconcile`'s batch class has three, which
+    /// is why its `render` refused.
+    ///
+    /// `None` means an initializer threw. The thrown value is stashed the way
+    /// every other shim stashes one — a shim cannot unwind through native
+    /// frames — and the caller turns a null instance into a bail.
+    pub fn jit_alloc_dynamic(&mut self, cls: &Rc<ClassDef>) -> Option<Value> {
+        let v = alloc_instance(cls);
+        let Value::Instance(inst) = &v else {
+            return None;
+        };
+        let env = cls.env.clone().unwrap_or_else(|| self.globals.clone());
+        let scope = child_env(&env);
+        env_define(&scope, "this", v.clone());
+        for (slot, e) in &cls.dynamic_inits {
+            match self.eval(e, &scope) {
+                Ok(ev) => inst.borrow_mut().slots[*slot] = ev,
+                Err(t) => {
+                    self.jit_host_error = Some(t);
+                    return None;
+                }
+            }
+        }
+        Some(v)
+    }
+
     pub fn jit_global_set_num(&mut self, name: &str, kind: i64, bits: i64) -> i64 {
         let v = match kind {
             0 => Value::I32(bits as i32),

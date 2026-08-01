@@ -5363,6 +5363,12 @@ fn translate(
                 let ptr = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
                 let fields = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
                 let handle = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                // A null instance means a computed field initializer threw. The
+                // value it threw is stashed on the interpreter; bailing here is
+                // what raises it. Classes whose initializers all fold cannot
+                // produce one, so this costs them a compare.
+                let failed = b.ins().icmp_imm(IntCC::Equal, ptr, 0);
+                guard(b, ctx, failed, R_HOST, pc, None);
 
                 if let Some(f) = ctor {
                     // The constructor is a method call on the fresh object,

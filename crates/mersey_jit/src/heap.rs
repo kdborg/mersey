@@ -355,7 +355,24 @@ pub(crate) unsafe extern "C" fn alloc(cls: *const ClassDef, arena: *mut Arena, o
     // needs the strong count bumped first, exactly like `cell_obj`'s clone.
     unsafe { Rc::increment_strong_count(cls) };
     let cls = unsafe { Rc::from_raw(cls) };
-    let v = alloc_instance(&cls);
+    // A field initializer that computes needs an evaluator, and there is one:
+    // the arena carries the interpreter for the duration of this call. Running
+    // them here is what lets compiled code construct a class that owns a
+    // collection at all — `= []` is a computed initializer.
+    //
+    // An initializer that throws gives a null instance, and the caller turns
+    // that into a bail; a shim cannot unwind through native frames.
+    let v = if cls.has_dynamic_inits() {
+        match unsafe { (*arena).interp_ptr() } {
+            Some(ip) => match unsafe { (*ip).jit_alloc_dynamic(&cls) } {
+                Some(v) => v,
+                None => Value::Null,
+            },
+            None => Value::Null,
+        }
+    } else {
+        alloc_instance(&cls)
+    };
     let (p, base) = match &v {
         Value::Instance(rc) => (
             Rc::as_ptr(rc) as u64,

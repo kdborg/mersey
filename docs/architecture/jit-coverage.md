@@ -335,7 +335,7 @@ arguments, and any op taking the depth below that has consumed the receiver
 first, so the scan stops there. **14 compiled / 2 refused, 59.30ms → 56.71**
 (−4.4%, six samples a side, non-overlapping).
 
-### The last one: `new` of a class that initializes a field
+### Done: `new` of a class that initializes a field
 
 `render` and `work` refuse on `new Batch(…)`, and the reason is one condition in
 `class_for_new`:
@@ -353,11 +353,23 @@ the arena carries `interp_ptr`, so the evaluator is reachable. What it needs is
 `alloc_instance` plus the `dynamic_inits` loop the interpreter already runs at
 `new` — same scope, same `this` binding.
 
-What makes it more than a copy: those initializers evaluate arbitrary Mersey
+What made it more than a copy: those initializers evaluate arbitrary Mersey
 expressions *during instance construction*, which can re-enter compiled code,
-and the shim has to signal a throw rather than return a half-built instance.
-That is a reentrancy question on the most safety-critical path here, and it
-wants doing deliberately.
+and the shim has to signal a throw rather than return a half-built instance. It
+follows the contract every other shim follows — stash on `jit_host_error`, hand
+back a null instance, let the caller's guard bail — rather than inventing one.
+
+Neutral on `reconcile` (60.33ms against 60.59, six samples a side) because
+`render` refuses one op later, at `nodes.entries()`: `VAL_METHODS` lists `keys`
+and `values` and not `entries`. The gain is the coverage, not that number — any
+class owning a collection was unconstructible from compiled code before this.
+
+`tests/jit/dynamic-init.mersey` builds two instances per iteration and checks
+they report 2 and 1, never 3 and 3. That is the property that makes a computed
+initializer computed: it runs *per instance*, which is why it cannot be folded
+into `initial_slots`. A shim that ran it once and shared the container, or
+skipped it and left the declared default, would give a wrong number rather than
+crash.
 
 The module-level write was the read's mirror and nothing more.
 `NameKind::NumGlobal` already told the tier which register a binding holds and

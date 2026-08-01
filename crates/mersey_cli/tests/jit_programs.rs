@@ -668,3 +668,25 @@ fn a_module_level_let_written_from_a_function_agrees_across_the_tier_boundary() 
     // stack depth at each pc.
     assert!(out.contains("emit   640000"), "{out}");
 }
+
+/// `new` for a class whose field initializers compute. `class_for_new` refused
+/// these outright — "the shim that allocates for compiled code has no
+/// evaluator" — which had stopped being true: the arena carries the interpreter
+/// for the duration of a compiled call, so `heap::alloc` reaches one and runs
+/// the same `dynamic_inits` loop `new_named` runs.
+///
+/// Wide rather than a corner: `private readonly xs: N[] = []` is a computed
+/// initializer, so any class owning a collection was unconstructible from
+/// compiled code. `separate` is the case that matters most — two instances must
+/// not share a container, which is exactly why the initializer cannot be folded
+/// into `initial_slots`.
+#[test]
+fn constructing_a_class_with_computed_field_initializers_agrees_across_the_tier_boundary() {
+    check("dynamic-init.mersey");
+    let out = run("dynamic-init.mersey", true);
+    // 2 and 1 per iteration — never 3 and 3, which is what a shared container
+    // would give.
+    assert!(out.contains("separate  2100000"), "{out}");
+    assert!(out.contains("sized     3200000"), "{out}");
+    assert!(out.contains("one       1 32"), "{out}");
+}
