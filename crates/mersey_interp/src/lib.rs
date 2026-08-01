@@ -4891,6 +4891,15 @@ impl Interp {
     pub fn jit_array_push(&mut self, h: u64, kind: i64, bits: i64) -> i64 {
         let v = match kind {
             1 => Value::F64(f64::from_bits(bits as u64)),
+            // Kind 2: `bits` is an arena handle minted for this push, and the
+            // value is *taken* out of it. Anything that is not a scalar arrives
+            // this way — an object, a string, an opaque — because those have no
+            // 64-bit form to pass. One owner throughout: the handle exists to
+            // carry the value here and stops existing when it arrives.
+            2 => match self.jit_arena.take(bits as u64) {
+                Some(v) => v,
+                None => return 1,
+            },
             _ => Value::I32(bits as i32),
         };
         match self.jit_arena.get(h) {

@@ -518,3 +518,21 @@ fn super_methods_agree_across_the_tier_boundary() {
     // call — which would not fail, but would quietly drop the message.
     assert!(out.contains("err   boom-7"), "{out}");
 }
+
+/// An array literal whose elements are not numbers. A built array is an opaque
+/// and its elements are pushed one at a time, and only a scalar could be pushed —
+/// a number has a 64-bit form to hand the shim and a reference does not. Strings
+/// were worse than refused: the analysis accepted them and the code generator did
+/// not, so the two passes disagreed and the refusal arrived after acceptance.
+///
+/// A reference goes over by arena handle now — minted at the push, taken by the
+/// shim, one owner the whole way. These three shapes were 1 compiled / 3 refused
+/// before and are 4 / 0 now.
+#[test]
+fn array_literals_of_references_agree_across_the_tier_boundary() {
+    check("array-literal-refs.mersey");
+    let out = run("array-literal-refs.mersey", true);
+    assert!(out.contains("objs  600000"), "{out}");
+    assert!(out.contains("strs  600000"), "{out}");
+    assert!(out.contains("opq   400000"), "{out}");
+}

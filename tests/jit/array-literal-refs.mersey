@@ -1,0 +1,66 @@
+// An array literal whose elements are not numbers, on both tiers.
+//
+// A built array is carried as an opaque and its elements are pushed one at a
+// time. Only a scalar could be pushed: a number has a 64-bit form to hand the
+// shim and a reference does not, so `[new P(1), new P(2)]` refused the whole
+// function. Strings were worse than refused — the analysis accepted them and
+// the code generator did not, so the two passes disagreed and the refusal
+// arrived after the function had been accepted.
+//
+// A reference is handed over by arena handle now: minted at the push, taken by
+// the shim, so it has exactly one owner the whole way and the array ends up
+// holding the value rather than a copy of a pointer to it. The `length` reads
+// below are the cheap part; what they prove is that the pushes did not leave
+// the elements owned twice or not at all.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+class P {
+    public n: int32 = 0;
+    public constructor(n: int32) {
+        this.n = n;
+    }
+}
+
+/// Objects, freshly allocated inside the loop so each iteration builds and drops
+/// three of them.
+function objs(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const xs = [new P(1), new P(2), new P(3)];
+        acc = acc + xs.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// Strings — two constants and one built, so both the borrowed and the owned
+/// kind go through the same push.
+function strs(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const xs = ["ab", "cde", `x${i}`];
+        acc = acc + xs.length;
+        i += 1;
+    }
+    return acc;
+}
+
+/// Opaques, whose handle is their identity.
+function opq(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const xs = [bytes.encodeUtf8("ab"), bytes.encodeUtf8("cde")];
+        acc = acc + xs.length;
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`objs  ${objs(200000)}`);
+console.log(`strs  ${strs(200000)}`);
+console.log(`opq   ${opq(200000)}`);

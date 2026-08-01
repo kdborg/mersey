@@ -1670,7 +1670,11 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // leaves it.
             Op::ArrayPush1 => {
                 let v = tval(stack.pop()?)?;
-                if !v.is_num() && v != Ty::Str {
+                // Scalars pass as themselves; everything else goes through the
+                // arena, so an array literal of objects, strings or opaques is
+                // buildable now. An array element cannot be an array — that shape
+                // has no handle to mint.
+                if !v.is_num() && !matches!(v, Ty::Str | Ty::Obj(_) | Ty::Val | Ty::StrArr) {
                     return None;
                 }
                 if !matches!(tval(*stack.last()?), Some(Ty::Val | Ty::StrArr)) {
@@ -4164,13 +4168,36 @@ fn translate(
                 stack.push(SlotV::ValRef(h, h));
             }
             Op::ArrayPush1 if p.array_at.contains_key(&pc) => {
-                let (v, t) = scalar(stack.pop()?)?;
-                let (kind, bits) = if t == Ty::F64 {
-                    (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
-                } else if t == Ty::I64 {
-                    (0i64, v)
-                } else {
-                    (0i64, b.ins().sextend(types::I64, v))
+                let top = stack.pop()?;
+                // A reference is handed over by arena handle — minted here, taken
+                // by the shim, so it has exactly one owner the whole way. This is
+                // also what `Ty::Str` always needed: the analysis accepted it and
+                // this arm did not, so the two passes disagreed and the function
+                // was refused after being accepted.
+                let (kind, bits) = match top {
+                    SlotV::Obj(ptr, _, _) => {
+                        let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
+                        (2i64, b.inst_results(c)[0])
+                    }
+                    SlotV::Str(ptr, len, _) => {
+                        let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                        b.ins().call(shim.own_str, &[arena_ptr, ptr, len, out]);
+                        (2i64, b.ins().load(types::I64, MemFlags::trusted(), out, 8))
+                    }
+                    SlotV::ValRef(v, _) => {
+                        let c = b.ins().call(shim.clone_val, &[arena_ptr, v]);
+                        (2i64, b.inst_results(c)[0])
+                    }
+                    other => {
+                        let (v, t) = scalar(other)?;
+                        if t == Ty::F64 {
+                            (1i64, b.ins().bitcast(types::I64, MemFlags::new(), v))
+                        } else if t == Ty::I64 {
+                            (0i64, v)
+                        } else {
+                            (0i64, b.ins().sextend(types::I64, v))
+                        }
+                    }
                 };
                 let SlotV::ValRef(h, _) = *stack.last()? else {
                     return None;
