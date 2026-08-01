@@ -1558,6 +1558,16 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                                 }
                             }
                         }
+                        // An array field about to be pushed onto: read the cell
+                        // as an opaque, not as an address and a length a push
+                        // would invalidate. `load_cell`'s `Ty::Val` case already
+                        // does this and hands back an owned handle, and
+                        // `jit_array_push` already takes one.
+                        let t = if matches!(t, Ty::Arr(_)) && feeds_a_push(&chunk, pc) {
+                            Ty::Val
+                        } else {
+                            t
+                        };
                         field_at.insert(pc, (slot, t));
                         // A reference reached *through* a shaky base is exactly
                         // as shaky as the base.
@@ -1884,7 +1894,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // something already opaque. `xs.push("a")` is as ordinary as
                     // `xs.push(1)`.
                     if !arg_slots.iter().all(|a| {
-                        tval(*a).is_some_and(|t| t.is_num() || t == Ty::Val || t == Ty::Str)
+                        tval(*a).is_some_and(|t| {
+                            t.is_num()
+                                || t == Ty::Val
+                                || t == Ty::Str
+                                // …and an object, which `box_arg` parks the way a
+                                // returned borrow is parked. `xs.push(row)` is
+                                // what a collection of anything is written to do.
+                                || matches!(t, Ty::Obj(_))
+                        })
                     }) {
                         return None;
                     }
@@ -3454,6 +3472,37 @@ fn coerce_edge(want: Ty, have: Ty) -> Option<Option<EdgeFix>> {
         (Ty::I32Opt, Ty::I32 | Ty::Bool) => Some(Some(EdgeFix::Widen)),
         _ => None,
     }
+}
+
+/// Is the value a field read at `pc` leaves the *receiver of a `push`*?
+///
+/// An array field reads as `Ty::Arr` — (address, elements, length) in registers
+/// — which is the right shape for indexing and the wrong one for growing, since
+/// a push can reallocate and move both. Read the same cell as an opaque instead
+/// and `jit_array_push` takes it by handle, which is what it wants anyway.
+///
+/// The choice has to be made here rather than at the call, because codegen is
+/// keyed by pc and this read is emitted before the call is seen — and a `TSlot`
+/// carries no origin pc to look back through. So: a bounded scan forward for a
+/// `push` whose intervening ops are exactly its arguments. Conservative by
+/// construction; anything it does not recognise keeps the `Ty::Arr` it had.
+fn feeds_a_push(chunk: &Chunk, pc: usize) -> bool {
+    // `receiver.push(a)` is the only arity `VAL_METHODS` lists, so at most one
+    // argument sits between the read and the call.
+    let mut at = pc + 1;
+    let end = (pc + 6).min(chunk.code.len());
+    while at < end {
+        match chunk.code.get(at) {
+            // The argument. Only shapes that push exactly one value and cannot
+            // themselves be the receiver of something else.
+            Some(Op::LoadSlot(_)) | Some(Op::Const(_)) => at += 1,
+            Some(Op::CallMethod(ni, 1)) => {
+                return chunk.names.get(*ni as usize).map(String::as_str) == Some("push");
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn arg_fits(want: Ty, have: Ty) -> bool {
@@ -5677,6 +5726,16 @@ fn box_arg(
         SlotV::Str(ptr, len, have) => {
             let c = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, have]);
             b.inst_results(c)[0]
+        }
+        // An object. `clone_obj` is the same parking a returned borrow gets: a
+        // reference of its own in the arena, released with the rest of `boxed`
+        // once the call is done. Without this `xs.push(obj)` was refused, which
+        // is most of what a collection of anything is written to do.
+        SlotV::Obj(ptr, _, _) => {
+            let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
+            let h = b.inst_results(c)[0];
+            boxed.push(h);
+            h
         }
         SlotV::Val(v, t) if t.is_num() => {
             let (kind, bits) = if t == Ty::F64 {

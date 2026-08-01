@@ -311,6 +311,17 @@ is compiled. 12.8x Bun is the worst row in the CLI arena by a wide margin, and
 it is not a string problem or an allocation problem — it is this one refusal,
 reached through every constructor that holds a reference.
 
+**The store and the push are done.** `reconcile` went 4 compiled / 11 refused to
+**8 / 8**, and 69.5ms to 67.7 — the first movement on it, and small, because
+four refusals still stand between here and a compiled `render`:
+
+| stops at | what it is |
+|---|---|
+| `SetMember` on a 10-op method | an array *of objects* stored into a field |
+| `StoreName` on a 32-op function | a module-level `let` written from a function |
+| `CallMethod` ×4, 21–40 ops | `Batch`'s own methods |
+| `NewNamed` on `render` (222) and `work` (164) | downstream of all of the above |
+
 **The store itself is done** — `heap::cell_set_obj`, and `Op::SetMember` now
 takes an object whose class is the field's or below it. `Entry`'s constructor
 compiles. The cascade is not finished, so `reconcile` has not moved (69.3ms
@@ -323,6 +334,26 @@ between here and `render`:
 
 Both are the same question one level out, and until both are answered `render`
 still stops at `NewNamed` and the reconciler still interprets.
+
+### The push: two refusals, not one
+
+Worth recording because the design in this file predicted one of them and the
+other only showed up on contact.
+
+The predicted half was the **receiver**, and it went as written: an array field
+now reads through `cell_val` — an owned handle — rather than `cell_arr`, when a
+bounded lookahead sees the read feeding a `push`. `feeds_a_push` is that scan.
+
+Clearing it moved the refusal one place to the right, to the **argument**.
+`box_arg` had no `SlotV::Obj` case, so `xs.push(row)` was declined for its
+argument having nowhere to be parked — which is most of what a collection of
+anything is written to do. The parking already existed: `clone_obj`, the same
+one a returned borrow gets, with `boxed` as the release list. Both halves were
+present and nothing joined them.
+
+The lesson is the ordinary one for this tier: a refusal names the op it stopped
+on, not the reason it will stop next time. Clearing one and re-tracing is the
+whole method.
 
 ### The first of those, in the parts that already exist
 

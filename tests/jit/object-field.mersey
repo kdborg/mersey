@@ -83,7 +83,37 @@ function churn(n: int32): int32 {
     return h.leaf.tag;
 }
 
+/// An object pushed onto an array *field*, then read back through it. Two
+/// refusals met here: the field read (an array field is (address, elements,
+/// length) in registers, which a push can move, so it is read as an opaque when
+/// it feeds one) and the argument (`box_arg` had no case for an object, so
+/// `xs.push(row)` — what a collection of anything is written to do — was
+/// declined). The read-back is by contents, since the push parks a reference and
+/// a mis-parked one is a wrong answer rather than a crash.
+class Bag {
+    private readonly items: Leaf[] = [];
+    public add(l: Leaf): int32 {
+        this.items.push(l);
+        return this.items.length;
+    }
+    public tagAt(i: int32): int32 {
+        return this.items[i].tag;
+    }
+}
+
+function collect(n: int32): int32 {
+    const bag = new Bag();
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + bag.add(new Leaf(i % 11));
+        i += 1;
+    }
+    return acc + bag.tagAt(0) + bag.tagAt(n - 1);
+}
+
 console.log(`drive       ${drive(200000)}`);
+console.log(`collect     ${collect(20000)}`);
 console.log(`viaSub      ${viaSub(200000)}`);
 console.log(`churn       ${churn(200000)}`);
 // Then read back one at a time, contents not identity.

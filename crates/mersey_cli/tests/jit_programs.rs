@@ -606,4 +606,8 @@ fn an_object_stored_into_a_field_agrees_across_the_tier_boundary() {
     assert!(out.contains("swapped     9 41"), "{out}");
     // A subclass into a base-typed field.
     assert!(out.contains("viaSub      400000"), "{out}");
+    // An object pushed onto an array field and read back through it: the field
+    // read becomes an opaque when it feeds a push (an address and a length are
+    // the wrong shape for something that grows), and `box_arg` parks the object.
+    assert!(out.contains("collect     200010001"), "{out}");
 }
