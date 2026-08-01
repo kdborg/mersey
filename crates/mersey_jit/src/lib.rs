@@ -655,6 +655,9 @@ struct Plan {
     /// Bytecode position of a `time.now()`/`time.monotonic()` → `true` for the
     /// epoch clock (`now`), `false` for monotonic. A numeric host call.
     time_at: HashMap<usize, bool>,
+    /// `counter += 1` on a module-level `let`: the name, and which numeric kind
+    /// the binding holds (`NameKind::NumGlobal`).
+    global_set_at: HashMap<usize, (&'static str, i64)>,
     /// Name ids that load the `std:time` namespace (a host-call receiver).
     time_ns_names: std::collections::HashSet<u16>,
     /// Name id → the web global's name, for the ones a `LoadName` reads as a
@@ -953,6 +956,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut clone_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut length_at: Vec<usize> = Vec::new();
     let mut time_at: HashMap<usize, bool> = HashMap::new();
+    let mut global_set_at: HashMap<usize, (&'static str, i64)> = HashMap::new();
     let mut time_ns_names: std::collections::HashSet<u16> = std::collections::HashSet::new();
     let mut web_globals: HashMap<u16, &'static str> = HashMap::new();
     let mut web_call_at: HashMap<usize, (&'static str, u8)> = HashMap::new();
@@ -1263,7 +1267,33 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                 }
             }
-            Op::StoreName(_) | Op::DeclareName(_) => return None,
+            // A module-level `let` written from inside a function — a counter, a
+            // cache, an id sequence. Reading one has always compiled
+            // (`NameKind::NumGlobal`); writing it was refused outright, which
+            // took the whole function with it.
+            Op::StoreName(ni) => {
+                let name = chunk.names[ni as usize].as_str();
+                let v = tval(stack.pop()?)?;
+                let NameKind::NumGlobal(k) = g.env.name_kind(scope.as_ref(), name) else {
+                    return None;
+                };
+                // The binding's type is fixed by the checker, so the register the
+                // value is in has to be the one that binding holds — otherwise
+                // the bits handed to the shim mean something else.
+                let want = match k {
+                    0 => Ty::I32,
+                    1 => Ty::I64,
+                    2 => Ty::F64,
+                    _ => Ty::Bool,
+                };
+                if v != want {
+                    return None;
+                }
+                let nm: &'static str = Box::leak(name.to_string().into_boxed_str());
+                global_set_at.insert(pc, (nm, k as i64));
+                g.writes = true;
+            }
+            Op::DeclareName(_) => return None,
             Op::Null => stack.push(TSlot::Null),
 
             // Allocation. The engine allocates (a shim: the instance, its literal
@@ -2413,6 +2443,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         owned_slots,
         length_at,
         time_at,
+        global_set_at,
         time_ns_names,
         web_globals,
         web_call_at,
@@ -2543,6 +2574,7 @@ struct Shims {
     global_val: FuncId,
     global_str: FuncId,
     global_num: FuncId,
+    global_set_num: FuncId,
     clone_val: FuncId,
     array_new: FuncId,
     array_push: FuncId,
@@ -2633,6 +2665,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_global_val", heap::global_val as *const u8);
     builder.symbol("msy_global_str", heap::global_str as *const u8);
     builder.symbol("msy_global_num", heap::global_num as *const u8);
+    builder.symbol("msy_global_set_num", heap::global_set_num as *const u8);
     builder.symbol("msy_clone_val", heap::clone_val as *const u8);
     builder.symbol("msy_array_new", heap::array_new as *const u8);
     builder.symbol("msy_array_push", heap::array_push as *const u8);
@@ -3096,6 +3129,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         global_str: one("msy_global_str", None, 4)?,
         // (arena, name_ptr, name_len) -> the value as raw bits
         global_num: one("msy_global_num", Some(types::I64), 3)?,
+        global_set_num: one("msy_global_set_num", Some(types::I64), 5)?,
         // (arena, handle, index) -> the byte / i64::MIN
         // (arena, handle) -> a fresh handle to the same value
         clone_val: one("msy_clone_val", Some(types::I64), 2)?,
@@ -3596,6 +3630,7 @@ fn translate(
         global_val: module.declare_func_in_func(shims.global_val, b.func),
         global_str: module.declare_func_in_func(shims.global_str, b.func),
         global_num: module.declare_func_in_func(shims.global_num, b.func),
+        global_set_num: module.declare_func_in_func(shims.global_set_num, b.func),
         clone_val: module.declare_func_in_func(shims.clone_val, b.func),
         array_new: module.declare_func_in_func(shims.array_new, b.func),
         array_push: module.declare_func_in_func(shims.array_push, b.func),
@@ -3913,6 +3948,28 @@ fn translate(
                 }
             }
             // The only name left in a compiled function: the one it calls.
+            Op::StoreName(_) if p.global_set_at.contains_key(&pc) => {
+                let (name, kind) = *p.global_set_at.get(&pc)?;
+                let (v, t) = scalar(stack.pop()?)?;
+                let bits = if t == Ty::F64 {
+                    b.ins().bitcast(types::I64, MemFlags::new(), v)
+                } else if t == Ty::I64 {
+                    v
+                } else {
+                    b.ins().sextend(types::I64, v)
+                };
+                let (nptr, nlen) = str_const(b, name);
+                let k = b.ins().iconst(types::I64, kind);
+                let call = b
+                    .ins()
+                    .call(shim.global_set_num, &[arena_ptr, nptr, nlen, k, bits]);
+                // The name not resolving is a case the checker has ruled out, so
+                // this guard is for the reasoning being wrong rather than for the
+                // program: it bails, and the interpreter raises the real error.
+                let failed = b.inst_results(call)[0];
+                let bad = b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                guard(b, ctx, bad, R_HOST, pc, None);
+            }
             Op::LoadName(ni) => {
                 if p.time_ns_names.contains(&ni) {
                     stack.push(SlotV::TimeNs);
@@ -6011,6 +6068,7 @@ struct ShimRefs {
     global_val: cranelift_codegen::ir::FuncRef,
     global_str: cranelift_codegen::ir::FuncRef,
     global_num: cranelift_codegen::ir::FuncRef,
+    global_set_num: cranelift_codegen::ir::FuncRef,
     clone_val: cranelift_codegen::ir::FuncRef,
     array_new: cranelift_codegen::ir::FuncRef,
     array_push: cranelift_codegen::ir::FuncRef,

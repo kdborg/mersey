@@ -642,3 +642,22 @@ fn an_opaque_returned_from_a_compiled_frame_survives_the_sweep() {
     // A `split` result leaves the same way.
     assert!(out.contains("parts   4 1"), "{out}");
 }
+
+/// A module-level `let` written from inside a function. Reading one always
+/// compiled; writing was refused outright, and a refusal costs the whole
+/// enclosing function — `bench/cli/reconcile`'s `applyOps` kept an id sequence
+/// in one, which refused it, which refused `Batch.apply` for calling it.
+///
+/// All four numeric kinds, because the bits handed to the shim mean something
+/// different in each and a mismatch is a wrong value rather than a bail. The
+/// final read is from the top level, which is interpreted, so the numbers agree
+/// only if the compiled writes reached the real binding.
+#[test]
+fn a_module_level_let_written_from_a_function_agrees_across_the_tier_boundary() {
+    check("global-write.mersey");
+    let out = run("global-write.mersey", true);
+    assert!(out.contains("bump   200000"), "{out}");
+    // A second function writing the same binding sees the live value.
+    assert!(out.contains("again  400000"), "{out}");
+    assert!(out.contains("state  400000 600000 100000 true"), "{out}");
+}

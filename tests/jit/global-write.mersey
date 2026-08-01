@@ -1,0 +1,50 @@
+// A module-level `let` written from inside a function.
+//
+// Reading one has always compiled — `NameKind::NumGlobal` tells the tier which
+// register the binding holds, and `jit_global_num` reads it through `env_get`.
+// Writing was refused outright, and a refusal costs the whole enclosing
+// function: `bench/cli/reconcile`'s `applyOps` kept an id sequence in a
+// module-level `let`, which refused it, which refused `Batch.apply` for having
+// called it.
+//
+// The write is the read's mirror — `env_set`, with the numeric kind decided at
+// compile time because the checker fixes a binding's type. All four kinds are
+// here, because the bits handed to the shim mean something different in each and
+// a mismatch would be a wrong value rather than a bail.
+
+import { console } from "std:console";
+
+let seq: int32 = 0;
+let big: int64 = 0;
+let total: float64 = 0.0;
+let seen: bool = false;
+
+/// Hot, so the writes happen in compiled code.
+function bump(n: int32): int32 {
+    let i = 0;
+    while (i < n) {
+        seq += 1;
+        big += 3;
+        total = total + 0.5;
+        i += 1;
+    }
+    seen = true;
+    return seq;
+}
+
+/// A second function writing the same bindings: the value must be the live one,
+/// not something a frame cached.
+function again(n: int32): int32 {
+    let i = 0;
+    while (i < n) {
+        seq += 2;
+        i += 1;
+    }
+    return seq;
+}
+
+console.log(`bump   ${bump(200000)}`);
+console.log(`again  ${again(100000)}`);
+// Read back from the top level, which is interpreted — so these values only
+// agree if the compiled writes went to the real binding.
+console.log(`state  ${seq} ${big} ${total} ${seen}`);

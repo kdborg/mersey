@@ -5139,6 +5139,31 @@ impl Interp {
         }
     }
 
+    /// The write half of `jit_global_num`: a module-level `let` assigned from a
+    /// compiled function. 0 on success, 1 if the name does not resolve — which
+    /// the checker has already ruled out, so it is a bail and not an answer.
+    ///
+    /// Kinds match `NameKind::NumGlobal`: 0 `int32`, 1 `int64`, 2 `float64`,
+    /// 3 `bool`. The binding's type is fixed, so the kind is decided at compile
+    /// time even though the value is written live.
+    pub fn jit_global_set_num(&mut self, name: &str, kind: i64, bits: i64) -> i64 {
+        let v = match kind {
+            0 => Value::I32(bits as i32),
+            1 => Value::I64(bits),
+            2 => Value::F64(f64::from_bits(bits as u64)),
+            _ => Value::Bool(bits != 0),
+        };
+        let env = self
+            .jit_scope
+            .clone()
+            .unwrap_or_else(|| self.globals.clone());
+        if env_set(&env, name, v) {
+            0
+        } else {
+            1
+        }
+    }
+
     pub fn jit_global_val(&mut self, name: &str) -> u64 {
         let env = self
             .jit_scope

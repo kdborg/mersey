@@ -318,9 +318,17 @@ compiled `render`:
 
 | stops at | what it is |
 |---|---|
-| `StoreName` on a 32-op function | a module-level `let` written from a function |
+| ~~`StoreName`~~ | ~~a module-level `let` written from a function~~ — **done** |
 | `CallMethod` ×4, 21–40 ops | `Batch`'s own methods |
-| `NewNamed` on `render` (222) and `work` (164) | downstream of all of the above |
+| `NewNamed` on `render` (222) and `work` (164) | downstream of those |
+
+The module-level write was the read's mirror and nothing more.
+`NameKind::NumGlobal` already told the tier which register a binding holds and
+`jit_global_num` read it through `env_get`; `jit_global_set_num` writes it
+through `env_set`, with the kind decided at compile time because the checker
+fixes a binding's type. Refusing it had cost `applyOps`, and `Batch.apply` with
+it for having called one. **10 compiled / 6 refused, and 64.2ms → 59.3 measured
+same-window at 5 samples a side, spreads of 0.4%.**
 
 All three of the finished ones were the same shape underneath: take a reference,
 then drop the old one, in that order, through a cell the tier already knew how

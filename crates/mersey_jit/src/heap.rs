@@ -897,6 +897,27 @@ pub(crate) unsafe extern "C" fn global_num(
     }
 }
 
+/// Write a top-level numeric binding (`counter += 1` from inside a function).
+/// 0 on success, 1 if the name does not resolve.
+///
+/// # Safety
+/// As `global_num`.
+pub(crate) unsafe extern "C" fn global_set_num(
+    arena: *mut Arena,
+    name_ptr: *const u8,
+    name_len: usize,
+    kind: i64,
+    bits: i64,
+) -> i64 {
+    unsafe {
+        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_global_set_num(name, kind, bits),
+            None => 1,
+        }
+    }
+}
+
 /// A top-level binding holding a string, as compiled code carries one. `out`
 /// receives (data, length); the arena entry keeping the buffer alive for the call
 /// is the interpreter's, so the value read here is a borrow and owns nothing.
