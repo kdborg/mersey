@@ -324,6 +324,36 @@ between here and `render`:
 Both are the same question one level out, and until both are answered `render`
 still stops at `NewNamed` and the reconciler still interprets.
 
+### The first of those, in the parts that already exist
+
+`push` is not missing. `jit_array_push(h, kind, bits)` takes the array **by
+arena handle** and kind 2 carries anything that is not a scalar — an object, a
+string, an opaque — by handle, one owner throughout. `VAL_METHODS` already lists
+`("push", Ty::Val, 1, 1)`, so a push onto an *opaque* compiles today.
+
+What refuses is the receiver's shape, and for a good reason. An array field
+reads as `Ty::Arr`, which is (address, elements, length) in registers — and a
+push can reallocate, moving both. `Ty::Arr` is the right shape for indexing
+(`Elem::Obj` exists; object elements read fine) and the wrong one for growing.
+
+The other reading of the same cell already exists too: `load_cell`'s `Ty::Val`
+case calls `cell_val(cell, arena)` and hands back an **owned** handle. So the
+missing piece is not a shim, it is a *choice* — read an array field with
+`cell_val` rather than `cell_arr` when the read feeds a push, and the existing
+opaque path takes it from there.
+
+The choice has to be made in the analysis, because codegen is keyed by pc and
+the field read is emitted before the call is seen. A `TSlot` carries no origin
+pc, so the practical form is a bounded lookahead at the `GetMember`: scan
+forward for a `CallMethod` named `push` whose intervening ops are exactly its
+arguments. Conservative, and it covers `this.items.push(x)`, which is the shape
+every collection class in the language is written with.
+
+Worth knowing what *not* to do: typing every object-array field as `Ty::Val`
+unconditionally. That would enable the push and take indexing with it — an
+opaque's numeric index has no object path (`val_index_str` is string-only), so
+reads would get slower to make writes possible.
+
 It is also more tractable than when the comment was written. Releasing the old
 reference and taking the new one is exactly the discipline the frame sweep
 already needed (see "A frame that returns has to let go of what it owns"), and
