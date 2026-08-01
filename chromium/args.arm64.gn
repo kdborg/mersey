@@ -3,6 +3,14 @@
 target_os = "linux"
 target_cpu = "arm64"
 is_debug = false
+# Chromium defaults `dcheck_always_on` to true for any non-official release
+# build, so `is_debug = false` alone does NOT give a build worth benchmarking.
+# Measured over all thirty web workloads, DCHECKs cost a 53% median — nothing on
+# pure compute (`compute` +0.5%, `calls` 0.0%) and 37–81% on everything that
+# crosses to the host, which is exactly what this fork exists to measure. Every
+# ratio in docs/architecture/where-the-browser-time-goes.md was wrong until this
+# line existed.
+dcheck_always_on = false
 # Chromium's own build/rust/std/BUILD.gn: a *prebuilt* Rust stdlib in a
 # component build is a known-broken configuration ("There is currently no known
 # solution to this for the prebuilt stdlib") — the allocator and the stdlib

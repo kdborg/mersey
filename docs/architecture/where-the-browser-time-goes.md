@@ -1,66 +1,72 @@
 # Where the browser time goes
 
-Measured on 2026-07-31, macOS arm64, the Chromium fork against the same
-browser's own JavaScript. Every row is the same workload written twice —
-line for line, same checksum — so the ratio is the language boundary and
-nothing else.
+Measured 2026-08-01, macOS arm64, the Chromium fork against the same browser's
+own JavaScript. Every row is the same workload written twice — line for line,
+same checksum — so the ratio is the language boundary and nothing else.
 
-## Read every ratio here with this first
+## First: this file used to be measured against a debug build
 
-**The fork is built with `dcheck_always_on = true`, and stock Chromium is not.**
-Nothing in `chromium/args.arm64.gn` asks for that — it says `is_debug = false`
-and nothing about DCHECKs — but Chromium defaults `dcheck_always_on` to *true*
-for any non-official release build, so a config that reads like a release build
-is not one. `gn args out/mersey-arm64 --list=dcheck_always_on` says `true`.
+Everything here was previously read off a fork built with
+`dcheck_always_on = true`, compared against stock Chromium, which is an official
+release build. Nothing in `chromium/args.arm64.gn` asked for that — the file says
+`is_debug = false` and nothing about DCHECKs — but Chromium defaults
+`dcheck_always_on` to *true* for any non-official release build. A config that
+reads like a release build is not one.
 
-Profiling the renderer during `streams` is what surfaced it. Under the idle
-frames, the top of the profile is V8 *verification* code —
+It surfaced from a profile: under the idle frames, the top of the renderer's
+samples during `streams` was V8 *verification* code —
 `Heap::ExternalStringTable::Contains`, `Heap::IsFreeSpaceValid`,
-`FreeList::IsVeryLong` — which a release build does not run at all. The first of
-those is specifically the string-externalisation path this bridge touches on
-every crossing that carries a string.
+`FreeList::IsVeryLong` — none of which a release build runs.
 
-So every fork-vs-JS ratio below compares a DCHECK-enabled fork against an
-official stock build, and overstates the gap by however much DCHECKs cost. That
-number is being measured (a `dcheck_always_on = false` build takes a while) and
-this note will carry it when it lands.
+Built both ways and run over all thirty workloads, DCHECKs cost a **53% median**,
+and the distribution is the whole point:
 
-What this does **not** touch: every improvement recorded in this file was
-measured as an A/B on the same binary with the same flags, so the deltas hold —
-`geometry` 79.7 → 23.9ms, `urlpattern` 231.8 → 186.3, `streams` 72.1 → 61.1, all
-on identical checksums. What it does touch is the *framing*: how far behind the
-fork actually is, and possibly which workload deserves attention next, since
-there is no reason to expect DCHECK cost to fall evenly across them.
+| | dcheck → no dcheck |
+|---|---|
+| `compute` | +0.5% |
+| `calls` | 0.0% |
+| `fcompute` | −0.4% |
+| `mathk` | −3.5% |
+| `crypto` | −10.7% |
+| `geometry` | −37.4% |
+| `frameworkui2` | −43.1% |
+| `streams` | −71.6% |
+| `msgchannel` | −74.9% |
+| `compression` | −78.2% |
+| `urlpattern` | −81.0% |
+
+**Pure compute pays nothing; every host crossing pays half to four-fifths.**
+That is the same axis this file's central claim runs along, so the claim was
+measuring the build as much as the bridge. `args.arm64.gn` now sets
+`dcheck_always_on = false` explicitly, and `run-native-chromium.mjs` takes
+`CHROMIUM_OUT` so a build flag can be priced instead of assumed.
 
 ## The shape of it
 
+Against the browser's own JavaScript, on a correctly configured build:
+
 | | ratio to Chromium's JS |
 |---|---|
-| `crypto` | **0.45x** (Mersey 2.2x faster) |
-| `calls` | **0.80x** (faster) |
-| `fcompute`, `mathk`, `compute` | 1.05–1.07x (parity) |
-| `storage` | 1.30x |
-| `encoding`, `blob`, `query`, `json` | 2.3–2.6x |
-| `xhr`, `fetch`, `websocket`, `canvas`, `url` | 2.9–3.3x |
-| `bchannel`, `idb`, `worker`, `timers`, `sse`, `events`, `dom` | 4.4–6.9x |
-| `locks`, `cssom`, `compression`, `urlpattern` | 8.8–14.9x |
-| `frameworkui2`, `msgchannel`, `geometry`, `streams` | **20–61x** |
+| `crypto` | **0.41x** (Mersey 2.4x faster) |
+| `storage` | **0.69x**, `query` **0.73x**, `calls` **0.76x** (faster) |
+| `mathk`, `compute`, `fcompute`, `blob` | 1.05–1.14x (parity) |
+| `json`, `encoding`, `url`, `fetch`, `xhr`, `bchannel` | 1.23–1.39x |
+| `websocket`, `worker`, `canvas`, `sse`, `timers` | 1.53–1.88x |
+| `urlpattern`, `idb`, `compression`, `dom` | 2.61–2.72x |
+| `events`, `locks`, `cssom` | 3.17–4.82x |
+| `msgchannel`, `geometry` | 6.8–6.9x |
+| `frameworkui2`, `streams` | **10.6x, 11.5x** |
 
-The line is not subtle and it is not about the engine. **Compute is at
-parity or ahead. Everything that crosses to the host is behind, in
-proportion to how often it crosses.** Tier 1 compiles `compute` to machine
-code that matches V8's; the same tier cannot help `geometry`, because
-`geometry` spends its time leaving the engine.
+Four workloads are *faster* than the browser's JavaScript. The old version of
+this table had rows at 20–61x and a band it called "8.8–14.9x"; both were
+DCHECK cost. The real spread is 0.41x to 11.5x, and the ordering changed too —
+`urlpattern` looked like a 12.6x outlier and is 2.6x.
 
-`geometry` is the clearest case. Per iteration it does `new DOMMatrix()`,
-`.translate(x, y)`, `.scale(2)`, and reads `m41`, `m42`, `a` — six
-crossings. It took 79.7ms for 10,000 iterations against Chromium JS's
-2.3ms, which is about **1.3µs per crossing**.
-
-**That number has been chased, and the diagnosis below was wrong.** See
-"What actually cost the 35x" at the end of this file: `geometry` is now
-**23.8–26.0ms**, a 3.1x improvement on the same checksum, and it needed no
-`web_bind` implementation at all.
+The direction of the finding survives: **compute is at parity or ahead, and what
+crosses to the host is behind in proportion to how often it crosses.** The
+magnitude does not. `streams` at 11.5x is the worst row and worth work;
+`urlpattern` at 2.6x is close enough that the tier work already done on it was
+most of what there was.
 
 ## Why a crossing costs that
 
@@ -77,33 +83,30 @@ and what it leaves NULL:
     web_call_str     web_call_scalars  web_new_scalars
     web_instanceof   web_iterate     web_bytes_read/write
 
-So a numeric method call lands on `web_call_u16`. That is *not* the JSON
-path — `msy_arg16` carries a `double`, so numbers cross as numbers and
-nothing is stringified. The interned-id scalar tier (`web_call_scalars`
-and friends) would therefore buy little here: it saves a name lookup the
-u16 tier has already interned away.
+A numeric method call lands on `web_call_u16`. That is *not* the JSON path —
+`msy_arg16` carries a `double`, so numbers cross as numbers and nothing is
+stringified. The interned-id scalar tier would therefore buy little: it saves a
+name lookup the u16 tier has already interned away.
 
-What is left is **entering V8**. `HostWebCallU16Shim` has to take a context
-scope, wrap the target handle as a `v8::Object`, convert each argument to a
-`v8::Value`, do a property lookup, call through V8, and convert the reply
-back. Around a microsecond is an honest price for that, and it is paid six
-times per `geometry` iteration.
+What is left is entering V8. `HostWebCallU16Shim` takes a context scope, wraps
+the target handle as a `v8::Object`, converts each argument, does a property
+lookup, calls through V8, and converts the reply back.
 
 ## What would change it
 
-`web_bind` — the typed tier — is the one that matters, and it is the one
-not implemented. It exists so that compiled code can call a *bound C++
-function* directly: no context scope, no `v8::Value` conversion, no
-property lookup. For `DOMMatrix.translate` that is a call into Blink's own
-`DOMMatrix::translate` with two doubles.
+`web_bind` — the typed tier — is the one not implemented. It exists so compiled
+code can call a *bound C++ function* directly: no context scope, no `v8::Value`
+conversion, no property lookup.
 
-That is per-interface work in each fork, and it is the whole remaining
-browser gap. It is worth scoping deliberately rather than starting at the
-edges: the interfaces to bind first are the ones this table already names —
-`DOMMatrix` (geometry), `MessagePort` (msgchannel), the streams reader, and
-whatever `frameworkui2`'s reconciler touches per row.
+Before writing it for an interface, though, read the section below. Twice now
+the answer was not a missing typed binding but a call landing on the JSON tier
+when the wide tier was right there, and those cost very differently to fix.
 
-## What actually cost the 35x
+## What actually cost the crossing
+
+(All numbers in this section and the two below are A/Bs on one binary with the
+same flags, so they hold; only the ratios above were affected by the DCHECK
+finding.)
 
 `DOMMatrix` was not reaching the wide tier. It was not that the typed tier
 was missing — it was that the fork answered `translate`, `scale`, the three
@@ -227,17 +230,18 @@ inline capacity. A typed path is only cheaper than building JSON if it does not
 allocate to say "no arguments".
 
 The lesson generalises past `DOMMatrix`. Before writing `web_bind` for an
-interface, check which tier its calls are actually landing on — the rows at
-20–61x above (`msgchannel`, `streams`, `frameworkui2`) are worth that check
-first, because a JSON round trip and a missing typed binding look identical
-from the outside and cost very differently to fix.
+interface, check which tier its calls are actually landing on — the worst rows above
+(`streams`, `frameworkui2`, `msgchannel`) are worth that check first, because a
+JSON round trip and a missing typed binding look identical from the outside and
+cost very differently to fix.
 
 ## What this table is not
 
 Read the small numbers with `bench/web/README.md`'s noise section in hand:
 the async and IPC-shaped workloads move 7–32% run to run on the same
-binary. `streams` at 61x and `geometry` at 35x are far outside that and are
-real. A row at 1.05x is parity, not a win or a loss.
+binary. `streams` at 11.5x and `frameworkui2` at 10.6x are far outside that and
+are real. A row at 1.05x is parity, not a win or a loss — and four rows are
+below 1.0, which is Mersey ahead.
 
 
 ## The other gap: the polyfill has no compile tier

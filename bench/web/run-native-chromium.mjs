@@ -48,10 +48,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 // dlopen look in out/../Frameworks (nonexistent) and the stub aborts
 // (main -> FatalError). Linux keeps the plain `chrome`.
 const CHROMIUM_SRC = process.env.CHROMIUM_SRC || join(here, "../../../browsers/chromium/src");
+// Which GN output directory. Overridable because the honest way to measure what
+// a build *flag* costs is to build it both ways and run the same workloads
+// against each — `CHROMIUM_OUT=mersey-nodcheck` beside the default is how the
+// `dcheck_always_on` question gets an answer rather than a caveat.
+const CHROMIUM_OUT = process.env.CHROMIUM_OUT || "mersey-arm64";
 const FORK =
   process.platform === "darwin"
-    ? `${CHROMIUM_SRC}/out/mersey-arm64/Mersey Blink (Experimental).app/Contents/MacOS/Mersey Blink (Experimental)`
-    : `${CHROMIUM_SRC}/out/mersey-arm64/chrome`;
+    ? `${CHROMIUM_SRC}/out/${CHROMIUM_OUT}/Mersey Blink (Experimental).app/Contents/MacOS/Mersey Blink (Experimental)`
+    : `${CHROMIUM_SRC}/out/${CHROMIUM_OUT}/chrome`;
 // Repeats per workload. Three is enough to reject a single bad launch but not
 // to resolve a change smaller than the machine's own drift — a browser leg on a
 // busy laptop moved 33% between sweeps with no code touching it. `REPEATS=15`
