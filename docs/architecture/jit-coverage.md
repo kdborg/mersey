@@ -202,10 +202,36 @@ so this needs the declaring class threaded through `direct_method`, which alread
 computes it internally as `defining`.
 
 **An array literal of objects (`ArrayPush1`).** `[new Base(1), new Base(2)]`.
+Done — references cross by arena handle now.
 
-Ranked by how much ordinary code they cover, `try`/`catch` is first and hardest;
-`super` is the one where the mechanism already exists and only the resolution
-question is open.
+### A second probe, and six more
+
+The same trick again, on shapes the first probe missed: getters and setters,
+statics, optional chaining, nullish coalescing, recursion, default parameters,
+`Set`, iterating a `Map`, `break`/`continue`. Eight of fourteen functions
+compile. The six that do not:
+
+| shape | stops at |
+|---|---|
+| a **setter** (`g.value = x`) | `SetMember` |
+| a **static field** read (`G.made`) | `GetMember` |
+| **optional chaining** (`o?.value`) | `OnNullJump` |
+| **nullish coalescing** (`a ?? b`) | `NotNullJump` |
+| a **default parameter** | the callee has no describable signature |
+
+A getter compiles (there is a `getter` hook); its setter does not, which looks
+like an omission by symmetry rather than a difficulty.
+
+`a ?? b` was **attempted and reverted**. The shape looks like it should fall out
+of what is already there: the value jumps to the merge when it is not null, the
+fall-through evaluates `b`, and the two arms meet as `int32?` against `int32`,
+which `coerce_edge` settles. Implemented that way it gave wrong answers — on the
+*null* path only; the non-null path was correct — and the cause was not isolated
+before reverting. Worth another attempt from a clean start, knowing the fault is
+in the fall-through arm and not in the jump.
+
+Ranked by how much ordinary code they cover, `?.` and `??` are first — they are
+how nullable values are read at all — then the setter, then statics.
 
 ## Traps, each of which has bitten more than once
 
