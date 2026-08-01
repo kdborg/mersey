@@ -223,6 +223,18 @@ workloads that is not enough to call a small difference. Measured on
 | `streams` | 77.2 / 77.5 / 87.5 / 90.8 | **17%** |
 | `frameworkui2` | 43.8 / 49.9 | **12%** |
 | `locks` | 163.2 / 169.7 / 173.0 / 177.7 | **9%** |
+
+Three more, measured 2026-08-01 the same way, after a change that could not have
+touched them — which is what makes them a noise reading rather than a result:
+
+| workload | readings (ms) | spread |
+|---|---|---|
+| `worker` | 67.4 / 76.7 / 84.1 / 85.9 | **27%** |
+| `json` | 3.36 / 3.44 / 3.48 / 3.92 | **17%** |
+| `timers` | 44.4 / 48.7 / 49.7 / 50.8 | **14%** |
+
+`json` is the caution worth keeping: 17% of 3.5ms is 0.6ms, so a percentage on a
+sub-5ms workload says almost nothing. Read those rows in absolute terms.
 | `websocket` | 41.4 / 41.7 / 43.9 / 44.4 | **7%** |
 
 So a 5% or even 10% move on an async or IPC-shaped workload (`bchannel`,

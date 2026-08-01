@@ -1690,22 +1690,14 @@ void MerseyScriptRunner::HostWebGetU16(int64_t target,
       }
       break;
     default:
-      // An interned name with no case here at all. It cannot be an *unknown*
-      // name — those decline in HostWebIntern and never reach this tier — so it
-      // is one this fork interned to keep off JSON and answers reflectively, or
-      // does not answer. Either way the JSON tier is the right home, because a
-      // null reply here is indistinguishable from the property *being* null:
-      // `read_msy_reply` always returns `Some`, so the engine takes it and does
-      // not retry.
-      //
-      // This is `default:` and not the code after the switch on purpose. A
-      // `break` from a case above means "handled, no value" — several of them
-      // do their work and then break — and routing those to JSON would run the
-      // effect a second time.
-      GetViaJson(target, id, out);
-      return;
+      break;
   }
-  FillNull(out);
+  // A read has no effect to run twice, so every `break` above already meant
+  // "could not answer" and all of them belong here. A null reply on this tier is
+  // indistinguishable from the property *being* null — `read_msy_reply` always
+  // answers `Some`, so the engine takes it and never retries — which is what
+  // made interning a name a promise to answer for every receiver it appears on.
+  GetViaJson(target, id, out);
 }
 
 void MerseyScriptRunner::HostWebSetU16(int64_t target,
@@ -1838,6 +1830,8 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
       if (node && argc >= 1 && args[0].kind == 2) {
         if (Node* child = NodeFor(static_cast<int64_t>(args[0].num))) {
           node->appendChild(child);
+          FillNull(out);
+          return;
         }
       }
       break;
@@ -1868,6 +1862,8 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
               GetSupplementable() ? GetSupplementable()->domWindow() : nullptr;
           set(window, Str16ToString(args[0].str16, args[0].str16_len),
               Str16ToString(args[1].str16, args[1].str16_len));
+          FillNull(out);
+          return;
         }
       }
       break;
@@ -1912,6 +1908,8 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
         if (auto fill = GetMerseyModulesBridge().canvas_fill_rect) {
           fill(obj->canvas_ctx_id, args[0].num, args[1].num, args[2].num,
                args[3].num);
+          FillNull(out);
+          return;
         }
       }
       break;
@@ -2111,18 +2109,24 @@ void MerseyScriptRunner::HostWebCallU16(int64_t target,
         out->tag = 7;
         return;
       }
-      break;
+      // The JSON tier declined; asking it again below would not change that.
+      FillNull(out);
+      return;
     }
     default:
-      // As in HostWebGetU16, and `default:` for the same reason: `case
-      // kFillRect` does the fill and then breaks, so sending a break here to
-      // the JSON tier drew the rectangle twice — and measured 13x slower while
-      // every checksum stayed green, because the workload never reads back what
-      // it drew.
-      CallViaJson(target, id, args, argc, out);
-      return;
+      break;
   }
-  FillNull(out);
+  // Every `break` above now means the same thing: this case could not answer for
+  // this receiver. That was not true before — `kFillRect`, `kAppendChild` and
+  // `kSetItem` did their work and then broke, so an earlier version of this
+  // fallback drew every rectangle twice and set every storage key twice. It
+  // measured 13x slower on `canvas` with all thirty checksums still green,
+  // because those workloads never read back what they write.
+  //
+  // With that fixed, falling to the JSON tier here restores what an interned
+  // name would have got had it never been interned — including the receiver a
+  // case does not recognise, which used to answer null and be believed.
+  CallViaJson(target, id, args, argc, out);
 }
 
 void MerseyScriptRunner::HostWebNewU16(uint32_t ctor_id,

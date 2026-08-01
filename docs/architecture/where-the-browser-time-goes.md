@@ -148,10 +148,17 @@ what every existing case already assumed. Results after that:
 | `msgchannel` | 51.94 | 48.56 (−6%) |
 | `canvas` / `dom` / `storage` | 5.68 / 15.93 / 137.50 | 5.90 / 16.16 / 138.50 |
 
-A receiver a case cannot answer for still falls to null — `kFillRect` on a
-non-canvas, say. That is pre-existing, it needs a per-case audit rather than a
-blanket change, and it is the same latent shape the `translate` work above had to
-handle explicitly.
+That left one thing open, and the audit closed it. Three cases —
+`kAppendChild`, `kSetItem`, `kFillRect` — did their work and then broke; every
+other case already answered the way `kSetProperty` does, with `FillNull` and a
+`return`. Making those three match means **`break` now says one thing
+everywhere: this case could not answer for this receiver.** So the fallback
+serves all of them, not just ids with no case, and `kFillRect` on a non-canvas
+reaches the JSON tier instead of answering null and being believed.
+
+All thirty checksums are unchanged by that, which is worth saying explicitly: no
+receiver mismatch was silently answering null in a way any workload here could
+see. The value is that one cannot start to.
 
 The lesson generalises past `DOMMatrix`. Before writing `web_bind` for an
 interface, check which tier its calls are actually landing on — the rows at
