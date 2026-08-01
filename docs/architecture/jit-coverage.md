@@ -279,6 +279,48 @@ Next attempt should start by checking whether `coerce_jump`'s entry for the
 Ranked by how much ordinary code they cover, `?.` and `??` are first — they are
 how nullable values are read at all — then statics.
 
+## The largest refusal left: an object stored into a field
+
+`this.node = node`, where the field holds another object. Nine ops, and it
+refuses the constructor. The `Op::SetMember` arm says why, and the reasoning is
+sound as far as it goes:
+
+> Storing an *object* would replace one reference-counted value with another —
+> an owned reference released and an owned reference taken — and compiled code
+> does not do that.
+
+What that costs is not one store. It cascades: a refused constructor makes every
+`new` of that class refuse, which makes every function that constructs one
+refuse. `bench/cli/reconcile` — the keyed reconciler out of `bench/web`'s
+`frameworkui2`, with its single host crossing stubbed so the engine half can be
+measured — has **11 functions refused and 4 compiled**, and its 222-op `render`
+stops at `NewNamed`, two ops in. `Entry { node, v }` is the whole reason.
+
+The measurement that settles what that is worth:
+
+| | ms |
+|---|---|
+| Node | 11.36 |
+| Bun | 5.50 |
+| Deno | 5.94 |
+| **Mersey** | **70.24** |
+| Mersey, `MERSEY_JIT=0` | 73.10 |
+
+**Tier 1 buys 6% here**, which by this file's own first rule means nothing in it
+is compiled. 12.8x Bun is the worst row in the CLI arena by a wide margin, and
+it is not a string problem or an allocation problem — it is this one refusal,
+reached through every constructor that holds a reference.
+
+It is also more tractable than when the comment was written. Releasing the old
+reference and taking the new one is exactly the discipline the frame sweep
+already needed (see "A frame that returns has to let go of what it owns"), and
+`heap.rs` is where the refcount handling is allowed to live. The field's cell is
+reachable, the new object's arena handle is in the third register, and the
+interpreter does this store on every Tier 0 pass already.
+
+Note what it is *not*: fields declared without an initializer compile fine, both
+with and without. That was the first guess and it was wrong.
+
 ## Traps, each of which has bitten more than once
 
 **Every width-assuming catch-all.** Adding a `Ty` wider than one register means

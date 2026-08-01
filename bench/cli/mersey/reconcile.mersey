@@ -1,0 +1,238 @@
+// The keyed reconciler from bench/web's `frameworkui2`, with the one host
+// crossing stubbed out — the engine-side half of a framework render, measurable
+// without a browser.
+//
+// It exists because `frameworkui2` is 10.6x its JavaScript twin on the Chromium
+// fork *while already batching*: every render commits through a single
+// `dom.apply`, so the gap cannot be crossing count. That leaves the reconciler
+// itself or the host applying the op buffer, and the fork is the one place this
+// engine cannot be introspected — `MERSEY_JIT_TRACE` does not reach the renderer
+// child, and a hand-launched fork does not run the page (see
+// docs/architecture/where-the-browser-time-goes.md). Here the tracer works.
+//
+// Everything above `apply` is the workload verbatim: the same op encoding, the
+// same Map/Set traffic, the same template strings, the same five renders per
+// round. `apply` creates the nodes the CREATE ops name and nothing else, which
+// is the least a host can do — so what is left is engine work.
+import { console } from "std:console";
+import { time } from "std:time";
+
+const N: int32 = 40;
+const ROWS: int32 = 200;
+const MID: int32 = 100;
+
+const OP_CREATE: int32 = 0;
+const OP_SET_TEXT: int32 = 1;
+const OP_APPEND: int32 = 2;
+const OP_REMOVE: int32 = 4;
+
+/// Stands in for an `Element`. A reconciler only ever holds nodes and hands them
+/// back, so identity is all it needs from one.
+class Node {
+    public id: int32;
+    public constructor(id: int32) {
+        this.id = id;
+    }
+}
+
+let nodeSeq: int32 = 0;
+
+/// The host's half of `dom.apply`, reduced to its obligation: make a node per
+/// CREATE op and return them in temp-ref order. Walking the ops keeps the op
+/// buffer's cost in the measurement rather than optimising it away.
+function applyOps(ops: int32[], strs: string[]): Node[] {
+    const out: Node[] = [];
+    let i = 0;
+    while (i < ops.length) {
+        if (ops[i] == OP_CREATE) {
+            nodeSeq += 1;
+            out.push(new Node(nodeSeq));
+        }
+        i += 4;
+    }
+    return out;
+}
+
+class Batch {
+    private readonly ops: int32[] = [];
+    private readonly liveNodes: Node[] = [];
+    private readonly strs: string[] = [];
+    private tempCount: int32 = 0;
+    private created: Node[] = [];
+    private readonly docRef: int32;
+
+    public constructor(doc: Node) {
+        this.docRef = this.live(doc);
+    }
+
+    public live(node: Node): int32 {
+        this.liveNodes.push(node);
+        return -(this.liveNodes.length);
+    }
+    private str(s: string): int32 {
+        this.strs.push(s);
+        return this.strs.length - 1;
+    }
+    public create(tag: string): int32 {
+        const t = this.tempCount;
+        this.tempCount += 1;
+        this.ops.push(OP_CREATE);
+        this.ops.push(this.str(tag));
+        this.ops.push(t);
+        this.ops.push(this.docRef);
+        return t;
+    }
+    public setText(ref: int32, text: string): void {
+        this.ops.push(OP_SET_TEXT);
+        this.ops.push(ref);
+        this.ops.push(this.str(text));
+        this.ops.push(0);
+    }
+    public append(parent: int32, child: int32): void {
+        this.ops.push(OP_APPEND);
+        this.ops.push(parent);
+        this.ops.push(child);
+        this.ops.push(0);
+    }
+    public remove(parent: int32, child: int32): void {
+        this.ops.push(OP_REMOVE);
+        this.ops.push(parent);
+        this.ops.push(child);
+        this.ops.push(0);
+    }
+    public apply(): void {
+        this.created = applyOps(this.ops, this.strs);
+    }
+    public node(ref: int32): Node {
+        return this.created[ref];
+    }
+}
+
+class Row {
+    public id: int32;
+    public v: int32;
+    public constructor(id: int32) {
+        this.id = id;
+        this.v = 0;
+    }
+}
+
+class Entry {
+    public node: Node;
+    public v: int32;
+    public constructor(node: Node, v: int32) {
+        this.node = node;
+        this.v = v;
+    }
+}
+
+class ListView {
+    private readonly container: Node;
+    private readonly nodes: Map<int32, Entry> = new Map<int32, Entry>();
+
+    public constructor(container: Node) {
+        this.container = container;
+    }
+
+    public render(rows: Row[]): void {
+        const nodes = this.nodes;
+        const batch = new Batch(new Node(0));
+        const cref = batch.live(this.container);
+        const keep = new Set<int32>();
+        for (let i = 0; i < rows.length; i += 1) {
+            keep.add(rows[i].id);
+        }
+        const drop: int32[] = [];
+        for (const [id, entry] of nodes.entries()) {
+            if (!keep.has(id)) {
+                drop.push(id);
+            }
+        }
+        for (let i = 0; i < drop.length; i += 1) {
+            const entry = nodes.get(drop[i]);
+            if (entry != null) {
+                batch.remove(cref, batch.live(entry.node));
+                nodes.remove(drop[i]);
+            }
+        }
+        const newRows: Row[] = [];
+        const newRefs: int32[] = [];
+        for (let i = 0; i < rows.length; i += 1) {
+            const r = rows[i];
+            const existing = nodes.get(r.id);
+            let ref: int32;
+            if (existing == null) {
+                ref = batch.create("div");
+                batch.setText(ref, `row ${r.id} v${r.v}`);
+                newRows.push(r);
+                newRefs.push(ref);
+            } else {
+                ref = batch.live(existing.node);
+                if (existing.v != r.v) {
+                    batch.setText(ref, `row ${r.id} v${r.v}`);
+                    existing.v = r.v;
+                }
+            }
+            batch.append(cref, ref);
+        }
+        batch.apply();
+        for (let i = 0; i < newRows.length; i += 1) {
+            const r = newRows[i];
+            nodes.set(r.id, new Entry(batch.node(newRefs[i]), r.v));
+        }
+    }
+}
+
+function fold(rows: Row[], checksum: int32): int32 {
+    let s: int32 = 0;
+    for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        s = s + (i + 1) * (r.id * 1000 + r.v);
+    }
+    return checksum * 31 + s;
+}
+
+function work(rounds: int32): int32 {
+    const view = new ListView(new Node(0));
+    let rows: Row[] = [];
+    let idc: int32 = 0;
+    let checksum: int32 = 0;
+    for (let round = 0; round < rounds; round += 1) {
+        rows = [];
+        for (let i = 0; i < ROWS; i += 1) {
+            idc += 1;
+            rows.push(new Row(idc));
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        for (let i = 0; i < rows.length; i += 10) {
+            rows[i].v += 1;
+        }
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        const t = rows[1];
+        rows[1] = rows[ROWS - 2];
+        rows[ROWS - 2] = t;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        const next: Row[] = [];
+        for (let i = 0; i < rows.length; i += 1) {
+            if (i != MID) {
+                next.push(rows[i]);
+            }
+        }
+        rows = next;
+        view.render(rows);
+        checksum = fold(rows, checksum);
+        rows = [];
+        view.render(rows);
+        checksum = fold(rows, checksum);
+    }
+    return checksum;
+}
+
+work(2);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT reconcile ${t1 - t0} ${c}`);
