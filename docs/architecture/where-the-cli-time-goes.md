@@ -189,7 +189,13 @@ the slice, so the arena holds more for longer. Reverted.
 ### What is left
 
 The remaining 1.7× against Node stands, and what would close it is unchanged: a
-string value cheap enough to allocate, which is still a representation question.
+string value cheap enough to allocate. `how-other-engines-hold-strings.md` is
+what V8 and JavaScriptCore do about that, and it reframes the question — the
+largest gap is not a representation at all but the *allocator*, since both
+engines bump-allocate short-lived strings in a nursery where this one pays
+mimalloc plus two allocations per string. It also records that V8 refuses to
+share a substring under thirteen characters, which is the same answer the
+experiment above reached the hard way.
 
 ## The rest of the profile
 
