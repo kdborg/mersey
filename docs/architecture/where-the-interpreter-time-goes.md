@@ -39,7 +39,26 @@ does not consume its source:
 
 For a scalar that is a 16-byte copy. For `Value::Instance`, `Value::Str`,
 `Value::Array` it is an `Rc` increment now and a decrement-and-test later.
-Removing it means the stack holding borrows, which is a different interpreter.
+
+**Aggregate, not local — tested.** `Op::CallMethod` cloned the receiver into the
+closure and the stack copy was dropped a few lines later by the `pop` that
+discards the callee; since `inlinable` reads only `data` and the argument count,
+that clone can be a move. It was, and it measured *neutral*: medians 5311ms
+against 5300ms, overlapping. Reverted.
+
+Which is the useful result. An `Rc` increment is one or two nanoseconds, so one
+of them per method call is invisible — where the closure *allocation* removed
+alongside it was 4.8%, at roughly twenty-five. The 22% is thousands of small
+clones, and nothing that removes them one at a time will show up.
+
+The structural lever is `Op::LoadSlot`. A load clones because the local keeps
+its value, but a load that is the *last* read of a local before it is
+overwritten or goes out of scope could move and leave the slot empty. In
+`fold`'s `const r = rows[i]; s = s + (i + 1) * (r.id * 1000 + r.v)` the second
+read of `r` is exactly that. It needs path-sensitive liveness over the bytecode
+— a load on a loop's back edge is not a last use however it looks locally — so
+it is a compiler feature with a correctness risk, not a peephole. Unattempted,
+and the only thing identified that could move this number.
 
 ## A method call allocated, and did not need to
 
