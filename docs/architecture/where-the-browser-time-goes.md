@@ -41,6 +41,36 @@ measuring the build as much as the bridge. `args.arm64.gn` now sets
 `dcheck_always_on = false` explicitly, and `run-native-chromium.mjs` takes
 `CHROMIUM_OUT` so a build flag can be priced instead of assumed.
 
+## The engine work reaches here
+
+A day of Tier 1 coverage work — driven from `bench/cli/reconcile`, a CLI twin of
+`frameworkui2`'s reconciler built because the fork cannot be introspected — was
+measured back on the fork by rebuilding the engine dylib it links. Against the
+same DCHECK-free build, earlier the same day:
+
+| | before | after | |
+|---|---|---|---|
+| `frameworkui2` | 25.25 | **22.31** | −11.6% |
+| `urlpattern` | 35.44 | 32.37 | −8.7% |
+| `cssom` | 17.19 | 15.74 | −8.4% |
+| `dom` | 6.20 | 5.73 | −7.6% |
+| `streams` | 17.37 | 16.51 | −5.0% |
+| `geometry` | 15.49 | 14.89 | −3.9% |
+| `msgchannel` | 11.52 | 12.44 | +8.0% |
+
+**Read these as indicative, not as an A/B.** The two sides are hours apart on a
+machine that has drifted ±5% within a single session today, and the old dylib
+was overwritten rather than kept for a same-window comparison. What argues
+against pure drift is that six of seven moved the same way, and that the largest
+mover is the workload the engine work was aimed at.
+
+`frameworkui2` was the row that started it: 10.6x its JavaScript twin, already
+batching one crossing per render, so the gap could not be crossing count. It is
+8.8x now, and none of the changes that got it there were about the browser —
+they were an object stored into a field, an object pushed onto an array field,
+an array from a call, a module-level counter, `new` of a class that initializes
+a field, and destructuring lowered to slots.
+
 ## The shape of it
 
 Against the browser's own JavaScript, on a correctly configured build:
