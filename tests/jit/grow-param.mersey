@@ -103,12 +103,51 @@ function filtered(n: int32): int32 {
     return sum;
 }
 
+/// The case a per-function rule gets wrong.
+///
+/// `holder.data` is an array *field*, which reads as the direct `Ty::Arr` — a
+/// pointer and a length. `sumInto` only reads it, and grows a different
+/// parameter. Deciding "does this body grow anything" would turn *both*
+/// parameters opaque, and then this call cannot be made at all: the argument is
+/// an `Arr` and the parameter wants a `Val`. That is not a hypothetical — it
+/// cost `bench/cli/reconcile` a compiled function and 10% of its time.
+class Holder {
+    public data: int32[] = [];
+    public constructor(n: int32) {
+        const d: int32[] = [];
+        for (let i: int32 = 0; i < n; i++) {
+            d.push(i * 2 + 1);
+        }
+        this.data = d;
+    }
+}
+
+function sumInto(src: int32[], out: int32[]): void {
+    let run = 0;
+    for (let j: int32 = 0; j < src.length; j++) {
+        run = run + src[j];
+        out.push(run);
+    }
+}
+
+function fromField(h: Holder): int32 {
+    const out: int32[] = [];
+    sumInto(h.data, out);
+    let sum = 0;
+    for (let j: int32 = 0; j < out.length; j++) {
+        sum = sum + out[j] % 1009;
+    }
+    return sum;
+}
+
 let a = 0;
 let b = 0;
 let c = 0;
+let d = 0;
 for (let r: int32 = 0; r < 200; r++) {
     a = build(40);
     b = words(40);
     c = filtered(40);
+    d = fromField(new Holder(40));
 }
-console.log(`${a} ${b} ${c}`);
+console.log(`${a} ${b} ${c} ${d}`);

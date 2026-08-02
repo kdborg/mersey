@@ -29,6 +29,30 @@ fn run(name: &str, jit: bool) -> String {
     s
 }
 
+/// How many functions Tier 1 took, read from the trace.
+///
+/// Some regressions are invisible to the printed answers, because a refusal is
+/// still *correct* — it is only interpreted. `grow-param` is one: deciding
+/// "does this body grow any array" instead of "which parameter does it grow"
+/// leaves every answer right and costs a compiled function, and nothing here
+/// could see it. It cost `bench/cli/reconcile` 10% of its time for four
+/// commits, found by measuring the workload rather than by any test.
+fn compiled_count(name: &str) -> usize {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/jit")
+        .join(name);
+    let out = Command::new(env!("CARGO_BIN_EXE_mersey"))
+        .arg("run")
+        .arg(&path)
+        .env("MERSEY_JIT_TRACE", "1")
+        .output()
+        .expect("run mersey");
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .filter(|l| l.starts_with("jit: COMPILED"))
+        .count()
+}
+
 fn check(name: &str) {
     let jit = run(name, true);
     let interp = run(name, false);
@@ -778,7 +802,16 @@ fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
     // The `string[]` arm, hashed over the characters of what was appended.
     assert!(out.contains(" 434422 "), "{out}");
     // The read-only parameter, filtered by the grower beside it.
-    assert!(out.trim_end().ends_with(" 1200"), "{out}");
+    assert!(out.contains(" 1200 "), "{out}");
+    // A *field* array — which reads as the direct `Ty::Arr` — passed to a
+    // function that grows a different parameter.
+    assert!(out.trim_end().ends_with(" 13059"), "{out}");
+    // And it has to actually compile. Asking whether the body grows anything,
+    // rather than which parameter it grows, turns both parameters opaque and
+    // the field array can no longer be passed at all — every answer above
+    // unchanged, one function fewer.
+    let n = compiled_count("grow-param.mersey");
+    assert!(n >= 7, "only {n} functions compiled");
 }
 
 /// An opaque cast to `string`.

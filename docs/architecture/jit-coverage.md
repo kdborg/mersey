@@ -130,13 +130,34 @@ out.push(…) }` could not be compiled — and neither could any *caller*, which
 refused one op earlier and reported it against `Call` with nothing connecting
 the two.
 
-So a body that grows an array now takes its array parameters as opaques. The
-decision is per function rather than per parameter: doing it properly would mean
-tracing each push's receiver back to its slot, and the coarse version costs a
-read-only array in a growing function its direct form — a slower compile of
-something that did not compile at all. `tests/jit/grow-param.mersey` reads every
-array back **in the caller** after the callee grew it, and reads contents rather
-than lengths, because the hazard in a representation change is a silent copy.
+So a body that grows an array takes *that* array's parameter as an opaque.
+`tests/jit/grow-param.mersey` reads every array back **in the caller** after the
+callee grew it, and reads contents rather than lengths, because the hazard in a
+representation change is a silent copy.
+
+**Per parameter, not per function** — which the first version got wrong. Asking
+only "does this body grow anything" turns every array parameter of a growing
+function opaque, and a caller holding a direct `Arr` (out of a field, say) then
+cannot pass it at all. That moved the refusal rather than removing it and cost
+`bench/cli/reconcile` a compiled function and 10% of its time — shipped, and
+not noticed for four commits, because the benchmark I kept checking was
+`bench/cli/url`.
+
+Which parameter is answered by walking *back* from the push. `feeds_a_push`
+asks it forwards and over-approximates on purpose: "still at or above this
+depth" keeps a value an `IndexGet` has quietly replaced at the same depth, so
+`src[j]` in a loop that pushes to `out` marks `src` as grown. Backwards there
+is no ambiguity — the receiver sits under `argc` arguments, so it is whatever
+last took the depth from `d - argc - 1` to `d - argc`. Naming the wrong slot or
+none leaves a growing parameter as an `Arr`, which the body refuses at the
+push: a refusal, not a wrong answer.
+
+What is left is the mirror of the same gap. A read-only array parameter is
+`Arr`, and an array built from a literal is an opaque, so passing one to the
+other is refused in *that* direction now. Since a growing parameter is opaque
+by the rule above, an `Arr` parameter is a proof the callee cannot grow it —
+which is what makes a conversion at the call boundary sound, and is the next
+thing to do here.
 
 **It bought no time.** `bench/cli/url` measured 9.50ms before and 9.51ms after,
 same checksum, 11 warm samples each. The three hot callers still refuse — one op

@@ -506,22 +506,54 @@ impl Group<'_> {
         // as an `Arr`, and a declared `int32[]` parameter is exactly how one
         // arrives. `void pushUtf8(out: int32[], …) { out.push(…) }` is the
         // shape: the parameter said `Arr`, the body needed an opaque, and the
-        // function was refused — and so was every call to it, one op earlier,
-        // reported against `Call` with nothing to connect the two.
+        // function was refused — and so was every call to it.
         //
-        // Deciding it per parameter would need the receiver of each push traced
-        // back to its slot. Per function is coarser and costs a read-only array
-        // in a growing function its direct form, which is a slower compile of
-        // something that does not compile at all today.
-        let grows = f.chunk.code.iter().any(|op| match op {
+        // Which parameter matters. Asking only whether the body grows *anything*
+        // moves the refusal rather than removing it: every array parameter of a
+        // growing function turns opaque, and a caller holding a direct `Arr` —
+        // out of a field, say — then cannot pass it. That cost `bench/cli`'s
+        // `reconcile` a compiled function and 10% of its time, which
+        // `bench/cli/url` was never going to show.
+        //
+        // `feeds_a_push` already answers it per value, using the verifier's
+        // depths: is *this* load the receiver a later push consumes? Asking it
+        // of every load of a parameter slot gives the answer per parameter. If
+        // the verifier declines, fall back to the coarse question — a parameter
+        // wrongly left as `Arr` is refused at the push, which is a refusal and
+        // not a wrong answer.
+        let coarse = f.chunk.code.iter().any(|op| match op {
             Op::ArrayPush1 => true,
             Op::CallMethod(ni, _) => {
                 f.chunk.names.get(*ni as usize).map(String::as_str) == Some("push")
             }
             _ => false,
         });
+        let mut grown = vec![coarse; f.params.len()];
+        if coarse {
+            if let Ok(depths) = analyze(&f.chunk) {
+                grown.iter_mut().for_each(|g| *g = false);
+                for (pc, op) in f.chunk.code.iter().enumerate() {
+                    let argc = match op {
+                        Op::ArrayPush1 => 1,
+                        Op::CallMethod(ni, n)
+                            if f.chunk.names.get(*ni as usize).map(String::as_str)
+                                == Some("push") =>
+                        {
+                            i32::from(*n)
+                        }
+                        _ => continue,
+                    };
+                    if let Some(sl) = push_receiver_slot(&f.chunk, &depths, pc, argc) {
+                        let k = sl as usize;
+                        if k < grown.len() {
+                            grown[k] = true;
+                        }
+                    }
+                }
+            }
+        }
         let mut params = Vec::with_capacity(f.params.len());
-        for i in 0..f.params.len() {
+        for (i, &is_grown) in grown.iter().enumerate() {
             // The declared type first — it is the only thing that knows an object
             // parameter's class. A numeric one the checker already typed.
             let t = match f.param_tys.get(i).and_then(|t| t.clone()) {
@@ -529,8 +561,8 @@ impl Group<'_> {
                 None => ty_of(f.chunk.slot_types.get(i).copied().flatten()?)?,
             };
             params.push(match t {
-                Ty::Arr(Elem::Str) if grows => Ty::StrArr,
-                Ty::Arr(_) if grows => Ty::Val,
+                Ty::Arr(Elem::Str) if is_grown => Ty::StrArr,
+                Ty::Arr(_) if is_grown => Ty::Val,
                 t => t,
             });
         }
@@ -3748,15 +3780,51 @@ fn feeds_a_push(chunk: &Chunk, depths: &[Option<i32>], pc: usize) -> bool {
         if d < after {
             return false; // the receiver was consumed by something that is not a push
         }
-        if let Some(Op::CallMethod(ni, argc)) = chunk.code.get(at) {
-            if d == after + i32::from(*argc)
-                && chunk.names.get(*ni as usize).map(String::as_str) == Some("push")
+        match chunk.code.get(at) {
+            Some(Op::CallMethod(ni, argc))
+                if d == after + i32::from(*argc)
+                    && chunk.names.get(*ni as usize).map(String::as_str) == Some("push") =>
             {
                 return true;
             }
+            // The optimised form of the same call, one argument and no name.
+            Some(Op::ArrayPush1) if d == after + 1 => return true,
+            _ => {}
         }
     }
     false
+}
+
+/// The slot the receiver of the push at `pc` was loaded from, if it was loaded
+/// from one.
+///
+/// [`feeds_a_push`] asks the same question forwards, from the value, and it
+/// over-approximates on purpose — "still on the stack at or above this depth"
+/// keeps a value that an `IndexGet` or a `GetMember` has quietly *replaced* at
+/// the same depth. Reading `src[j]` in a loop that pushes to `out` is exactly
+/// that shape, and answering "yes" for `src` turns a read-only parameter opaque
+/// and stops its caller passing an array it holds directly.
+///
+/// Backwards from the push there is no ambiguity: the receiver sits under
+/// `argc` arguments, so the instruction that produced it is the last one to
+/// take the depth from `d - argc - 1` to `d - argc`. Getting this wrong can
+/// only name the wrong slot or none, and both leave a growing parameter as an
+/// `Arr` — which the body then refuses at the push. A refusal, not a wrong
+/// answer.
+fn push_receiver_slot(chunk: &Chunk, depths: &[Option<i32>], pc: usize, argc: i32) -> Option<u16> {
+    let d = depths.get(pc).copied().flatten()?;
+    let under = d - argc - 1;
+    for at in (0..pc).rev() {
+        let before = depths.get(at).copied().flatten()?;
+        let after = depths.get(at + 1).copied().flatten()?;
+        if before == under && after == under + 1 {
+            return match chunk.code.get(at) {
+                Some(Op::LoadSlot(s)) => Some(*s),
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 fn arg_fits(want: Ty, have: Ty) -> bool {
