@@ -920,9 +920,12 @@ fn an_array_of_instances_from_a_literal_agrees_across_the_tier_boundary() {
     assert!(out.contains(" 7070 "), "{out}");
     // A field written through an element and read back through a fresh index.
     assert!(out.contains(" 7820 "), "{out}");
-    // Four of five compile. `viaReturn` does not: a signature saying `Row[]`
-    // still reads back as a bare opaque, so the element type is lost across the
-    // call — the same idea one step further out, in `sig_of`.
-    let (ok, _) = tier1_counts("obj-array-literal.mersey");
+    // Every one of them, including across a call: `sig_of` reads the element
+    // type out of the declaration, so a `Row[]` return is an `ObjArr` and not a
+    // bare opaque. Asserting *no* refusals is the point — losing the element
+    // type again would leave every answer above correct and cost the
+    // compilation, which is what happened twice while this was being written.
+    let (ok, no) = tier1_counts("obj-array-literal.mersey");
     assert!(ok >= 5, "only {ok} functions compiled");
+    assert_eq!(no, 0, "{no} functions refused, expected none");
 }

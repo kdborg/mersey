@@ -74,10 +74,11 @@ function mutateThrough(n: int32): int32 {
 /// leaving it out cost two functions their compilation and nothing else, which
 /// a checksum cannot see.
 ///
-/// The widening is real, though — `viaReturn` below is the one function here
-/// that still does *not* compile, because a signature says `Row[]` and this
-/// tier reads that back as a bare opaque, so the element type is lost across
-/// the call. Fixing that is the same idea one step further out, in `sig_of`.
+/// The element type survives the call now: `sig_of` reads it out of the
+/// *declaration* — the body is deliberately never read, so that recursion can
+/// be typed — and a `Row[]` return comes back as `Ty::ObjArr` rather than a
+/// bare opaque. Without that, `makeRows(n)[i]` typed as a number and the field
+/// read after it was refused, which is the same loss one step further out.
 function makeRows(n: int32): Row[] {
     const rows: Row[] = [];
     for (let i: int32 = 0; i < n; i += 1) {

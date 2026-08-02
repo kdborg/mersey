@@ -602,7 +602,25 @@ impl Group<'_> {
         } else if f.ret_str {
             Ty::Str
         } else if f.ret_val {
-            Ty::Val
+            // A declared `Row[]` return carries its element type in the
+            // signature, and widening it to a bare opaque here is exactly where
+            // it was being lost: the caller got a `Ty::Val`, so `f(n)[i]` typed
+            // as a number and the field read after it was refused. The
+            // declaration is the only place this can be recovered — the body is
+            // not read, on purpose, so that recursion can be typed.
+            let elem = match f.ret_ty {
+                Some(mersey_front::ast::TypeExpr::ArrayOf(inner)) => match &**inner {
+                    mersey_front::ast::TypeExpr::Named { name, .. } => {
+                        self.env.class_named(f.scope.as_ref(), name)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            match elem {
+                Some(c) => Ty::ObjArr(self.class_idx(&c)),
+                None => Ty::Val,
+            }
         } else if f.ret_numopt {
             Ty::I32Opt
         } else if f.ret_bool {
@@ -1838,7 +1856,13 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     // released. That is fixed at the `Return` (see
                     // `tests/jit/opaque-return.mersey`), and with a live handle
                     // the store is the same one an opaque field gets.
-                    matches!(v, Ty::Arr(ve) if ve == fe) || v == Ty::Val
+                    // …and `Ty::ObjArr`, which is that same handle once the
+                    // tier learned what is in it. Accepting `Ty::Val` and not
+                    // this one is how `apply` stopped compiling the moment
+                    // `applyOps` gained an element type: same representation,
+                    // strictly more known about it, and refused for the
+                    // knowing.
+                    matches!(v, Ty::Arr(ve) if ve == fe) || matches!(v, Ty::Val | Ty::ObjArr(_))
                 } else if let Ty::Obj(fci) = t {
                     match v {
                         Ty::Obj(vci) => {
