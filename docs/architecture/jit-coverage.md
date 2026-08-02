@@ -197,7 +197,24 @@ something better. Five blockers found so far:
 Five of seven were ordinary omissions and all five shipped, several in a few
 lines each. The queue is enumerable, not endless.
 
-**And the two that remain are one.** `work` refuses *because* `render` does:
+**The chain past them, walked in a scratch copy.** Rewriting the pair away moves
+`render` to `entry.node` — the `Map` value type. Typing *that* away moves it to
+`batch.remove(…)`, and the reason there is not a type gap at all:
+
+    `remove` on `Batch`: no bytecode yet — never called through the VM
+
+`direct_method` requires the callee to already have a chunk, and a chunk is
+built lazily by `chunk_of` on the first inlinable call. A caller analysed before
+that happens is refused, and the refusal is final — nothing re-analyses a
+function once Tier 1 has declined it. So a method's compilability depends on the
+order things got hot in, which is not a property of the code.
+
+That one is worth fixing on its own account: it is general, it has nothing to do
+with `reconcile`, and `direct_method` could compile the body it is being asked
+about rather than declining for its absence — `data.chunk` is a `RefCell`, so
+the lazy build needs no more mutability than is already there.
+
+**And the two refusals that remain are one.** `work` refuses *because* `render` does:
 analysing a call adds the callee to the group and analyses it inline, in the
 same trace stream with no marker between them, so both refusals name the same
 op inside `render`. Counting them separately was counting one blocker twice —

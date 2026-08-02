@@ -6482,23 +6482,45 @@ impl Interp {
     }
 
     fn direct_method(&self, cls: &Rc<ClassDef>, name: &str) -> Option<JitFn> {
+        // Seven ways to decline, and for a long time the trace said only that
+        // one of them had. The caller prints the list; this prints which, so a
+        // refused method call is a fact rather than a shortlist.
+        let no = |why: &str| -> Option<JitFn> {
+            if std::env::var_os("MERSEY_JIT_TRACE").is_some_and(|v| v != "0") {
+                eprintln!("jit:   `{name}` on `{}`: {why}", cls.name);
+            }
+            None
+        };
         // A getter or a setter means `o.name` is a call, not a load, and this is
         // not the shape the compiler thinks it is.
-        if cls.is_accessor(name) || cls.is_host_backed() {
-            return None;
+        if cls.is_accessor(name) {
+            return no("an accessor, so the read is a call");
         }
-        let data = cls.lookup_method(name)?;
+        if cls.is_host_backed() {
+            return no("the class is host-backed");
+        }
+        let Some(data) = cls.lookup_method(name) else {
+            return no("no such method on the class");
+        };
         if data.is_async {
-            return None;
+            return no("async");
         }
         // The whole of dispatch: if nothing below `cls` overrides `name`, then
         // every instance this receiver can hold runs *this* body.
         if self.overridden_below(cls, name) {
-            return None;
+            return no("something below this class overrides it");
         }
-        let chunk = data.chunk.borrow().clone()??;
-        if chunk.yields || chunk.needs_env || !chunk.simple_params {
-            return None;
+        let Some(Some(chunk)) = data.chunk.borrow().clone() else {
+            return no("no bytecode yet — never called through the VM");
+        };
+        if chunk.yields {
+            return no("the body yields");
+        }
+        if chunk.needs_env {
+            return no("the body needs a scope");
+        }
+        if !chunk.simple_params {
+            return no("the parameters are not simple");
         }
         // A method's free names resolve where its *class* was written.
         let scope = cls.env.clone().map(DefScope);
