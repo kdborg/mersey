@@ -1,0 +1,108 @@
+// An array of instances built from a literal.
+//
+// An array a parameter declares — `f(rows: Row[])` — arrives as `Ty::Arr(Elem::Obj)`
+// and always worked. One built from a literal has to stay an *opaque* because it
+// grows, and an opaque had no element type: `rows[i]` typed as `int32`, which is
+// right for a `Bytes` and wrong here, so the field read after it was refused and
+// took the whole function with it.
+//
+// `Ty::ObjArr(n)` is the answer, and it is `Ty::StrArr`'s idea — an opaque that
+// knows what its elements are — said for the other element type worth knowing.
+// The checker publishes it (`local_obj_array`), the chunk carries it
+// (`slot_obj_array`), and an element read hands back a real object.
+//
+// What the assertions are for: the element comes out of the shim owning its own
+// arena entry rather than borrowing from the container, so every case here reads
+// a field off an element *after* the array has grown past it — a borrow into a
+// reallocated buffer would give the right length and the wrong object.
+
+import { console } from "std:console";
+
+class Row {
+    public id: int32;
+    public v: int32;
+    public constructor(id: int32) {
+        this.id = id;
+        this.v = id * 10;
+    }
+}
+
+/// The shape from `bench/cli/reconcile`: build, then read a field off an element.
+function build(n: int32): int32 {
+    const rows: Row[] = [];
+    for (let i: int32 = 0; i < n; i += 1) {
+        rows.push(new Row(i));
+    }
+    let sum = 0;
+    for (let i: int32 = 0; i < rows.length; i += 1) {
+        sum = sum + rows[i].v;
+    }
+    return sum;
+}
+
+/// An element held while the array keeps growing. If the read borrowed from the
+/// container, the push that reallocates would leave it pointing at the old one.
+function heldAcrossGrowth(n: int32): int32 {
+    const rows: Row[] = [];
+    rows.push(new Row(7));
+    const first = rows[0];
+    for (let i: int32 = 1; i < n; i += 1) {
+        rows.push(new Row(i));
+    }
+    // `first` was read before ~n reallocations. It must still be row 7.
+    return first.id * 1000 + first.v;
+}
+
+/// A field *written* through an element, and read back through a fresh index.
+function mutateThrough(n: int32): int32 {
+    const rows: Row[] = [];
+    for (let i: int32 = 0; i < n; i += 1) {
+        rows.push(new Row(i));
+    }
+    for (let i: int32 = 0; i < rows.length; i += 2) {
+        const r = rows[i];
+        r.v = r.v + 1;
+    }
+    let sum = 0;
+    for (let i: int32 = 0; i < rows.length; i += 1) {
+        sum = sum + rows[i].v;
+    }
+    return sum;
+}
+
+/// Returned as an opaque, which is the widening the `Return` arms had to learn:
+/// leaving it out cost two functions their compilation and nothing else, which
+/// a checksum cannot see.
+///
+/// The widening is real, though — `viaReturn` below is the one function here
+/// that still does *not* compile, because a signature says `Row[]` and this
+/// tier reads that back as a bare opaque, so the element type is lost across
+/// the call. Fixing that is the same idea one step further out, in `sig_of`.
+function makeRows(n: int32): Row[] {
+    const rows: Row[] = [];
+    for (let i: int32 = 0; i < n; i += 1) {
+        rows.push(new Row(i * 2));
+    }
+    return rows;
+}
+
+function viaReturn(n: int32): int32 {
+    const rows = makeRows(n);
+    let sum = 0;
+    for (let i: int32 = 0; i < rows.length; i += 1) {
+        sum = sum + rows[i].id;
+    }
+    return sum;
+}
+
+let a = 0;
+let b = 0;
+let c = 0;
+let d = 0;
+for (let r: int32 = 0; r < 2000; r += 1) {
+    a = build(40);
+    b = heldAcrossGrowth(40);
+    c = mutateThrough(40);
+    d = viaReturn(40);
+}
+console.log(`${a} ${b} ${c} ${d}`);

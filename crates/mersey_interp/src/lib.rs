@@ -4986,6 +4986,38 @@ impl Interp {
         }
     }
 
+    /// `xs[i]` where `xs` is an opaque array of *instances* — the twin of
+    /// `jit_val_index_str`, and for the same reason: `rows[i].v` is what a
+    /// collection of objects is written for, and it is one bounds check and a
+    /// clone away from the general path's whole dispatch.
+    ///
+    /// Returns the element's arena handle, 0 for an element that is not an
+    /// instance, or `u64::MAX` when the index threw — the error stashed so the
+    /// message is the interpreter's own, length included.
+    pub fn jit_val_index_obj(&mut self, h: u64, idx: i64) -> u64 {
+        if idx >= 0 {
+            let hit = match self.jit_arena.get(h) {
+                Some(Value::Array(a)) => match a.borrow().get(idx as usize) {
+                    Some(v @ Value::Instance(_)) => Some(v.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(v) = hit {
+                return self.jit_arena.keep(v);
+            }
+        }
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        match self.index_get(&o, &Value::I64(idx)) {
+            Ok(v @ Value::Instance(_)) => self.jit_arena.keep(v),
+            Ok(_) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                u64::MAX
+            }
+        }
+    }
+
     /// `b[i]` on an opaque (a `Bytes`) from compiled code. `i64::MIN` means it
     /// threw — out of range, or not something indexable — with the error stashed,
     /// so the message is the interpreter's own, down to the length it reports.

@@ -874,6 +874,44 @@ pub(crate) unsafe extern "C" fn clone_val(arena: *mut Arena, h: u64) -> u64 {
     }
 }
 
+/// `xs[i]` on an opaque array of instances. `out` receives (address, fields,
+/// owning handle); returns 1 if it threw, so the guard bails and the
+/// interpreter raises its own error.
+///
+/// The handle is the element's own arena entry, which the caller owns — the
+/// same discipline `val_index_str` uses, and the reason an element read here
+/// does not have to borrow from the container.
+///
+/// # Safety
+/// As `global_val`; `out` names three writable words.
+pub(crate) unsafe extern "C" fn val_index_obj(
+    arena: *mut Arena,
+    h: u64,
+    idx: i64,
+    out: *mut u64,
+) -> i64 {
+    unsafe {
+        let Some(ip) = (*arena).interp_ptr() else {
+            return 1;
+        };
+        let eh = (*ip).jit_val_index_obj(h, idx);
+        if eh == u64::MAX || eh == 0 {
+            return 1;
+        }
+        match (*arena).get(eh) {
+            Some(Value::Instance(rc)) => {
+                let p = Rc::as_ptr(rc) as u64;
+                let base = instance_slots(rc).unwrap_or(std::ptr::null_mut());
+                *out = p;
+                *out.add(1) = base as u64;
+                *out.add(2) = eh;
+                0
+            }
+            _ => 1,
+        }
+    }
+}
+
 /// `a[i]` on an opaque array of strings. `out` receives (data, length, owning
 /// handle); 0, or 1 if it threw.
 ///

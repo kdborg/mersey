@@ -898,3 +898,31 @@ fn casting_to_int32_agrees_across_the_tier_boundary() {
     // pair of versions.
     assert!(out.trim_end().ends_with("-1 0"), "{out}");
 }
+
+/// An array of instances built from a literal.
+///
+/// A parameter declaring `Row[]` arrives as `Ty::Arr(Elem::Obj)` and always
+/// worked; one built from a literal stays an *opaque* because it grows, and an
+/// opaque had no element type — so `rows[i]` typed as `int32`, right for a
+/// `Bytes` and wrong here, and the field read after it took the whole function
+/// down. `Ty::ObjArr` is `Ty::StrArr`'s idea said for the other element type.
+///
+/// The assertions are about ownership: an element comes back owning its own
+/// arena entry rather than borrowing from the container, so each case reads a
+/// field off an element *after* the array has grown past it. A borrow into a
+/// reallocated buffer would give the right length and the wrong object.
+#[test]
+fn an_array_of_instances_from_a_literal_agrees_across_the_tier_boundary() {
+    check("obj-array-literal.mersey");
+    let out = run("obj-array-literal.mersey", true);
+    assert!(out.starts_with("7800 "), "{out}");
+    // The element held across ~40 reallocations: still row 7.
+    assert!(out.contains(" 7070 "), "{out}");
+    // A field written through an element and read back through a fresh index.
+    assert!(out.contains(" 7820 "), "{out}");
+    // Four of five compile. `viaReturn` does not: a signature saying `Row[]`
+    // still reads back as a bare opaque, so the element type is lost across the
+    // call — the same idea one step further out, in `sig_of`.
+    let (ok, _) = tier1_counts("obj-array-literal.mersey");
+    assert!(ok >= 5, "only {ok} functions compiled");
+}
