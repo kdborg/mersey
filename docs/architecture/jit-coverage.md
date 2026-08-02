@@ -157,27 +157,50 @@ returned by a native is held as an opaque, so the two arms of that ternary are
 `Ty::Str` and `Ty::Val`.
 
 The obvious fix is an `EdgeFix` that relabels the opaque, the way a `Return`
-already does through `heap::val_to_str`. **It was written, and it produced a
-wrong answer** — so it is not in the tree, and the reproducer is worth more than
-the patch was:
+already does through `heap::val_to_str`. It was written — a `val_to_owned_str`
+shim that bails on a non-string handle, keeps null as null rather than as `""`,
+and copies, since what crosses an edge may not depend on the slot it came from
+— and **turning it on produced a wrong answer**, so it is not in the tree.
+
+The conversion itself is not the bug. On its own it is correct, including null
+preservation and contents, with the calling function compiled too:
+
+```mersey
+function pick(s: string): string {
+    const t = bytes.decodeUtf8(bytes.encodeUtf8(s));
+    return t == null ? s : t;                 // the merge, and nothing else
+}
+```
+
+What the rule does besides converting is make `std:url`'s `decode` compilable,
+and with it the `URLSearchParams` constructor that calls it. The wrong answer
+lives in there, and it is a *pre-existing* bug that had never been reachable
+because those functions had never been compiled.
+
+The reproducer, which is worth more than the patch was:
 
 ```mersey
 const q = new URLSearchParams("a=1&b=two&c=%20sp");
 acc = acc + q.toString().length;    // 17 interpreted, 15 once compiled
 ```
 
-`encode(" sp")` gave back `" sp"` instead of `"%20sp"` — but only inside the hot
-loop, and only after ~560 iterations. The same call made from top level
-afterwards printed correctly, which is why nothing in `mersey test`, the 35 tier
-programs, or 50k differential fuzz iterations caught it: all three call these
-functions from outside a compiled frame. `tools/std-hot.mersey`'s own checksum
-did catch it (`3661120` against `3700000`), which is the argument for that file
-existing.
+Three things pin it down. **The `std:url` functions compile identically whether
+or not the program is wrong** — the only difference between a run that fails and
+one that does not is whether the *caller* compiles as well, putting the whole
+thing in one compiled frame with one arena. **Any probe removes it**: binding
+the result to a local, testing it for `"%"`, or calling `get` alongside all stop
+the caller compiling and the answer comes back right, which is what makes this
+the kind of bug a print statement cannot be pointed at. And the failure is
+specific — `encode(" sp")` returns `" sp"`, which means that inside `encode`,
+for the same `i`, `s.charAt(i)` gave `" "` while `s.codePointAt(i)` gave
+something `unreserved` said yes to. Two accessors disagreeing about one string
+is the shape `own_str`'s comment describes: a handle naming one buffer beside a
+data pointer into another.
 
-Enabling the rule also compiles three functions that were refused before, so the
-bisect that blamed the rule does not distinguish *the conversion is wrong* from
-*one of the three newly-reachable functions is wrong*. That is the next thing to
-separate — likely by forcing each of the three to compile on its own.
+Nothing in `mersey test`, the 35 tier programs, or 50k differential fuzz
+iterations caught it, because all three call these functions from outside a
+compiled frame. `tools/std-hot.mersey`'s checksum did (`3661120` against
+`3700000`), which is the argument for that file existing.
 
 ## What it compiles
 

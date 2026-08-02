@@ -332,14 +332,23 @@ pub fn hook(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
             (None, Some(_)) => "<method>".to_string(),
             (None, None) => "<anonymous>".to_string(),
         };
+        // The chunk does carry positions, and the first op's is the function's.
+        // Most of what this tier refuses is a `<method>` or an `<anonymous>` in
+        // a `std:` module, and a name that says neither which module nor which
+        // function is a name you cannot act on — the whole cost of a wrong
+        // answer in `std:url` was spent working out *which* of three
+        // indistinguishable trace lines was the one to look at.
+        let at = root.chunk.pos_at(0);
         eprintln!(
-            "jit: {} {who} ({} ops)",
+            "jit: {} {who} ({} ops) @ {}:{}",
             if code.is_some() {
                 "COMPILED"
             } else {
                 "refused"
             },
-            root.chunk.code.len()
+            root.chunk.code.len(),
+            at.line,
+            at.col
         );
     }
     code

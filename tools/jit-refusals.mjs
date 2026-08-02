@@ -84,12 +84,13 @@ child.on("close", () => {
       acceptedAll = true;
       continue;
     }
-    m = /^jit: (COMPILED|refused) (.*?) \((\d+) ops\)/.exec(line);
+    m = /^jit: (COMPILED|refused) (.*?) \((\d+) ops\)(?: @ (\S+))?/.exec(line);
     if (m) {
       fns.push({
         outcome: m[1],
         who: m[2],
         size: Number(m[3]),
+        at: m[4] || "?",
         // The op it stopped on. Empty means `sig_of` declined before the body.
         last: ops.length ? ops[ops.length - 1] : "<signature: no body read>",
         open: ops.slice(0, 4).join(" "),
@@ -102,7 +103,7 @@ child.on("close", () => {
 
   if (list) {
     for (const f of fns
-      .map((f) => `${f.outcome.padEnd(8)} ${String(f.size).padStart(4)}ops  ${f.open}`)
+      .map((f) => `${f.outcome.padEnd(8)} ${String(f.size).padStart(4)}ops @${f.at}  ${f.open}`)
       .sort())
       console.log(f);
     return;
@@ -115,18 +116,21 @@ child.on("close", () => {
 
   const by = new Map();
   for (const f of refused) {
-    const e = by.get(f.last) || { n: 0, sizes: [], late: 0 };
+    const e = by.get(f.last) || { n: 0, sizes: [], at: [], late: 0 };
     e.n += 1;
     e.sizes.push(f.size);
+    e.at.push(f.at);
     if (f.acceptedAll) e.late += 1;
     by.set(f.last, e);
   }
   console.log("\nrefusals by the op they stopped on, largest first:");
   for (const [op, e] of [...by].sort((x, y) => y[1].n - x[1].n || Math.max(...y[1].sizes) - Math.max(...x[1].sizes))) {
     const sizes = e.sizes.sort((a, b) => b - a).slice(0, 5).join(", ");
+    const at = e.at.slice(0, 5).join(" ");
     // A refusal *after* the analysis accepted everything is codegen or the
     // entry wrapper, which is a different investigation entirely.
     const late = e.late ? `  [${e.late} after analysis passed — codegen or the wrapper]` : "";
     console.log(`  ${String(e.n).padStart(3)}  ${op.padEnd(26)} sizes ${sizes}${late}`);
+    console.log(`       at ${at}`);
   }
 });
