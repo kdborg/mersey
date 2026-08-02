@@ -158,6 +158,11 @@ fn a_compiled_function_reads_its_own_modules_globals() {
     assert!(out.contains("bufSize   160"), "{out}");
     // 16 units + indexOf("a") == 10 + 1 for the equality, ten times over.
     assert!(out.contains("tableSpan 270"), "{out}");
+    // The same globals reached from a hot caller in *this* module, which is a
+    // different case: the group's one scope is then the caller's, and the
+    // callee's own module is not in it. This read 0 — an empty string, silently
+    // — until the tier learned to refuse rather than answer.
+    assert!(out.contains("viaCaller 170"), "{out}");
 }
 
 /// Indexing a `Bytes`, and giving one back. `b[i]` is the only indexing the

@@ -9,7 +9,7 @@
 // test that says what compiled and not only what it printed.
 
 import { console } from "std:console";
-import { bufSize, tableSpan } from "./module-globals-lib.mersey";
+import { bufSize, tableSpan, tableAt, tableLen, bufLen } from "./module-globals-lib.mersey";
 
 // Hot enough that Tier 1 takes them.
 bufSize(300000);
@@ -17,3 +17,33 @@ tableSpan(300000);
 
 console.log(`bufSize   ${bufSize(10)}`);
 console.log(`tableSpan ${tableSpan(10)}`);
+
+// The same globals, reached from a hot caller *in this* module.
+//
+// Above, the compiled group's root is the lib function itself, so the one scope
+// a group installs is that function's own and the read lands in the right place.
+// Cross-module calls made a group able to span modules, and nothing told the
+// shims: with the root here, `TABLE` is not in this module's scope, `env_get`
+// found nothing, and `jit_global_str` handed back handle 0 — an *empty string*,
+// which is a wrong answer and not a bail. It cost `%20` its digits in
+// `std:url`'s `encode` and took two commits to find, because the case that
+// existed here is the one that works.
+function viaLocalCaller(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        // Small callees, so they are inlined here rather than called — which is
+        // what puts their reads in *this* function's group and scope.
+        //
+        // Only *string* globals. An opaque one (`BUF`) reads back as handle 0,
+        // which the compiled body treats as a bail — so it falls to the
+        // interpreter, answers correctly, and hides this. That is exactly how
+        // the bug survived: the test that existed read both.
+        acc = acc + tableAt(i).length + tableLen();
+        i += 1;
+    }
+    return acc;
+}
+
+viaLocalCaller(200000);
+console.log(`viaCaller ${viaLocalCaller(10)}`);

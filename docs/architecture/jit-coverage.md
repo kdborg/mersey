@@ -202,16 +202,13 @@ iterations caught it, because all three call these functions from outside a
 compiled frame. `tools/std-hot.mersey`'s checksum did (`3661120` against
 `3700000`), which is the argument for that file existing.
 
-**What narrows it further:** the *same* call graph — `decode`, the constructor,
-`toString`, `encode` and a compiled caller, all in one frame — is **correct**
-when the opaque is relabelled by `(text as string)` instead, which is the cast
-described below. The two conversions differ in one thing: the cast produces a
-**borrow** with the origin slot's provenance carried across, and the merge
-produced an **owned copy** with `Prov::Stable`, because a block parameter has no
-provenance to carry. So the suspicion now points at the ownership, not the
-relabel — an entry the returned value still points into being released by the
-frame sweep, rather than a bad read. A merge fix that borrows instead has the
-block-parameter problem to solve first, which is why this is still open.
+**Resolved, and it was neither the merge nor the relabel.** Rewriting the same
+program with the whole of `std:url` copied into one file makes it correct;
+moving that copy back out into a module of its own makes it wrong again. The
+bug is cross-module, and the merge only ever made these functions compilable
+enough to reach it. It is written up under "one scope per group" below. The
+merge rule itself is correct — with the fix in place it can go back in, and
+that is what will finally move `bench/cli/url`.
 
 ### An opaque cast to `string`
 
@@ -884,3 +881,38 @@ browser legs cannot resolve better than about a third, and the **wasm build has 
 JIT at all** — so nothing in this file helps the browser polyfill leg. It reaches
 the Chromium, Servo and Ladybird forks, which link Tier 1 by default, after a
 rebuild; Firefox's development fork compiles it out.
+
+
+## One scope per group, and a group that spans modules
+
+A compiled group installs exactly one scope for the whole call — `JitCode::scope`,
+"the scope its root was written in" — and the shims that read a global
+(`jit_global_str`, `jit_global_num`, `jit_global_val`) look the name up in it.
+That was right by construction while a group could only ever hold one module's
+functions. **Cross-module calls broke it without touching any of the code that
+rests on it.** A `const` declared in an imported module is not in the entry
+module's scope, `env_get` finds nothing, and the shim answers "absent".
+
+For an opaque or numeric global "absent" is handle 0, which compiled code
+treats as a bail — it falls to the interpreter and answers correctly, at
+interpreted speed. For a **string** global it is `(0, 0)`: an empty string, no
+bail, a wrong answer. `std:url`'s `HEX` is one, which is how `encode` turned
+`%20` into `%`, and `%20sp` into ` sp`.
+
+Until a group can carry a scope per function, a function whose free names
+resolve somewhere other than the group's own scope may not read or write a
+global; everything else about it still compiles. That costs
+`tools/std-hot.mersey` two functions (33 compiled / 7 refused → 31 / 9) and
+`bench/cli/url` no measurable time — 9.54ms against 9.50ms, eleven warm samples.
+
+**Why `tests/jit/module-globals.mersey` did not catch it**, having been written
+for exactly this: it called the library functions from top level, so each was
+its *own* group root and the one scope installed was its own. The case that
+fails needs a hot caller in another module, small enough callees to be inlined
+into it, and — the part that hid it for two commits — **no opaque global read
+alongside**, because that one bails and the bail masks the string. All three
+conditions are in the test now.
+
+The real fix is a scope per function in the group: `JitCode` carrying one per
+entry and the global shims taking an index rather than reading whatever is
+current. That recovers the two functions and unblocks the merge rule above.

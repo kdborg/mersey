@@ -30,3 +30,19 @@ export function tableSpan(n: int32): int32 {
     }
     return acc;
 }
+
+/// Small enough to be *inlined* into a caller, which is the case that matters:
+/// an inlined body is emitted inside the caller's compiled function and reads
+/// its globals through the caller's group scope, not its own module's.
+export function tableAt(i: int32): string {
+    return TABLE.charAt(i % 16);
+}
+
+/// The same for a string global read whole, and for an opaque one.
+export function tableLen(): int32 {
+    return TABLE.length;
+}
+
+export function bufLen(): int32 {
+    return BUF.length;
+}

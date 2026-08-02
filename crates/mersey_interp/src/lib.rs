@@ -1955,6 +1955,15 @@ impl DefScope {
     pub(crate) fn env(&self) -> Env {
         self.0.clone()
     }
+
+    /// Is this the same scope as `other`? Identity, not contents.
+    ///
+    /// A compiled group installs *one* scope for the whole call, so a function
+    /// in it whose free names resolve somewhere else cannot read them. Tier 1
+    /// uses this to notice that before it emits the read rather than after.
+    pub fn is(&self, other: &DefScope) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// What a free name binds, as far as Tier 1 cares.

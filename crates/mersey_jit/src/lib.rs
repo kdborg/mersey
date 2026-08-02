@@ -933,6 +933,25 @@ fn prov(s: TSlot) -> Prov {
 fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let chunk = g.fns[me].chunk.clone();
     let scope = g.fns[me].scope.clone();
+    // A compiled group installs exactly one scope for the whole call (see
+    // `JitCode::scope`), and the shims that read a global read it by *name* in
+    // that one scope. While a group could only hold one module's functions that
+    // was the right scope by construction. Cross-module calls broke the
+    // assumption without touching the code resting on it: a `const` declared in
+    // an imported module is not in the entry module's scope, `env_get` finds
+    // nothing, and `jit_global_str` hands back handle 0 — an empty string,
+    // which is a wrong answer and not a bail. `std:url`'s `HEX` is one of
+    // those, and it is why `encode` turned `%20` into `%`.
+    //
+    // Until a group can carry a scope per function, a function whose free names
+    // resolve somewhere other than the group's own scope may not read or write
+    // a global. Everything else about it is still compiled.
+    let foreign_scope = match (&scope, &g.fns[0].scope) {
+        (Some(a), Some(b)) => !a.is(b),
+        // No scope on one side is not proof that the two agree.
+        (None, None) => false,
+        _ => true,
+    };
     let sig = g.sigs[me].clone();
     let n_slots = sig.n_slots;
     let n_params = sig.params.len();
@@ -1266,6 +1285,16 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::StdNs(ns)); // a native-call receiver
                     }
                     NameKind::Opaque => {
+                        if foreign_scope {
+                            if *TRACE {
+                                eprintln!(
+                                    "jit:   `{name}` is a global of another module, and a \
+                                     compiled group has only one scope"
+                                );
+                            }
+                            return None;
+                        }
+
                         opaque_globals
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
@@ -1281,6 +1310,16 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::ClassRef(ci));
                     }
                     NameKind::NumGlobal(kind) => {
+                        if foreign_scope {
+                            if *TRACE {
+                                eprintln!(
+                                    "jit:   `{name}` is a global of another module, and a \
+                                     compiled group has only one scope"
+                                );
+                            }
+                            return None;
+                        }
+
                         let t = match kind {
                             0 => Ty::I32,
                             1 => Ty::I64,
@@ -1293,6 +1332,16 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::Val(t, Prov::Stable));
                     }
                     NameKind::StrGlobal => {
+                        if foreign_scope {
+                            if *TRACE {
+                                eprintln!(
+                                    "jit:   `{name}` is a global of another module, and a \
+                                     compiled group has only one scope"
+                                );
+                            }
+                            return None;
+                        }
+
                         str_globals
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
@@ -1329,6 +1378,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let NameKind::NumGlobal(k) = g.env.name_kind(scope.as_ref(), name) else {
                     return None;
                 };
+                if foreign_scope {
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   `{name}` is a global of another module, and a compiled \
+                             group has only one scope"
+                        );
+                    }
+                    return None;
+                }
                 // The binding's type is fixed by the checker, so the register the
                 // value is in has to be the one that binding holds — otherwise
                 // the bits handed to the shim mean something else.
