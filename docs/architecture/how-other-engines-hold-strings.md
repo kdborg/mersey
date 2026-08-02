@@ -75,23 +75,42 @@ Mersey pays mimalloc plus an `Rc` for every string, and `Rc<Vec<u16>>` is two
 allocations: the `Rc` box, then the `Vec`'s buffer. A `parse` in
 `bench/cli/strings` does about sixteen of them.
 
-**This may be the largest gap and the cheapest to close**, because it needs no
-change to `Value`, no width flag, and no rope. `jit_arena` is already cleared
-wholesale when the outermost compiled call returns — the shape of a nursery is
-present, holding *handles*. What it does not hold is the character buffers.
+This looked like the largest gap and the cheapest to close. **It was tried, and
+it is not.**
+
+A pool of released `Rc<Vec<u16>>` buffers — reused instead of freed, harvested
+both from `Arena::release` and from the wholesale `clear` at the end of every
+compiled call, and drawn on by `own_str` and `str_join`, the two hottest string
+builders — measured *neutral*. `std-hot` 0.55 against 0.54–0.55; `strings`
+44.7–45.4 against 45.2–45.5, back to back in one window.
+
+The reason is the difference between the two halves of what a nursery buys.
+mimalloc already has per-thread free lists and small-size-class caching, so a
+malloc/free pair for a short string is about as cheap as a pool pop/push — the
+`mi_malloc` and `mi_free` in the profile are near the floor for this allocation
+*pattern*, not waste a pool can reclaim. What V8 gets that a pool cannot is the
+other half: nothing is freed per object at all. The 80–90% that die are
+reclaimed by resetting a pointer, and that only works because the collector
+copies survivors out, which is a collector design and not an allocator one.
 
 ## Ranking, for this engine
 
-1. **Bump-allocate string buffers with a call-scoped lifetime.** No
-   representation change, and it attacks the 13% of the profile that is
-   `mi_malloc`/`mi_free` rather than the 6% that is copying.
-2. **One-byte storage for Latin-1.** The biggest constant-factor win, and the
+1. **One-byte storage for Latin-1.** The biggest constant-factor win, and the
    one every production engine treats as table stakes. Large JIT change; no
    `Value` change.
+2. **Fewer allocations per string** — `Rc<[u16]>` instead of `Rc<Vec<u16>>`,
+   which is one allocation rather than two. Blocked at the argument boundary,
+   not by the lint.
 3. **Ropes.** Only pays where concatenation is hot, and fights the flat
    `(pointer, length)` model hardest.
-4. **Slices below the threshold.** Already measured, already neutral, and V8
-   agrees. Not worth revisiting.
+4. **Reusing buffers instead of freeing them.** Tried; neutral. mimalloc is
+   already this good.
+5. **Slices below thirteen characters.** Tried; neutral. V8 agrees.
+
+The two that remain are both about allocating *less*, not about allocating
+*faster* — which is the finding underneath both negative results. This engine's
+allocation cost is at the floor for its current representation, so the only
+lever left is the representation.
 
 Sources: [V8 `string.h`](https://github.com/v8/v8/blob/main/src/objects/string.h),
 [Exploring V8's strings](https://iliazeus.lol/articles/js-string-optimizations-en/),
