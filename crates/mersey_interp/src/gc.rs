@@ -62,12 +62,31 @@ use crate::{
 /// it is recording from `&self` alone.
 pub struct GcCell<T: GcContents> {
     inner: RefCell<T>,
+    /// Has this cell been promoted into the old generation?
+    ///
+    /// Both the write barrier and the drop are questions about `OLD`, and both
+    /// used to *ask* it: a thread-local lookup and a hash probe, on every
+    /// `borrow_mut` and every drop. For a young object — which is most objects,
+    /// and every object in a loop that allocates and lets go — the answer is
+    /// always no, and the whole cost is the asking. `bench/cli/strings` spends
+    /// 7% of its samples in this drop and 3% reaching thread-locals, for a
+    /// `split` result that never lives long enough to be promoted.
+    ///
+    /// So the cell remembers instead. `promote` is the one place anything is
+    /// inserted into `OLD`, which is what makes that possible.
+    ///
+    /// The asymmetry that matters: a stale `true` costs a wasted probe and a
+    /// conservative extra root, and a stale `false` is a missed write barrier —
+    /// a root the minor trace never sees, and an object swept while live. So
+    /// this is set on promotion and never cleared.
+    old: std::cell::Cell<bool>,
 }
 
 impl<T: GcContents> GcCell<T> {
     pub fn new(value: T) -> GcCell<T> {
         GcCell {
             inner: RefCell::new(value),
+            old: std::cell::Cell::new(false),
         }
     }
 
@@ -76,8 +95,15 @@ impl<T: GcContents> GcCell<T> {
     }
 
     pub fn borrow_mut(&self) -> RefMut<'_, T> {
-        note_write(self as *const GcCell<T> as usize);
+        if self.old.get() {
+            note_write(self as *const GcCell<T> as usize);
+        }
         self.inner.borrow_mut()
+    }
+
+    /// Called by `promote`, and nowhere else. See the field.
+    pub(crate) fn mark_old(&self) {
+        self.old.set(true);
     }
 
     /// Borrow, or `None` if the interpreter is already inside this object.
@@ -91,7 +117,9 @@ impl<T: GcContents> GcCell<T> {
     }
 
     pub(crate) fn try_borrow_mut(&self) -> Option<RefMut<'_, T>> {
-        note_write(self as *const GcCell<T> as usize);
+        if self.old.get() {
+            note_write(self as *const GcCell<T> as usize);
+        }
         self.inner.try_borrow_mut().ok()
     }
 }
@@ -131,14 +159,20 @@ impl<T: GcContents> Drop for GcCell<T> {
     /// not recurse: it moves its children onto a queue, and the outermost drop
     /// drains that queue in a loop.
     fn drop(&mut self) {
-        let ptr = self as *const GcCell<T> as usize;
-        // try_with: a GcCell can outlive the thread_locals at shutdown.
-        let _ = OLD.try_with(|old| {
-            old.borrow_mut().remove(&ptr);
-        });
-        let _ = REMEMBERED.try_with(|r| {
-            r.borrow_mut().remove(&ptr);
-        });
+        // Only an object that was promoted can be in either set, and the cell
+        // knows whether it was — see the `old` field. Everything allocated and
+        // let go between two collections skips both lookups, which is what a
+        // loop that builds a string and drops it does all day.
+        if self.old.get() {
+            let ptr = self as *const GcCell<T> as usize;
+            // try_with: a GcCell can outlive the thread_locals at shutdown.
+            let _ = OLD.try_with(|old| {
+                old.borrow_mut().remove(&ptr);
+            });
+            let _ = REMEMBERED.try_with(|r| {
+                r.borrow_mut().remove(&ptr);
+            });
+        }
 
         let mut children = Vec::new();
         self.inner.get_mut().take_children(&mut children);
@@ -279,6 +313,25 @@ impl GcObj {
     }
 
     /// The object's identity, or `None` if refcounting already freed it.
+    /// Tell the cell it is old. See `GcCell::old`.
+    fn mark_old(&self) {
+        fn m<T: GcContents>(w: &Weak<GcCell<T>>) {
+            if let Some(rc) = w.upgrade() {
+                rc.mark_old();
+            }
+        }
+        match self {
+            GcObj::Env(w) => m(w),
+            GcObj::Inst(w) => m(w),
+            GcObj::Arr(w) => m(w),
+            GcObj::SetV(w) => m(w),
+            GcObj::Rec(w) => m(w),
+            GcObj::MapV(w) => m(w),
+            GcObj::Prom(w) => m(w),
+            GcObj::Gen(w) => m(w),
+        }
+    }
+
     fn ptr(&self) -> Option<usize> {
         fn p<T: GcContents>(w: &Weak<GcCell<T>>) -> Option<usize> {
             w.upgrade().map(|rc| Rc::as_ptr(&rc) as usize)
@@ -642,6 +695,11 @@ fn collect_gen(roots: &Roots, major: bool) -> GcStats {
     OLD.with(|old| {
         let mut old = old.borrow_mut();
         for (p, obj) in promoted {
+            // The cell has to learn this before anything can write to it or
+            // drop it, or its barrier and its removal are both skipped. This is
+            // the only place anything enters `OLD`, which is what makes the
+            // flag safe to trust.
+            obj.mark_old();
             old.insert(p, obj);
         }
     });

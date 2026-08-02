@@ -99,6 +99,36 @@ So: do not build a typed `Map` expecting `reconcile` to move. The way to know
 what would move it is to keep walking this table until `render` compiles, in a
 scratch copy, before writing any engine code at all.
 
+## strings: the write barrier and the drop were asking a question they knew
+
+`strings` is 4.6x from Tier 1 and fully compiled, so its time is *in* generated
+code. `sample` over a 4M-iteration run said otherwise about what that code
+spends it on — allocator ~15%, arena and GC ~14%, `memmove`/`memcmp` ~9%, and
+the actual searching (`str_search`, `find_units`) ~5%.
+
+Two entries were the same fact. `GcCell::drop` was the single largest symbol at
+7%, and `_tlv_get_addr` — thread-local access — was 3%. Both came from asking
+`OLD` a question: the drop removed the cell from `OLD` and `REMEMBERED`, and
+`borrow_mut` asked `OLD` whether to remember a write. For a young object the
+answer is always no, and every `s.split(".")` in a parse loop allocates one and
+lets it go.
+
+The cell remembers instead — one bool, set at the single place anything enters
+`OLD`. The asymmetry is what makes it safe: a stale `true` costs a wasted probe
+and a conservative extra root; a stale `false` is a missed write barrier and an
+object swept while live. So it is set on promotion and never cleared.
+
+| workload | before | after |
+|---|---:|---:|
+| strings | 57.0 | **43.3** |
+| reconcile | 60.2 | **54.8** |
+| url | 10.06 | **9.53** |
+| encoding | 1.53 | 1.52 |
+
+Measured back to back on one machine, median of six, same checksums.
+`_tlv_get_addr` leaves the profile entirely. `strings` against the Node twin
+goes from 2.1x to 1.7x.
+
 ## The rest of the profile
 
 `Value::clone` and `drop_glue<Value>` together are 16%, which is the 16-byte
