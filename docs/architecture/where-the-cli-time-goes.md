@@ -186,6 +186,43 @@ wrong: it can drop a value, which re-enters and finds the queue borrowed. The
 existing cycle-collector test catches that; a 300k-link chain does not, which is
 why both now exist.
 
+## reconcile, profiled again
+
+Unchanged after everything above. 3562 samples, `N=5000`:
+
+| symbol | share |
+|---|---:|
+| `vm::exec` | 27% |
+| `drop_glue<Value>` | 10% |
+| `Value::clone` | 6.7% |
+| `Interp::call_member` | 4.4% |
+| `Interp::try_jit_args` | 3.7% |
+| `mi_malloc_aligned` | 2.7% |
+
+`call_member` is the *general* method path — what a `Map` or `Set` call takes,
+since the inline cache is for instances. It looked like a target: `split_args`
+builds a `Vec` with `split_off` for every one of them, and `str_member_units`
+already exists to avoid exactly that for strings, justified when it was written
+by a measurement.
+
+**Tried, and neutral.** A slice-based `map_set_member` for `get`/`set`/`has`/
+`add`/`remove` measured 54.18ms against 54.55ms — inside the noise, on
+overlapping distributions. Reverted, and not only for the absence of a gain: it
+duplicates `Map::set`'s insertion-order promise into a second place that has to
+keep agreeing with the first, which is a poor trade for nothing.
+
+That is the third allocation-removal this session to come out neutral, after the
+string-buffer pool and the receiver-clone move. The pattern is consistent enough
+to state as a rule: **removing one small allocation per operation is not
+measurable here.** mimalloc's small-size path is about as cheap as whatever
+replaces it, and the changes that have shown up — the closure allocation at
+4.8%, the GC flag at 24% — removed work from *every* operation rather than one
+allocation from each.
+
+So `reconcile` still says what it said: 27% in `vm::exec`, all of it the one
+refused method, and nothing else on the list is worth attacking while that
+stands.
+
 ## What is left needs a decision, not a patch
 
 After all of the above the profile is allocator-shaped: `mi_malloc_aligned`
