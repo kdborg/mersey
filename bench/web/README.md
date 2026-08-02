@@ -213,6 +213,28 @@ the message pointed at the wrong thing entirely. `global` returns `-1` for a
 present-but-undefined global now, and the error says `navigator is not
 defined`.
 
+**A passing run can still be drifting, and now says so.** The gate fails at
+`PERF_TIME_TOL` (1.5×), which is the right threshold for failing a build on a
+machine this noisy and the wrong one for noticing: anything under it prints
+`PASS` and nothing else. `frameworkui` sat at 1.16–1.20× its baseline across
+six runs and passed every time. So a workload past `PERF_TIME_NOTE` (1.1×) now
+prints its ratio on the row and is listed again at the end. Pass and fail are
+unchanged; only the reporting is.
+
+That threshold also separates drift from heat. In a *full* 28-workload run
+`frameworkui2` and `xhr` read 1.08× and 1.09×, and in a filtered run of four
+they read 1.09× and 1.02× — they are downstream of `calls` (27s) and `compute`
+(44s) warming the machine. `frameworkui` reads 1.16× either way, which is what
+makes it the real one.
+
+**`frameworkui` is 1.16–1.20× its baseline and nobody knows why yet.** Recorded
+here rather than fixed, as `locks` above. What is ruled out: it is not
+`crates/mersey_interp` (reverting the whole crate to `8144143` and rebuilding
+the wasm changes nothing), and it is not the hash-backed `Map`, which predates
+the baseline. Peak RSS is *down* 13% at the same time, so something traded
+memory for time somewhere in the 48 commits since `32c0d72`. The engine leg has
+no JIT, so none of the Tier-1 work in that range can be responsible.
+
 When extending a platform's coverage, filter with `PERF_WL` to the workloads you
 are *adding*: `--update` merges `{...baselines, ...fresh}`, so re-running it over
 a workload that already has a baseline silently re-records it at today's number

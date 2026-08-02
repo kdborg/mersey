@@ -28,6 +28,17 @@ const BASELINE_FILE = join(here, "perf-baselines.json");
 
 const REPEATS = Number(process.env.REPEATS ?? 2);
 const TIME_TOL = Number(process.env.PERF_TIME_TOL ?? 1.5);
+// Where a passing run starts saying so out loud. The gate fails at TIME_TOL,
+// which is deliberately loose — it guards against gross regressions on a noisy
+// machine, and 1.5x is the right threshold for *failing* a build. It is the
+// wrong threshold for *noticing*: `frameworkui` sat 19% over its baseline
+// across four runs and printed PASS every time, which is exactly the shape of
+// thing this file exists to catch. So a deviation this side of the gate is
+// still worth a word.
+const TIME_NOTE = Number(process.env.PERF_TIME_NOTE ?? 1.1);
+
+/// Workloads that passed but drifted, reported together at the end.
+const drift = [];
 const MEM_TOL = Number(process.env.PERF_MEM_TOL ?? 1.4);
 const TIME_FLOOR_MS = 20; // below this, a diff is noise, not a regression
 const MEM_FLOOR_KB = 8192;
@@ -134,7 +145,10 @@ for (const wl of WORKLOADS) {
   if (timeBad) fail(`${tag} — time regression (> ${TIME_TOL}x)`);
   else if (rssBad) fail(`${tag} — peak-RSS regression (> ${MEM_TOL}x)`);
   else if (heapBad) fail(`${wl}: wasm heap ${heap} > baseline ${b.heap} × ${MEM_TOL} — engine heap regression`);
-  else pass(tag);
+  else if (ms > b.ms * TIME_NOTE && ms - b.ms > TIME_FLOOR_MS) {
+    drift.push(`${wl} ${(ms / b.ms).toFixed(2)}x`);
+    pass(`${tag}  ← ${(ms / b.ms).toFixed(2)}x baseline`);
+  } else pass(tag);
 }
 
 server.close();
@@ -155,3 +169,11 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log(`\nperf: all ${WORKLOADS.length} workloads within tolerance`);
+if (drift.length) {
+  // Not a failure. A run that passes while drifting is the state this gate is
+  // least able to describe, so it says it rather than leaving it in the rows.
+  console.log(
+    `perf: ${drift.length} over ${TIME_NOTE}x baseline — ${drift.join(", ")}\n` +
+      `      (the gate fails at ${TIME_TOL}x; re-baseline with --update if this is intended)`,
+  );
+}
