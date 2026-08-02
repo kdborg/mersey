@@ -52,13 +52,33 @@ alongside it was 4.8%, at roughly twenty-five. The 22% is thousands of small
 clones, and nothing that removes them one at a time will show up.
 
 The structural lever is `Op::LoadSlot`. A load clones because the local keeps
-its value, but a load that is the *last* read of a local before it is
-overwritten or goes out of scope could move and leave the slot empty. In
-`fold`'s `const r = rows[i]; s = s + (i + 1) * (r.id * 1000 + r.v)` the second
-read of `r` is exactly that. It needs path-sensitive liveness over the bytecode
-— a load on a loop's back edge is not a last use however it looks locally — so
-it is a compiler feature with a correctness risk, not a peephole. Unattempted,
-and the only thing identified that could move this number.
+its value, but a load that is the *last* read before the local is overwritten or
+goes out of scope could move and leave the slot empty. In `fold`'s
+`const r = rows[i]; s = s + (i + 1) * (r.id * 1000 + r.v)` the second read of
+`r` is exactly that.
+
+**Scoped, and not worth building.** Three costs, and the third is the one that
+decides it:
+
+1. It needs path-sensitive liveness over the bytecode — a load on a loop's back
+   edge is not a last use however it looks locally. The chunk compiler emits
+   linearly from the AST and has no dataflow pass to hang this on.
+2. It would have to agree *exactly* with Tier 1's own liveness. `try_osr` reads
+   every frame slot and maps `Value::Null` to a zero or a null pointer; if this
+   analysis nulls a slot the JIT's analysis thinks is live, OSR hands compiled
+   code a zero for a real value. Two independent analyses, one wrong answer if
+   they disagree anywhere.
+3. **It breaks the debugger.** `exec` reads every named slot on each statement
+   when `debugging` — `chunk.slot_names` zipped against the live frame, straight
+   into `debug_vm_stmt`. A moved-out local reads `null` while the source says it
+   is still in scope, so a variable would vanish from the inspector partway
+   through its own lifetime. That is a regression in a feature currently being
+   built out per browser, traded for an *estimated* gain in one that is already
+   measured as unaddressable a clone at a time.
+
+So the 22% stands. Not because it is irreducible in principle, but because the
+one mechanism that would reduce it costs correctness surface in two places and
+observable behaviour in a third.
 
 ## A method call allocated, and did not need to
 
