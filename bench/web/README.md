@@ -227,13 +227,33 @@ they read 1.09× and 1.02× — they are downstream of `calls` (27s) and `comput
 (44s) warming the machine. `frameworkui` reads 1.16× either way, which is what
 makes it the real one.
 
-**`frameworkui` is 1.16–1.20× its baseline and nobody knows why yet.** Recorded
-here rather than fixed, as `locks` above. What is ruled out: it is not
-`crates/mersey_interp` (reverting the whole crate to `8144143` and rebuilding
-the wasm changes nothing), and it is not the hash-backed `Map`, which predates
-the baseline. Peak RSS is *down* 13% at the same time, so something traded
-memory for time somewhere in the 48 commits since `32c0d72`. The engine leg has
-no JIT, so none of the Tier-1 work in that range can be responsible.
+**`frameworkui` is 1.16–1.20× its baseline, and no committed change explains
+it.** Recorded here rather than fixed, as `locks` above.
+
+The whole list of things changed since `32c0d72` that the engine leg can even
+see is `crates/mersey_interp`, `web/mersey-bridge.js`, and nothing else —
+`mersey_jit` and `mersey_capi` are not in the wasm build, and `bench/web`'s
+workloads, `engine-child.mjs`, `mersey_front`, `mersey_wasm` and `Cargo.lock`
+are untouched. Both were reverted to `32c0d72` and measured:
+
+| tree | frameworkui |
+|---|---|
+| HEAD | 800–833ms |
+| `crates/mersey_interp` at `8144143` | 825–844ms |
+| `web/mersey-bridge.js` at `32c0d72` | 809ms |
+| baseline recorded at `32c0d72` | 688.5ms |
+
+Thermal throttling is out too: `compute` (44s) and `calls` (27s) both sit *at*
+their baselines, and they would be the first to suffer.
+
+So the baseline is not reproducible from the repository at any commit in the
+range, which points at how it was recorded rather than at what has changed since
+— most likely an uncommitted tree, or a different host environment. Peak RSS is
+also *down* 13%, which is a large enough signal to be worth explaining and is
+not explained.
+
+**Not re-baselined on purpose.** `--update` would make the line go away and take
+the 1.18× with it, and an unexplained ratio is worth more visible than tidy.
 
 When extending a platform's coverage, filter with `PERF_WL` to the workloads you
 are *adding*: `--update` merges `{...baselines, ...fresh}`, so re-running it over
