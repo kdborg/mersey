@@ -172,6 +172,17 @@ along — so the crossing works there and something else is now in the way. Its
 timing is unchanged, and the measurement window was too noisy (55.5–57.5ms
 across nine runs) to claim otherwise.
 
+## Where this stops paying
+
+Across `std-hot` and all six `bench/cli` workloads there are **five refusals
+left**, two of them the same function twice removed. The histogram that drove
+everything above has run out of entries, and `where-the-cli-time-goes.md` has
+the profile that says what to do instead: `bench/cli/reconcile` spends 27% of
+its samples in `vm::exec`, all of it one refused method, and both of that
+method's blockers are values coming out of a `Map` — which this tier holds as
+an untyped opaque. Rewriting one of them away moves the refusal four lines and
+buys nothing, so neither is worth fixing alone.
+
 **It bought no time.** `bench/cli/url` measured 9.50ms before and 9.51ms after,
 same checksum, 11 warm samples each. The three hot callers still refuse — one op
 later than they used to — so `decode` stays interpreted and compiling the
