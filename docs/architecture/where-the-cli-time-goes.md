@@ -40,6 +40,22 @@ through, which is the honest asterisk on the two largest numbers — the engine
 was worst at exactly the work nobody had been measuring, and adding the workload
 is what found it.
 
+**Re-measured after a further dozen commits of coverage work: unchanged.** 3.15×
+against 3.09×, every row within noise of where it was. Those commits took
+`tools/std-hot.mersey` from 30 compiled / 10 refused to **38 / 0** and 11% of
+its wall time, and moved this arena not at all.
+
+That is worth stating plainly, because `std-hot` is a *driver* written to rank
+coverage gaps, not a benchmark. Its compiled/refused count is a good map of what
+Tier 1 cannot do and a poor proxy for what anything runs faster. The shapes
+those commits fixed — nested arrays, arrays of instances, a method compiled
+before its first call — are the shapes `std:` is written in and `bench/cli` does
+not reach, except in `reconcile`, whose hot method is refused for a different
+reason entirely.
+
+Coverage is not speed. It has been said in this file twice already and is worth
+a third.
+
 **The gap that remains is `reconcile`.** `REPORT.md` puts Bun at 5.5ms against
 this engine's ~56, an order of magnitude, where the same table has Mersey ahead
 of all three runtimes on `calls`, `crypto`, `json` and `encoding`. Its hot
