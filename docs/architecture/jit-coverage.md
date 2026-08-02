@@ -190,10 +190,20 @@ something better. Five blockers found so far:
 | 2 | `GetMember` on what `nodes.get()` returned | open |
 | 3 | `CastOp`, an opaque cast to `int32` | **fixed** |
 | 4 | `CallMethod`, the array crossing a plain call already made | **fixed** |
-| 5 | `GetMember` on `rows[i]`, where `rows` is a literal-built local | open |
+| 5 | `GetMember` on `rows[i]`, where `rows` is a literal-built local | **fixed** |
+| 6 | `SetMember` of a call's array result into an array field | **fixed** |
+| 7 | `IndexSet`, an instance written back into its own array | **fixed** |
 
-Three of five were ordinary omissions, two of them shipped in a few lines each.
-The queue is enumerable, not endless.
+Five of seven were ordinary omissions and all five shipped, several in a few
+lines each. The queue is enumerable, not endless.
+
+**And the two that remain are one.** `work` refuses *because* `render` does:
+analysing a call adds the callee to the group and analyses it inline, in the
+same trace stream with no marker between them, so both refusals name the same
+op inside `render`. Counting them separately was counting one blocker twice —
+and reading the ops immediately before a refusal as belonging to the function
+the line names is the specific mistake, now written into `jit-refusals.mjs`
+beside the other two ways that trace has misled.
 
 **And the three that remain are one gap wearing three hats.** In each case the
 tier knows a container's *identity* and not what is inside it:

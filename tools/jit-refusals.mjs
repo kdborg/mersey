@@ -14,6 +14,14 @@
 //
 //   * The op named is the *last one analysed*, which is the one that failed —
 //     ops are printed after the decision to look at them.
+//   * …but it may belong to a **callee**, not to the function the line names.
+//     Analysing a call adds the callee to the group and analyses it *inline*,
+//     into the same stream, with no marker between them — so the op is always
+//     the one that failed, while the size and position beside it are the
+//     enclosing function's. `bench/cli/reconcile` shows this plainly: two
+//     refusals, `render` and the `work` that calls it, and both stop on the
+//     same op inside `render`. Counting them as two blockers is counting one
+//     twice.
 //   * A refusal with **no** op is a signature failure: `sig_of` declined before
 //     the body was read, which is a different bug from anything in the body.
 //   * `analysis accepted every op` means codegen or the entry wrapper refused,
