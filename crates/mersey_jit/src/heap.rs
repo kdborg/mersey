@@ -966,6 +966,29 @@ pub(crate) unsafe extern "C" fn val_index_get(arena: *mut Arena, h: u64, idx: i6
 ///
 /// # Safety
 /// As `global_val`.
+/// `xs[i] = v` where the value is a reference, handed over by arena handle.
+/// The twin of `val_index_set`, which carries only bits. 1 means it threw.
+///
+/// The handle is *taken* by the interpreter: compiled code mints it for this
+/// store and does not release it, so it has one owner the whole way — the same
+/// discipline `ArrayPush1` uses for the same reason.
+///
+/// # Safety
+/// As `global_val`.
+pub(crate) unsafe extern "C" fn val_index_set_ref(
+    arena: *mut Arena,
+    h: u64,
+    idx: i64,
+    eh: u64,
+) -> i64 {
+    unsafe {
+        match (*arena).interp_ptr() {
+            Some(ip) => (*ip).jit_val_index_set_ref(h, idx, eh),
+            None => 1,
+        }
+    }
+}
+
 pub(crate) unsafe extern "C" fn val_index_set(arena: *mut Arena, h: u64, idx: i64, v: i64) -> i64 {
     unsafe {
         match (*arena).interp_ptr() {

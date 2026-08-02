@@ -5044,6 +5044,26 @@ impl Interp {
         }
     }
 
+    /// `xs[i] = v` where the value is a reference — an instance, a string, an
+    /// array — handed over by arena handle rather than as bits. The twin of
+    /// `jit_val_index_set`, which can only carry a number.
+    ///
+    /// The handle is *taken*: compiled code minted it for this store and does
+    /// not release it, so ownership passes here exactly once.
+    pub fn jit_val_index_set_ref(&mut self, h: u64, idx: i64, eh: u64) -> i64 {
+        let o = self.jit_arena.get(h).cloned().unwrap_or(Value::Null);
+        let Some(v) = self.jit_arena.take(eh) else {
+            return 1;
+        };
+        match self.index_set(&o, &Value::I64(idx), v) {
+            Ok(()) => 0,
+            Err(t) => {
+                self.jit_host_error = Some(t);
+                1
+            }
+        }
+    }
+
     /// `random.fill(buf)` straight from compiled code.
     ///
     /// The general native path is name (or id) plus an argument array plus a

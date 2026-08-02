@@ -96,14 +96,35 @@ function viaReturn(n: int32): int32 {
     return sum;
 }
 
+/// Writing an element *back* — the other half of reading one. The value is
+/// handed to the store by arena handle, minted here and taken there, so it has
+/// one owner the whole way; getting that wrong leaks or double-frees rather
+/// than answering incorrectly, which is why the reads below are of contents.
+function swapEnds(n: int32): int32 {
+    const rows: Row[] = [];
+    for (let i: int32 = 0; i < n; i += 1) {
+        rows.push(new Row(i));
+    }
+    const first = rows[0];
+    rows[0] = rows[n - 1];
+    rows[n - 1] = first;
+    let h = 0;
+    for (let i: int32 = 0; i < rows.length; i += 1) {
+        h = (h * 31 + rows[i].id) % 1000003;
+    }
+    return h;
+}
+
 let a = 0;
 let b = 0;
 let c = 0;
 let d = 0;
+let e = 0;
 for (let r: int32 = 0; r < 2000; r += 1) {
     a = build(40);
     b = heldAcrossGrowth(40);
     c = mutateThrough(40);
     d = viaReturn(40);
+    e = swapEnds(40);
 }
-console.log(`${a} ${b} ${c} ${d}`);
+console.log(`${a} ${b} ${c} ${d} ${e}`);

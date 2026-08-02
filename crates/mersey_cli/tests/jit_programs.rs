@@ -925,7 +925,9 @@ fn an_array_of_instances_from_a_literal_agrees_across_the_tier_boundary() {
     // bare opaque. Asserting *no* refusals is the point — losing the element
     // type again would leave every answer above correct and cost the
     // compilation, which is what happened twice while this was being written.
+    // Writing an element back, by arena handle minted here and taken there.
+    assert!(out.trim_end().ends_with(" 200389"), "{out}");
     let (ok, no) = tier1_counts("obj-array-literal.mersey");
-    assert!(ok >= 5, "only {ok} functions compiled");
+    assert!(ok >= 6, "only {ok} functions compiled");
     assert_eq!(no, 0, "{no} functions refused, expected none");
 }

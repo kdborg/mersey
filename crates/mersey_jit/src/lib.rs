@@ -727,6 +727,8 @@ struct Plan {
     val_index_at: HashMap<usize, bool>,
     /// `xs[i]` where `xs` is an opaque array of instances, and of which class.
     val_index_obj_at: HashMap<usize, u32>,
+    /// `xs[i] = obj` where `xs` is an opaque array of instances.
+    val_index_set_ref_at: HashSet<usize>,
     /// `Return` sites handing back a native's opaque where a string is promised.
     val_ret_str: HashSet<usize>,
     /// String-valued property reads on an opaque (`u.pathname`).
@@ -1067,6 +1069,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut to_arr_at: HashMap<usize, Vec<(usize, Elem)>> = HashMap::new();
     let mut val_index_at: HashMap<usize, bool> = HashMap::new();
     let mut val_index_obj_at: HashMap<usize, u32> = HashMap::new();
+    let mut val_index_set_ref_at: HashSet<usize> = HashSet::new();
     let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
     let mut cell_prop_at: HashMap<usize, (u32, &'static str)> = HashMap::new();
     let mut array_at: HashMap<usize, i64> = HashMap::new();
@@ -2020,6 +2023,19 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     stack.push(TSlot::Val(v, Prov::Stable));
                     continue;
                 }
+                // `rows[1] = rows[k]` — an instance back into the array it came
+                // out of. The read side of this landed first and left the write
+                // as the next refusal, which is what `bench/cli/reconcile`'s
+                // `work` was stopping on.
+                if matches!(tval(base), Some(Ty::ObjArr(_)))
+                    && i.is_int()
+                    && matches!(v, Ty::Obj(_))
+                {
+                    val_index_set_ref_at.insert(pc);
+                    g.writes = true;
+                    stack.push(TSlot::Val(v, Prov::Stable));
+                    continue;
+                }
                 let Ty::Arr(e) = tval(base)? else {
                     return None;
                 };
@@ -2852,6 +2868,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         to_arr_at,
         val_index_at,
         val_index_obj_at,
+        val_index_set_ref_at,
         val_prop_str_at,
         cell_prop_at,
         array_at,
@@ -3012,6 +3029,7 @@ struct Shims {
     val_index_get: FuncId,
     val_index_str: FuncId,
     val_index_obj: FuncId,
+    val_index_set_ref: FuncId,
     val_index_set: FuncId,
     native_call: FuncId,
     random_fill: FuncId,
@@ -3107,6 +3125,10 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_val_index_get", heap::val_index_get as *const u8);
     builder.symbol("msy_val_index_str", heap::val_index_str as *const u8);
     builder.symbol("msy_val_index_obj", heap::val_index_obj as *const u8);
+    builder.symbol(
+        "msy_val_index_set_ref",
+        heap::val_index_set_ref as *const u8,
+    );
     builder.symbol("msy_val_index_set", heap::val_index_set as *const u8);
     builder.symbol("msy_native_call", heap::native_call as *const u8);
     builder.symbol("msy_random_fill", heap::random_fill as *const u8);
@@ -3585,6 +3607,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, handle, index, out) -> 0 ok / 1 threw
         val_index_str: one("msy_val_index_str", Some(types::I64), 4)?,
         val_index_obj: one("msy_val_index_obj", Some(types::I64), 4)?,
+        val_index_set_ref: one("msy_val_index_set_ref", Some(types::I64), 4)?,
         // (arena, handle, index, value) -> 0 ok / 1 threw
         val_index_set: one("msy_val_index_set", Some(types::I64), 4)?,
         // (arena, name_ptr, name_len, args_ptr, argc, fast_id) -> handle / 0 / u64::MAX
@@ -4147,6 +4170,7 @@ fn translate(
         val_index_get: module.declare_func_in_func(shims.val_index_get, b.func),
         val_index_str: module.declare_func_in_func(shims.val_index_str, b.func),
         val_index_obj: module.declare_func_in_func(shims.val_index_obj, b.func),
+        val_index_set_ref: module.declare_func_in_func(shims.val_index_set_ref, b.func),
         val_index_set: module.declare_func_in_func(shims.val_index_set, b.func),
         native_call: module.declare_func_in_func(shims.native_call, b.func),
         random_fill: module.declare_func_in_func(shims.random_fill, b.func),
@@ -5045,6 +5069,32 @@ fn translate(
                 let threw = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
                 guard(b, ctx, threw, R_HOST, pc, None);
                 stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            Op::IndexSet if p.val_index_set_ref_at.contains(&pc) => {
+                let SlotV::Obj(ptr, fields, _) = stack.pop()? else {
+                    return None;
+                };
+                let (i, it) = scalar(stack.pop()?)?;
+                let i = convert(b, i, it, Ty::I64);
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                // Minted here and taken by the shim: one owner the whole way,
+                // the same hand-over `ArrayPush1` makes.
+                let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
+                let eh = b.inst_results(c)[0];
+                let call = b.ins().call(shim.val_index_set_ref, &[arena_ptr, h, i, eh]);
+                let bad = b.inst_results(call)[0];
+                let threw = b.ins().icmp_imm(IntCC::NotEqual, bad, 0);
+                guard(b, ctx, threw, R_HOST, pc, None);
+                // `a[i] = v` evaluates to `v`, and the value's own registers say
+                // what that is. Zeroing the fields base would be fine for
+                // `rows[1] = r;` — a statement, nothing reads it — and wrong for
+                // `(rows[1] = r).v`, which is legal and would read field zero off
+                // a null base. Handle 0: the store took the reference that was
+                // minted for it, so what stays on the stack is a borrow.
+                let zero = b.ins().iconst(types::I64, 0);
+                stack.push(SlotV::Obj(ptr, fields, zero));
             }
             Op::IndexSet if p.val_index_at.contains_key(&pc) => {
                 let (v, vt) = scalar(stack.pop()?)?;
@@ -6697,6 +6747,7 @@ struct ShimRefs {
     val_index_get: cranelift_codegen::ir::FuncRef,
     val_index_str: cranelift_codegen::ir::FuncRef,
     val_index_obj: cranelift_codegen::ir::FuncRef,
+    val_index_set_ref: cranelift_codegen::ir::FuncRef,
     val_index_set: cranelift_codegen::ir::FuncRef,
     native_call: cranelift_codegen::ir::FuncRef,
     random_fill: cranelift_codegen::ir::FuncRef,
