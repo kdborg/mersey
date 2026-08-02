@@ -19,6 +19,34 @@ switched off, so the ratio is what compiling buys and nothing else.
 `crypto` needs `--allow-random`; without it the program raises before it times
 anything, which reads as a broken benchmark and is not one.
 
+## What a session of this moved
+
+Both engines built and run alternately in one window — run-by-run, not all of
+one then all of the other, so drift lands on both sides. Checksums identical on
+every row.
+
+| workload | before | after | |
+|---|---:|---:|---|
+| strings | 355.45 | 47.24 | **7.5×** |
+| crypto | 3.32 | 0.55 | **6.0×** |
+| encoding | 4.22 | 1.65 | **2.6×** |
+| reconcile | 149.50 | 60.53 | **2.5×** |
+| url | 25.00 | 10.60 | **2.4×** |
+| json | 1.07 | 0.83 | **1.3×** |
+
+Geometric mean 3.1×. `crypto`, `encoding`, `json` and `url` are byte-identical
+source across the two builds; `strings` and `reconcile` were *added* partway
+through, which is the honest asterisk on the two largest numbers — the engine
+was worst at exactly the work nobody had been measuring, and adding the workload
+is what found it.
+
+**The gap that remains is `reconcile`.** `REPORT.md` puts Bun at 5.5ms against
+this engine's ~56, an order of magnitude, where the same table has Mersey ahead
+of all three runtimes on `calls`, `crypto`, `json` and `encoding`. Its hot
+method is refused by Tier 1 for several unrelated reasons at once (see
+`jit-coverage.md`), so it runs interpreted in a benchmark built to look like a
+UI framework's reconciler — which is the shape of work this engine exists for.
+
 ## Coverage is not the lever any more, except in one place
 
 Across `tools/std-hot.mersey` and all six workloads there are **five refusals
