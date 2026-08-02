@@ -1050,3 +1050,66 @@ conditions are in the test now.
 
 With that done, the `string`/`string?` merge rule above has nothing left
 standing in its way.
+## The refusal queue is exhausted
+
+Coverage across the whole CLI arena, at the end of this session's coverage work:
+
+| workload | compiled | refused |
+|---|---:|---:|
+| `crypto` | 0 | 0 |
+| `encoding` | 1 | 0 |
+| `json` | 1 | 0 |
+| `strings` | 2 | 0 |
+| `url` | 4 | 0 |
+| `std-hot` | 38 | 0 |
+| `reconcile` | 14 | **2** |
+
+Every workload but one refuses nothing. `reconcile`'s two are `render` (230 ops)
+and its neighbour (164), and both stop on the same `IndexGet`: the
+`for (const [id, entry] of nodes.entries())` destructure, where the pair's second
+element has no type this tier can name.
+
+**They are one blocker, not two.** `entry.node` needs `nodes` to be known as a
+`Map<int32, Entry>`; so does `nodes.get(...)`. The two items this queue has been
+carrying separately — "the `entries()` pair" and "the Map value type" — are the
+same piece of work, and the pair cannot be usefully typed without it.
+
+### What it would cost, and why it is not built
+
+The shape is known, because `Ty::ObjArr` is the same idea for the other
+container: the checker publishes the element type from `note_local`, the chunk
+carries it per slot, and the reads type against it. That is four files and a new
+entry in the type lattice.
+
+What decides against it is the *return*, measured rather than assumed. The
+interpreter profile puts `vm::exec` at 27% of `reconcile` with Tier 1 on, and
+that 27% is every interpreted thing in the workload, of which `render` is the
+largest but not the whole. Compiling it does not make it free — a Map-heavy
+method with host calls is exactly the shape Tier 1 does least well on. Call the
+realistic gain half of that 27%, on one workload of six: **~2% of the arena.**
+
+Against a track record, in this same file, of `Ty::ObjArr` silently costing
+coverage *twice* by being missing from a `Ty::Val` acceptance list — regressions
+no checksum could see, found only because the refusal count was watched.
+
+### The mechanism, kept where it can be found
+
+The destructure half was built and then reverted: a look-ahead in the `IndexGet`
+analysis that recognises `Dup; Const; IndexGet` and types the pair as a
+container, plus a `msy_val_index_val` shim handing the element back as its own
+arena entry. It is correct — checksums unchanged, the analysis reaches one op
+further, to the `GetMember` on `entry.node` — and it is **dead**, because that
+`GetMember` is the blocker above and nothing in the arena reaches the new arm.
+
+It was reverted rather than kept: a shim and handle plumbing carried for a
+prerequisite to work that is not being done is a liability. The diff is in
+`.build-logs/val-index-val.patch` for whoever builds the Map value type.
+
+### The general result
+
+This is the third time in this session's notes that coverage and speed have come
+apart, and the clearest. A dozen coverage commits took `std-hot` from 30/10 to
+38/0 and moved the CLI arena from 3.09x to 3.15x. The queue is now empty except
+for one item whose ceiling is 2%, which means **refusals have stopped being where
+the time is.** Further speed has to come from the quality of what is already
+compiled, or from the interpreter, not from compiling more.
