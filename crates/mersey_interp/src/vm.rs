@@ -3340,10 +3340,12 @@ fn exec(
                 // interpreter. A method call is what object-oriented code is made
                 // of; it cost more than twice a plain one.
                 let inline = if let Value::Instance(inst) = &stack[at] {
-                    let (cid, cls) = {
-                        let b = inst.borrow();
-                        (b.class.id, b.class.clone())
-                    };
+                    // The id is all the cache needs, and the cache is the point:
+                    // taking a reference to the class as well cost an `Rc` bump
+                    // and a matching decrement on *every* method call, to hand
+                    // `method_of` something it is not asked for unless the site
+                    // is polymorphic or cold.
+                    let cid = inst.borrow().class.id;
                     let slot = &chunk.method_cache[ni as usize];
                     let hit = match &*slot.borrow() {
                         Some((c, d, k)) if *c == cid => Some((d.clone(), k.clone())),
@@ -3351,7 +3353,11 @@ fn exec(
                     };
                     let found = match hit {
                         Some(x) => Some(x),
-                        None => match i.method_of(&cls, &chunk.names[ni as usize]) {
+                        // The borrow ends with the statement: `method_of` walks
+                        // the class chain and must not find this one held.
+                        None => match i
+                            .method_of(&inst.borrow().class.clone(), &chunk.names[ni as usize])
+                        {
                             Some((d, k)) => {
                                 *slot.borrow_mut() = Some((cid, d.clone(), k.clone()));
                                 Some((d, k))
