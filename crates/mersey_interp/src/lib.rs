@@ -6193,9 +6193,25 @@ impl Interp {
         if c.this.is_some() || c.cls.is_some() || c.data.is_async {
             return None;
         }
-        // Nothing captured beyond the scope the caller itself resolves in: a
-        // nested closure holding locals is not a direct call.
-        if !Rc::ptr_eq(&c.env, env) {
+        // Nothing captured beyond a module scope: a nested closure holding
+        // locals is not a direct call, and calling one without its captures
+        // would read the wrong values.
+        //
+        // "The caller's own scope" was too strict a way to say that. Every
+        // module gets `child_env(&self.root)` (see `run_modules`), so an
+        // *imported* function's env is its own module's and never the caller's —
+        // which refused every cross-module call, and so refused any function
+        // that calls into `std:`. A closure whose env hangs directly off the
+        // root captured nothing but its module, and that is the property this
+        // wants. The callee is compiled against `c.env` either way (see `scope`
+        // below), so its own free names still resolve where it was written.
+        let own_module = c
+            .env
+            .borrow()
+            .parent
+            .as_ref()
+            .is_some_and(|p| Rc::ptr_eq(p, &self.root));
+        if !Rc::ptr_eq(&c.env, env) && !own_module {
             return None;
         }
         // A function is compiled to bytecode on its first *call*, so a callee on

@@ -57,6 +57,33 @@ generated code is the same and a timing difference between the two builds has no
 mechanism. That is how a believed 3% regression turned out to be noise, after
 being measured back-to-back and still read wrong.
 
+## Calls into another module
+
+`top_level_fn` refused them, and so refused any function that calls into
+`std:` — which is most library-using code. The guard read:
+
+    // Nothing captured beyond the scope the caller itself resolves in.
+    if !Rc::ptr_eq(&c.env, env) { return None; }
+
+The comment is right about what it guards: a nested closure holding locals is
+not a direct call, and calling one without its captures reads the wrong values.
+"The caller's own scope" is a stricter thing than that, though. `run_modules`
+gives every module `child_env(&self.root)`, so an *imported* function's env is
+its own module's and never the caller's, and the two are never pointer-equal.
+
+The test is now that the callee's env hangs directly off the root, which is what
+"captured nothing beyond a module scope" actually means. The callee is compiled
+against `c.env` either way, so its own free names still resolve where it was
+written — and `tests/jit/cross-module.mersey` checks exactly that rather than
+merely checking that it compiles: two modules each export a `tag` and a
+`shared`, each `shared` calls its own `tag`, and crossed resolution is a wrong
+answer rather than a bail.
+
+Found by `tools/jit-refusals.mjs` over `tools/std-hot.mersey` on its first run,
+ranked top with three functions stopping there. The refusals moved to `CastOp` —
+`(x as Bytes)` after a null check, which the checker requires and which is
+therefore everywhere — and that is now the top entry.
+
 ## What it compiles
 
 **Numbers, booleans, objects, arrays** — the original tier. Slots are registers;

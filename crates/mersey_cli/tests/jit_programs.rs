@@ -710,3 +710,22 @@ fn array_destructuring_agrees_across_the_tier_boundary() {
     assert!(out.contains("arrays     3434"), "{out}");
     assert!(out.contains("repeated   7700000"), "{out}");
 }
+
+/// A call to a function imported from another module — which `top_level_fn`
+/// refused, and with it any function that calls into `std:`.
+///
+/// The guard wanted "captured nothing beyond a module scope" and said "the
+/// caller's own scope". Every module gets `child_env(&self.root)`, so an
+/// imported function's env is its own module's and never the caller's.
+///
+/// What this pins is not that it compiles but that it resolves *correctly*:
+/// both modules export a `tag` and a `shared`, and each `shared` calls its own
+/// `tag`. Crossed resolution gives 122 or 221 instead of 121 and 222 — a wrong
+/// answer, not a bail.
+#[test]
+fn a_call_into_another_module_agrees_across_the_tier_boundary() {
+    check("cross-module.mersey");
+    let out = run("cross-module.mersey", true);
+    assert!(out.contains("drive 73200000"), "{out}");
+    assert!(out.contains("one   11 12 121 222"), "{out}");
+}

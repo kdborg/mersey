@@ -1,0 +1,37 @@
+// A call to a function imported from another module.
+//
+// `top_level_fn` required the callee's closure env to be the *caller's own
+// scope*, reaching for "captured nothing beyond a module scope" and saying
+// something stricter. Every module gets `child_env(&self.root)` (see
+// `run_modules`), so an imported function's env is its own module's and never
+// the caller's — which refused every cross-module call, and with it any function
+// that calls into `std:`. That is most library-using code; the reason
+// `bench/cli/reconcile` compiled its helpers at all is that they are siblings in
+// one module.
+//
+// The test is now that the callee's env hangs directly off the root, which is
+// the property the comment always described. The callee is still compiled
+// against its own env, so its free names resolve where it was written — and
+// that is what this program checks rather than merely that it compiles: both
+// modules export a `tag` *and* a `shared`, and each `shared` calls its own
+// `tag`. Resolving to the wrong one is a wrong answer, not a bail.
+
+import { console } from "std:console";
+import { tag as tagA, shared as sharedA } from "./xmod/alpha.mersey";
+import { tag as tagB, shared as sharedB } from "./xmod/beta.mersey";
+
+/// Hot, so the cross-module calls are the compiled path.
+function drive(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + tagA(1) + tagB(1) + sharedA(2) + sharedB(2);
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`drive ${drive(200000)}`);
+// 11 and 12 are the two `tag`s; 121 and 222 are each module's `shared` reaching
+// its own — 21+100 and 22+200. Crossed resolution gives 122 or 221.
+console.log(`one   ${tagA(1)} ${tagB(1)} ${sharedA(2)} ${sharedB(2)}`);

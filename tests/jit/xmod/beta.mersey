@@ -1,0 +1,2 @@
+export function tag(n: int32): int32 { return n * 10 + 2; }
+export function shared(n: int32): int32 { return tag(n) + 200; }
