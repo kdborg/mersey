@@ -1991,7 +1991,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         };
                         if let Some(id) = sub {
                             str_sub_at.insert(pc, (id, n == 2));
-                            stack.push(TSlot::Val(ret, Prov::Stable));
+                            // A borrow of the receiver, not a copy of it — see
+                            // `heap::str_sub`. So it inherits the receiver's
+                            // provenance: a substring of a string held in a
+                            // re-assignable local is rooted in that local, and
+                            // the guard that stops such a borrow dangling has to
+                            // keep applying to it. Claiming `Stable` here would
+                            // be the use-after-free the `Prov` doc describes,
+                            // with the slice as the thing left pointing.
+                            stack.push(TSlot::Val(ret, prov(recv)));
                             continue;
                         }
                     }

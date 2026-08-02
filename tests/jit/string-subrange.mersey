@@ -13,6 +13,13 @@
 // bounds the wrong way round, an index past the end, and an index that lands
 // inside a surrogate pair.
 //
+// The three that used to allocate no longer do: a substring is a contiguous
+// subrange, and inside a compiled frame a string is already a pointer and a
+// length, so `slice`/`substring`/`charAt` are pointer arithmetic and hand back a
+// **borrow** of the receiver. `heldAcross` is the hazard that introduces — the
+// borrow's units belong to a slot that is then overwritten — and the answer has
+// to be what the borrow said when it was taken.
+//
 // Note what `neg` shows: a negative index clamps to 0 for `slice` and counts
 // from the end for `charAt`, and JS does neither. That is existing behaviour,
 // unspecified in `docs/spec`, and deliberately left alone here — this pins it so
@@ -51,3 +58,35 @@ console.log(`rev   ${probe("abcd", 3, 1)}`);
 // Empty range, and entirely past the end.
 console.log(`zero  ${probe("abcd", 0, 0)}`);
 console.log(`past  ${probe("abcd", 7, 9)}`);
+
+/// A substring held across the reassignment of the slot it was taken from.
+///
+/// The slice borrows the receiver's units. If that borrow reached the read
+/// below still pointing at the *old* `s`, the answer would be the right length
+/// and the wrong contents, which is the failure `Prov` exists to stop — so the
+/// slice carries the receiver's provenance and the store promotes it.
+function heldAcross(a: string, b: string): string {
+    // Built here, so the *frame* owns it and overwriting the slot releases it.
+    // A parameter would not do: the caller keeps its buffer alive, and the
+    // borrow would read the right answer whether or not it was promoted.
+    let s = `${a}!`;
+    const part = s.slice(2, 7);
+    // Overwrite the slot the borrow is rooted in, then allocate hard enough
+    // that a freed entry would have been reused by the time `part` is read.
+    s = `${b}?`;
+    // Churn that *allocates*. Slicing no longer does, so a loop of slices
+    // leaves the freed buffer untouched and a stale pointer reads the right
+    // bytes by luck — which is exactly how the first version of this test
+    // passed against a deliberately broken provenance.
+    let churn = 0;
+    for (let k: int32 = 0; k < 8; k++) {
+        churn = churn + `${s}#${k}`.length;
+    }
+    return `${part}|${s.slice(0, 3)}|${churn}`;
+}
+
+let held = "";
+for (let r: int32 = 0; r < 3000; r++) {
+    held = heldAcross("abcdefghij", "0123456789");
+}
+console.log(`held     ${held}`);

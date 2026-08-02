@@ -150,12 +150,29 @@ sixteen times — `Rc<Vec<u16>>` is two allocations per string, and `slice` and
 `split` copy rather than share. V8 answers both with sliced strings, where a
 substring is a view onto its parent.
 
-Neither fix is available without a representation change. Sliced strings need a
-`Value` wider than 16 bytes (`repr::SIZE`, checked at runtime); `Rc<[u16]>`
-would halve the allocations per string but is a fat pointer, and a string slot
-in a compiled frame is one word. Both are decisions about the engine's shape
-rather than optimisations, and they are the whole of the remaining 1.7× against
-Node.
+Both were tried.
+
+**`Rc<[u16]>` is blocked**, and not by `unsafe_code = "forbid"` — `mersey_jit`
+has no `[lints]` section and does not inherit it. It is blocked at the argument
+boundary, where each argument already occupies exactly two cells, a value and an
+ownership handle, both spoken for. A slice needs three: pointer, length, owner.
+
+**Sliced strings did not need a wider `Value` at all**, because inside a
+compiled frame a string is *already* a pointer and a length. `slice`,
+`substring` and `charAt` name contiguous subranges, so `heap::str_sub` now
+returns a borrow — pointer arithmetic — where it used to build a `Vec`, wrap it
+in an `Rc` and park that in the arena. Worth **12% on `tools/std-hot.mersey`**
+(0.60s → 0.53s, non-overlapping over eight runs).
+
+It is worth **nothing on `strings`**, which is the workload it was meant for.
+Every slice there is stored straight into a local — often the same local, as in
+`s = s.slice(0, plus)` — and a stored borrow must be promoted, so the
+allocation moves from `str_sub` to `own_str` and the count is unchanged. The
+win is in library code that *consumes* a substring rather than keeping it.
+
+So the remaining 1.7× against Node stands, and what would close it is unchanged:
+a string value cheap enough to allocate, which is still a representation
+question.
 
 ## The rest of the profile
 

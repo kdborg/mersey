@@ -25,9 +25,9 @@
 use std::rc::Rc;
 
 use mersey_interp::{
-    alloc_instance, append_int_utf16, array_data, char_at_units, code_point_at_units, find_units,
-    gc::GcCell, instance_slots, new_array, rfind_units, slice_units, split_units_into,
-    substring_units, Arena, ClassDef, Instance, Value, WebArg, WebReplyRaw,
+    alloc_instance, append_int_utf16, array_data, code_point_at_units, find_units, gc::GcCell,
+    instance_slots, new_array, rfind_units, split_units_into, Arena, ClassDef, Instance, Value,
+    WebArg, WebReplyRaw,
 };
 
 /// Where an instance's fields live. Null in, null out: compiled code checks for
@@ -1133,7 +1133,7 @@ pub(crate) unsafe extern "C" fn str_code_point(sptr: *const u16, slen: usize, i:
 /// `sptr` names `slen` readable `u16`s, or `slen` is 0; `out` names three
 /// writable words; `arena` is the current call's live arena.
 pub(crate) unsafe extern "C" fn str_sub(
-    arena: *mut Arena,
+    _arena: *mut Arena,
     sptr: *const u16,
     slen: usize,
     a: i64,
@@ -1148,18 +1148,29 @@ pub(crate) unsafe extern "C" fn str_sub(
             std::slice::from_raw_parts(sptr, slen)
         };
         let bb = if b == i64::MIN { None } else { Some(b) };
-        let units = match id {
-            0 => slice_units(s, a, bb),
-            1 => substring_units(s, a, bb),
-            _ => char_at_units(s, a),
+        // A substring is a contiguous subrange, and inside a compiled frame a
+        // string is already a pointer and a length — so this is pointer
+        // arithmetic and not a copy. It used to build a `Vec`, wrap it in an
+        // `Rc` and park that in the arena: three allocations for a view.
+        //
+        // Handle 0, because the units belong to the receiver. That makes the
+        // result a *borrow*, and the analysis carries the receiver's provenance
+        // onto it so the guard that stops a borrow dangling still applies —
+        // returning one promotes it, storing one across an edge owns it, and
+        // handing one to a native parks it, all of which already existed for
+        // every other borrowed string.
+        let (start, end) = match id {
+            0 => mersey_interp::slice_bounds(s.len(), a, bb),
+            1 => mersey_interp::substring_bounds(s.len(), a, bb),
+            _ => mersey_interp::char_at_bounds(s.len(), a),
         };
-        let rc = std::rc::Rc::new(units);
-        let data = rc.as_ptr() as u64;
-        let len = rc.len() as u64;
-        let h = (*arena).keep(Value::Str(rc));
-        *out = data;
-        *out.add(1) = len;
-        *out.add(2) = h;
+        *out = if end > start {
+            s.as_ptr().add(start) as u64
+        } else {
+            0
+        };
+        *out.add(1) = (end - start) as u64;
+        *out.add(2) = 0;
     }
 }
 

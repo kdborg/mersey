@@ -10874,26 +10874,56 @@ pub(crate) fn str_member_units(rc: &Rc<Vec<u16>>, name: &str, args: &[Value]) ->
 /// negative index to 0 where JS counts from the end. That is existing behaviour
 /// and is not changed here — this moves the code, it does not redecide it.
 pub fn slice_units(s: &[u16], a: i64, b: Option<i64>) -> Vec<u16> {
-    let len = s.len() as i64;
+    let (start, end) = slice_bounds(s.len(), a, b);
+    s[start..end].to_vec()
+}
+
+/// The half-open range `slice` names, without taking it.
+///
+/// Split out so that compiled code can answer `slice` with a *borrow* — a
+/// substring is a contiguous subrange, so inside a compiled frame, where a
+/// string is already a pointer and a length, it costs pointer arithmetic and
+/// nothing else. The arithmetic has to be the interpreter's own or the two
+/// tiers would disagree about an edge, which is why it lives here rather than
+/// beside the shim that wants it.
+pub fn slice_bounds(len: usize, a: i64, b: Option<i64>) -> (usize, usize) {
+    let len = len as i64;
     let norm = |v: i64| v.clamp(0, len) as usize;
     let start = norm(a);
     let end = norm(b.unwrap_or(len));
     if start < end {
-        s[start..end].to_vec()
+        (start, end)
     } else {
-        Vec::new()
+        (0, 0)
     }
 }
 
 /// As `slice_units`, except that bounds the wrong way round are swapped rather
 /// than giving nothing — which is the whole difference between the two.
 pub fn substring_units(s: &[u16], a: i64, b: Option<i64>) -> Vec<u16> {
-    let len = s.len() as i64;
+    let (start, end) = substring_bounds(s.len(), a, b);
+    s[start..end].to_vec()
+}
+
+/// As `slice_bounds`, for `substring`: bounds the wrong way round are swapped.
+pub fn substring_bounds(len: usize, a: i64, b: Option<i64>) -> (usize, usize) {
+    let len = len as i64;
     let norm = |v: i64| v.clamp(0, len) as usize;
     let a = norm(a);
     let b = norm(b.unwrap_or(len));
-    let (start, end) = if a <= b { (a, b) } else { (b, a) };
-    s[start..end].to_vec()
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// As `slice_bounds`, for `charAt`: one unit, or nothing.
+pub fn char_at_bounds(len: usize, i: i64) -> (usize, usize) {
+    match resolve_at(i, len) {
+        Some(i) if i < len => (i, i + 1),
+        _ => (0, 0),
+    }
 }
 
 /// The i-th code *unit* as a one-unit string, or empty. Note `resolve_at`: a

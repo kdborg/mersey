@@ -4,3 +4,4 @@ neg   [abcd|abcd|abcd|abcd|c|99]
 rev   [|d|bc|bc|d|100]
 zero  [|abcd|||a|97]
 past  [|||||null]
+held     cdefg|012|104
