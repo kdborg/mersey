@@ -2190,20 +2190,73 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 for a in arg_slots {
                     args.push(tval(a)?);
                 }
-                let Ty::Obj(ci) = tval(recv)? else {
+                let Some(Ty::Obj(ci)) = tval(recv) else {
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   `{name}` is called on {:?}, which is not an object this \
+                             tier can dispatch on",
+                            tval(recv)
+                        );
+                    }
                     return None;
                 };
                 let cls = g.classes[ci as usize].clone();
                 // The whole of dispatch. If the engine will not answer, it is
                 // because something below this class overrides the method — and
                 // then there is no one body to call.
-                let f = g.env.method(&cls, &name)?;
-                let idx = g.add(f)?;
-                let sig = g.sigs[idx].clone();
-                if sig.params.len() != args.len()
-                    || !sig.params.iter().zip(&args).all(|(w, h)| arg_fits(*w, *h))
-                {
+                let Some(f) = g.env.method(&cls, &name) else {
+                    if *TRACE {
+                        // `direct_method` declines for seven reasons and does not
+                        // say which, so neither does this. Naming one of them
+                        // here would be a guess dressed as a diagnostic.
+                        eprintln!(
+                            "jit:   `{name}` is not a single describable body — an accessor, \
+                             host-backed, async, overridden below, not yet compiled, or a \
+                             body that yields or needs a scope"
+                        );
+                    }
                     return None;
+                };
+                let Some(idx) = g.add(f) else {
+                    if *TRACE {
+                        eprintln!("jit:   `{name}`'s own signature is undescribable");
+                    }
+                    return None;
+                };
+                let sig = g.sigs[idx].clone();
+                if sig.params.len() != args.len() {
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   `{name}` wants {} arguments, given {}",
+                            sig.params.len(),
+                            args.len()
+                        );
+                    }
+                    return None;
+                }
+                // The same two crossings a plain call already makes. A method
+                // call had neither, so `view.render(rows)` was refused for
+                // handing an array built from a literal to a declared `Row[]` —
+                // the codegen below has done this since arrays got two shapes,
+                // and only the analysis never asked for it.
+                let mut as_arr: Vec<(usize, Elem)> = Vec::new();
+                for (k, (want, have)) in sig.params.iter().zip(&args).enumerate() {
+                    if arg_fits(*want, *have) {
+                        continue;
+                    }
+                    if let (Ty::Arr(e), Ty::Val | Ty::StrArr) = (*want, *have) {
+                        as_arr.push((k, e));
+                        continue;
+                    }
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   `{name}` argument {k} is {have:?}, parameter wants {want:?}"
+                        );
+                    }
+                    return None;
+                }
+                if !as_arr.is_empty() {
+                    to_arr_at.insert(pc, as_arr);
                 }
                 method_at.insert(pc, idx);
                 // An object result is fresh or cloned by the callee: stable.

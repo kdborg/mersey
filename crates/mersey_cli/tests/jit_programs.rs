@@ -804,7 +804,11 @@ fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
     assert!(out.contains(" 1200 "), "{out}");
     // A *field* array — which reads as the direct `Ty::Arr` — passed to a
     // function that grows a different parameter.
-    assert!(out.trim_end().ends_with(" 13059"), "{out}");
+    assert!(out.contains(" 13059 "), "{out}");
+    // The same crossing through a method call, which `Op::CallMethod` did not
+    // make until the analysis was taught to ask for what the codegen already
+    // did.
+    assert!(out.trim_end().ends_with(" 2380"), "{out}");
     // And it has to actually compile. Both halves of the array-shape gap show
     // up here as *refusals*, which leave every answer above unchanged: asking
     // whether the body grows anything (rather than which parameter) stops the
@@ -813,9 +817,10 @@ fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
     // function, and only the counts can see it.
     let (ok, no) = tier1_counts("grow-param.mersey");
     assert!(ok >= 7, "only {ok} functions compiled");
-    // The one left is `words`, on an `int32?` cast that has nothing to do with
-    // arrays.
-    assert!(no <= 1, "{no} functions refused, expected at most 1");
+    // Nothing left. `words` was the last holdout, on an `int32?` cast, and that
+    // is a crossing now too. Asserting zero is deliberate: this file exists to
+    // notice when a shape stops compiling, and "at most one" cannot.
+    assert_eq!(no, 0, "{no} functions refused, expected none");
 }
 
 /// An opaque cast to `string`.

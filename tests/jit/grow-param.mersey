@@ -140,14 +140,41 @@ function fromField(h: Holder): int32 {
     return sum;
 }
 
+/// The same crossing, through a *method* call.
+///
+/// `Op::Call` learned this when arrays got two shapes and `Op::CallMethod` did
+/// not, so `view.render(rows)` was refused for handing an array built from a
+/// literal to a declared `Row[]` — while the identical plain call compiled. The
+/// codegen was shared the whole time; only the analysis never asked.
+class Summer {
+    public total: int32 = 0;
+    public addAll(xs: int32[]): void {
+        for (let j: int32 = 0; j < xs.length; j++) {
+            this.total = this.total + xs[j];
+        }
+    }
+}
+
+function viaMethod(n: int32): int32 {
+    const xs: int32[] = [];
+    for (let i: int32 = 0; i < n; i++) {
+        xs.push(i * 3 + 1);
+    }
+    const s = new Summer();
+    s.addAll(xs);
+    return s.total;
+}
+
 let a = 0;
 let b = 0;
 let c = 0;
 let d = 0;
+let e = 0;
 for (let r: int32 = 0; r < 200; r++) {
     a = build(40);
     b = words(40);
     c = filtered(40);
     d = fromField(new Holder(40));
+    e = viaMethod(40);
 }
-console.log(`${a} ${b} ${c} ${d}`);
+console.log(`${a} ${b} ${c} ${d} ${e}`);
