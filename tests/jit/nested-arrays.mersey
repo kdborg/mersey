@@ -1,0 +1,64 @@
+// `string[][]` — an array whose elements are arrays.
+//
+// `elem_of` declined this outright ("an array of arrays, or of anything this
+// tier has no register for"), so a `string[][]` *parameter* made a signature
+// undescribable and the function was refused before its body was read. That is
+// the type `std:csv` is written in: `parse` returns one and `stringify` takes
+// one, and between them they were the whole of what `tools/std-hot.mersey` had
+// left to compile.
+//
+// The element is an opaque, which this tier does have a shape for. Naming it
+// only as an opaque moves the problem one level in — a read off a bare `Ty::Val`
+// types as a number, so `row[j]` came back an `int32` where a string was wanted.
+// `Elem::StrArr` is the fix and `Ty::StrArr` already existed to be its type.
+//
+// The reads here are of contents, and of the innermost strings, because every
+// layer of this can be wrong while the shape stays plausible.
+
+import { console } from "std:console";
+
+/// A `string[][]` parameter — the signature that could not be described.
+function widths(rows: string[][]): int32 {
+    let total = 0;
+    for (const row of rows) {
+        for (const field of row) {
+            total = total + field.length;
+        }
+    }
+    return total;
+}
+
+/// …and one returned, built a row at a time.
+function grid(n: int32): string[][] {
+    const rows: string[][] = [];
+    for (let i: int32 = 0; i < n; i += 1) {
+        const row: string[] = [];
+        for (let j: int32 = 0; j < 3; j += 1) {
+            row.push(`r${i}c${j}`);
+        }
+        // Pushing an array *into* an array: both are opaques, and the one that
+        // knows its elements was refused where the one that does not was taken.
+        rows.push(row);
+    }
+    return rows;
+}
+
+/// Indexing two levels down, and reading the string that comes out.
+function innermost(rows: string[][], i: int32, j: int32): int32 {
+    const row = rows[i];
+    const cell = row[j];
+    let h = 0;
+    for (let k: int32 = 0; k < cell.length; k += 1) {
+        h = (h * 31 + cell.charAt(k).length * (k + 1)) % 1000003;
+    }
+    return h + cell.length;
+}
+
+let a = 0;
+let b = 0;
+for (let r: int32 = 0; r < 3000; r += 1) {
+    const g = grid(12);
+    a = widths(g);
+    b = innermost(g, 5, 2);
+}
+console.log(`${a} ${b}`);

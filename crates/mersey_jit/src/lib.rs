@@ -147,6 +147,21 @@ enum Elem {
     /// and writing one the same copy-into-the-cell — an array's elements are
     /// `Value`s in a buffer, exactly as an object's fields are.
     Str,
+    /// An element that is itself a container — `string[][]`, which is what
+    /// `std:csv` parses into and serialises from. It needs no more than this:
+    /// the element is an opaque, read as any opaque field is, and nothing here
+    /// has to know what is inside *it*.
+    ///
+    /// `elem_of` declined this outright, so a `string[][]` parameter made a
+    /// signature undescribable and took its function with it — `std:csv`'s
+    /// `stringify` was refused before its body was read.
+    Val,
+    /// …and the one nested shape worth naming: an element that is an array of
+    /// *strings*. `string[][]` is the type `std:csv` is written in, and leaving
+    /// its rows as bare opaques only moves the problem one level in — a field
+    /// read off one types as a number, because that is what an opaque with no
+    /// element type gives.
+    StrArr,
 }
 
 impl Elem {
@@ -158,6 +173,8 @@ impl Elem {
             Elem::Bool => Ty::Bool,
             Elem::Obj(c) => Ty::Obj(c),
             Elem::Str => Ty::Str,
+            Elem::Val => Ty::Val,
+            Elem::StrArr => Ty::StrArr,
         }
     }
 }
@@ -451,7 +468,15 @@ impl Group<'_> {
             FieldTy::Bool => Elem::Bool,
             FieldTy::Obj(c) => Elem::Obj(self.class_idx(c)),
             FieldTy::Str => Elem::Str,
-            // An array of arrays, or of anything this tier has no register for.
+            // An array of arrays: the element is an opaque, which is a shape
+            // this tier does have — and for `string[][]` a shape that knows
+            // what is inside it, which is the difference between `row[j]`
+            // reading as a string and reading as a number.
+            FieldTy::Arr(inner) => match &**inner {
+                FieldTy::Str => Elem::StrArr,
+                _ => Elem::Val,
+            },
+            // Anything else it has no register for.
             _ => return None,
         })
     }
@@ -2167,12 +2192,21 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     if !arg_slots.iter().all(|a| {
                         tval(*a).is_some_and(|t| {
                             t.is_num()
-                                || t == Ty::Val
                                 || t == Ty::Str
                                 // …and an object, which `box_arg` parks the way a
                                 // returned borrow is parked. `xs.push(row)` is
                                 // what a collection of anything is written to do.
-                                || matches!(t, Ty::Obj(_))
+                                //
+                                // The three opaques together: `Ty::Val` was here
+                                // and the two that know their elements were not,
+                                // which made `rows.push(row)` on a `string[][]`
+                                // refused for knowing what `row` held. They are
+                                // one handle either way as far as `box_arg` is
+                                // concerned.
+                                || matches!(
+                                    t,
+                                    Ty::Obj(_) | Ty::Val | Ty::StrArr | Ty::ObjArr(_)
+                                )
                         })
                     }) {
                         return None;

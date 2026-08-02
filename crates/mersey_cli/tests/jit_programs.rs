@@ -956,3 +956,28 @@ fn a_method_not_yet_called_does_not_refuse_its_caller() {
         "{no} refused — the caller was declined for a callee it had not run"
     );
 }
+
+/// `string[][]` — an array whose elements are arrays.
+///
+/// `elem_of` declined this outright, so a `string[][]` *parameter* made a
+/// signature undescribable and the function was refused before its body was
+/// read. That is the type `std:csv` is written in — `parse` returns one,
+/// `stringify` takes one — and between them they were the whole of what
+/// `tools/std-hot.mersey` had left to compile.
+///
+/// Naming the element only as an opaque moves the problem one level in: a read
+/// off a bare `Ty::Val` types as a number, so `row[j]` came back an `int32`
+/// where a string was wanted. The assertions read the innermost strings,
+/// because every layer of this can be wrong while the shape stays plausible.
+#[test]
+fn nested_arrays_agree_across_the_tier_boundary() {
+    check("nested-arrays.mersey");
+    let out = run("nested-arrays.mersey", true);
+    // 12 rows × 3 cells × 5 units.
+    assert!(out.starts_with("150 "), "{out}");
+    // Two levels down, hashed over the characters of the cell.
+    assert!(out.trim_end().ends_with(" 31814"), "{out}");
+    let (ok, no) = tier1_counts("nested-arrays.mersey");
+    assert!(ok >= 3, "only {ok} functions compiled");
+    assert_eq!(no, 0, "{no} refused");
+}
