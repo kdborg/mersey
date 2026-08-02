@@ -899,11 +899,20 @@ interpreted speed. For a **string** global it is `(0, 0)`: an empty string, no
 bail, a wrong answer. `std:url`'s `HEX` is one, which is how `encode` turned
 `%20` into `%`, and `%20sp` into ` sp`.
 
-Until a group can carry a scope per function, a function whose free names
-resolve somewhere other than the group's own scope may not read or write a
-global; everything else about it still compiles. That costs
-`tools/std-hot.mersey` two functions (33 compiled / 7 refused → 31 / 9) and
-`bench/cli/url` no measurable time — 9.54ms against 9.50ms, eleven warm samples.
+**The fix is a scope per function.** `JitCode::scopes` holds one entry per
+function in the group, indexed as the group indexes them; `Plan::scope_ix` is
+the other half, and the five shims that resolve a name (`global_str`,
+`global_val`, `global_num`, `global_set_num`, `global_web`) take it, so a read
+is looked up in the scope of the function *doing* the reading rather than
+whatever the group's root happened to be. The interpreter makes the group's own
+`Rc` current for the call, so that costs a refcount rather than a clone per
+function. `tools/std-hot.mersey` is back to 33 compiled / 7 refused.
+
+The first fix for this was a refusal — a function whose names resolved
+elsewhere could not read a global at all — which cost two of those functions
+and no measurable time. It is worth knowing that was available: the wrong
+answer was live, and turning it into a missed optimisation took fifteen lines
+against this one's hundred.
 
 **Why `tests/jit/module-globals.mersey` did not catch it**, having been written
 for exactly this: it called the library functions from top level, so each was
@@ -913,6 +922,5 @@ into it, and — the part that hid it for two commits — **no opaque global rea
 alongside**, because that one bails and the bail masks the string. All three
 conditions are in the test now.
 
-The real fix is a scope per function in the group: `JitCode` carrying one per
-entry and the global shims taking an index rather than reading whatever is
-current. That recovers the two functions and unblocks the merge rule above.
+With that done, the `string`/`string?` merge rule above has nothing left
+standing in its way.

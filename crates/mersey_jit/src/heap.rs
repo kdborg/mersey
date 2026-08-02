@@ -758,13 +758,14 @@ pub(crate) unsafe extern "C" fn random_fill(arena: *mut Arena, handle: u64) -> i
 /// constant embedded in the compiled body) that outlives the call.
 pub(crate) unsafe extern "C" fn global_web(
     arena: *mut Arena,
+    scope_ix: u64,
     name_ptr: *const u8,
     name_len: usize,
 ) -> i64 {
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_global_web(name),
+            Some(ip) => (*ip).jit_global_web(scope_ix, name),
             None => 0,
         }
     }
@@ -778,13 +779,14 @@ pub(crate) unsafe extern "C" fn global_web(
 /// As `global_web`.
 pub(crate) unsafe extern "C" fn global_val(
     arena: *mut Arena,
+    scope_ix: u64,
     name_ptr: *const u8,
     name_len: usize,
 ) -> u64 {
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_global_val(name),
+            Some(ip) => (*ip).jit_global_val(scope_ix, name),
             None => 0,
         }
     }
@@ -902,13 +904,14 @@ pub(crate) unsafe extern "C" fn val_index_set(arena: *mut Arena, h: u64, idx: i6
 /// As `global_val`.
 pub(crate) unsafe extern "C" fn global_num(
     arena: *mut Arena,
+    scope_ix: u64,
     name_ptr: *const u8,
     name_len: usize,
 ) -> i64 {
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_global_num(name),
+            Some(ip) => (*ip).jit_global_num(scope_ix, name),
             None => 0,
         }
     }
@@ -921,6 +924,7 @@ pub(crate) unsafe extern "C" fn global_num(
 /// As `global_num`.
 pub(crate) unsafe extern "C" fn global_set_num(
     arena: *mut Arena,
+    scope_ix: u64,
     name_ptr: *const u8,
     name_len: usize,
     kind: i64,
@@ -929,7 +933,7 @@ pub(crate) unsafe extern "C" fn global_set_num(
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
         match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_global_set_num(name, kind, bits),
+            Some(ip) => (*ip).jit_global_set_num(scope_ix, name, kind, bits),
             None => 1,
         }
     }
@@ -944,6 +948,7 @@ pub(crate) unsafe extern "C" fn global_set_num(
 /// As `global_val`; `out` names two writable words.
 pub(crate) unsafe extern "C" fn global_str(
     arena: *mut Arena,
+    scope_ix: u64,
     name_ptr: *const u8,
     name_len: usize,
     out: *mut u64,
@@ -951,7 +956,7 @@ pub(crate) unsafe extern "C" fn global_str(
     unsafe {
         let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len));
         let h = match (*arena).interp_ptr() {
-            Some(ip) => (*ip).jit_global_str(name),
+            Some(ip) => (*ip).jit_global_str(scope_ix, name),
             None => 0,
         };
         let (ptr, len) = match (*arena).get(h) {

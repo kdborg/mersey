@@ -735,6 +735,8 @@ struct Plan {
     /// A cast of a host handle to a reference type (`createElement(…) as
     /// HTMLElement`): a runtime no-op, the handle passes straight through.
     cast_web: std::collections::HashSet<usize>,
+    /// This function's scope, as an index into the group. See `JitCode::scopes`.
+    scope_ix: u64,
     cast_val_str: std::collections::HashSet<usize>,
     /// A web property set (`el.textContent = str`): (property name, id, value
     /// type — `Str` or a numeric).
@@ -933,25 +935,11 @@ fn prov(s: TSlot) -> Prov {
 fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let chunk = g.fns[me].chunk.clone();
     let scope = g.fns[me].scope.clone();
-    // A compiled group installs exactly one scope for the whole call (see
-    // `JitCode::scope`), and the shims that read a global read it by *name* in
-    // that one scope. While a group could only hold one module's functions that
-    // was the right scope by construction. Cross-module calls broke the
-    // assumption without touching the code resting on it: a `const` declared in
-    // an imported module is not in the entry module's scope, `env_get` finds
-    // nothing, and `jit_global_str` hands back handle 0 — an empty string,
-    // which is a wrong answer and not a bail. `std:url`'s `HEX` is one of
-    // those, and it is why `encode` turned `%20` into `%`.
-    //
-    // Until a group can carry a scope per function, a function whose free names
-    // resolve somewhere other than the group's own scope may not read or write
-    // a global. Everything else about it is still compiled.
-    let foreign_scope = match (&scope, &g.fns[0].scope) {
-        (Some(a), Some(b)) => !a.is(b),
-        // No scope on one side is not proof that the two agree.
-        (None, None) => false,
-        _ => true,
-    };
+    // Which scope this function's free names resolve in, as an index into the
+    // group. A global read is by *name*, and the name means different things in
+    // different modules — so the shim is told whose name it is looking up. See
+    // `JitCode::scopes`.
+    let scope_ix = me as u64;
     let sig = g.sigs[me].clone();
     let n_slots = sig.n_slots;
     let n_params = sig.params.len();
@@ -1285,16 +1273,6 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::StdNs(ns)); // a native-call receiver
                     }
                     NameKind::Opaque => {
-                        if foreign_scope {
-                            if *TRACE {
-                                eprintln!(
-                                    "jit:   `{name}` is a global of another module, and a \
-                                     compiled group has only one scope"
-                                );
-                            }
-                            return None;
-                        }
-
                         opaque_globals
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
@@ -1310,16 +1288,6 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::ClassRef(ci));
                     }
                     NameKind::NumGlobal(kind) => {
-                        if foreign_scope {
-                            if *TRACE {
-                                eprintln!(
-                                    "jit:   `{name}` is a global of another module, and a \
-                                     compiled group has only one scope"
-                                );
-                            }
-                            return None;
-                        }
-
                         let t = match kind {
                             0 => Ty::I32,
                             1 => Ty::I64,
@@ -1332,16 +1300,6 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::Val(t, Prov::Stable));
                     }
                     NameKind::StrGlobal => {
-                        if foreign_scope {
-                            if *TRACE {
-                                eprintln!(
-                                    "jit:   `{name}` is a global of another module, and a \
-                                     compiled group has only one scope"
-                                );
-                            }
-                            return None;
-                        }
-
                         str_globals
                             .entry(ni)
                             .or_insert_with(|| Box::leak(name.to_string().into_boxed_str()));
@@ -1378,15 +1336,6 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 let NameKind::NumGlobal(k) = g.env.name_kind(scope.as_ref(), name) else {
                     return None;
                 };
-                if foreign_scope {
-                    if *TRACE {
-                        eprintln!(
-                            "jit:   `{name}` is a global of another module, and a compiled \
-                             group has only one scope"
-                        );
-                    }
-                    return None;
-                }
                 // The binding's type is fixed by the checker, so the register the
                 // value is in has to be the one that binding holds — otherwise
                 // the bits handed to the shim mean something else.
@@ -2663,6 +2612,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         math_at,
         cast_f64,
         cast_web,
+        scope_ix,
         cast_val_str,
         depths,
         block_types,
@@ -3106,7 +3056,9 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     let read_osr = read;
 
     Some(Rc::new(JitCode {
-        scope: root.scope.clone(),
+        // One per function, indexed as the group indexes them — `Plan::scope_ix`
+        // is the other half of this.
+        scopes: Rc::new(g.fns.iter().map(|f| f.scope.clone()).collect()),
         kind: match root_ret {
             Ty::I64 => JitKind::I64,
             Ty::F64 => JitKind::F64,
@@ -3332,16 +3284,16 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, epoch) -> milliseconds; the JIT's first host call.
         host_time: one("msy_host_time", Some(types::F64), 2)?,
         // (arena, name_ptr, name_len) -> handle
-        global_web: one("msy_global_web", Some(types::I64), 3)?,
+        global_web: one("msy_global_web", Some(types::I64), 4)?,
         // (arena, target, name_ptr, name_len, args_ptr, argc) -> 0 ok / 1 threw
         web_call_num: one("msy_web_call_num", Some(types::I64), 6)?,
         // (arena, name_ptr, name_len) -> arena handle, 0 if not an opaque
-        global_val: one("msy_global_val", Some(types::I64), 3)?,
+        global_val: one("msy_global_val", Some(types::I64), 4)?,
         // (arena, name_ptr, name_len, out) -> writes (data, len)
-        global_str: one("msy_global_str", None, 4)?,
+        global_str: one("msy_global_str", None, 5)?,
         // (arena, name_ptr, name_len) -> the value as raw bits
-        global_num: one("msy_global_num", Some(types::I64), 3)?,
-        global_set_num: one("msy_global_set_num", Some(types::I64), 5)?,
+        global_num: one("msy_global_num", Some(types::I64), 4)?,
+        global_set_num: one("msy_global_set_num", Some(types::I64), 6)?,
         // (arena, handle, index) -> the byte / i64::MIN
         // (arena, handle) -> a fresh handle to the same value
         clone_val: one("msy_clone_val", Some(types::I64), 2)?,
@@ -3915,6 +3867,11 @@ fn translate(
     let state_ptr = b.block_params(entry)[p.n_vars as usize + 1];
     let arena_ptr = b.block_params(entry)[p.n_vars as usize + 2];
 
+    // Which scope every global read below resolves in. A group spans modules,
+    // and a name means different things in different ones, so the shim is told
+    // whose name it is looking up. See `JitCode::scopes`.
+    let scope_ix = b.ins().iconst(types::I64, p.scope_ix as i64);
+
     // Hoist the web-global receivers. A global cannot be reassigned inside
     // compiled code — the JIT bails on every `StoreName` — so `ctx`'s handle is
     // invariant for the whole call. Read each one once, here in the entry block
@@ -3927,7 +3884,9 @@ fn translate(
         .iter()
         .map(|(&ni, name)| {
             let (nptr, nlen) = str_const(b, name);
-            let call = b.ins().call(shim.global_web, &[arena_ptr, nptr, nlen]);
+            let call = b
+                .ins()
+                .call(shim.global_web, &[arena_ptr, scope_ix, nptr, nlen]);
             (ni, b.inst_results(call)[0])
         })
         .collect();
@@ -3950,7 +3909,7 @@ fn translate(
             ));
             let out_ptr = b.ins().stack_addr(types::I64, out, 0);
             b.ins()
-                .call(shim.global_str, &[arena_ptr, nptr, nlen, out_ptr]);
+                .call(shim.global_str, &[arena_ptr, scope_ix, nptr, nlen, out_ptr]);
             let d = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
             let l = b.ins().load(types::I64, MemFlags::trusted(), out_ptr, 8);
             (ni, (d, l))
@@ -3962,7 +3921,9 @@ fn translate(
         .iter()
         .map(|(&ni, name)| {
             let (nptr, nlen) = str_const(b, name);
-            let call = b.ins().call(shim.global_val, &[arena_ptr, nptr, nlen]);
+            let call = b
+                .ins()
+                .call(shim.global_val, &[arena_ptr, scope_ix, nptr, nlen]);
             (ni, b.inst_results(call)[0])
         })
         .collect();
@@ -4184,9 +4145,10 @@ fn translate(
                 };
                 let (nptr, nlen) = str_const(b, name);
                 let k = b.ins().iconst(types::I64, kind);
-                let call = b
-                    .ins()
-                    .call(shim.global_set_num, &[arena_ptr, nptr, nlen, k, bits]);
+                let call = b.ins().call(
+                    shim.global_set_num,
+                    &[arena_ptr, scope_ix, nptr, nlen, k, bits],
+                );
                 // The name not resolving is a case the checker has ruled out, so
                 // this guard is for the reasoning being wrong rather than for the
                 // program: it bails, and the interpreter raises the real error.
@@ -4205,7 +4167,9 @@ fn translate(
                     stack.push(SlotV::ClassRef);
                 } else if let Some(&(name, t)) = p.num_globals.get(&ni) {
                     let (nptr, nlen) = str_const(b, name);
-                    let call = b.ins().call(shim.global_num, &[arena_ptr, nptr, nlen]);
+                    let call = b
+                        .ins()
+                        .call(shim.global_num, &[arena_ptr, scope_ix, nptr, nlen]);
                     let bits = b.inst_results(call)[0];
                     let v = match t {
                         Ty::I64 => bits,
