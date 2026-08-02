@@ -56,6 +56,10 @@ pub struct Chunk {
     /// Which slots were declared `string[]` — the one fact about a container the
     /// tier cannot work out for itself. See `check::local_is_str_array`.
     pub slot_str_array: Vec<bool>,
+    /// Which slots were declared as an array of *instances*, and of what class.
+    /// The sibling of `slot_str_array`, for the other element type worth
+    /// knowing. See `check::local_obj_array`.
+    pub slot_obj_array: Vec<Option<String>>,
     /// What each slot is CALLED — the debugger's view of slot-resolved locals
     /// ('#'-prefixed entries are compiler temps and are not shown).
     pub slot_names: Vec<String>,
@@ -313,6 +317,7 @@ pub(crate) fn compile_fn_in(
                 &n.text,
                 local_type_for(n),
                 mersey_front::check::local_is_str_array(n),
+                mersey_front::check::local_obj_array(n),
             ) {
                 Some(slot) => {
                     let ni = c.name(&n.text);
@@ -877,6 +882,7 @@ struct C {
     /// What each slot holds, indexed by slot.
     slot_types: Vec<Option<Num>>,
     slot_str_array: Vec<bool>,
+    slot_obj_array: Vec<Option<String>>,
     slot_names: Vec<String>,
     /// The slot `this` lives in, allocated the first time the body needs it.
     this_slot: Option<u16>,
@@ -911,6 +917,7 @@ impl C {
             param_slots: vec![],
             slot_types: vec![],
             slot_str_array: vec![],
+            slot_obj_array: vec![],
             slot_names: vec![],
             this_slot: None,
             simple_params: true,
@@ -945,6 +952,7 @@ impl C {
             n_slots: self.n_slots,
             slot_types: std::mem::take(&mut self.slot_types),
             slot_str_array: std::mem::take(&mut self.slot_str_array),
+            slot_obj_array: std::mem::take(&mut self.slot_obj_array),
             slot_names: std::mem::take(&mut self.slot_names),
             needs_env,
             simple_params: self.simple_params,
@@ -1019,10 +1027,16 @@ impl C {
     }
 
     fn declare_local_typed(&mut self, name: &str, ty: Option<Num>) -> Option<u16> {
-        self.declare_local_full(name, ty, false)
+        self.declare_local_full(name, ty, false, None)
     }
 
-    fn declare_local_full(&mut self, name: &str, ty: Option<Num>, str_array: bool) -> Option<u16> {
+    fn declare_local_full(
+        &mut self,
+        name: &str,
+        ty: Option<Num>,
+        str_array: bool,
+        obj_array: Option<String>,
+    ) -> Option<u16> {
         if self.captured.contains(name) {
             return None;
         }
@@ -1030,6 +1044,7 @@ impl C {
         self.n_slots += 1;
         self.slot_types.push(ty);
         self.slot_str_array.push(str_array);
+        self.slot_obj_array.push(obj_array);
         self.slot_names.push(name.to_string());
         self.slot_scopes
             .last_mut()
@@ -1144,6 +1159,7 @@ impl C {
             &n.text,
             local_type_for(n),
             mersey_front::check::local_is_str_array(n),
+            mersey_front::check::local_obj_array(n),
         ) {
             Some(slot) => {
                 self.emit(Op::StoreSlot(slot));
@@ -1233,6 +1249,8 @@ impl C {
                 self.n_slots += 1;
                 self.slot_types.push(None); // an instance, not a number
                 self.slot_str_array.push(false);
+                self.slot_obj_array.push(None);
+                self.slot_obj_array.push(None);
                 self.this_slot = Some(s);
                 s
             }
@@ -1248,6 +1266,7 @@ impl C {
         self.n_slots += 1;
         self.slot_types.push(None); // a compiler temp: an array, an index, a value
         self.slot_str_array.push(false);
+        self.slot_obj_array.push(None);
         self.slot_names.push(name.clone());
         self.slot_scopes
             .last_mut()

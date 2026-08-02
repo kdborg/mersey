@@ -89,6 +89,9 @@ thread_local! {
     /// this, `out[i] != ".."` reads the element as a number.
     static LOCAL_STR_ARRAYS: RefCell<std::collections::HashSet<usize>> =
         RefCell::new(std::collections::HashSet::new());
+    /// As `LOCAL_STR_ARRAYS`, carrying the element class's name.
+    static LOCAL_OBJ_ARRAYS: RefCell<std::collections::HashMap<usize, String>> =
+        RefCell::new(std::collections::HashMap::new());
     /// The default an *uninitialized* binding or field starts with, keyed by the
     /// address of its declared `TypeExpr`. See [`DefaultVal`].
     static DEFAULTS: RefCell<std::collections::HashMap<usize, DefaultVal>> =
@@ -213,6 +216,14 @@ pub fn local_is_str_array(n: &Name) -> bool {
     LOCAL_STR_ARRAYS.with(|m| m.borrow().contains(&id))
 }
 
+/// The class a local's elements are instances of, if it was declared as an
+/// array of them. See `local_is_str_array`, which answers the same question for
+/// the one element type that already had an answer.
+pub fn local_obj_array(n: &Name) -> Option<String> {
+    let id = n as *const Name as usize;
+    LOCAL_OBJ_ARRAYS.with(|m| m.borrow().get(&id).cloned())
+}
+
 fn publish(
     c: &Coercions,
     results: &Coercions,
@@ -220,12 +231,17 @@ fn publish(
     locals: &Coercions,
     defaults: &std::collections::HashMap<usize, DefaultVal>,
     str_arrays: &std::collections::HashSet<usize>,
+    obj_arrays: &std::collections::HashMap<usize, String>,
 ) {
     COERCIONS.with(|m| m.borrow_mut().extend(c.iter().map(|(k, v)| (*k, *v))));
     RESULT_COERCIONS.with(|m| m.borrow_mut().extend(results.iter().map(|(k, v)| (*k, *v))));
     OP_TYPES.with(|m| m.borrow_mut().extend(ops.iter().map(|(k, v)| (*k, *v))));
     LOCAL_TYPES.with(|m| m.borrow_mut().extend(locals.iter().map(|(k, v)| (*k, *v))));
     LOCAL_STR_ARRAYS.with(|m| m.borrow_mut().extend(str_arrays.iter().copied()));
+    LOCAL_OBJ_ARRAYS.with(|m| {
+        m.borrow_mut()
+            .extend(obj_arrays.iter().map(|(k, v)| (*k, v.clone())))
+    });
     DEFAULTS.with(|m| {
         m.borrow_mut()
             .extend(defaults.iter().map(|(k, v)| (*k, *v)))
@@ -1202,6 +1218,7 @@ fn check_graph_indexed_with(
         let op_types = std::mem::take(&mut c.op_types);
         let local_types = std::mem::take(&mut c.local_types);
         let local_str_arrays = std::mem::take(&mut c.local_str_arrays);
+        let local_obj_arrays = std::mem::take(&mut c.local_obj_arrays);
         let defaults = std::mem::take(&mut c.defaults);
         // The editor does not publish. It re-checks on every keystroke, dropping
         // the AST each time, and an address that has been freed can be handed to
@@ -1216,6 +1233,7 @@ fn check_graph_indexed_with(
                 &local_types,
                 &defaults,
                 &local_str_arrays,
+                &local_obj_arrays,
             );
         }
         results.push((
@@ -1538,6 +1556,10 @@ struct Checker {
     /// engine gives every local a frame slot; this is what that slot holds.
     local_types: Coercions,
     local_str_arrays: std::collections::HashSet<usize>,
+    /// Locals declared as an array of *instances*, and of what class. The
+    /// sibling of `local_str_arrays`: the engine's compiler cannot see inside a
+    /// container it built from a literal, and this is the one fact that lets it.
+    local_obj_arrays: std::collections::HashMap<usize, String>,
     /// Zero-defaults for uninitialized bindings and fields, keyed by the address
     /// of the declared `TypeExpr`. See [`DefaultVal`].
     defaults: std::collections::HashMap<usize, DefaultVal>,
@@ -1626,6 +1648,7 @@ impl Checker {
             op_types: Coercions::new(),
             local_types: Coercions::new(),
             local_str_arrays: std::collections::HashSet::new(),
+            local_obj_arrays: std::collections::HashMap::new(),
             defaults: std::collections::HashMap::default(),
             classes: Vec::new(),
             ifaces: Vec::new(),
@@ -4160,6 +4183,12 @@ impl Checker {
         }
         if matches!(ty, Type::Array(e) if matches!(**e, Type::Str)) {
             self.local_str_arrays.insert(id);
+        }
+        if let Type::Array(e) = ty {
+            if let Type::Class(cid, _) = &**e {
+                let name = self.classes[*cid].name.clone();
+                self.local_obj_arrays.insert(id, name);
+            }
         }
     }
 
