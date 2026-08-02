@@ -44,6 +44,19 @@ Over a whole library, a histogram of "the last op each refusal printed" ranks th
 work. That is how the coverage below was driven: fix the top entry, re-run, look
 again — not by guessing which feature was missing.
 
+`tools/jit-refusals.mjs` does it, so it need not be rebuilt by hand each time:
+
+    node tools/jit-refusals.mjs app.mersey            # the histogram
+    node tools/jit-refusals.mjs app.mersey --list     # every function, sorted
+    node tools/jit-refusals.mjs --diff a.txt b.txt    # what changed between runs
+
+The `--diff` is worth knowing about before you need it. Compiled and refused
+*counts* can be identical while the sets differ, so counts cannot tell you
+whether a change altered what gets compiled — and if the sets are identical, the
+generated code is the same and a timing difference between the two builds has no
+mechanism. That is how a believed 3% regression turned out to be noise, after
+being measured back-to-back and still read wrong.
+
 ## What it compiles
 
 **Numbers, booleans, objects, arrays** — the original tier. Slots are registers;
