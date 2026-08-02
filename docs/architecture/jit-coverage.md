@@ -172,6 +172,50 @@ along — so the crossing works there and something else is now in the way. Its
 timing is unchanged, and the measurement window was too noisy (55.5–57.5ms
 across nine runs) to claim otherwise.
 
+## `reconcile`'s queue is finite, and it converges on one gap
+
+`bench/cli/reconcile` is the largest concrete gap left in the arena —
+`bench/cli/REPORT.md` puts Bun at 5.5ms against this engine's ~56, in a table
+where Mersey leads all three runtimes on `calls`, `crypto`, `json` and
+`encoding`. Its hot method is refused, so the workload shaped most like what
+this engine exists for runs interpreted.
+
+Earlier this was written off because the refusals *queue*: rewrite one away in a
+scratch copy and the next appears four lines later. Walking it properly says
+something better. Five blockers found so far:
+
+| # | blocker | outcome |
+|---|---|---|
+| 1 | `IndexGet` on the `[int32, Entry]` pair from `nodes.entries()` | open |
+| 2 | `GetMember` on what `nodes.get()` returned | open |
+| 3 | `CastOp`, an opaque cast to `int32` | **fixed** |
+| 4 | `CallMethod`, the array crossing a plain call already made | **fixed** |
+| 5 | `GetMember` on `rows[i]`, where `rows` is a literal-built local | open |
+
+Three of five were ordinary omissions, two of them shipped in a few lines each.
+The queue is enumerable, not endless.
+
+**And the three that remain are one gap wearing three hats.** In each case the
+tier knows a container's *identity* and not what is inside it:
+
+* an array built from a literal is `Ty::Val`, so `rows[i]` types as `int32` —
+  which is right for `Bytes`, the case that path was built for, and wrong here.
+  A *parameter* declared `Row[]` is `Ty::Arr(Elem::Obj)` and works, which is why
+  `fold` compiles and `work` does not.
+* a `Map` has no value type, so `nodes.get(k)` is an opaque.
+* a destructured pair is heterogeneous, and `Elem` has no shape for one.
+
+The checker knows all three. The mechanism for telling the tier already exists
+and is proven: `check::local_is_str_array` publishes exactly this fact for
+`string[]` locals, `Chunk::slot_str_array` carries it, and `Ty::StrArr` is the
+result — an opaque that knows its elements are strings.
+
+So the fix is to generalise that from `Str` to any element type, rather than to
+invent anything. The cost is the reason it is not done here: `StrArr` has 41
+sites in `mersey_jit` alone, plus the front-end and `vm` plumbing, and it is a
+representation change to `Ty` rather than a case added to a match. Worth doing
+deliberately, in one piece, with the tier-agreement programs as the net.
+
 ## Where this stops paying
 
 Across `std-hot` and all six `bench/cli` workloads there are **five refusals
