@@ -170,9 +170,26 @@ Every slice there is stored straight into a local — often the same local, as i
 allocation moves from `str_sub` to `own_str` and the count is unchanged. The
 win is in library code that *consumes* a substring rather than keeping it.
 
-So the remaining 1.7× against Node stands, and what would close it is unchanged:
-a string value cheap enough to allocate, which is still a representation
-question.
+### Sharing the parent's entry instead of copying: tried, neutral
+
+The obvious next step, and it does not pay. A stored slice has to own something
+before its source slot is overwritten, and it currently owns a **copy** of the
+units. It could instead own a second reference to the *source slot's* arena
+entry — `clone_val` on a `Value::Str` is an `Rc` bump, not a buffer copy — which
+is a refcount where the copy is an allocation and a memcpy.
+
+Measured back to back: medians 45.8 against 46.0 over six warm runs. Nothing.
+
+Two reasons, both worth knowing. The slices here are short (`"1"`, `"2"`,
+`"rc.1"`), and mimalloc's small-allocation path is about as cheap as an arena
+lookup plus a `Value` clone plus an arena push. And sharing *retains* the
+parent: after `s = s.slice(0, plus)` the original full string stays alive behind
+the slice, so the arena holds more for longer. Reverted.
+
+### What is left
+
+The remaining 1.7× against Node stands, and what would close it is unchanged: a
+string value cheap enough to allocate, which is still a representation question.
 
 ## The rest of the profile
 
