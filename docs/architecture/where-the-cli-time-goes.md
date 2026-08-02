@@ -127,7 +127,35 @@ object swept while live. So it is set on promotion and never cleared.
 
 Measured back to back on one machine, median of six, same checksums.
 `_tlv_get_addr` leaves the profile entirely. `strings` against the Node twin
-goes from 2.1x to 1.7x.
+goes from 2.1× to 1.7×.
+
+`GcCell::drop` stays at 7% of a smaller total afterwards, because what is left
+in it is not the lookups. It moved its children into a fresh `Vec` and then
+extended the queue with it — an allocation, a free and two copies to hand three
+values to a queue that was going to take them anyway. That buffer now lives
+across drops for its capacity, which is worth about **1%** on `strings`:
+medians 43.6 against 43.3, every quantile lower, distributions overlapping. A
+real mechanism at the edge of what this benchmark resolves, recorded as such.
+
+Handing `take_children` the queue *directly* is the obvious version and is
+wrong: it can drop a value, which re-enters and finds the queue borrowed. The
+existing cycle-collector test catches that; a 300k-link chain does not, which is
+why both now exist.
+
+## What is left needs a decision, not a patch
+
+After all of the above the profile is allocator-shaped: `mi_malloc_aligned`
+~8%, `mi_free` ~5%, `memmove` ~6%. A `parse` in this workload allocates about
+sixteen times — `Rc<Vec<u16>>` is two allocations per string, and `slice` and
+`split` copy rather than share. V8 answers both with sliced strings, where a
+substring is a view onto its parent.
+
+Neither fix is available without a representation change. Sliced strings need a
+`Value` wider than 16 bytes (`repr::SIZE`, checked at runtime); `Rc<[u16]>`
+would halve the allocations per string but is a fat pointer, and a string slot
+in a compiled frame is one word. Both are decisions about the engine's shape
+rather than optimisations, and they are the whole of the remaining 1.7× against
+Node.
 
 ## The rest of the profile
 

@@ -50,6 +50,79 @@ function churn(n: int32): void {
 churn(5000);
 "#;
 
+/// A chain long enough to be a stack overflow if freeing it recursed.
+///
+/// `Rc` frees a linked structure by recursion — dropping the head drops the
+/// next, which drops the next — so `GcCell::drop` moves children onto a queue
+/// and the outermost drop drains it in a loop. §5.2 says hostile input must not
+/// crash the engine, and a list built by an ordinary loop is not even hostile.
+///
+/// This covers the recursion, and nothing here covered it before. It does *not*
+/// cover the other way that drop can go wrong: handing `take_children` the
+/// queue directly — the obvious way to skip a per-drop allocation — panics,
+/// because `take_children` can itself drop a value and re-enter a queue that is
+/// still borrowed. A chain of `Link`s never does, so this test passes on that
+/// broken version; `the_cycle_collector_never_considers_a_reachable_object_garbage`
+/// is the one that catches it.
+const DEEP: &str = r#"
+class Link {
+    public next: Link? = null;
+    public v: int32 = 0;
+    public constructor(v: int32) { this.v = v; }
+}
+function build(n: int32): Link {
+    let head = new Link(0);
+    for (let i: int32 = 1; i < n; i += 1) {
+        const l = new Link(i);
+        l.next = head;
+        head = l;
+    }
+    return head;
+}
+function walk(h: Link): int32 {
+    let n = 0;
+    let cur: Link? = h;
+    while (cur != null) {
+        n += 1;
+        cur = (cur as Link).next;
+    }
+    return n;
+}
+let total = 0;
+for (let round: int32 = 0; round < 3; round += 1) {
+    // Each round's chain is freed in one go when `head` goes out of scope.
+    const head = build(300000);
+    total = total + walk(head);
+}
+if (total != 900000) {
+    throw new Error(`walked ${total}`);
+}
+"#;
+
+#[test]
+fn freeing_a_long_chain_does_not_recurse() {
+    let src = source::decode("<deep>", DEEP.as_bytes()).expect("decode");
+    let parsed = parser::parse(&src);
+    let module: &'static _ = Box::leak(Box::new(parsed.module));
+    assert!(parsed.diagnostics.is_empty());
+    assert!(bind::bind(module).diagnostics.is_empty());
+    assert!(check::check(module).diagnostics.is_empty());
+
+    let mut i = new_interp(Box::new(Silent));
+    if let Err(t) = i.run_module(module) {
+        panic!("runtime: {}", i.describe_thrown(&t));
+    }
+    // Reaching here at all is the assertion — a recursive free aborts the
+    // process rather than failing a check. The heap being quiescent afterwards
+    // says the chains were actually reclaimed and not merely survived.
+    let after = i.collect_garbage();
+    assert!(
+        after.tracked <= 10,
+        "{} objects left after three 300k chains",
+        after.tracked
+    );
+}
+
 #[test]
 fn cycles_are_reclaimed() {
     let src = source::decode("<gc>", CYCLES.as_bytes()).expect("decode");

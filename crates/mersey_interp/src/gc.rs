@@ -129,6 +129,15 @@ impl<T: GcContents> GcCell<T> {
 pub trait GcContents {
     /// Move every value out of this object.
     fn take_children(&mut self, out: &mut Vec<Value>);
+
+    /// Cheaply: is there anything for `take_children` to move?
+    ///
+    /// A drop that answers no skips the queue entirely, and with it two
+    /// thread-local reads. Worth overriding wherever the answer is a length —
+    /// the default is the safe one, and costs only what the queue costs.
+    fn has_children(&self) -> bool {
+        true
+    }
 }
 
 thread_local! {
@@ -141,6 +150,16 @@ thread_local! {
     static DRAIN: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
     /// Is a drop-drain already running on this thread?
     static DRAINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The buffer `take_children` fills, kept between drops for its capacity.
+    ///
+    /// This used to be a fresh `Vec` per drop: an allocation, a free and two
+    /// copies to hand three values to a queue that was going to take them
+    /// anyway. Handing `take_children` the queue *directly* is the obvious
+    /// alternative and is wrong — `take_children` can drop a value, which
+    /// re-enters this and finds the queue already borrowed. A `Cell` has no
+    /// borrow flag and is taken out while in use, so a drop that re-enters gets
+    /// an empty one and allocates its own.
+    static SCRATCH: std::cell::Cell<Vec<Value>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 impl<T: GcContents> Drop for GcCell<T> {
@@ -174,17 +193,23 @@ impl<T: GcContents> Drop for GcCell<T> {
             });
         }
 
-        let mut children = Vec::new();
-        self.inner.get_mut().take_children(&mut children);
-        if children.is_empty() {
+        if !self.inner.get_mut().has_children() {
             return;
         }
         let Ok(already_draining) = DRAINING.try_with(|d| d.get()) else {
             return; // thread shutdown: let the ordinary drop run
         };
-        if DRAIN.try_with(|q| q.borrow_mut().extend(children)).is_err() {
+        let mut children = SCRATCH.try_with(|s| s.take()).unwrap_or_default();
+        self.inner.get_mut().take_children(&mut children);
+        if DRAIN
+            .try_with(|q| q.borrow_mut().append(&mut children))
+            .is_err()
+        {
             return;
         }
+        // `append` left it empty and kept its capacity, which is the whole
+        // point of it living outside this frame.
+        let _ = SCRATCH.try_with(|s| s.set(children));
         if already_draining {
             return; // an outer drop is already draining; it will take these
         }
@@ -206,11 +231,19 @@ impl GcContents for Vec<Value> {
     fn take_children(&mut self, out: &mut Vec<Value>) {
         out.append(self);
     }
+
+    fn has_children(&self) -> bool {
+        !self.is_empty()
+    }
 }
 
 impl GcContents for Vec<(String, Value)> {
     fn take_children(&mut self, out: &mut Vec<Value>) {
         out.extend(std::mem::take(self).into_iter().map(|(_, v)| v));
+    }
+
+    fn has_children(&self) -> bool {
+        !self.is_empty()
     }
 }
 
