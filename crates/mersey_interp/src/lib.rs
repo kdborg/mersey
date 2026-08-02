@@ -714,6 +714,16 @@ impl std::hash::Hash for Key {
 /// `RandomState` — SipHash — and *not* the FxHash the engine's own tables use:
 /// these are the one kind of table whose keys a running program chooses, so
 /// this is exactly the case the alias above warns against widening.
+///
+/// **Measured, so it stays closed.** Swapping both to `FxBuildHasher` is worth
+/// **3.3%** of `bench/cli/reconcile` — 52.4ms against 54.2ms, six alternating
+/// pairs, not one overlapping, checksums identical — and nothing at all on the
+/// other five workloads, none of which are `Map`-heavy. That is the whole of
+/// what the hasher is worth here, and it does not buy out collision resistance
+/// on the one table an attacker picks the keys of. `foldhash` and `ahash` are
+/// the same trade for slightly less of it: randomly seeded, but not keyed
+/// hashes, so a known algorithm plus a recovered seed still yields collisions.
+/// SipHash stays until something needs more than 3% of one workload.
 pub type MapData = indexmap::IndexMap<Key, Value, std::collections::hash_map::RandomState>;
 pub type SetData = indexmap::IndexSet<Key, std::collections::hash_map::RandomState>;
 
