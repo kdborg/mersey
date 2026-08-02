@@ -735,6 +735,7 @@ struct Plan {
     /// A cast of a host handle to a reference type (`createElement(…) as
     /// HTMLElement`): a runtime no-op, the handle passes straight through.
     cast_web: std::collections::HashSet<usize>,
+    cast_val_str: std::collections::HashSet<usize>,
     /// A web property set (`el.textContent = str`): (property name, id, value
     /// type — `Str` or a numeric).
     web_set_at: HashMap<usize, (&'static str, u32, Ty)>,
@@ -1008,6 +1009,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut math_at: HashMap<usize, MathOp> = HashMap::new();
     let mut cast_f64: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut cast_web: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut cast_val_str: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut block_types: HashMap<usize, Vec<Ty>> = HashMap::new();
     let mut ret: Option<Ty> = if sig.void { None } else { Some(sig.ret) };
 
@@ -2254,6 +2256,30 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(base);
                         continue;
                     }
+                    // An opaque to `string`. `eval_cast` returns the value
+                    // unchanged here too, but unlike every case above this is
+                    // not a pass-through for *this* tier: an opaque is a handle
+                    // in two registers and a string is a pointer, a length and
+                    // an owner in three. So it is a real conversion, and
+                    // `heap::val_to_str` is the one that already knows how to
+                    // read the units out and bail if the handle names anything
+                    // that is not a string.
+                    //
+                    // `x != null` narrows in the checker and not in the
+                    // bytecode, so `(text as string)` is a cast the language
+                    // makes you write — it is how every `parse`-shaped function
+                    // in the library ends.
+                    mersey_front::ast::TypeExpr::Named { name, .. }
+                        if src == Ty::Val && name == "string" =>
+                    {
+                        cast_val_str.insert(pc);
+                        // The provenance comes across: the units belong to the
+                        // opaque, so a string made this way is a borrow rooted
+                        // wherever the opaque was, and the guard that keeps such
+                        // a borrow from dangling has to keep applying to it.
+                        stack.push(TSlot::Val(Ty::Str, prov(base)));
+                        continue;
+                    }
                     // A string to `string`: `("string", Value::Str(_))` returns
                     // the value unchanged, and `Ty::Str` is exactly that case.
                     mersey_front::ast::TypeExpr::Named { name, .. }
@@ -2579,6 +2605,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         math_at,
         cast_f64,
         cast_web,
+        cast_val_str,
         depths,
         block_types,
         ret: ret.unwrap_or(sig.ret),
@@ -5639,6 +5666,23 @@ fn translate(
             }
             // `el as HTMLElement`: a host handle cast to a reference type. The
             // handle is unchanged — re-type the slot to `Ty::Web` and move on.
+            Op::CastOp(_, _) if p.cast_val_str.contains(&pc) => {
+                let SlotV::ValRef(v, _) = stack.pop()? else {
+                    return None;
+                };
+                let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                let call = b.ins().call(shim.val_to_str, &[arena_ptr, v, out]);
+                let bad = b.inst_results(call)[0];
+                let wrong = b.ins().icmp_imm(IntCC::NotEqual, bad, 0);
+                guard(b, ctx, wrong, R_TAG, pc, None);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                // Handle 0 — a borrow. `val_to_str` hands back the *opaque's*
+                // handle, and taking it here would leave two owners for one
+                // arena entry; the units stay alive because the opaque does.
+                let borrowed = b.ins().iconst(types::I64, 0);
+                stack.push(SlotV::Str(d, l, borrowed));
+            }
             Op::CastOp(_, _) if p.cast_web.contains(&pc) => {
                 // A cast the analysis proved is a no-op. A host handle is
                 // re-tagged as `Ty::Web`; an opaque or a string already *is*

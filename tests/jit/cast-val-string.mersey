@@ -1,0 +1,88 @@
+// An opaque cast to `string`.
+//
+// `x != null` narrows in the checker and not in the bytecode, so the language
+// makes you write `(text as string)` after the check — it is how every
+// `parse`-shaped function ends. The tier held a native's `string?` as an opaque
+// and refused that cast, which is not a pass-through the way `el as
+// HTMLElement` is: an opaque is a handle in two registers and a string is a
+// pointer, a length and an owner in three.
+//
+// The conversion reads the units out through `heap::val_to_str`, which bails if
+// the handle names anything but a string, and produces a **borrow** — handle 0.
+// Taking the opaque's own handle would leave two owners for one arena entry.
+// That makes provenance the thing to test: a borrow rooted in a re-assignable
+// local is the one borrow that can dangle, so the cast has to carry the origin
+// slot across or the guard cannot follow it.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// The `parse`-shaped ending: null-check, then cast.
+function roundTrip(s: string): string {
+    const t = bytes.decodeUtf8(bytes.encodeUtf8(s));
+    if (t == null) {
+        return "?";
+    }
+    return t as string;
+}
+
+/// The cast's result held across a **reassignment of the slot it came from**.
+/// If the cast handed back a plain `Stable` string, the second decode would
+/// release the entry the first one is still pointing into, and `first` would
+/// read back as something of the right length and the wrong contents.
+function borrowThenOverwrite(a: string, b: string): int32 {
+    let t = bytes.decodeUtf8(bytes.encodeUtf8(a));
+    if (t == null) {
+        return -1;
+    }
+    const first = t as string;
+    // Overwrite the slot the borrow is rooted in, and allocate hard enough
+    // afterwards that a freed entry would have been reused.
+    t = bytes.decodeUtf8(bytes.encodeUtf8(b));
+    let churn = 0;
+    for (let k: int32 = 0; k < 8; k++) {
+        const junk = bytes.decodeUtf8(bytes.encodeUtf8(`${b}-${k}`));
+        if (junk != null) {
+            churn = churn + (junk as string).length;
+        }
+    }
+    // Contents of the *first* string, read after all of that.
+    let h = 0;
+    for (let j: int32 = 0; j < first.length; j++) {
+        h = (h * 31 + first.charAt(j).length * (j + 1)) % 1000003;
+    }
+    return h + churn + first.length;
+}
+
+/// The null arm: the cast is never reached, and the fallback must come back.
+function nullArm(): int32 {
+    const bad = bytes.alloc(2);
+    bad[0] = 255;
+    bad[1] = 254;
+    const t = bytes.decodeUtf8(bad);
+    if (t == null) {
+        return 7;
+    }
+    return (t as string).length;
+}
+
+function run(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const r = roundTrip("héllo wörld");
+        acc = acc + r.length;
+        // Contents, not length: a relabel that read the wrong buffer would
+        // still hand back a plausible length.
+        for (let j: int32 = 0; j < r.length; j++) {
+            acc = acc + r.charAt(j).length * (j % 3);
+        }
+        acc = acc + borrowThenOverwrite("first-value", "second");
+        acc = acc + nullArm();
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`${run(2000)}`);
+console.log(`[${roundTrip("héllo wörld")}] ${borrowThenOverwrite("first-value", "second")} ${nullArm()}`);

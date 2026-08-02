@@ -197,10 +197,45 @@ something `unreserved` said yes to. Two accessors disagreeing about one string
 is the shape `own_str`'s comment describes: a handle naming one buffer beside a
 data pointer into another.
 
-Nothing in `mersey test`, the 35 tier programs, or 50k differential fuzz
+Nothing in `mersey test`, the tier programs, or 50k differential fuzz
 iterations caught it, because all three call these functions from outside a
 compiled frame. `tools/std-hot.mersey`'s checksum did (`3661120` against
 `3700000`), which is the argument for that file existing.
+
+**What narrows it further:** the *same* call graph — `decode`, the constructor,
+`toString`, `encode` and a compiled caller, all in one frame — is **correct**
+when the opaque is relabelled by `(text as string)` instead, which is the cast
+described below. The two conversions differ in one thing: the cast produces a
+**borrow** with the origin slot's provenance carried across, and the merge
+produced an **owned copy** with `Prov::Stable`, because a block parameter has no
+provenance to carry. So the suspicion now points at the ownership, not the
+relabel — an entry the returned value still points into being released by the
+frame sweep, rather than a bad read. A merge fix that borrows instead has the
+block-parameter problem to solve first, which is why this is still open.
+
+### An opaque cast to `string`
+
+`(text as string)` after a null check is how every `parse`-shaped function in
+the library ends, and it was refused. `Val` cast to a *reference* type is
+already a pass-through — `eval_cast` hands back anything it cannot disprove —
+but `string` is a scalar cast target, and for this tier it is not a pass-through
+at all: an opaque is a handle in two registers, a string is a pointer, a length
+and an owner in three. So it is a real conversion, through the `heap::val_to_str`
+that the `Return` path already uses, bailing rather than guessing when the
+handle names something else.
+
+The result is a **borrow** — handle 0. `val_to_str` hands back the opaque's own
+handle, and taking it would leave two owners for one arena entry. That makes
+provenance the thing to get right, and `tests/jit/cast-val-string.mersey` holds
+the cast's result across a reassignment of the slot it came from plus eight more
+allocations before reading its contents.
+
+It does not move `tools/std-hot.mersey`, which stays at 33 / 7: `std:url` writes
+the ternary rather than the cast. It closes the gap for code that writes the
+cast — a call graph shaped like `std:url`'s goes from three refusals to none —
+and in this repo that is `bench/web`'s `idb`, `urlpattern` and `streams`, all
+browser-side and not cheap to measure from here. Recorded as coverage, not as a
+speed claim.
 
 ## What it compiles
 

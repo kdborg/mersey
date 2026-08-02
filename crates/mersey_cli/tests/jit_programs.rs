@@ -775,3 +775,29 @@ fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
     // The read-only parameter, filtered by the grower beside it.
     assert!(out.trim_end().ends_with(" 1200"), "{out}");
 }
+
+/// An opaque cast to `string`.
+///
+/// `x != null` narrows in the checker and not in the bytecode, so `(text as
+/// string)` is a cast the language makes you write — and unlike `el as
+/// HTMLElement` it is not a pass-through here: an opaque is two registers and a
+/// string is three. The conversion goes through `heap::val_to_str`, which bails
+/// rather than guessing when the handle names something else, and hands back a
+/// **borrow**, since taking the opaque's own handle would leave two owners for
+/// one arena entry.
+///
+/// The borrow is what the assertions are about. `borrowThenOverwrite` holds the
+/// cast's result across a reassignment of the slot it came from and eight more
+/// allocations, then reads its *contents* — which is the shape that catches a
+/// relabel that forgot to carry provenance across.
+#[test]
+fn an_opaque_cast_to_string_agrees_across_the_tier_boundary() {
+    check("cast-val-string.mersey");
+    let out = run("cast-val-string.mersey", true);
+    // The units themselves, through the cast.
+    assert!(out.contains("[héllo wörld]"), "{out}");
+    // The borrow, read after its origin slot was overwritten.
+    assert!(out.contains(" 341506 "), "{out}");
+    // The null arm, where the cast is never reached.
+    assert!(out.trim_end().ends_with(" 7"), "{out}");
+}
