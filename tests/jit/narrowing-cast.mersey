@@ -1,0 +1,59 @@
+// The cast a null check leaves behind.
+//
+// `x != null` narrows in the checker and not in the bytecode, so the language
+// *requires* the cast that follows: `(b as Bytes)`, `(s as string)`. Tier 1 took
+// only two kinds — a host handle to a reference type, and a number to `float64`
+// — so every other one refused the enclosing function. That is the shape every
+// `parse`-like function in the standard library is written with, and it was four
+// of the ten still refusing there after cross-module calls landed.
+//
+// Both new cases are no-ops, and provably so rather than hopefully: `eval_cast`
+// returns the value unchanged for a string cast to `string`, and reaches its
+// `return Ok(v)` for anything that is neither an instance nor a numeric target —
+// which is what an opaque cast to `Bytes` is. This tier already knows the value's
+// shape, so there is nothing left to check.
+//
+// The reads are of *contents*, because a cast that quietly dropped ownership
+// would give the right length and the wrong bytes — the shape two use-after-
+// frees in this engine took.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// An opaque through a null check and a cast, in a loop, contents read back.
+function decode(n: int32): int32 {
+    const src = bytes.encodeUtf8("héllo wörld");
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const round = bytes.decodeUtf8(src);
+        if (round != null) {
+            const s = round as string;
+            acc = acc + s.length;
+            // Contents, not just length: the first unit of "héllo".
+            acc = acc + (s.codePointAt(0) ?? 0);
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+/// An opaque cast to an engine primitive, then used as one.
+function reencode(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const b = bytes.encodeUtf8("abc");
+        const raw = b as Bytes;
+        acc = acc + raw.length + raw[0];
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`decode    ${decode(100000)}`);
+console.log(`reencode  ${reencode(100000)}`);
+// Read back one at a time, cold.
+const b = bytes.encodeUtf8("héllo wörld");
+const r = bytes.decodeUtf8(b);
+console.log(`one       ${r == null ? "null" : (r as string)}`);

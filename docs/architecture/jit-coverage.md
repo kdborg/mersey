@@ -80,9 +80,34 @@ merely checking that it compiles: two modules each export a `tag` and a
 answer rather than a bail.
 
 Found by `tools/jit-refusals.mjs` over `tools/std-hot.mersey` on its first run,
-ranked top with three functions stopping there. The refusals moved to `CastOp` —
-`(x as Bytes)` after a null check, which the checker requires and which is
-therefore everywhere — and that is now the top entry.
+ranked top with three functions stopping there.
+
+## The cast a null check leaves behind
+
+`x != null` narrows in the checker and not in the bytecode, so the language
+*requires* the cast that follows: `(b as Bytes)`, `(s as string)`. This tier took
+a host handle to a reference type and a number to `float64`, and refused the
+enclosing function for every other one — which is the shape every `parse`-like
+function in the library is written with, and was four of the ten still refusing
+once cross-module calls landed.
+
+Two more are no-ops, and provably rather than hopefully. `eval_cast` returns a
+string cast to `string` unchanged, and reaches its `return Ok(v)` for anything
+that is neither an instance nor a numeric target — which is what an opaque cast
+to `Bytes` is. This tier already knows the value's shape; there is nothing left
+to check, which is the same argument the host-handle case rests on.
+
+The slot is carried through rather than replaced with a fresh `Stable` one: a
+borrow that came out of a field is still a borrow after a cast, and claiming
+otherwise is how two use-after-frees got in. `tests/jit/narrowing-cast.mersey`
+reads contents back, because a cast that dropped ownership gives the right
+length and the wrong bytes.
+
+**`tools/std-hot.mersey`: 30 compiled / 10 refused → 32 / 8.** `Call(2)` tops
+the ranking now, two of its three arriving *after* the analysis passed — which
+is codegen or the entry wrapper, a different investigation. An `int32?` cast to
+`int32` is still refused: that one is a sentinel guard rather than a
+pass-through.
 
 ## What it compiles
 

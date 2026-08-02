@@ -729,3 +729,24 @@ fn a_call_into_another_module_agrees_across_the_tier_boundary() {
     assert!(out.contains("drive 73200000"), "{out}");
     assert!(out.contains("one   11 12 121 222"), "{out}");
 }
+
+/// The cast a null check leaves behind. `x != null` narrows in the checker and
+/// not in the bytecode, so the language requires `(b as Bytes)` / `(s as
+/// string)` — and Tier 1 took only a host handle to a reference type and a
+/// number to `float64`, refusing the enclosing function for anything else.
+///
+/// Both new cases are provable no-ops: `eval_cast` returns a string cast to
+/// `string` unchanged, and reaches `return Ok(v)` for anything neither an
+/// instance nor a numeric target, which is what an opaque cast to `Bytes` is.
+///
+/// The reads are of contents, since a cast that dropped ownership would give
+/// the right length and the wrong bytes.
+#[test]
+fn a_narrowing_cast_agrees_across_the_tier_boundary() {
+    check("narrowing-cast.mersey");
+    let out = run("narrowing-cast.mersey", true);
+    assert!(out.contains("decode    11500000"), "{out}");
+    assert!(out.contains("reencode  10000000"), "{out}");
+    // The units themselves, through the cast.
+    assert!(out.contains("one       héllo wörld"), "{out}");
+}

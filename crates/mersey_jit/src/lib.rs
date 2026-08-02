@@ -2179,6 +2179,42 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     }
                 }
                 let src = tval(base)?;
+                // The two casts a null check leaves behind, both no-ops here for
+                // the same reason the host-handle case above is one: this tier
+                // already knows what the value is, and `eval_cast` hands back
+                // anything it cannot disprove.
+                //
+                // `x != null` narrows in the checker but not in the bytecode, so
+                // the language *requires* the cast that follows — `(b as Bytes)`,
+                // `(s as string)`. Refusing them refused four of the ten std
+                // functions still declining after cross-module calls landed,
+                // which is the shape every `parse`-like function in the library
+                // is written with.
+                match chunk.types[ti as usize] {
+                    // An opaque to a reference type: `eval_cast` reaches its
+                    // `return Ok(v)` for anything that is not an instance and not
+                    // a numeric target, so this is a pass-through there too.
+                    mersey_front::ast::TypeExpr::Named { name, .. }
+                        if matches!(src, Ty::Val | Ty::StrArr) && !is_scalar_cast_target(name) =>
+                    {
+                        cast_web.insert(pc); // same lowering: carry the slot over
+                                             // `base`, not a fresh `Stable` slot: a borrow that came
+                                             // out of a field is still a borrow after a cast, and
+                                             // claiming otherwise is how two use-after-frees got in.
+                        stack.push(base);
+                        continue;
+                    }
+                    // A string to `string`: `("string", Value::Str(_))` returns
+                    // the value unchanged, and `Ty::Str` is exactly that case.
+                    mersey_front::ast::TypeExpr::Named { name, .. }
+                        if src == Ty::Str && name == "string" =>
+                    {
+                        cast_web.insert(pc);
+                        stack.push(base);
+                        continue;
+                    }
+                    _ => {}
+                }
                 if !src.is_num() {
                     return None;
                 }
@@ -5516,12 +5552,15 @@ fn translate(
             // `el as HTMLElement`: a host handle cast to a reference type. The
             // handle is unchanged — re-type the slot to `Ty::Web` and move on.
             Op::CastOp(_, _) if p.cast_web.contains(&pc) => {
-                let handle = match stack.pop()? {
-                    SlotV::Web(h) => h,
-                    SlotV::Val(h, Ty::Web) => h,
-                    _ => return None,
-                };
-                stack.push(SlotV::Val(handle, Ty::Web));
+                // A cast the analysis proved is a no-op. A host handle is
+                // re-tagged as `Ty::Web`; an opaque or a string already *is*
+                // what the cast claims, so it crosses unchanged — registers,
+                // ownership and all.
+                let v = stack.pop()?;
+                stack.push(match v {
+                    SlotV::Web(h) => SlotV::Val(h, Ty::Web),
+                    other => other,
+                });
             }
             Op::BinNum(binop, num) => {
                 let t = ty_of(num)?;
