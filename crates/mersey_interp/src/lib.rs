@@ -1302,6 +1302,14 @@ pub struct Closure {
 
 pub struct FnData {
     name: Rc<str>,
+    /// The module this body was *written* in.
+    ///
+    /// Not the one running when its bytecode happened to get built, which is
+    /// what `compile_fn_in` was being handed and what therefore reached
+    /// `Chunk::module` — and from there every stack frame. An error inside an
+    /// imported function named the *importing* file, at a line that is correct
+    /// for the file it is not in.
+    module: Rc<str>,
     is_async: bool,
     params: &'static [Param],
     body: FnBody,
@@ -1337,6 +1345,7 @@ impl FnData {
 
     fn new(
         name: Rc<str>,
+        module: Rc<str>,
         is_async: bool,
         params: &'static [Param],
         body: FnBody,
@@ -1344,6 +1353,7 @@ impl FnData {
     ) -> FnData {
         FnData {
             name,
+            module,
             is_async,
             params,
             body,
@@ -2353,8 +2363,7 @@ impl JitEnv for InterpEnv<'_> {
         }
         // A constructor is compiled on first *use*; a hot `new` may arrive first.
         if data.chunk.borrow().is_none() {
-            let module = self.i.current_module.clone();
-            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            let out = vm::compile_fn_in(&data.body, &data.module, data.params);
             *data.chunk.borrow_mut() = Some(out);
         }
         let chunk = data.chunk.borrow().clone()??;
@@ -3166,6 +3175,7 @@ impl Interp {
             if let Decl::Function(f) = d {
                 let data = Rc::new(FnData::new(
                     f.name.text.as_str().into(),
+                    self.current_module.as_str().into(),
                     f.is_async,
                     &f.params,
                     FnBody::Block(&f.body),
@@ -3266,6 +3276,7 @@ impl Interp {
             if let Decl::Function(f) = d {
                 let data = Rc::new(FnData::new(
                     f.name.text.as_str().into(),
+                    self.current_module.as_str().into(),
                     f.is_async,
                     &f.params,
                     FnBody::Block(&f.body),
@@ -3773,6 +3784,7 @@ impl Interp {
                         // at the boundary was moot. It is compiled now.
                         let data = Rc::new(FnData::new(
                             name.as_str().into(),
+                            self.current_module.as_str().into(),
                             *is_async,
                             params,
                             FnBody::Block(body),
@@ -3796,6 +3808,7 @@ impl Interp {
                         name.clone(),
                         Rc::new(FnData::new(
                             name.as_str().into(),
+                            self.current_module.as_str().into(),
                             false,
                             &[],
                             FnBody::Block(body),
@@ -3810,6 +3823,7 @@ impl Interp {
                         name.clone(),
                         Rc::new(FnData::new(
                             name.as_str().into(),
+                            self.current_module.as_str().into(),
                             false,
                             std::slice::from_ref(param),
                             FnBody::Block(body),
@@ -3820,6 +3834,7 @@ impl Interp {
                 ClassMember::Ctor { params, body, .. } => {
                     ctor = Some(Rc::new(FnData::new(
                         format!("{}.constructor", c.name.text).into(),
+                        self.current_module.as_str().into(),
                         false,
                         params,
                         FnBody::Block(body),
@@ -4511,8 +4526,7 @@ impl Interp {
             let compiled = match cached {
                 Some(x) => x,
                 None => {
-                    let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+                    let out = vm::compile_fn_in(&c.data.body, &c.data.module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -4550,8 +4564,7 @@ impl Interp {
             let compiled = match cached {
                 Some(x) => x,
                 None => {
-                    let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+                    let out = vm::compile_fn_in(&c.data.body, &c.data.module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -4593,8 +4606,7 @@ impl Interp {
             let compiled = match cached {
                 Some(x) => x,
                 None => {
-                    let module = self.current_module.clone();
-                    let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+                    let out = vm::compile_fn_in(&c.data.body, &c.data.module, c.data.params);
                     *c.data.chunk.borrow_mut() = Some(out.clone());
                     out
                 }
@@ -5729,8 +5741,7 @@ impl Interp {
         if let Some(cached) = c.data.chunk.borrow().clone() {
             return cached;
         }
-        let module = self.current_module.clone();
-        let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+        let out = vm::compile_fn_in(&c.data.body, &c.data.module, c.data.params);
         *c.data.chunk.borrow_mut() = Some(out.clone());
         out
     }
@@ -6139,8 +6150,7 @@ impl Interp {
         // A method is compiled to bytecode on its first call; a test may ask
         // before that has happened.
         if data.chunk.borrow().is_none() {
-            let module = self.current_module.clone();
-            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            let out = vm::compile_fn_in(&data.body, &data.module, data.params);
             *data.chunk.borrow_mut() = Some(out);
         }
         let Some(root) = self.direct_method(&cls, name) else {
@@ -6290,8 +6300,7 @@ impl Interp {
         let chunk = match cached {
             Some(x) => x?,
             None => {
-                let module = self.current_module.clone();
-                let out = vm::compile_fn_in(&c.data.body, &module, c.data.params);
+                let out = vm::compile_fn_in(&c.data.body, &c.data.module, c.data.params);
                 *c.data.chunk.borrow_mut() = Some(out.clone());
                 out?
             }
@@ -6455,8 +6464,7 @@ impl Interp {
             return None;
         }
         if data.chunk.borrow().is_none() {
-            let module = self.current_module.clone();
-            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            let out = vm::compile_fn_in(&data.body, &data.module, data.params);
             *data.chunk.borrow_mut() = Some(out);
         }
         let chunk = data.chunk.borrow().clone()??;
@@ -6520,8 +6528,7 @@ impl Interp {
         // The constructor path above has had this for the same reason and says
         // so — `a hot `new` may arrive first`. This is that, for methods.
         if data.chunk.borrow().is_none() {
-            let module = self.current_module.clone();
-            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            let out = vm::compile_fn_in(&data.body, &data.module, data.params);
             *data.chunk.borrow_mut() = Some(out);
         }
         let Some(Some(chunk)) = data.chunk.borrow().clone() else {
@@ -7838,6 +7845,7 @@ impl Interp {
             } => {
                 let data = Rc::new(FnData::new(
                     "<arrow>".into(),
+                    self.current_module.as_str().into(),
                     *is_async,
                     params,
                     match body {

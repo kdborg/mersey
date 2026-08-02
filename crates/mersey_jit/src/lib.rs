@@ -354,14 +354,19 @@ pub fn hook(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
         // answer in `std:url` was spent working out *which* of three
         // indistinguishable trace lines was the one to look at.
         let at = root.chunk.pos_at(0);
+        // With the module, because `27:11` names a line in whichever of thirty
+        // files you happen to guess. The chunk has carried this the whole time
+        // and the trace did not print it, which cost three separate hunts
+        // through `std:` for a function that turned out to be somewhere else.
         eprintln!(
-            "jit: {} {who} ({} ops) @ {}:{}",
+            "jit: {} {who} ({} ops) @ {}:{}:{}",
             if code.is_some() {
                 "COMPILED"
             } else {
                 "refused"
             },
             root.chunk.code.len(),
+            root.chunk.module,
             at.line,
             at.col
         );

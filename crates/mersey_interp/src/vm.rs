@@ -2040,6 +2040,8 @@ impl C {
             } => {
                 let data = Rc::new(FnData::new(
                     "<arrow>".into(),
+                    // An arrow is written where its enclosing body is.
+                    self.module.as_str().into(),
                     *is_async,
                     params,
                     match body {
