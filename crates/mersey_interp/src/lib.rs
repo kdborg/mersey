@@ -6510,8 +6510,22 @@ impl Interp {
         if self.overridden_below(cls, name) {
             return no("something below this class overrides it");
         }
+        // A method is compiled to bytecode on its first *call*, and its caller
+        // can get hot first — a method guarded by a branch that has not been
+        // taken yet is in the caller's bytecode without ever having run. It was
+        // then declined for the absence, and the decline is permanent: nothing
+        // re-analyses a function Tier 1 has refused. That made compilability a
+        // property of the order things got hot in.
+        //
+        // The constructor path above has had this for the same reason and says
+        // so — `a hot `new` may arrive first`. This is that, for methods.
+        if data.chunk.borrow().is_none() {
+            let module = self.current_module.clone();
+            let out = vm::compile_fn_in(&data.body, &module, data.params);
+            *data.chunk.borrow_mut() = Some(out);
+        }
         let Some(Some(chunk)) = data.chunk.borrow().clone() else {
-            return no("no bytecode yet — never called through the VM");
+            return no("the body has no bytecode — it did not compile");
         };
         if chunk.yields {
             return no("the body yields");

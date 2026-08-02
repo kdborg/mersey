@@ -931,3 +931,28 @@ fn an_array_of_instances_from_a_literal_agrees_across_the_tier_boundary() {
     assert!(ok >= 6, "only {ok} functions compiled");
     assert_eq!(no, 0, "{no} functions refused, expected none");
 }
+
+/// A method whose caller gets hot before the method has ever run.
+///
+/// A method is compiled to bytecode on its first *call*, and `rare` sits behind
+/// a branch not taken while `hot` warms up — in the bytecode, never executed, no
+/// chunk when `hot` was analysed. `direct_method` declined for the absence, and
+/// a decline is permanent, so compilability was a property of the order things
+/// got hot in rather than of the code.
+///
+/// This asserts the *count*, because every answer was already correct: a refusal
+/// runs the interpreter, and the interpreter is right. Nothing but the compiled
+/// count could see it.
+#[test]
+fn a_method_not_yet_called_does_not_refuse_its_caller() {
+    check("lazy-method-chunk.mersey");
+    let out = run("lazy-method-chunk.mersey", true);
+    assert!(out.contains("510000 "), "{out}");
+    assert!(out.trim_end().ends_with(" 4950"), "{out}");
+    let (ok, no) = tier1_counts("lazy-method-chunk.mersey");
+    assert!(ok >= 2, "only {ok} functions compiled");
+    assert_eq!(
+        no, 0,
+        "{no} refused — the caller was declined for a callee it had not run"
+    );
+}

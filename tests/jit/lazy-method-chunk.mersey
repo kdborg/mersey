@@ -1,0 +1,51 @@
+// A method whose caller gets hot before the method has ever run.
+//
+// A method is compiled to bytecode on its first *call*. `rare` below sits behind
+// a branch that is not taken while `hot` is warming up — so it is in `hot`'s
+// bytecode, has never executed, and had no chunk when `hot` was analysed.
+// `direct_method` declined for the absence, and a decline is permanent: nothing
+// re-analyses a function Tier 1 has refused.
+//
+// That made compilability a property of the order things got hot in rather than
+// of the code. `hot` and a `hot` with the branch inverted are the same function,
+// and one compiled while the other did not.
+//
+// The constructor path has had the fix for the same reason since before this —
+// "a hot `new` may arrive first" — so this is that, for methods: compile the
+// body being asked about instead of refusing for its absence.
+//
+// The assertion that matters is the *count*: every answer here was already
+// correct, because a refusal runs the interpreter and the interpreter is right.
+
+import { console } from "std:console";
+
+class Thing {
+    public v: int32 = 0;
+    public common(x: int32): int32 {
+        return x + 1;
+    }
+    /// Reached only after `hot` is long since compiled.
+    public rare(x: int32): int32 {
+        return x * 3;
+    }
+}
+
+function hot(t: Thing, n: int32, take: bool): int32 {
+    let acc = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        acc = acc + t.common(i);
+        if (take) {
+            acc = acc + t.rare(i);
+        }
+    }
+    return acc;
+}
+
+const t = new Thing();
+let cold = 0;
+for (let r: int32 = 0; r < 400; r += 1) {
+    cold = cold + hot(t, 50, false);
+}
+// Now take the branch, on a function that has been compiled for a long time.
+const warm = hot(t, 50, true);
+console.log(`${cold} ${warm}`);
