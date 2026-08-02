@@ -395,7 +395,34 @@ shape it could have taken, and this one was the *bytecode* handing it a shape
 nothing could take. Reading a refusal as "the tier needs a case for this" would
 have been wrong here.
 
-`render` now stops at `IndexGet` on the pair — the ninth link.
+`render` now stops at `IndexGet` on the pair — the ninth link, and the first
+that is not incremental.
+
+### The ninth link is a representation, not a case
+
+An opaque array's element is assumed to be a *number*: `IndexGet` on a `Ty::Val`
+receiver pushes `Ty::I32` (or `Ty::Str` for a `StrArr`), because those are the
+two things this tier can carry out of a container it cannot see into.
+
+`m.entries()` yields **pairs** — a container whose elements are themselves
+containers — so iterating it gives values typed `Ty::I32` that are really little
+arrays, and the destructuring's `IndexGet` on one has a base that is not
+`Ty::Val` at all. It refuses, correctly: taking that path would read a number
+out of an array.
+
+That is not a missing case, it is a missing shape. The tier's model of an opaque
+container is "holds numbers, or holds strings", and a pair needs a third answer —
+an element that is itself a handle. The honest options are a new element kind
+carried through `val_index_at` and its shim, or a `Ty` for a nested container;
+both are a representation change rather than another arm on a `match`, and both
+want designing rather than discovering.
+
+Which is a reasonable place to stop pulling this thread. `bench/cli/reconcile`
+went 4 compiled / 11 refused at 69.5ms to **14 / 2 at 56.3**, and the eight
+refusals cleared on the way were all general — any class owning a collection,
+any module-level counter, any `xs.push(obj)`, any array from a call, any simple
+destructuring. The ninth is the first that asks for something new rather than
+for something withheld.
 
 `tests/jit/dynamic-init.mersey` builds two instances per iteration and checks
 they report 2 and 1, never 3 and 3. That is the property that makes a computed
