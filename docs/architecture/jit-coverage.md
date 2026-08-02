@@ -152,12 +152,25 @@ last took the depth from `d - argc - 1` to `d - argc`. Naming the wrong slot or
 none leaves a growing parameter as an `Arr`, which the body refuses at the
 push: a refusal, not a wrong answer.
 
-What is left is the mirror of the same gap. A read-only array parameter is
-`Arr`, and an array built from a literal is an opaque, so passing one to the
-other is refused in *that* direction now. Since a growing parameter is opaque
-by the rule above, an `Arr` parameter is a proof the callee cannot grow it —
-which is what makes a conversion at the call boundary sound, and is the next
-thing to do here.
+### Crossing between the two array shapes at a call
+
+The mirror of the same gap: a read-only array parameter is `Arr`, an array built
+from a literal is an opaque, and passing one to the other was refused in that
+direction too. `heap::val_arr` is the crossing — an arena handle read as
+(address, elements, length), bailing if the handle names anything else.
+
+It is a **borrow**, and it is sound *because* of the rule above it. A parameter
+this tier types `Ty::Arr` is one `sig_of` found no push for, and `ArrayPush1`
+takes an opaque and nothing else — so the callee cannot reallocate the elements
+out from under the pointer. The element type comes from the parameter's
+declaration, which is the one thing an opaque cannot say for itself.
+
+`tools/std-hot.mersey` goes 34 compiled / 4 refused to **35 / 3**.
+`bench/cli/reconcile` stays at 14 / 2, but its two remaining refusals *move* —
+from the array-shape mismatch to `IndexGet` and a `CallMethod`, both further
+along — so the crossing works there and something else is now in the way. Its
+timing is unchanged, and the measurement window was too noisy (55.5–57.5ms
+across nine runs) to claim otherwise.
 
 **It bought no time.** `bench/cli/url` measured 9.50ms before and 9.51ms after,
 same checksum, 11 warm samples each. The three hot callers still refuse — one op

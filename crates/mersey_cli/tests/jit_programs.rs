@@ -37,7 +37,7 @@ fn run(name: &str, jit: bool) -> String {
 /// leaves every answer right and costs a compiled function, and nothing here
 /// could see it. It cost `bench/cli/reconcile` 10% of its time for four
 /// commits, found by measuring the workload rather than by any test.
-fn compiled_count(name: &str) -> usize {
+fn tier1_counts(name: &str) -> (usize, usize) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/jit")
         .join(name);
@@ -47,10 +47,9 @@ fn compiled_count(name: &str) -> usize {
         .env("MERSEY_JIT_TRACE", "1")
         .output()
         .expect("run mersey");
-    String::from_utf8_lossy(&out.stderr)
-        .lines()
-        .filter(|l| l.starts_with("jit: COMPILED"))
-        .count()
+    let err = String::from_utf8_lossy(&out.stderr);
+    let n = |p: &str| err.lines().filter(|l| l.starts_with(p)).count();
+    (n("jit: COMPILED"), n("jit: refused"))
 }
 
 fn check(name: &str) {
@@ -806,12 +805,17 @@ fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
     // A *field* array — which reads as the direct `Ty::Arr` — passed to a
     // function that grows a different parameter.
     assert!(out.trim_end().ends_with(" 13059"), "{out}");
-    // And it has to actually compile. Asking whether the body grows anything,
-    // rather than which parameter it grows, turns both parameters opaque and
-    // the field array can no longer be passed at all — every answer above
-    // unchanged, one function fewer.
-    let n = compiled_count("grow-param.mersey");
-    assert!(n >= 7, "only {n} functions compiled");
+    // And it has to actually compile. Both halves of the array-shape gap show
+    // up here as *refusals*, which leave every answer above unchanged: asking
+    // whether the body grows anything (rather than which parameter) stops the
+    // field array being passed at all, and a literal-built array cannot reach a
+    // read-only parameter without the crossing at the call. Either one costs a
+    // function, and only the counts can see it.
+    let (ok, no) = tier1_counts("grow-param.mersey");
+    assert!(ok >= 7, "only {ok} functions compiled");
+    // The one left is `words`, on an `int32?` cast that has nothing to do with
+    // arrays.
+    assert!(no <= 1, "{no} functions refused, expected at most 1");
 }
 
 /// An opaque cast to `string`.

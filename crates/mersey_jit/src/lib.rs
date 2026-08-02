@@ -685,6 +685,11 @@ struct Plan {
     /// Where a nullable number is used *as* a number: bit 0 the left operand or
     /// the only one, bit 1 the right. See `Ty::I32Opt`.
     unbox_at: HashMap<usize, u8>,
+    /// Call sites where an argument is an opaque array and the parameter wants
+    /// the direct (address, elements, length) shape — the position, and the
+    /// element type the parameter declared, which is the one thing an opaque
+    /// cannot say for itself.
+    to_arr_at: HashMap<usize, Vec<(usize, Elem)>>,
     /// `b[i]` / `b[i] = v` sites where the receiver is an opaque (a `Bytes`).
     val_index_at: HashMap<usize, bool>,
     /// `Return` sites handing back a native's opaque where a string is promised.
@@ -1020,6 +1025,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut class_names: HashSet<u16> = HashSet::new();
     let mut throw_at: HashMap<usize, &'static str> = HashMap::new();
     let mut unbox_at: HashMap<usize, u8> = HashMap::new();
+    let mut to_arr_at: HashMap<usize, Vec<(usize, Elem)>> = HashMap::new();
     let mut val_index_at: HashMap<usize, bool> = HashMap::new();
     let mut val_prop_str_at: HashMap<usize, &'static str> = HashMap::new();
     let mut cell_prop_at: HashMap<usize, (u32, &'static str)> = HashMap::new();
@@ -2407,12 +2413,27 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 // position, and there are at most eight of those before this
                 // declines, which is not a real limit on a call.
                 let mut mask = 0u8;
+                let mut as_arr: Vec<(usize, Elem)> = Vec::new();
                 for (k, (want, have)) in sig.params.iter().zip(&args).enumerate() {
                     if arg_fits(*want, *have) {
                         continue;
                     }
                     if *have == Ty::I32Opt && *want == Ty::I32 && k < 8 {
                         mask |= 1 << k;
+                        continue;
+                    }
+                    // An array built from a literal is an arena opaque; a
+                    // parameter the callee only reads is declared, so it is the
+                    // direct shape. Crossing between them is what a `[]` local
+                    // passed to `f(xs: int32[])` needs.
+                    //
+                    // The borrow is safe *because* of the rule above it: a
+                    // parameter this tier types `Ty::Arr` is one `sig_of` did
+                    // not find a push for, and `ArrayPush1` takes an opaque and
+                    // nothing else — so the callee cannot reallocate the
+                    // elements out from under the pointer.
+                    if let (Ty::Arr(e), Ty::Val | Ty::StrArr) = (*want, *have) {
+                        as_arr.push((k, e));
                         continue;
                     }
                     if *TRACE {
@@ -2422,6 +2443,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 }
                 if mask != 0 {
                     unbox_at.insert(pc, mask);
+                }
+                if !as_arr.is_empty() {
+                    to_arr_at.insert(pc, as_arr);
                 }
                 stack.push(TSlot::Val(sig.ret, Prov::Stable));
             }
@@ -2615,6 +2639,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         class_names,
         throw_at,
         unbox_at,
+        to_arr_at,
         val_index_at,
         val_prop_str_at,
         cell_prop_at,
@@ -2782,6 +2807,7 @@ struct Shims {
     val_len: FuncId,
     str_search: FuncId,
     val_to_str: FuncId,
+    val_arr: FuncId,
     val_to_owned_str: FuncId,
     str_split: FuncId,
     str_code_point: FuncId,
@@ -2874,6 +2900,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_str_search", heap::str_search as *const u8);
     builder.symbol("msy_val_to_str", heap::val_to_str as *const u8);
+    builder.symbol("msy_val_arr", heap::val_arr as *const u8);
     builder.symbol("msy_val_to_owned_str", heap::val_to_owned_str as *const u8);
     builder.symbol("msy_str_split", heap::str_split as *const u8);
     builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
@@ -3359,6 +3386,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, ptr, len) -> handle of a Value::Str
         str_search: one("msy_str_search", Some(types::I64), 5)?,
         val_to_str: one("msy_val_to_str", Some(types::I64), 3)?,
+        val_arr: one("msy_val_arr", Some(types::I64), 3)?,
         val_to_owned_str: one("msy_val_to_owned_str", Some(types::I64), 3)?,
         str_split: one("msy_str_split", Some(types::I64), 5)?,
         str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
@@ -3909,6 +3937,7 @@ fn translate(
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         str_search: module.declare_func_in_func(shims.str_search, b.func),
         val_to_str: module.declare_func_in_func(shims.val_to_str, b.func),
+        val_arr: module.declare_func_in_func(shims.val_arr, b.func),
         val_to_owned_str: module.declare_func_in_func(shims.val_to_owned_str, b.func),
         str_split: module.declare_func_in_func(shims.str_split, b.func),
         str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
@@ -5398,6 +5427,24 @@ fn translate(
                     };
                     *a = SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32);
                 }
+                // An opaque array handed to a parameter that wants the direct
+                // shape: read its address, elements and length for the call.
+                if let Some(fixes) = p.to_arr_at.get(&pc) {
+                    for &(k, e) in fixes {
+                        let SlotV::ValRef(h, _) = *args.get(k)? else {
+                            return None;
+                        };
+                        let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                        let call = b.ins().call(shim.val_arr, &[arena_ptr, h, out]);
+                        let bad = b.inst_results(call)[0];
+                        let wrong = b.ins().icmp_imm(IntCC::NotEqual, bad, 0);
+                        guard(b, ctx, wrong, R_TAG, pc, None);
+                        let cp = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                        let data = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                        let len = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                        args[k] = SlotV::Arr(cp, data, len, e);
+                    }
+                }
                 // A static call: the receiver is a class marker with no
                 // registers, and the callee takes no `this`.
                 if p.static_at.contains(&pc) {
@@ -6361,6 +6408,7 @@ struct Ctx {
 struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
     val_to_str: cranelift_codegen::ir::FuncRef,
+    val_arr: cranelift_codegen::ir::FuncRef,
     val_to_owned_str: cranelift_codegen::ir::FuncRef,
     str_split: cranelift_codegen::ir::FuncRef,
     str_code_point: cranelift_codegen::ir::FuncRef,

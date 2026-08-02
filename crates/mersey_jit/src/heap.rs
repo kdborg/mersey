@@ -129,6 +129,46 @@ pub(crate) unsafe extern "C" fn cell_arr(cell: *const Value, out: *mut u64) {
     }
 }
 
+/// An arena handle read as an array the callee will only *read*: its address,
+/// its elements, and how many. The mirror of [`cell_arr`], for a value this
+/// tier holds as an opaque rather than in a field.
+///
+/// An array has two shapes here — a growable arena opaque, and a borrowed
+/// (address, elements, length) — and a literal makes the first while a
+/// read-only parameter declares the second. This is the crossing. It is a
+/// **borrow**: nothing here takes a reference, and the elements stay alive
+/// because the opaque does.
+///
+/// Safe only because a parameter typed `Ty::Arr` is a proof the callee cannot
+/// grow it — `sig_of` gives a grown parameter the opaque shape, and
+/// `ArrayPush1` takes nothing else — so the pointer cannot be left behind by a
+/// reallocation during the call.
+///
+/// Returns 1 — bail — if the handle names anything but an array.
+///
+/// # Safety
+/// `out` names three writable words; `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn val_arr(arena: *mut Arena, h: u64, out: *mut u64) -> i64 {
+    unsafe {
+        let (p, data, len) = match (*arena).get(h) {
+            Some(Value::Array(rc)) => {
+                let p = Rc::as_ptr(rc) as u64;
+                match array_data(rc) {
+                    Some((d, n)) => (p, d as u64, n as i64),
+                    // A null array: the same (0, -1) `cell_arr` reports, which
+                    // compiled code turns into the interpreter's `TypeError`.
+                    None => (p, 0, -1),
+                }
+            }
+            _ => return 1,
+        };
+        *out = p;
+        *out.add(1) = data;
+        *out.add(2) = len as u64;
+        0
+    }
+}
+
 /// A string slot's data pointer and length, derived at entry from the address
 /// the frame holds — `Rc::as_ptr` of an `Rc<Vec<u16>>`, i.e. a `*const Vec<u16>`.
 /// The wrapper does this once, exactly as it derives an object's fields from its
