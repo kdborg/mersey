@@ -3366,12 +3366,20 @@ fn exec(
                         },
                     };
                     found.and_then(|(data, defining)| {
-                        let c = Rc::new(Closure {
+                        // On the stack, not in an `Rc`. Nothing outlives this
+                        // push: `InlineFrame` keeps the chunk and the bases and
+                        // not the closure, and both `inlinable` and `jit_call`
+                        // take `&Closure`. It was a heap allocation and a free
+                        // per method call for a value that dies four lines
+                        // later. `Op::Call` above is different and stays as it
+                        // is — the closure it inlines already exists on the
+                        // stack, so cloning the `Rc` allocates nothing.
+                        let c = Closure {
                             data,
                             env: defining.env.clone().unwrap_or_else(|| i.globals_env()),
                             this: Some(stack[at].clone()),
                             cls: Some(defining),
-                        });
+                        };
                         i.inlinable(&c, n).map(|ch| (c, ch))
                     })
                 } else {

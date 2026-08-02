@@ -41,22 +41,33 @@ For a scalar that is a 16-byte copy. For `Value::Instance`, `Value::Str`,
 `Value::Array` it is an `Rc` increment now and a decrement-and-test later.
 Removing it means the stack holding borrows, which is a different interpreter.
 
-## A method call allocates
+## A method call allocated, and did not need to
 
-The inline-cache path in `Op::CallMethod` ends with
+The inline-cache path in `Op::CallMethod` ended with
 
     Rc::new(Closure { data, env, this: Some(stack[at].clone()), cls })
 
-— a heap allocation per call, because the frame needs an `Rc<Closure>` and
-`this` differs every time, so the closure cannot be cached beside the method.
-At roughly 25ns an allocation this is on the order of 5% of the profile, and
-recovering it needs frames to hold `this` separately from the closure. Not
-attempted; recorded because it is the largest single identifiable item left.
+— a heap allocation per call. This was first written up here as needing frames
+to hold `this` separately from the closure, which was wrong: **`InlineFrame`
+does not keep the closure at all.** It keeps the chunk, the pc and the stack
+bases. The closure is read during the push — `this` into a frame slot, `cls`
+onto the class stack, `env` onto the scope stack, `data` for the name and the
+OSR context — and dropped four lines later. Both `inlinable` and `jit_call`
+take `&Closure`, not `Rc<Closure>`.
 
-Pooling the `Closure` allocations would be the obvious cheaper alternative, and
-`how-other-engines-hold-strings.md` records the same idea measuring *neutral*
-for string buffers — mimalloc's small-size-class path is already about as cheap
-as a pool. There is no reason to expect a different answer here.
+So it is a stack value now, and the allocation and its free are gone.
+
+**4.8% on the interpreter**: 5261–5276ms against 5478–5573ms over five warm runs
+each, non-overlapping. With Tier 1 on it is not measurable for this workload —
+60.5 against 61.0 median, overlapping — because most of `reconcile` is compiled
+by then and interpreted method dispatch is a smaller share of what is left.
+
+`Op::Call` above is deliberately unchanged: the closure it inlines already
+exists on the stack as a `Value::Closure`, so cloning the `Rc` allocates
+nothing.
+
+The lesson worth keeping is that the reason recorded for *not* attempting this
+was a guess about `InlineFrame` that thirty seconds of reading disproved.
 
 ## What was fixed
 
