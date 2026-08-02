@@ -1,0 +1,147 @@
+// Every pure `std:` module, driven hot enough to compile.
+//
+// `jit-coverage.md` says the coverage work is ranked by a histogram of what
+// Tier 1 refused across a whole library — but the test suite is the wrong
+// corpus for that. Tests are short, Tier 1 needs a hot loop, and running
+// `mersey test` under the tracer attempts about seven functions in total. This
+// is the corpus: each module's entry points called enough times to be compiled,
+// so `tools/jit-refusals.mjs` has something to rank.
+//
+//   node tools/jit-refusals.mjs tools/std-hot.mersey
+//
+// It is a driver, not a test — correctness is `mersey test`'s job. It prints a
+// checksum only so a refusal that silently changes an answer has somewhere to
+// show up, and so the run cannot be optimised away.
+//
+// Only the modules that compute are here. `http`, `date` and `test` want a host
+// or a clock; `abort` and `result` are types rather than work.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+import { parse as semverParse, valid, compare } from "std:semver";
+import { isAbsolute, normalize, join, extname } from "std:path";
+import { encode as b64encode, decode as b64decode } from "std:base64";
+import { encode as b32encode } from "std:base32";
+import { encode as hexEncode, decode as hexDecode } from "std:hex";
+import { parse as csvParse, stringify as csvStringify } from "std:csv";
+import { parse as cookieParse } from "std:cookie";
+import { orOctetStream, extensionOf } from "std:mime";
+import { isValid as uuidIsValid, format as uuidFormat } from "std:uuid";
+import { URLSearchParams } from "std:url";
+
+const N: int32 = 20000;
+
+function hotSemver(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const v = semverParse("1.2.3-rc.1+build.5");
+        if (v != null) {
+            acc = acc + 1;
+        }
+        if (valid("10.20.30")) {
+            acc = acc + 1;
+        }
+        const c = compare("1.2.3", "1.2.4");
+        if (c != null) {
+            acc = acc + (c as int32);
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+function hotPath(n: int32): int32 {
+    const parts: string[] = ["/usr", "local", "share", "..", "lib"];
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + normalize("/a/b/../c/./d").length;
+        acc = acc + join(parts).length;
+        if (isAbsolute("/x/y")) {
+            acc = acc + 1;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+function hotCodecs(n: int32): int32 {
+    const data = bytes.encodeUtf8("the quick brown fox jumps over the lazy dog");
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const b64 = b64encode(data);
+        acc = acc + b64.length;
+        const back = b64decode(b64);
+        if (back != null) {
+            acc = acc + (back as Bytes).length;
+        }
+        const h = hexEncode(data);
+        acc = acc + h.length;
+        const hb = hexDecode(h);
+        if (hb != null) {
+            acc = acc + (hb as Bytes).length;
+        }
+        acc = acc + b32encode(data).length;
+        i += 1;
+    }
+    return acc;
+}
+
+function hotText(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const rows = csvParse("a,b,c\n1,2,3\n\"x,y\",z,w");
+        acc = acc + rows.length;
+        acc = acc + csvStringify(rows).length;
+        const jar = cookieParse("a=1; b=2; path=/; secure");
+        acc = acc + jar.size;
+        acc = acc + orOctetStream("index.html").length;
+        acc = acc + extensionOf("archive.tar.gz").length;
+        acc = acc + extname("report.final.pdf").length;
+        i += 1;
+    }
+    return acc;
+}
+
+function hotUrl(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const q = new URLSearchParams("a=1&b=two&c=%20sp");
+        const b = q.get("b");
+        if (b != null) {
+            acc = acc + (b as string).length;
+        }
+        acc = acc + q.toString().length;
+        i += 1;
+    }
+    return acc;
+}
+
+function hotUuid(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        if (uuidIsValid("123e4567-e89b-12d3-a456-426614174000")) {
+            acc = acc + 1;
+        }
+        const u = uuidFormat(bytes.encodeUtf8("0123456789abcdef"));
+        if (u != null) {
+            acc = acc + (u as string).length;
+        }
+        i += 1;
+    }
+    return acc;
+}
+
+let sum = 0;
+sum = sum + hotSemver(N);
+sum = sum + hotPath(N);
+sum = sum + hotCodecs(N / 4);
+sum = sum + hotText(N / 2);
+sum = sum + hotUrl(N);
+sum = sum + hotUuid(N);
+console.log(`std-hot ${sum}`);
