@@ -750,3 +750,28 @@ fn a_narrowing_cast_agrees_across_the_tier_boundary() {
     // The units themselves, through the cast.
     assert!(out.contains("one       héllo wörld"), "{out}");
 }
+
+/// An array parameter the callee grows.
+///
+/// `Ty::Arr` is a pointer and a length — the shape a `push` cannot use, since it
+/// can reallocate and move both. A declared `int32[]` parameter arrived as that
+/// shape, so a body that pushed to it was refused, and so was every call to it:
+/// the call failed one op earlier and reported against `Call`, with nothing to
+/// connect the two. Growing bodies now take their array parameters as opaques.
+///
+/// The hazard a representation change brings is aliasing, so the assertions are
+/// on values the *caller* reads back after the callee grew the array — a copy
+/// would leave the caller's array short, and the third case checks that a
+/// read-only parameter in the same function still reads correctly after being
+/// dragged to the opaque form with it.
+#[test]
+fn growing_an_array_parameter_agrees_across_the_tier_boundary() {
+    check("grow-param.mersey");
+    let out = run("grow-param.mersey", true);
+    // Two callees pushing to one array, read back by the caller.
+    assert!(out.starts_with("21189 "), "{out}");
+    // The `string[]` arm, hashed over the characters of what was appended.
+    assert!(out.contains(" 434422 "), "{out}");
+    // The read-only parameter, filtered by the grower beside it.
+    assert!(out.trim_end().ends_with(" 1200"), "{out}");
+}

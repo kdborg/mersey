@@ -72,6 +72,12 @@ child.on("close", () => {
     let m = /^jit: analyze \d+ (\S+)/.exec(line);
     if (m) {
       ops.push(m[1]);
+      // A callee's analysis prints its own "accepted every op" in the middle of
+      // the caller's, so the flag has to die the moment analysis resumes.
+      // Without this it survives to whichever function refuses next and marks it
+      // as a codegen failure it is not — which sent me looking for IR that was
+      // never printed.
+      acceptedAll = false;
       continue;
     }
     if (line.includes("analysis accepted every op")) {

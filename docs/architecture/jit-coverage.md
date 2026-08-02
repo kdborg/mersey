@@ -103,11 +103,81 @@ otherwise is how two use-after-frees got in. `tests/jit/narrowing-cast.mersey`
 reads contents back, because a cast that dropped ownership gives the right
 length and the wrong bytes.
 
-**`tools/std-hot.mersey`: 30 compiled / 10 refused → 32 / 8.** `Call(2)` tops
-the ranking now, two of its three arriving *after* the analysis passed — which
-is codegen or the entry wrapper, a different investigation. An `int32?` cast to
-`int32` is still refused: that one is a sentinel guard rather than a
+**`tools/std-hot.mersey`: 30 compiled / 10 refused → 33 / 7.** An `int32?` cast
+to `int32` is still refused: that one is a sentinel guard rather than a
 pass-through.
+
+(An earlier version of this paragraph said two of the `Call(2)`s arrived *after*
+the analysis passed, and therefore were codegen or the wrapper. They did not.
+`jit-refusals.mjs` was carrying that flag across functions — a callee prints its
+own "accepted every op" in the middle of its caller's analysis — so the mark
+landed on whichever function refused next. Fixed there; the giveaway was going
+to look for the IR those failures print and finding none.)
+
+### An array parameter the callee grows
+
+`Call` topped the ranking with four refusals and all four were one thing, which
+the histogram could not say because every exit from that arm looked identical
+from outside. They print their reasons now, and the reason was: *argument 0 is
+Val, parameter wants Arr(I32)*.
+
+An array has two shapes here. `Ty::Arr` is a borrowed pointer and a length —
+fast to read, impossible to `push` to, since a push can reallocate and move
+both. `Ty::Val` (and `Ty::StrArr` for string elements) is an arena opaque, which
+is what `ArrayPush1` takes and the only thing it takes. A declared `int32[]`
+parameter arrived as the first shape, so `void pushUtf8(out: int32[], …) {
+out.push(…) }` could not be compiled — and neither could any *caller*, which
+refused one op earlier and reported it against `Call` with nothing connecting
+the two.
+
+So a body that grows an array now takes its array parameters as opaques. The
+decision is per function rather than per parameter: doing it properly would mean
+tracing each push's receiver back to its slot, and the coarse version costs a
+read-only array in a growing function its direct form — a slower compile of
+something that did not compile at all. `tests/jit/grow-param.mersey` reads every
+array back **in the caller** after the callee grew it, and reads contents rather
+than lengths, because the hazard in a representation change is a silent copy.
+
+**It bought no time.** `bench/cli/url` measured 9.50ms before and 9.51ms after,
+same checksum, 11 warm samples each. The three hot callers still refuse — one op
+later than they used to — so `decode` stays interpreted and compiling the
+callee alone changes nothing. Worth recording as its own fact: a coverage number
+moving is not a speed number moving, and this one was a prerequisite rather than
+a win.
+
+### `string` against `string?` at a merge — open, and it bites
+
+The three refusals that survive the above stop at a block merge:
+
+    the two ways into this block disagree at stack 0: Val falling in, Str jumping in
+
+which is `return text == null ? s : text` — the reference twin of the
+`x == null ? 0 : x` pair `coerce_edge` already handles for numbers. A `string?`
+returned by a native is held as an opaque, so the two arms of that ternary are
+`Ty::Str` and `Ty::Val`.
+
+The obvious fix is an `EdgeFix` that relabels the opaque, the way a `Return`
+already does through `heap::val_to_str`. **It was written, and it produced a
+wrong answer** — so it is not in the tree, and the reproducer is worth more than
+the patch was:
+
+```mersey
+const q = new URLSearchParams("a=1&b=two&c=%20sp");
+acc = acc + q.toString().length;    // 17 interpreted, 15 once compiled
+```
+
+`encode(" sp")` gave back `" sp"` instead of `"%20sp"` — but only inside the hot
+loop, and only after ~560 iterations. The same call made from top level
+afterwards printed correctly, which is why nothing in `mersey test`, the 35 tier
+programs, or 50k differential fuzz iterations caught it: all three call these
+functions from outside a compiled frame. `tools/std-hot.mersey`'s own checksum
+did catch it (`3661120` against `3700000`), which is the argument for that file
+existing.
+
+Enabling the rule also compiles three functions that were refused before, so the
+bisect that blamed the rule does not distinguish *the conversion is wrong* from
+*one of the three newly-reachable functions is wrong*. That is the next thing to
+separate — likely by forcing each of the three to compile on its own.
 
 ## What it compiles
 

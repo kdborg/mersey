@@ -490,6 +490,27 @@ impl Group<'_> {
                 return None;
             }
         }
+        // An array has two shapes here and only one of them can grow. `Ty::Arr`
+        // is a borrowed pointer and a length, which is the fast one to read and
+        // the impossible one to `push` to — `ArrayPush1` takes an arena opaque,
+        // and nothing else. So a body that grows an array cannot have that array
+        // as an `Arr`, and a declared `int32[]` parameter is exactly how one
+        // arrives. `void pushUtf8(out: int32[], …) { out.push(…) }` is the
+        // shape: the parameter said `Arr`, the body needed an opaque, and the
+        // function was refused — and so was every call to it, one op earlier,
+        // reported against `Call` with nothing to connect the two.
+        //
+        // Deciding it per parameter would need the receiver of each push traced
+        // back to its slot. Per function is coarser and costs a read-only array
+        // in a growing function its direct form, which is a slower compile of
+        // something that does not compile at all today.
+        let grows = f.chunk.code.iter().any(|op| match op {
+            Op::ArrayPush1 => true,
+            Op::CallMethod(ni, _) => {
+                f.chunk.names.get(*ni as usize).map(String::as_str) == Some("push")
+            }
+            _ => false,
+        });
         let mut params = Vec::with_capacity(f.params.len());
         for i in 0..f.params.len() {
             // The declared type first — it is the only thing that knows an object
@@ -498,7 +519,11 @@ impl Group<'_> {
                 Some(s) => self.ty_of_slot(&s)?,
                 None => ty_of(f.chunk.slot_types.get(i).copied().flatten()?)?,
             };
-            params.push(t);
+            params.push(match t {
+                Ty::Arr(Elem::Str) if grows => Ty::StrArr,
+                Ty::Arr(_) if grows => Ty::Val,
+                t => t,
+            });
         }
         let this = f.this.as_ref().map(|c| Ty::Obj(self.class_idx(c)));
         // A method whose body never says `this` has no slot for it, and does not
@@ -736,7 +761,7 @@ struct Plan {
 /// of any of those, a fresh allocation (which the arena keeps until the call
 /// ends) — cannot dangle, because compiled code cannot detach them: object fields
 /// and object elements are never written by compiled code.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Prov {
     Stable,
     /// Borrowed from (or through) this re-assignable local.
@@ -744,7 +769,7 @@ enum Prov {
 }
 
 /// A value on the abstract operand stack, in the typing pass.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TSlot {
     Val(Ty, Prov),
     /// The literal `null`. It has no type of its own and no register — the only
@@ -1020,7 +1045,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         match coerce_edge(*b, *a) {
                             Some(None) => {}
                             Some(Some(t)) => fix.push((i, t)),
-                            None => return None,
+                            None => {
+                                if *TRACE {
+                                    eprintln!(
+                                        "jit:   the two ways into this block disagree \
+                                         at stack {i}: {a:?} falling in, {b:?} jumping in"
+                                    );
+                                }
+                                return None;
+                            }
                         }
                     }
                     if !fix.is_empty() {
@@ -1076,7 +1109,15 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 _ => return None,
             }),
             Op::LoadSlot(s) => {
-                let t = slots[s as usize]?;
+                let Some(t) = slots[s as usize] else {
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   slot {s} has no type here — nothing this tier \
+                             understands has stored into it on every path"
+                        );
+                    }
+                    return None;
+                };
                 // A reference loaded from a slot the body stores into is the one
                 // borrow that can dangle — see `Prov`.
                 let pv = match t {
@@ -2245,16 +2286,45 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                 stack.push(TSlot::Val(Ty::Bool, Prov::Stable));
             }
             Op::Call(n) => {
+                // Every exit below says which one it was. `Call` has four of
+                // them and they mean entirely different things — an argument
+                // with no type, a value being called, an arity mismatch, one
+                // parameter that does not fit — and the histogram in
+                // `jit-coverage.md` ranks by the op, so all four arrive as the
+                // same line. That is the same trap `Return` already prints its
+                // way out of, and `Call` is what tops the ranking now.
                 let mut args: Vec<Ty> = Vec::new();
                 for _ in 0..n {
-                    args.push(tval(stack.pop()?)?);
+                    let a = stack.pop()?;
+                    let Some(t) = tval(a) else {
+                        if *TRACE {
+                            eprintln!("jit:   argument {a:?} is not a value this tier can pass");
+                        }
+                        return None;
+                    };
+                    args.push(t);
                 }
                 args.reverse();
                 let TSlot::Callee(f) = stack.pop()? else {
-                    return None; // calling a value, not a function
+                    if *TRACE {
+                        eprintln!("jit:   callee is a value, not a known function");
+                    }
+                    return None;
                 };
                 let sig = g.sigs[f].clone();
                 if sig.this.is_some() || sig.params.len() != args.len() {
+                    if *TRACE {
+                        eprintln!(
+                            "jit:   callee wants {} args{}, given {}",
+                            sig.params.len(),
+                            if sig.this.is_some() {
+                                " and a `this`"
+                            } else {
+                                ""
+                            },
+                            args.len()
+                        );
+                    }
                     return None;
                 }
                 // A nullable number handed to a parameter that wants a number: the
@@ -2270,6 +2340,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     if *have == Ty::I32Opt && *want == Ty::I32 && k < 8 {
                         mask |= 1 << k;
                         continue;
+                    }
+                    if *TRACE {
+                        eprintln!("jit:   argument {k} is {have:?}, parameter wants {want:?}");
                     }
                     return None;
                 }
@@ -2556,7 +2629,13 @@ fn record_block(
                 }
             }
             if !fix.is_empty() {
-                coerce.insert(pc, fix);
+                // Appended, not inserted. The ownership fixes above went into
+                // this same entry under this same key, and overwriting them let
+                // a borrow cross an edge with nothing keeping it alive — which
+                // was unreachable only while the coercions here were all
+                // numeric, and stopped being so the moment one applied to a
+                // reference.
+                coerce.entry(pc).or_default().extend(fix);
             }
             Some(())
         }

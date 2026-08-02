@@ -1,0 +1,114 @@
+// An array parameter the callee grows.
+//
+// An array has two shapes in Tier 1: `Ty::Arr` is a borrowed pointer and a
+// length, which is the fast one to read and the impossible one to `push` to —
+// `ArrayPush1` takes an arena opaque and nothing else. A declared `int32[]`
+// parameter arrived as the first shape, so a function whose body pushed to it
+// could not be compiled, and neither could any *caller*: the call refused one op
+// earlier, reported against `Call` with nothing to connect it to the body.
+//
+// So a body that grows an array now takes its array parameters as opaques. The
+// risk in that is aliasing — the callee's pushes have to be visible to the
+// caller afterwards, which is the whole point of passing a growable array — and
+// a representation change is exactly the kind of thing that quietly copies. So
+// every case here reads the array back **in the caller** after the callee has
+// grown it, and reads its contents rather than only its length.
+
+import { console } from "std:console";
+
+/// The shape from `std:url`: void, grows the parameter, called in a loop.
+function pushDigits(out: int32[], n: int32): void {
+    let v = n;
+    if (v == 0) {
+        out.push(48);
+        return;
+    }
+    while (v > 0) {
+        out.push(48 + (v % 10));
+        v = v / 10;
+    }
+}
+
+/// A second grower called on the *same* array, so the caller sees two callees'
+/// pushes interleaved — a copy would lose the earlier one.
+function pushSep(out: int32[]): void {
+    out.push(44);
+}
+
+/// The caller reads back what both callees appended.
+function build(n: int32): int32 {
+    const acc: int32[] = [];
+    let i = 0;
+    while (i < n) {
+        pushDigits(acc, i);
+        pushSep(acc);
+        i += 1;
+    }
+    // Contents, not length: a lost or copied push would still leave a plausible
+    // length if the array were rebuilt somewhere.
+    let sum = 0;
+    for (let j: int32 = 0; j < acc.length; j++) {
+        sum = sum + acc[j] * ((j % 7) + 1);
+    }
+    return sum;
+}
+
+/// The string-element twin. `string[]` has its own opaque (`Ty::StrArr`), so it
+/// takes a different arm of the same rule.
+function pushWord(out: string[], i: int32): void {
+    out.push(`w${i % 5}`);
+}
+
+function words(n: int32): int32 {
+    const acc: string[] = [];
+    let i = 0;
+    while (i < n) {
+        pushWord(acc, i);
+        i += 1;
+    }
+    let h = 0;
+    for (let j: int32 = 0; j < acc.length; j++) {
+        const w = acc[j];
+        for (let k: int32 = 0; k < w.length; k++) {
+            h = (h * 31 + (w.codePointAt(k) as int32)) % 1000003;
+        }
+    }
+    return h;
+}
+
+/// A read-only array parameter in a function that *also* grows a different one.
+/// The rule is per function, so `src` becomes an opaque too — it must still read
+/// correctly, which is the cost side of the trade being checked.
+function copyOdd(src: int32[], dst: int32[]): void {
+    for (let j: int32 = 0; j < src.length; j++) {
+        if (src[j] % 2 == 1) {
+            dst.push(src[j]);
+        }
+    }
+}
+
+function filtered(n: int32): int32 {
+    const src: int32[] = [];
+    let i = 0;
+    while (i < n) {
+        src.push(i * 3);
+        i += 1;
+    }
+    const dst: int32[] = [];
+    copyOdd(src, dst);
+    let sum = 0;
+    for (let j: int32 = 0; j < dst.length; j++) {
+        sum = sum + dst[j];
+    }
+    return sum;
+}
+
+let a = 0;
+let b = 0;
+let c = 0;
+for (let r: int32 = 0; r < 200; r++) {
+    a = build(40);
+    b = words(40);
+    c = filtered(40);
+}
+console.log(`${a} ${b} ${c}`);
