@@ -198,12 +198,20 @@ Three of the Linux twenty-nine have no macOS baseline, and the reasons divide:
 |---|---|---|
 | `urlpattern` | `URLPattern is not a constructor` | no — Node 20 on this host has no `URLPattern` |
 | `websocket` | `WebSocket is not a constructor` | no — same, no global `WebSocket` |
-| `locks` | `stale handle 1` from the bridge | **unresolved** — reproduces at `6c69de6`, so not from the frame sweep or the setter, but not yet explained |
+| `locks` | `navigator is not defined` | no — Node 20 has no `navigator` (it arrives in 21) |
 
-The first two want a newer Node, not engine work. The third is a real question
-about handle lifetime under a closure that crosses into the host and a promise
-that chains the next iteration; it is recorded here rather than fixed because it
-predates the work that found it.
+All three want a newer Node, not engine work.
+
+`locks` did not look like that at first. It failed with **`stale handle 1`**,
+which reads like a lifetime bug in the bridge — a handle released while
+something still held it — and was recorded here as unresolved for exactly that
+reason. It was not. `web_global` used `name in globalObject`, which does not
+distinguish *absent* from *present but undefined*, so the realm mapping
+`navigator: globalThis.navigator` on a Node without one minted a handle for
+`undefined`. The engine then found out several crossings later, by which point
+the message pointed at the wrong thing entirely. `global` returns `-1` for a
+present-but-undefined global now, and the error says `navigator is not
+defined`.
 
 When extending a platform's coverage, filter with `PERF_WL` to the workloads you
 are *adding*: `--update` merges `{...baselines, ...fresh}`, so re-running it over

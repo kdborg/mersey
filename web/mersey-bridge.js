@@ -304,7 +304,17 @@ export function makeBridge(globalObject, invokeCallback) {
     },
     global(name) {
       // Ambient globals only: the engine already gates this by import.
-      return name in globalObject ? handleFor(globalObject[name]) : -1;
+      //
+      // A global that is *present but undefined* is absent as far as anyone
+      // asking is concerned, and `in` does not distinguish them. Minting a
+      // handle for it stores nothing under a real id, and the engine then finds
+      // out several crossings later with "stale handle N" — which reads like a
+      // lifetime bug in the bridge and is not one. `navigator` on Node 20 is the
+      // case that showed it: the realm maps it through, Node has no such global
+      // until 21, and the `locks` workload failed with a handle error rather
+      // than saying what was missing.
+      const v = globalObject[name];
+      return name in globalObject && v != null ? handleFor(v) : -1;
     },
     get(target, prop) {
       try {
