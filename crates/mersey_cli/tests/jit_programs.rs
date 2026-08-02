@@ -806,3 +806,30 @@ fn an_opaque_cast_to_string_agrees_across_the_tier_boundary() {
     // The null arm, where the cast is never reached.
     assert!(out.trim_end().ends_with(" 7"), "{out}");
 }
+
+/// `string` against `string?` where two branches meet.
+///
+/// `return text == null ? s : text` is how every `parse`-shaped function in the
+/// library ends — the reference twin of the `x == null ? 0 : x` pair
+/// `coerce_edge` already handled for numbers. The checker narrows in the
+/// else-arm and the bytecode does not, and a `string?` from a native is held as
+/// an opaque, so the arms arrive as `Ty::Str` and `Ty::Val`.
+///
+/// The conversion copies: a block parameter carries no provenance, so what
+/// crosses may not borrow from the slot it came from. Null stays null rather
+/// than becoming `""`, and a handle that is not a string bails.
+///
+/// The assertions read *contents*, and read them after further allocation. The
+/// bug this rule spent three commits behind was a wrong answer of the right
+/// length.
+#[test]
+fn a_string_merged_with_a_nullable_string_agrees_across_the_tier_boundary() {
+    check("merge-val-string.mersey");
+    let out = run("merge-val-string.mersey", true);
+    // The opaque arm, unit for unit.
+    assert!(out.contains("[héllo wörld]"), "{out}");
+    // The arm where the native really does give null.
+    assert!(out.contains("[fallback]"), "{out}");
+    // The merged value read after eight more allocations.
+    assert!(out.trim_end().ends_with(" 653939"), "{out}");
+}

@@ -1,0 +1,70 @@
+// `string` against `string?` where two branches meet.
+//
+// `return text == null ? s : text` is how every `parse`-shaped function in the
+// library ends, and it is the reference twin of the `x == null ? 0 : x` pair
+// `coerce_edge` already handled for numbers: the checker narrows `text` in the
+// else-arm, the bytecode does not, and a `string?` from a native is held as an
+// opaque — so the two arms arrive as `Ty::Str` and `Ty::Val` and the whole
+// function was refused.
+//
+// The conversion copies. A block parameter carries no provenance, so what
+// crosses the edge may not borrow from the slot it came from; `val_to_owned_str`
+// keeps null as null rather than turning it into `""`, and bails rather than
+// guessing if the handle names something that is not a string.
+//
+// Every case here reads the *contents* of what came out of the merge, and reads
+// them after enough allocation that a freed entry would have been reused. The
+// bug this rule spent three commits behind was a wrong answer of the right
+// length, which a length check would have sailed past.
+
+import { console } from "std:console";
+import { bytes } from "std:bytes";
+
+/// The shape itself: the opaque arm is taken.
+function decodeOr(s: string): string {
+    const t = bytes.decodeUtf8(bytes.encodeUtf8(s));
+    return t == null ? s : t;
+}
+
+/// The fallback arm, where the native really does give null.
+function decodeBad(fallback: string): string {
+    const bad = bytes.alloc(2);
+    bad[0] = 255;
+    bad[1] = 254;
+    const t = bytes.decodeUtf8(bad);
+    return t == null ? fallback : t;
+}
+
+/// The merged value held across further allocation, then read. A borrow would
+/// be pointing into a released entry by the time this returns.
+function heldAcross(s: string): int32 {
+    const first = decodeOr(s);
+    let churn = 0;
+    for (let k: int32 = 0; k < 8; k++) {
+        churn = churn + decodeOr(`${s}-${k}`).length;
+    }
+    let h = 0;
+    for (let j: int32 = 0; j < first.length; j++) {
+        h = (h * 31 + first.charAt(j).length * (j + 1)) % 1000003;
+    }
+    return h + churn;
+}
+
+function run(n: int32): int32 {
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        const a = decodeOr("héllo wörld");
+        acc = acc + a.length;
+        for (let j: int32 = 0; j < a.length; j++) {
+            acc = acc + a.charAt(j).length * (j % 3);
+        }
+        acc = acc + decodeBad("fallback").length;
+        acc = acc + heldAcross("payload");
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`${run(2000)}`);
+console.log(`[${decodeOr("héllo wörld")}] [${decodeBad("fallback")}] ${heldAcross("payload")}`);

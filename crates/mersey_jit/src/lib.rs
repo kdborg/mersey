@@ -2750,6 +2750,7 @@ struct Shims {
     val_len: FuncId,
     str_search: FuncId,
     val_to_str: FuncId,
+    val_to_owned_str: FuncId,
     str_split: FuncId,
     str_code_point: FuncId,
     str_sub: FuncId,
@@ -2841,6 +2842,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_val_len", heap::val_len as *const u8);
     builder.symbol("msy_str_search", heap::str_search as *const u8);
     builder.symbol("msy_val_to_str", heap::val_to_str as *const u8);
+    builder.symbol("msy_val_to_owned_str", heap::val_to_owned_str as *const u8);
     builder.symbol("msy_str_split", heap::str_split as *const u8);
     builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
     builder.symbol("msy_str_sub", heap::str_sub as *const u8);
@@ -3325,6 +3327,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         // (arena, ptr, len) -> handle of a Value::Str
         str_search: one("msy_str_search", Some(types::I64), 5)?,
         val_to_str: one("msy_val_to_str", Some(types::I64), 3)?,
+        val_to_owned_str: one("msy_val_to_owned_str", Some(types::I64), 3)?,
         str_split: one("msy_str_split", Some(types::I64), 5)?,
         str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
         str_sub: one("msy_str_sub", None, 7)?,
@@ -3670,6 +3673,18 @@ enum EdgeFix {
     /// value crossing no longer depends on the slot it came from, so there is
     /// nothing left for an overwrite to invalidate.
     Own,
+    /// An opaque where a string is wanted.
+    ///
+    /// `return text == null ? s : text` merges a `string` with a `string?`, and
+    /// a `string?` from a native is held as an opaque — so the two arms arrive
+    /// as `Ty::Str` and `Ty::Val` and the function was refused. It is the
+    /// reference twin of the `int32`/`int32?` pair above, and it is how every
+    /// `parse`-shaped function in the library ends.
+    ///
+    /// `heap::val_to_owned_str` bails if the handle is not a string, keeps null
+    /// as null rather than as `""`, and copies — a block parameter carries no
+    /// provenance, so what crosses may not borrow from the slot it came from.
+    ValToStr,
 }
 
 /// Can a value of type `have` become `want` on the way into a merge, and how?
@@ -3695,6 +3710,8 @@ fn coerce_edge(want: Ty, have: Ty) -> Option<Option<EdgeFix>> {
         (Ty::I32, Ty::I32Opt) => Some(Some(EdgeFix::Narrow)),
         // Widening is free and always safe: every `int32` is an `int32?`.
         (Ty::I32Opt, Ty::I32 | Ty::Bool) => Some(Some(EdgeFix::Widen)),
+        // The reference twin of the pair above: `string` against `string?`.
+        (Ty::Str, Ty::Val) => Some(Some(EdgeFix::ValToStr)),
         _ => None,
     }
 }
@@ -3824,6 +3841,7 @@ fn translate(
         box_str: module.declare_func_in_func(shims.box_str, b.func),
         str_search: module.declare_func_in_func(shims.str_search, b.func),
         val_to_str: module.declare_func_in_func(shims.val_to_str, b.func),
+        val_to_owned_str: module.declare_func_in_func(shims.val_to_owned_str, b.func),
         str_split: module.declare_func_in_func(shims.str_split, b.func),
         str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
         str_sub: module.declare_func_in_func(shims.str_sub, b.func),
@@ -6147,6 +6165,23 @@ fn coerce_stack(
                 }
                 _ => return None,
             },
+            // Owned for the same reason `Own` is, and by the same route: the
+            // shim copies. A handle that is not a string bails rather than
+            // reading whatever the value happens to be.
+            EdgeFix::ValToStr => {
+                let SlotV::ValRef(v, _) = cur else {
+                    return None;
+                };
+                let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
+                let call = b.ins().call(shim.val_to_owned_str, &[arena_ptr, v, out]);
+                let bad = b.inst_results(call)[0];
+                let wrong = b.ins().icmp_imm(IntCC::NotEqual, bad, 0);
+                guard(b, ctx, wrong, R_TAG, pc, None);
+                let d = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+                let l = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                let owned = b.ins().load(types::I64, MemFlags::trusted(), out, 16);
+                SlotV::Str(d, l, owned)
+            }
         };
     }
     Some(())
@@ -6258,6 +6293,7 @@ struct Ctx {
 struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
     val_to_str: cranelift_codegen::ir::FuncRef,
+    val_to_owned_str: cranelift_codegen::ir::FuncRef,
     str_split: cranelift_codegen::ir::FuncRef,
     str_code_point: cranelift_codegen::ir::FuncRef,
     str_sub: cranelift_codegen::ir::FuncRef,

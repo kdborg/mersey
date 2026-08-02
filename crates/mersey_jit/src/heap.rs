@@ -1207,6 +1207,47 @@ pub(crate) unsafe extern "C" fn val_to_str(arena: *mut Arena, h: u64, out: *mut 
     }
 }
 
+/// An opaque handle read as a string the *caller* will own.
+///
+/// [`val_to_str`] hands back the opaque's own handle, which is right for a
+/// return — the frame is swept straight after — and wrong for a value crossing
+/// into a block, which outlives the slot it came from and has no provenance to
+/// keep it alive. So this copies, as [`own_str`] does for a string crossing the
+/// same edge.
+///
+/// Null stays null: a `string?` opaque holding nothing must arrive as a null
+/// data pointer, and `""` instead would be a wrong answer.
+///
+/// Returns 1 — bail — if the handle names anything but a string or a null.
+///
+/// # Safety
+/// `out` names three writable words; `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn val_to_owned_str(arena: *mut Arena, h: u64, out: *mut u64) -> i64 {
+    unsafe {
+        let mut got = [0u64; 3];
+        if val_to_str(arena, h, got.as_mut_ptr()) != 0 {
+            return 1;
+        }
+        // `val_to_str` writes a null data pointer for handle 0 and for an arena
+        // `Value::Null` alike, so this one test covers both ways of being null.
+        if got[0] == 0 {
+            *out = 0;
+            *out.add(1) = 0;
+            *out.add(2) = 0;
+            return 0;
+        }
+        let units = std::slice::from_raw_parts(got[0] as *const u16, got[1] as usize);
+        let rc = std::rc::Rc::new(units.to_vec());
+        // The copy's address, for the reason `own_str` spells out.
+        let data = rc.as_ptr() as u64;
+        let kept = (*arena).keep(Value::Str(rc));
+        *out = data;
+        *out.add(1) = got[1];
+        *out.add(2) = kept;
+        0
+    }
+}
+
 /// A string parked in the arena as an entry the *caller* owns.
 ///
 /// Not `box_str`: that one answers from the interpreter's small memo, which owns

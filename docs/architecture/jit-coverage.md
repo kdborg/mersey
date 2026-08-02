@@ -205,10 +205,20 @@ compiled frame. `tools/std-hot.mersey`'s checksum did (`3661120` against
 **Resolved, and it was neither the merge nor the relabel.** Rewriting the same
 program with the whole of `std:url` copied into one file makes it correct;
 moving that copy back out into a module of its own makes it wrong again. The
-bug is cross-module, and the merge only ever made these functions compilable
-enough to reach it. It is written up under "one scope per group" below. The
-merge rule itself is correct — with the fix in place it can go back in, and
-that is what will finally move `bench/cli/url`.
+bug was cross-module — written up under "one scope per group" below — and the
+merge only ever made these functions compilable enough to reach it. With that
+fixed the rule is in: `tools/std-hot.mersey` goes 33 compiled / 7 refused to
+**34 / 4**, checksums agreeing.
+
+**It is worth 1.75× on the work it touches** — 0.28s to 0.16s over 20000
+`URLSearchParams` round trips, same checksum, against a startup floor too small
+to matter.
+
+Which is also a lesson about the yardstick. Three commits reported "no
+measurable change" against `bench/cli/url`, and that was true and useless:
+that workload exercises the `URL` primitive and contains no `%` at all, so it
+never calls `decode` and could not have moved whatever was done to it. A
+benchmark with the right *name* is not a benchmark that runs the right code.
 
 ### An opaque cast to `string`
 
