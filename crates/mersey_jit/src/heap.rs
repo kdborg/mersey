@@ -1247,6 +1247,28 @@ pub(crate) unsafe extern "C" fn val_to_str(arena: *mut Arena, h: u64, out: *mut 
     }
 }
 
+/// An opaque handle read as an `int32`. `i64::MIN` — which is not a value an
+/// `int32` can hold — means bail: the handle is null, or names something that
+/// is not a number, and the interpreter can say what it thinks about that.
+///
+/// The sibling of [`val_to_str`], for `x as int32` where `x` came out of
+/// something this tier holds opaquely. A keyed lookup is the usual source: a
+/// `Map` has no static value type here, so `m.get(k)` is an opaque and the cast
+/// the language makes you write after the null check is the only place its
+/// shape is known.
+///
+/// # Safety
+/// `arena` is the current call's live arena.
+pub(crate) unsafe extern "C" fn val_to_i32(arena: *mut Arena, h: u64) -> i64 {
+    unsafe {
+        match (*arena).get(h) {
+            Some(Value::I32(n)) => *n as i64,
+            Some(Value::Bool(t)) => *t as i64,
+            _ => i64::MIN,
+        }
+    }
+}
+
 /// An opaque handle read as a string the *caller* will own.
 ///
 /// [`val_to_str`] hands back the opaque's own handle, which is right for a

@@ -775,6 +775,10 @@ struct Plan {
     /// This function's scope, as an index into the group. See `JitCode::scopes`.
     scope_ix: u64,
     cast_val_str: std::collections::HashSet<usize>,
+    /// `x as int32` where `x` is an `int32?`: guard the sentinel, then reduce.
+    cast_narrow: std::collections::HashSet<usize>,
+    /// `x as int32` where `x` is an opaque: read it, or bail.
+    cast_val_i32: std::collections::HashSet<usize>,
     /// A web property set (`el.textContent = str`): (property name, id, value
     /// type — `Str` or a numeric).
     web_set_at: HashMap<usize, (&'static str, u32, Ty)>,
@@ -1055,6 +1059,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut cast_f64: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut cast_web: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut cast_val_str: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut cast_narrow: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut cast_val_i32: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut block_types: HashMap<usize, Vec<Ty>> = HashMap::new();
     let mut ret: Option<Ty> = if sig.void { None } else { Some(sig.ret) };
 
@@ -2325,6 +2331,37 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                         stack.push(TSlot::Val(Ty::Str, prov(base)));
                         continue;
                     }
+                    // An opaque cast to `int32`. A `Map` has no static value
+                    // type in this tier, so `m.get(k)` is an opaque and the
+                    // cast the language makes you write after the null check is
+                    // the only place its shape is stated. `heap::val_to_i32`
+                    // bails on a null or a non-number rather than guessing.
+                    mersey_front::ast::TypeExpr::Named { name, .. }
+                        if src == Ty::Val && name == "int32" =>
+                    {
+                        cast_val_i32.insert(pc);
+                        stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                        continue;
+                    }
+                    // A nullable number cast to `int32`. This is the shape a
+                    // keyed lookup leaves — `const x = m.get(k); if (x != null)
+                    // { … x as int32 … }` — and the third member of the family
+                    // above, except that it is not a pass-through either: an
+                    // `int32?` is an i64 carrying a sentinel and an `int32` is
+                    // an i32. Guard, then reduce, which is exactly `unbox_num`
+                    // and exactly what a narrowing block edge and a narrowed
+                    // call argument already do.
+                    //
+                    // The guard is not for well-typed code — the checker proved
+                    // it non-null to allow the cast — it is because a silent
+                    // `i64::MIN` would be a wrong answer where a bail is not.
+                    mersey_front::ast::TypeExpr::Named { name, .. }
+                        if src == Ty::I32Opt && name == "int32" =>
+                    {
+                        cast_narrow.insert(pc);
+                        stack.push(TSlot::Val(Ty::I32, Prov::Stable));
+                        continue;
+                    }
                     // A string to `string`: `("string", Value::Str(_))` returns
                     // the value unchanged, and `Ty::Str` is exactly that case.
                     mersey_front::ast::TypeExpr::Named { name, .. }
@@ -2337,6 +2374,9 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
                     _ => {}
                 }
                 if !src.is_num() {
+                    if *TRACE {
+                        eprintln!("jit:   cast from {src:?} has no lowering to this target");
+                    }
                     return None;
                 }
                 match chunk.types[ti as usize] {
@@ -2671,6 +2711,8 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         cast_web,
         scope_ix,
         cast_val_str,
+        cast_narrow,
+        cast_val_i32,
         depths,
         block_types,
         ret: ret.unwrap_or(sig.ret),
@@ -2808,6 +2850,7 @@ struct Shims {
     str_search: FuncId,
     val_to_str: FuncId,
     val_arr: FuncId,
+    val_to_i32: FuncId,
     val_to_owned_str: FuncId,
     str_split: FuncId,
     str_code_point: FuncId,
@@ -2901,6 +2944,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_str_search", heap::str_search as *const u8);
     builder.symbol("msy_val_to_str", heap::val_to_str as *const u8);
     builder.symbol("msy_val_arr", heap::val_arr as *const u8);
+    builder.symbol("msy_val_to_i32", heap::val_to_i32 as *const u8);
     builder.symbol("msy_val_to_owned_str", heap::val_to_owned_str as *const u8);
     builder.symbol("msy_str_split", heap::str_split as *const u8);
     builder.symbol("msy_str_code_point", heap::str_code_point as *const u8);
@@ -3387,6 +3431,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         str_search: one("msy_str_search", Some(types::I64), 5)?,
         val_to_str: one("msy_val_to_str", Some(types::I64), 3)?,
         val_arr: one("msy_val_arr", Some(types::I64), 3)?,
+        val_to_i32: one("msy_val_to_i32", Some(types::I64), 2)?,
         val_to_owned_str: one("msy_val_to_owned_str", Some(types::I64), 3)?,
         str_split: one("msy_str_split", Some(types::I64), 5)?,
         str_code_point: one("msy_str_code_point", Some(types::I64), 3)?,
@@ -3938,6 +3983,7 @@ fn translate(
         str_search: module.declare_func_in_func(shims.str_search, b.func),
         val_to_str: module.declare_func_in_func(shims.val_to_str, b.func),
         val_arr: module.declare_func_in_func(shims.val_arr, b.func),
+        val_to_i32: module.declare_func_in_func(shims.val_to_i32, b.func),
         val_to_owned_str: module.declare_func_in_func(shims.val_to_owned_str, b.func),
         str_split: module.declare_func_in_func(shims.str_split, b.func),
         str_code_point: module.declare_func_in_func(shims.str_code_point, b.func),
@@ -5821,6 +5867,20 @@ fn translate(
             }
             // `el as HTMLElement`: a host handle cast to a reference type. The
             // handle is unchanged — re-type the slot to `Ty::Web` and move on.
+            Op::CastOp(_, _) if p.cast_val_i32.contains(&pc) => {
+                let SlotV::ValRef(h, _) = stack.pop()? else {
+                    return None;
+                };
+                let call = b.ins().call(shim.val_to_i32, &[arena_ptr, h]);
+                let v = b.inst_results(call)[0];
+                let bad = b.ins().icmp_imm(IntCC::Equal, v, i64::MIN);
+                guard(b, ctx, bad, R_TAG, pc, None);
+                stack.push(SlotV::Val(b.ins().ireduce(types::I32, v), Ty::I32));
+            }
+            Op::CastOp(_, _) if p.cast_narrow.contains(&pc) => {
+                let (v, _) = scalar(stack.pop()?)?;
+                stack.push(SlotV::Val(unbox_num(b, ctx, pc, v), Ty::I32));
+            }
             Op::CastOp(_, _) if p.cast_val_str.contains(&pc) => {
                 let SlotV::ValRef(v, _) = stack.pop()? else {
                     return None;
@@ -6409,6 +6469,7 @@ struct ShimRefs {
     str_search: cranelift_codegen::ir::FuncRef,
     val_to_str: cranelift_codegen::ir::FuncRef,
     val_arr: cranelift_codegen::ir::FuncRef,
+    val_to_i32: cranelift_codegen::ir::FuncRef,
     val_to_owned_str: cranelift_codegen::ir::FuncRef,
     str_split: cranelift_codegen::ir::FuncRef,
     str_code_point: cranelift_codegen::ir::FuncRef,

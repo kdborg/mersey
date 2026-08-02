@@ -75,8 +75,29 @@ four lines later and buys nothing.** That was worth finding out before building
 anything, and it is the argument against fixing either one on its own.
 
 The fix they both want is a typed `Map` — the checker knows `Map<int32, Entry>`
-and this tier does not. That is a feature, not a patch, and it is the only piece
-of `bench/cli` with a `vm::exec` share worth spending it on.
+and this tier does not.
+
+**It would not be enough, and that was worth an hour to find out.** Rewriting
+`reconcile` so that its `Map` holds `int32` throughout — which is what a typed
+`Map` would amount to for this workload — walks the refusal forward rather than
+removing it:
+
+| after removing | `render` stops at |
+|---|---|
+| — | `IndexGet` on the `entries()` pair |
+| the destructure | `GetMember` on what `get()` returned |
+| the `Entry` values | `CastOp`, an opaque cast to `int32` |
+| *that* (shipped) | `CallMethod` |
+
+Four in a row, each invisible until the one before it was gone. A feature built
+for the first would have bought nothing, and so would a feature built for all
+three — the fourth is still there. `render` is 48 lines that touch a `Map`, a
+`Set`, an array of objects, template strings and a batching object, and the
+honest reading is that it is refused for *many* reasons rather than one.
+
+So: do not build a typed `Map` expecting `reconcile` to move. The way to know
+what would move it is to keep walking this table until `render` compiles, in a
+scratch copy, before writing any engine code at all.
 
 ## The rest of the profile
 

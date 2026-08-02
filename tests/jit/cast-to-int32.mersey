@@ -1,0 +1,65 @@
+// The two ways a number arrives needing a cast.
+//
+// `x != null` narrows in the checker and not in the bytecode, so `(x as int32)`
+// is a cast the language makes you write — the numeric sibling of the
+// `(t as string)` in `cast-val-string.mersey`, and like it, not a pass-through
+// for this tier.
+//
+// They differ in where the value came from, which decides the lowering:
+//
+//   * `int32?` — an i64 carrying `i64::MIN` as null. Guard the sentinel, then
+//     reduce. This is what a function declared `: int32?` returns.
+//   * an **opaque** — a `Map` has no static value type here, so `m.get(k)` is a
+//     handle and `heap::val_to_i32` reads it, bailing on a null or on anything
+//     that is not a number rather than guessing.
+//
+// The guards are not for well-typed code: the checker proved both non-null to
+// allow the cast at all. They are there because a silent `i64::MIN`, or a
+// handle read as a number, would be a wrong answer where a bail is not.
+
+import { console } from "std:console";
+import { compare } from "std:semver";
+
+/// The opaque form: a keyed lookup, null-checked, then cast.
+function viaMap(m: Map<int32, int32>, k: int32): int32 {
+    const got = m.get(k);
+    if (got == null) {
+        return -1;
+    }
+    return got as int32;
+}
+
+/// The `int32?` form: a `std:` function whose declared return is nullable.
+function viaNullable(a: string, b: string): int32 {
+    const c = compare(a, b);
+    if (c == null) {
+        return -9;
+    }
+    return c as int32;
+}
+
+/// The bail paths, which have to reach the interpreter and come back with the
+/// same answers rather than reading a sentinel as a number.
+function missing(m: Map<int32, int32>): int32 {
+    return viaMap(m, 999999);
+}
+
+function run(n: int32): int32 {
+    const m = new Map<int32, int32>();
+    m.set(1, 10);
+    m.set(2, 20);
+    m.set(3, 30);
+    let acc = 0;
+    let i = 0;
+    while (i < n) {
+        acc = acc + viaMap(m, 1 + (i % 3));
+        acc = acc + viaNullable("1.2.3", "1.2.4");
+        acc = acc + viaNullable("2.0.0", "1.0.0");
+        acc = acc + missing(m);
+        i += 1;
+    }
+    return acc;
+}
+
+console.log(`${run(20000)}`);
+console.log(`${viaMap(new Map<int32, int32>(), 1)} ${viaNullable("1.0.0", "1.0.0")}`);

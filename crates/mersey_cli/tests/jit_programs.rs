@@ -870,3 +870,26 @@ fn a_string_merged_with_a_nullable_string_agrees_across_the_tier_boundary() {
     // The merged value read after eight more allocations.
     assert!(out.trim_end().ends_with(" 653939"), "{out}");
 }
+
+/// The two ways a number arrives needing a cast.
+///
+/// `x != null` narrows in the checker and not in the bytecode, so `(x as
+/// int32)` is a cast the language makes you write. Where the value came from
+/// decides the lowering: an `int32?` is an i64 carrying `i64::MIN` as null, so
+/// guard and reduce; an **opaque** — what `m.get(k)` is, because a `Map` has no
+/// static value type in this tier — goes through `heap::val_to_i32`, which
+/// bails on a null or a non-number rather than guessing.
+///
+/// The bail paths matter as much as the fast ones: `missing` looks up a key
+/// that is not there on every iteration, so the guard is taken 20000 times and
+/// has to come back with the interpreter's answer rather than a sentinel read
+/// as a number.
+#[test]
+fn casting_to_int32_agrees_across_the_tier_boundary() {
+    check("cast-to-int32.mersey");
+    let out = run("cast-to-int32.mersey", true);
+    assert!(out.contains("379990"), "{out}");
+    // The two bail paths, taken from the top level: a missing key and an equal
+    // pair of versions.
+    assert!(out.trim_end().ends_with("-1 0"), "{out}");
+}
