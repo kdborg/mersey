@@ -921,3 +921,27 @@ Making one needs a `box_bool` shim (`box_num` would land back on `Value::I32`).
 
 Worth about 2% of this workload, for a new shim and a new coercion. Recorded
 rather than built.
+
+### Correction: measure against the fastest runtime, not against node
+
+The `semver` twin was reported above as **3.06×**, which is its ratio to *node*.
+The refreshed run has all three JS runtimes, and node is not the fastest on it:
+
+| workload | best JS | Mersey | ratio |
+|---|---:|---:|---:|
+| `strings` | 14.99 (bun) | 43.56 | 2.9× |
+| `semver` | 30.59 (deno) | 128.97 | **4.2×** |
+| `csv` | 11.20 (bun) | 68.79 | 6.1× |
+| `path` | 16.25 (bun) | 136.46 | 8.4× |
+| `reconcile` | 5.57 (bun) | 58.74 | 10.5× |
+
+So `semver` is 4.2×, not 3.06×. The conclusion it was offered as evidence for
+survives — the two least container-bound workloads are the two closest, and the
+three container-bound ones are 6× to 10.5× — but the number quoted was the
+friendlier of two available comparisons, and the ratios in this file should be
+against whichever runtime is fastest on that row.
+
+The runtimes disagree by more than a little, which is why the choice matters:
+on `semver` node is 41.13 and deno 30.59, and on `crypto` node is 18.86 against
+bun's 0.49. Picking one as *the* baseline flatters or punishes depending on the
+row.
