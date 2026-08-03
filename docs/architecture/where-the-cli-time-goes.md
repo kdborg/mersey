@@ -875,3 +875,49 @@ context-sensitive rules — Greek final sigma, ß → SS — that a per-characte
 `char::to_uppercase` does not, so a units version would be a *behaviour* change
 rather than the same answer faster. The rest of the survey moved because those
 methods were provably equivalent; this one is not.
+
+## `semver`: what the engine looks like without containers
+
+`std:semver` is the largest std module and was the last substantial one
+unmeasured. Added as a twin (the JS side ports it, since no runtime ships
+semver); checksums agreed at 749798 on the first run.
+
+| | |
+|---|---|
+| Mersey | 121.6ms |
+| node | 39.8ms |
+| ratio | **3.06×** |
+| Tier 1 vs interpreted | **5.56×** (676ms) — the best in the arena |
+| peak RSS | 10.9 MiB, flat |
+| coverage | 11 compiled, 1 refused |
+
+**The ratio is the reason it was worth adding.** `csv` is 6.2× and `path` about
+8.5×; this is 3.06×. `parse` is `trim`, `indexOf`, `slice` and `split` over
+short strings, then digit-by-digit integer scanning, and `compare` walks two
+identifier lists comparing code points — almost no container allocation. So it
+measures the string and scalar paths on their own, and they land at 3× where the
+container-bound workloads land at 6–9×.
+
+That is a third line of evidence for the same conclusion the two allocation
+ceilings gave: what separates the workloads Mersey loses from the ones it wins
+is *containers*, not strings.
+
+### The one refusal, and why it stays
+
+`satisfies` returns `bool?`, which has no register shape. `int32?` becomes
+`FieldTy::NumOpt` — one register with a sentinel — and nothing else nullable
+does, so a 15-op function called once per iteration runs interpreted.
+
+`bool?` is the same shape as `int32?` and mapping it to `NumOpt` looked like a
+one-liner. It is not: `NumOpt` comes back as `Value::I32`, and a function
+declared `bool?` must answer with `Value::Bool` or `Value::Null`. Returning the
+wrong type from compiled code is exactly the class of bug the tier-agreement
+tests exist to catch.
+
+Routing it to the *opaque* return instead is type-correct — the arena carries
+the real `Value` — and was tried: **the function is still refused**, because the
+`Return` arm has no coercion from a `Bool` in a register to an arena handle.
+Making one needs a `box_bool` shim (`box_num` would land back on `Value::I32`).
+
+Worth about 2% of this workload, for a new shim and a new coercion. Recorded
+rather than built.
