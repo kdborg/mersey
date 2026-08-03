@@ -945,3 +945,60 @@ The runtimes disagree by more than a little, which is why the choice matters:
 on `semver` node is 41.13 and deno 30.59, and on `crypto` node is 18.86 against
 bun's 0.49. Picking one as *the* baseline flatters or punishes depending on the
 row.
+
+## `reconcile` re-profiled: unchanged, and what the last lever costs
+
+Now the worst row in the arena at **10.5×** (58.74ms against bun's 5.57).
+Re-profiled because its last profile predated the global hoist, the in-place
+append, the `string[]` return, three leak fixes and four string-method changes.
+
+None of them touched it. The profile is the same one as before: `vm::exec` 29.6%,
+`drop_glue<Value>` 10.6%, `Value::clone` 6.9% — **47% interpreter and refcount** —
+then `try_jit_args` 3.6%, `call_member` 3.4%, `IndexMap` 2.9%, `Arena` keep and
+release 3.7%.
+
+One thing checked and cleared: `compile_groups` shows at 1.5%, which would be a
+recompilation loop if it were steady-state. It is not — the trace has exactly 14
+`COMPILED` lines, one per function. It is one-time cost caught by a sample that
+starts a second in.
+
+### The 29.6% is two functions, and what compiling them needs
+
+`render` (230 ops) and the harness loop (164), both refused on `IndexGet`. The
+first is the one that matters, and it needs the **Map value type**:
+
+    private readonly nodes: Map<int32, Entry> = new Map<int32, Entry>();
+    …
+    for (const [id, entry] of nodes.entries())   // ← refuses here
+    const entry = nodes.get(drop[i]);            // ← and would refuse here
+
+`Map<int32, Entry>` has no representation in the lattice at all — no `FieldTy`
+variant, so `this.nodes` is an opaque and everything read out of it is untyped.
+Carrying the value type through means, at minimum:
+
+1. a `FieldTy` variant for a map with a known value class, produced by
+   `resolve_field_ty` from the *field* declaration (not a local's — `nodes` is
+   `const nodes = this.nodes`);
+2. a matching `Ty`, and `get` returning `Ty::Obj(cid)` rather than `Ty::Val` —
+   nullable, so it needs the null shape too;
+3. `entries()` typing its pair, which needs the destructure look-ahead built and
+   reverted earlier (`.build-logs/val-index-val.patch`) — that half is done and
+   was correct, it was just dead without this;
+4. **an audit of every list that accepts `Ty::Val`.** This is the part that has
+   cost real coverage twice: `Ty::ObjArr` was missing from the `Return`
+   coercions and from `Op::SetMember`, and both times functions were refused
+   *for knowing more*, invisibly to every checksum.
+
+### What it is worth, honestly
+
+Compiling `render` does not make it free — it is Map-heavy with host calls,
+which is what Tier 1 does least well on. At a typical 2.5× on that shape, 29.6%
+becomes about 12%, so `reconcile` goes from 58.7ms to roughly 48. That is **~18%
+on the worst row**, and it leaves it at about 8.6× rather than 10.5×.
+
+Which is the honest summary of the position: this is the last *identified*
+lever short of changing the allocation model, it is worth about a fifth of one
+workload, and it is a lattice extension of the kind that has twice regressed
+coverage without any test noticing. Written down in full rather than started at
+the end of an iteration, because the audit in step 4 is the whole risk and it
+wants a fresh start.
