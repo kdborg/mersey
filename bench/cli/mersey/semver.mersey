@@ -1,0 +1,51 @@
+// CLI twin of `bench/cli/js/semver.js`, over `std:semver` — the largest std
+// module (376 lines) and the last substantial one with no benchmark.
+//
+// No JS runtime ships semver, so the JS side ports `std/semver.mersey` line for
+// line; what is compared is two engines running one program. It is chosen for
+// the *shape*: `parse` is `trim`, `indexOf`, `slice` and `split` over short
+// strings, then digit-by-digit integer scanning, and `compare` walks two
+// identifier lists comparing code points. Almost no allocation of containers,
+// which is what every other losing workload here turns out to be bound by — so
+// this measures the string and scalar paths on their own.
+import { console } from "std:console";
+import { time } from "std:time";
+import { Version, compare, satisfies, valid } from "std:semver";
+
+const N: int32 = 20000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        const a = `${i % 9}.${i % 17}.${i % 5}-alpha.${i % 7}+build.${i}`;
+        const b = `${(i + 1) % 9}.${i % 17}.${i % 5}`;
+
+        const va = Version.parse(a);
+        if (va != null) {
+            sum = (sum + va.toString().length) % 1000003;
+            sum = (sum + va.core().length) % 1000003;
+        }
+        const c = compare(a, b);
+        if (c != null) {
+            sum = (sum + c + 2) % 1000003;
+        }
+        if (valid(b)) {
+            sum = (sum + 1) % 1000003;
+        }
+        const s = satisfies(b, `^${i % 9}.0.0`);
+        if (s != null && s) {
+            sum = (sum + 3) % 1000003;
+        }
+        // An invalid one, so the rejection paths are measured too.
+        if (!valid(`${i}.x.${i}`)) {
+            sum = (sum + 5) % 1000003;
+        }
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT semver ${t1 - t0} ${c}`);
