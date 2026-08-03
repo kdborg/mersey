@@ -688,3 +688,62 @@ That is a much better-founded target than "how strings are held", which three
 workload-level profiles pointed at and the primitive table then contradicted:
 the string primitives are competitive, and it is the *container* allocation path
 that is 28×.
+
+## A leak in compiled code, found by the memory column
+
+`bench/cli`'s refresh put `path` at **27 MiB peak RSS against 6–10 for every
+other workload**. Memory is this engine's clearest advantage over the JS
+runtimes, so a workload breaking the pattern by 3× is worth more attention than
+a workload that is merely slow.
+
+It was not overhead. RSS grew **linearly with N** — 13.8, 27.3, 83.9, 227 MiB at
+N=5k, 20k, 80k, 200k — in a loop that discards everything it makes. `csv`,
+`strings` and `url` are all flat at the same test, so it was specific rather
+than structural, and `MERSEY_JIT=0` was flat too: **the leak was in Tier 1.**
+
+Localised by bisecting the workload rather than reading the code — each `path`
+operation alone, then each construct inside `normalize`, then each primitive.
+Everything was flat in isolation (`split`, `push`, `join`, `for…of`, array
+`slice`, array reassignment, a template return) until the one construct none of
+those covered:
+
+    out[out.length - 1] != ".."
+
+**Reading an element out of a `string[]` and comparing it.** The element arrives
+from the shim owning its own arena entry — deliberately, so that it survives the
+container being reallocated — and the comparison then dropped both handles on
+the floor:
+
+    (SlotV::Str(ap, al, _), SlotV::Str(bp, bl, _)) => { … }
+
+A comparison *consumes* its operands, so an owning one has to give its entry
+back. Almost every string compared is a borrow whose handle is 0, which is why
+this survived: the release is a no-op for all of them, and the one case that is
+not is an element read.
+
+`out.push(t[j])` is the same mistake in the same shape — `ArrayPush1` copies the
+value into the array and discarded the source's handle. Both are fixed, and both
+releases go *after* the copy, since the copy reads the buffer the handle names.
+
+| | before | after |
+|---|---:|---:|
+| `normalize`, N=20k → 200k | 9.7 → 21.8 MiB | 8.2 → **8.2 MiB** |
+| `bench/cli/path`, N=200k | 227 MiB | 71.7 MiB |
+
+Checksums unchanged everywhere, and the times did not move: an arena slot is a
+`Vec` index, so leaking one costs memory rather than speed.
+
+### Not finished
+
+`path` is **still linear** — 16.2 MiB at N=20k against 71.7 at 200k — so a third
+site remains. It is reachable from `out.push(src[j])` where the array is a
+`string[]` local, which does *not* go through `ArrayPush1`: that path is
+compiled (2 functions, 0 refused) and flat under `MERSEY_JIT=0`, so it is a
+third place where an owned handle is dropped.
+
+**And there is no regression guard yet.** A tier-agreement test cannot catch
+this: every answer was always correct, because a leaked arena slot is memory,
+not meaning. `gc.stats().live` cannot see it either — the arena is cleared when
+the outermost compiled call returns, so the growth exists only *during* the
+call, as peak RSS. `bench/cli/run.mjs` already measures peak RSS per workload
+and does not assert on it; that is the shape the guard should take.

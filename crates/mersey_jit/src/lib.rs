@@ -4798,7 +4798,7 @@ fn translate(
                         let v = b.ins().uextend(types::I32, c);
                         stack.push(SlotV::Val(v, Ty::Bool));
                     }
-                    (SlotV::Str(ap, al, _), SlotV::Str(bp, bl, _)) => {
+                    (SlotV::Str(ap, al, ah), SlotV::Str(bp, bl, bh)) => {
                         let call = b.ins().call(shim.str_eq, &[ap, al, bp, bl]);
                         let eq = b.inst_results(call)[0];
                         let v = match binop {
@@ -4807,6 +4807,20 @@ fn translate(
                             _ => return None,
                         };
                         let v = b.ins().uextend(types::I32, v);
+                        // A comparison *consumes* both strings, so an operand
+                        // that owned an arena entry has to give it back here —
+                        // nothing downstream names it, and the arena is not
+                        // swept until the outermost compiled call returns.
+                        //
+                        // Almost every string compared is a borrow (handle 0,
+                        // and this is a no-op), which is why it went unnoticed:
+                        // the one that is not is an element read out of an
+                        // array, which the shim hands over owning its own entry.
+                        // `rows[i] != ".."` in a loop leaked one string and one
+                        // arena slot per iteration — `std:path`'s `normalize`,
+                        // and 227 MiB on a `bench/cli/path` scaled to 200k.
+                        release_if_owned(b, shim.release, arena_ptr, ah);
+                        release_if_owned(b, shim.release, arena_ptr, bh);
                         stack.push(SlotV::Val(v, Ty::Bool));
                     }
                     (SlotV::Val(lv, lt), SlotV::Val(rv, _)) => {
@@ -5135,19 +5149,33 @@ fn translate(
                 // also what `Ty::Str` always needed: the analysis accepted it and
                 // this arm did not, so the two passes disagreed and the function
                 // was refused after being accepted.
+                //
+                // The value being pushed is *copied* into the array, so an
+                // operand that owned an arena entry has to give it back — after
+                // the copy, never before, since the copy reads the buffer the
+                // handle names. Handle 0 is a borrow and the release is a no-op,
+                // which is every push of a literal or a local; the one that owns
+                // is an element read out of another array, and `out.push(t[j])`
+                // in a loop leaked one entry per iteration.
                 let (kind, bits) = match top {
-                    SlotV::Obj(ptr, _, _) => {
+                    SlotV::Obj(ptr, _, h) => {
                         let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
-                        (2i64, b.inst_results(c)[0])
+                        let bits = b.inst_results(c)[0];
+                        release_if_owned(b, shim.release, arena_ptr, h);
+                        (2i64, bits)
                     }
-                    SlotV::Str(ptr, len, _) => {
+                    SlotV::Str(ptr, len, h) => {
                         let out = b.ins().stack_addr(types::I64, shim.scratch, 0);
                         b.ins().call(shim.own_str, &[arena_ptr, ptr, len, out]);
-                        (2i64, b.ins().load(types::I64, MemFlags::trusted(), out, 8))
+                        let bits = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+                        release_if_owned(b, shim.release, arena_ptr, h);
+                        (2i64, bits)
                     }
-                    SlotV::ValRef(v, _) => {
+                    SlotV::ValRef(v, h) => {
                         let c = b.ins().call(shim.clone_val, &[arena_ptr, v]);
-                        (2i64, b.inst_results(c)[0])
+                        let bits = b.inst_results(c)[0];
+                        release_if_owned(b, shim.release, arena_ptr, h);
+                        (2i64, bits)
                     }
                     other => {
                         let (v, t) = scalar(other)?;
