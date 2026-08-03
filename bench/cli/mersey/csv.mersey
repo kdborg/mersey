@@ -1,0 +1,55 @@
+// CLI twin of `bench/cli/js/csv.js`, over `std:csv` — RFC 4180 parse and
+// serialize. The JS side ports the same algorithm line for line, because no JS
+// runtime has a CSV builtin; what is being compared is the two engines running
+// one program, which is the point of the arena.
+//
+// Why this workload: `parse` accumulates a field one character at a time
+// (`field = `${field}${c}``), which is the shape every JS engine special-cases
+// with ropes and the shape `bench/cli/strings` found the engine worst at. It is
+// also written in `string[][]`, the type that needed its own lattice entry
+// before Tier 1 could describe it at all — so the grid is exercised as well as
+// the appending.
+import { console } from "std:console";
+import { time } from "std:time";
+import { parse, stringify } from "std:csv";
+
+const N: int32 = 300;
+
+// A source table with every case the parser has a branch for: bare fields,
+// quoted fields holding commas, doubled quotes, and a quoted line break.
+function source(rows: int32): string {
+    let out: string = "id,name,note,qty\r\n";
+    for (let i: int32 = 0; i < rows; i += 1) {
+        const name = `item ${i}`;
+        const note = i % 3 == 0
+            ? `"quoted, with comma"`
+            : (i % 3 == 1 ? `say ""hi"" there` : `plain note ${i}`);
+        out = `${out}${i},${name},"${note}",${i * 7}\r\n`;
+    }
+    return out;
+}
+
+function work(n: int32, text: string): int32 {
+    let sum = 0;
+    for (let r: int32 = 0; r < n; r += 1) {
+        const grid = parse(text);
+        sum = (sum + grid.length) % 1000003;
+        for (let i: int32 = 0; i < grid.length; i += 1) {
+            const row = grid[i];
+            sum = (sum + row.length) % 1000003;
+            for (let j: int32 = 0; j < row.length; j += 1) {
+                sum = (sum * 31 + row[j].length) % 1000003;
+            }
+        }
+        const back = stringify(grid);
+        sum = (sum + back.length) % 1000003;
+    }
+    return sum;
+}
+
+const text = source(60);
+work(5, text);
+const t0 = time.monotonic();
+const c = work(N, text);
+const t1 = time.monotonic();
+console.log(`RESULT csv ${t1 - t0} ${c}`);
