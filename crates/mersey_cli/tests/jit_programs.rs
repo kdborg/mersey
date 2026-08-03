@@ -1056,3 +1056,33 @@ fn string_append_agrees_across_the_tier_boundary() {
     assert_eq!(ok, 7, "only {ok} of 7 functions compiled");
     assert_eq!(no, 0, "{no} refused");
 }
+
+/// A `string[]` returned from a function and used by its caller.
+///
+/// `sig_of` recovers a declared return's element type only for `ArrayOf(Named)`
+/// resolving to a class, so `Row[]` became `Ty::ObjArr` and `string[]` — whose
+/// element is a predefined name, not a class — fell through to a bare opaque. A
+/// read off one types as a *number*, so `segments(p)[i]` came back an `int32`
+/// where a string was wanted and every use of it left through a shim.
+/// `Ty::StrArr` already existed for exactly this and was never reached from the
+/// return path.
+///
+/// `std/path.mersey`'s `relative` is written on two of these: 776ms to 382ms,
+/// and `bench/cli/path` 233ms to 144ms, 1.62x.
+///
+/// The count is the assertion that matters — an opaque read is slow, not wrong,
+/// so every answer here was already correct. Before the fix this file compiled
+/// **one** of its four functions.
+#[test]
+fn returned_string_arrays_agree_across_the_tier_boundary() {
+    check("str-array-return.mersey");
+    let out = run("str-array-return.mersey", true);
+    // `common`: two shared segments, then the hash of the rest of the target.
+    assert!(out.starts_with("6899 "), "{out}");
+    // `totalLength`, and `rejoin` — whose text shows a wrong element where a
+    // length would not.
+    assert!(out.trim_end().ends_with(" 30 a|bb|ccc|dddd"), "{out}");
+    let (ok, no) = tier1_counts("str-array-return.mersey");
+    assert_eq!(ok, 4, "only {ok} of 4 functions compiled");
+    assert_eq!(no, 0, "{no} refused");
+}

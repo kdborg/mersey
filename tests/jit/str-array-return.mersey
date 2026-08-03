@@ -1,0 +1,80 @@
+// A `string[]` *returned* from a function, and used by its caller.
+//
+// `sig_of` recovers a declared return's element type so the caller gets
+// something better than a bare opaque. It did that only for `ArrayOf(Named)`
+// resolving to a *class* — a `Row[]` return becomes `Ty::ObjArr` — and `string`
+// is a predefined name, not a class, so `class_named` said no and a returned
+// `string[]` arrived as `Ty::Val`.
+//
+// A read off a bare `Ty::Val` types as a number. So `segments(p)[i]` came back an
+// `int32` where a string was wanted, and every use of it went out through a shim.
+// `Ty::StrArr` — "an opaque whose elements are strings" — already existed for
+// exactly this and was simply never reached from the return path.
+//
+// `std/path.mersey`'s `relative` is written on two of these, and was 13.8x node
+// where its neighbours in the same module were about 5x. It is 2.03x faster now,
+// and `bench/cli/path` 1.62x.
+//
+// Every answer here was already correct — an opaque read is slow, not wrong — so
+// the assertion that catches a regression is the *count*.
+
+import { console } from "std:console";
+
+/// Returns `string[]`, the shape that was arriving opaque.
+function segments(p: string): string[] {
+    const out: string[] = [];
+    for (const s of p.split("/")) {
+        if (s.length > 0 && s != ".") {
+            out.push(s);
+        }
+    }
+    return out;
+}
+
+/// Indexed, compared, and its contents read — the three things that all typed as
+/// a number when the element type was lost.
+function common(a: string, b: string): int32 {
+    const f = segments(a);
+    const t = segments(b);
+    let i: int32 = 0;
+    // String equality on two elements, which is `relative`'s inner loop.
+    while (i < f.length && i < t.length && f[i] == t[i]) {
+        i += 1;
+    }
+    let h = 0;
+    for (let j: int32 = i; j < t.length; j += 1) {
+        // The element's own contents: a length off a number would be nonsense,
+        // and a length off the wrong string would be plausible.
+        h = (h * 31 + t[j].length) % 1000003;
+    }
+    return i * 1000 + h;
+}
+
+/// Returned straight into a `for…of`, without a local in between.
+function totalLength(p: string): int32 {
+    let n = 0;
+    for (const s of segments(p)) {
+        n = n + s.length;
+    }
+    return n;
+}
+
+/// The element read back out and rebuilt, so a wrong element shows in the text.
+function rejoin(p: string): string {
+    const parts = segments(p);
+    let out = "";
+    for (let i: int32 = 0; i < parts.length; i += 1) {
+        out = out.length == 0 ? parts[i] : `${out}|${parts[i]}`;
+    }
+    return out;
+}
+
+let a = 0;
+let b = 0;
+let c = "";
+for (let r: int32 = 0; r < 800; r += 1) {
+    a = common("/usr/local/lib", "/usr/local/share/doc/x");
+    b = totalLength("/usr/local/lib/mersey/pkg/mod.mersey");
+    c = rejoin("/a/bb/./ccc/dddd");
+}
+console.log(`${a} ${b} ${c}`);

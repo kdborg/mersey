@@ -638,18 +638,29 @@ impl Group<'_> {
             // as a number and the field read after it was refused. The
             // declaration is the only place this can be recovered — the body is
             // not read, on purpose, so that recursion can be typed.
-            let elem = match f.ret_ty {
+            match f.ret_ty {
                 Some(mersey_front::ast::TypeExpr::ArrayOf(inner)) => match &**inner {
-                    mersey_front::ast::TypeExpr::Named { name, .. } => {
-                        self.env.class_named(f.scope.as_ref(), name)
+                    // `string[]`, the other element type worth knowing, and the
+                    // one `Ty::StrArr` already exists to describe — "an opaque
+                    // whose elements are strings". Without it a returned
+                    // `string[]` arrived as a bare opaque, so `segments(p)[i]`
+                    // typed as a *number* and every read of it went out through
+                    // a shim. `std/path.mersey`'s `relative` is written on two
+                    // of them and was 13.8x node against ~5x for its neighbours.
+                    mersey_front::ast::TypeExpr::Named { name, args, .. }
+                        if name == "string" && args.is_empty() =>
+                    {
+                        Ty::StrArr
                     }
-                    _ => None,
+                    mersey_front::ast::TypeExpr::Named { name, .. } => {
+                        match self.env.class_named(f.scope.as_ref(), name) {
+                            Some(c) => Ty::ObjArr(self.class_idx(&c)),
+                            None => Ty::Val,
+                        }
+                    }
+                    _ => Ty::Val,
                 },
-                _ => None,
-            };
-            match elem {
-                Some(c) => Ty::ObjArr(self.class_idx(&c)),
-                None => Ty::Val,
+                _ => Ty::Val,
             }
         } else if f.ret_numopt {
             Ty::I32Opt
