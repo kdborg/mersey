@@ -566,3 +566,64 @@ Reverted. Two things worth keeping from it:
 
 That is now the third distinct workload pointing at the same thing — `strings`,
 the `csv` append, and this.
+
+## The primitives, one at a time
+
+The per-operation breakdown that found the `string[]` return, taken one level
+down: each primitive in its own function, warmed past the tier threshold, timed
+against the same loop in node. Identical checksums.
+
+**The first version of this measured nothing.** Every loop was at module top
+level, which Tier 1 never sees, so it compared the Mersey *interpreter* against
+node's JIT and reported figures up to 49×. A benchmark of the engine has to be
+inside a function, and the number that gave it away was `"".length` at 64ns.
+
+| primitive | mersey | node | |
+|---|---:|---:|---:|
+| `slice` | 1.27 | 1.97 | 0.6× |
+| `lastIndexOf` | 3.62 | 4.85 | 0.7× |
+| `startsWith` | 2.58 | 2.74 | 0.9× |
+| `charAt` | 1.27 | 0.98 | 1.3× |
+| `length` | 1.37 | 0.98 | 1.4× |
+| `template` | 9.30 | 4.40 | 2.1× |
+| `codePointAt` | 1.33 | 0.54 | 2.4× |
+| `indexOf` | 3.14 | 1.00 | 3.1× |
+| `join` | 81.30 | 22.27 | 3.7× |
+| `split` | 81.70 | 14.04 | 5.8× |
+| **`push`** | **55.09** | **3.79** | **14.5×** |
+
+The shape of this is the useful part, and it is not what the workload-level gaps
+suggested: **the string primitives are competitive**, three of them faster than
+node's. Nothing here is 7× on its own. The workload gaps are built out of the
+two rows at the bottom and out of what surrounds the primitives rather than the
+primitives themselves.
+
+`push` — allocate a small array, push twice — is 183ns against node's 12.6ns, on
+**compiled** code. That is the row worth chasing, and it lines up with `path`'s
+flat allocation profile.
+
+### A module-level array refuses the function that reads it
+
+Three rows of the table were missing because their functions were refused, all
+on `LoadName`: they read a module-level `const ARR: string[]`. An array global
+resolves to `NameKind::Other`, which is looked up as a *function*, is not one,
+and refuses. A local array of the same contents compiles.
+
+That is idiomatic code — a keyword list, an alphabet, a lookup table — and no
+`std/` module happens to use it, which is why nothing in the arena ever noticed.
+
+**Adding `Value::Array` to the opaque-global arm was measured and reverted.** It
+does what it says: the refused function compiles (prim2 went 10/3 to 11/2, no
+arena coverage moved). It is worth **nothing** — 137ms against 137ms on a loop
+reading `KEYWORDS.length` two million times — because the read stays a shim
+either way. Compiling the arithmetic around a shim that dominates changes
+nothing, which is the fourth or fifth time this session that compiling more has
+not meant going faster.
+
+The fix that would pay is an element-*typed* array global — `Ty::StrArr` or
+`Ty::ObjArr` rather than `Ty::Val`, hoisted at entry like the numeric, string and
+web globals — so `.length`, `[i]` and `for…of` are native rather than shims. The
+element type is available: `name_kind` already holds the `Value`, and a
+`string[]` only ever holds strings, so its first element names the type. That is
+a real piece of work and nothing currently measured needs it, so it is written
+down rather than built.
