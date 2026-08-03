@@ -627,3 +627,64 @@ element type is available: `name_kind` already holds the `Value`, and a
 `string[]` only ever holds strings, so its first element names the type. That is
 a real piece of work and nothing currently measured needs it, so it is written
 down rather than built.
+
+## Array allocation, decomposed
+
+`push` was the one primitive genuinely off, so it was taken apart. Each shape in
+its own function, warmed, N=1,000,000, all five compiled (verified from the
+trace, not assumed):
+
+| | mersey | node | |
+|---|---:|---:|---:|
+| allocate an empty array, read `.length` | 85.9 | 3.03 | **28.3×** |
+| …and push one string | 147.3 | 12.73 | 11.6× |
+| …and push two | 182.4 | 12.58 | 14.5× |
+| push onto an array that already exists | 100.7 | 12.06 | 8.3× |
+| allocate and push two `int32` | 124.4 | 10.10 | 12.3× |
+
+**The allocation is the cost, not the push.** An empty array is 86ns against
+node's 3ns — the largest single-primitive gap measured in this arena — and the
+first push adds 61ns on top.
+
+Profiled (compiled, verified), the 86ns is not one thing:
+
+| | share |
+|---|---:|
+| `Arena::keep` + `Arena::release` | 15.7% |
+| thread-local access + `_tlv_get_addr` + `YOUNG` | ~17% |
+| shim plumbing (`array_new`, `jit_array_new`, `new_array`) | ~14% |
+| `mi_malloc` + `mi_free` + `Rc` | ~13% |
+| GC tracking (`track_array`, `GcCell` drop) | ~9% |
+| `val_len` — the `.length` read | 4.8% |
+
+Nothing dominates. Allocating an array does five separate pieces of bookkeeping:
+allocate the `Rc<GcCell<Vec>>`, register a `Weak` in the young list, bump the
+allocation counter, park it in the arena for compiled code, and release it
+again.
+
+### Consolidating the GC's thread-locals: neutral
+
+`register` runs on every allocation and reached three thread-locals — the young
+list, the prune threshold nested inside it, the allocation counter. Folding them
+into one `Nursery` struct behind a single lookup (with zero-sized key handles so
+the cold call sites stayed as they were) **did exactly what it claimed and
+bought nothing**: `_tlv_get_addr` disappears from the profile entirely, and the
+time does not move — `alloc2` 182.4 against 181.8, and every arena workload
+within noise.
+
+Reverted. Worth keeping is why it failed, because it was not the usual "below
+the floor" answer: the work really was removed, and the workload is bound
+elsewhere. `Arena::keep` and `Arena::release` become the top two rows afterwards.
+
+### What this actually says
+
+The gap is architectural rather than a missing optimisation. V8 allocates a
+young object by bumping a pointer into a nursery and registers nothing; this
+engine does a refcounted heap allocation plus four pieces of bookkeeping. No
+single one of them is wrong, and removing any one of them — as the thread-local
+attempt showed — leaves the other four.
+
+That is a much better-founded target than "how strings are held", which three
+workload-level profiles pointed at and the primitive table then contradicted:
+the string primitives are competitive, and it is the *container* allocation path
+that is 28×.
