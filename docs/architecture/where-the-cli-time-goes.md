@@ -286,3 +286,66 @@ experiment above reached the hard way.
 specific to this workload. `IndexMap::shift_remove` at 3% is `nodes.remove()`
 and is O(n) on purpose: a `Map` iterates in insertion order (§6.5), so the
 cheap `swap_remove` would be observably wrong.
+
+## Tier 1 on: where `reconcile`'s remaining time is
+
+The table above says `reconcile` gets **1.16×** from Tier 1 — the smallest ratio
+in the arena by a wide margin. That is not a coverage problem: the arena refuses
+nothing except two functions in this workload, and those are worth ~2% (see
+`jit-coverage.md`). Compiling was never what `reconcile` was short of.
+
+So, profiled with Tier 1 **on** — `sample` for 6s over a copy scaled to N=5000,
+4137 thread samples, top of stack:
+
+| symbol | samples | share |
+|---|---:|---:|
+| `vm::exec` | 1202 | 29% |
+| `drop_glue<Value>` | 468 | 11% |
+| `Value::clone` | 299 | 7% |
+| `Interp::call_member` | 165 | 4.0% |
+| `Interp::try_jit_args` | 145 | 3.5% |
+| `memmove` | 129 | 3.1% |
+| `mi_malloc_aligned` | 104 | 2.5% |
+| `IndexMap` (probe) | 99 | 2.4% |
+| `Arena::keep` | 79 | 1.9% |
+| `mi_free` | 71 | 1.7% |
+| `sip::Hasher` | 48 | 1.2% |
+
+**47% is the interpreter and its refcount churn** — `exec`, `drop_glue`,
+`clone`. That is the same 22%-of-Tier-0 structure written up in
+`where-the-interpreter-time-goes.md`, which scopes the one mechanism that would
+reduce it (last-use moves on `LoadSlot`) and rejects it for costing correctness
+surface in two places and the debugger in a third. Tier 1 being *on* does not
+change that: what it compiles leaves this behind rather than reducing it.
+
+`sip::Hasher` is answered where it lives — see the note on `MapData` in
+`lib.rs`: the whole hasher is worth 3.3% of this workload and does not buy out
+collision resistance on attacker-chosen keys.
+
+### `try_jit_args`, and a fourth data point for the allocation rule
+
+3.5% is the interpreter/Tier-1 boundary: the entry guard per slot, the cache
+lookup, the arena setup and teardown. Its one obvious allocation is the argument
+buffer — `Vec::with_capacity(args.len() + 1)`, once per compiled call.
+
+Replaced with a `smallvec::SmallVec<[JitArg; 8]>` so the common arity never
+leaves the stack. `JitArg` is 24 bytes, so that is a 192-byte inline buffer.
+Measured against the same binary alternately, four pairs per workload:
+`reconcile` **54.5 against 53.9** — slightly *worse* — `strings` and `url`
+neither. Retried at `[JitArg; 4]` in case 192 bytes was itself the cost:
+medians 54.2 against 54.2, neither.
+
+Reverted, and the dependency with it. This is the fourth measurement in this
+session to say the same thing — **removing one small allocation per operation is
+not measurable** — and the first to have it come out the wrong way, which
+sharpens it: mimalloc's small-size path costs about what initialising an inline
+buffer costs, so this is not a trade that has a favourable side. The wins in
+this session that *did* show up removed work from every operation (a GC flag,
+24%) or removed an allocation happening ~25 times per operation (the per-call
+closure, 4.8%). One per call is below the floor.
+
+What that leaves for the boundary: nothing worth taking on its own. The 3.5% is
+spread across the per-slot guard, a hash lookup, and two `clear()`s, none of
+which is a majority of it, and the taken path's hash lookup is the only one with
+an obvious cheaper form (a memo on the chunk, the way `jit_refused` already
+memoises the refusal). At 3.5% total that is a fraction of a fraction.
