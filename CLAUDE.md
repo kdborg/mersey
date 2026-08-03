@@ -99,6 +99,15 @@ discovered) + the hardcoded lists in `run-native-servo.mjs`,
 it needs a web API the engine leg's stub realm (`engine-child.mjs`) may need
 the stub too.
 
+`bench/cli/` is the browser-free arena — node vs bun vs deno vs the Mersey CLI,
+twins in `bench/cli/{js,mersey}/`. `run.mjs` writes `REPORT.md` and
+`results.json`; **then** `gen-report-data.mjs` rewrites `report.html`'s DATA
+block from that JSON. Same rule as above: never hand-edit those numbers (they
+had already drifted by 25% before the generator existed). The `WORKLOADS`
+prose map in `report.html` *is* hand-written — the generator warns about a
+workload with no description rather than inventing one. Adding a workload = the
+two twin files + the `WORKLOADS` list in `run.mjs` + a description.
+
 ## Conventions that bite
 
 - Workload twins must stay line-for-line equivalent and print

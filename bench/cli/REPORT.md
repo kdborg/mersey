@@ -6,22 +6,24 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 87.36 | 95.57 | 95.42 | 87.3 |
-| calls | 120.72 | 30.78 | 28.07 | 21.89 |
-| fcompute | 102.05 | 101.87 | 103.5 | 101.52 |
-| mathk | 13.27 | 13.91 | 13.09 | 12.51 |
-| url | 8.6 | 7.36 | 10.92 | 9.4 |
-| encoding | 4.36 | 1.59 | 4.17 | 1.47 |
-| crypto | 18.47 | 0.48 | 1.54 | 0.5 |
-| json | 3.86 | 1.27 | 1.45 | 0.73 |
-| strings | 25.51 | 13.95 | 14.63 | 55.1 |
-| reconcile | 11.35 | 5.5 | 6 | 56.3 |
+| compute | 87.39 | 95.6 | 95.48 | 87.39 |
+| calls | 120.67 | 31.49 | 28.06 | 21.92 |
+| fcompute | 102.14 | 101.9 | 103.41 | 101.58 |
+| mathk | 13.31 | 13.88 | 13.15 | 12.5 |
+| url | 8.56 | 7.34 | 10.81 | 9.46 |
+| encoding | 4.37 | 1.6 | 4.2 | 1.49 |
+| crypto | 18.53 | 0.47 | 1.53 | 0.5 |
+| json | 3.84 | 1.32 | 1.44 | 0.74 |
+| strings | 25.38 | 13.91 | 14.61 | 42.7 |
+| reconcile | 11.48 | 5.54 | 6.01 | 53.32 |
+| csv | 13.62 | 10.77 | 11.03 | 66.7 |
+| path | 29.03 | 15.26 | 25.06 | 142.06 |
 
 ## Wall — whole CLI invocation incl. startup + warm-up (ms)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 120 | 110 | 110 | 90 |
+| compute | 120 | 110 | 110 | 100 |
 | calls | 140 | 40 | 30 | 20 |
 | fcompute | 130 | 110 | 110 | 100 |
 | mathk | 30 | 20 | 20 | 10 |
@@ -29,20 +31,24 @@ macOS (arm64). 5 repeats per cell; work/wall = min, rss = median of peak. Checks
 | encoding | 30 | 10 | 10 | 0 |
 | crypto | 40 | 0 | 10 | 0 |
 | json | 30 | 10 | 10 | 0 |
-| strings | 50 | 20 | 20 | 60 |
+| strings | 50 | 20 | 20 | 40 |
 | reconcile | 40 | 10 | 10 | 60 |
+| csv | 40 | 20 | 20 | 70 |
+| path | 60 | 20 | 40 | 160 |
 
 ## Peak RSS (MiB)
 
 | workload | Node.js | Bun | Deno | Mersey CLI |
 |---|---|---|---|---|
-| compute | 38.7 | 29 | 34.8 | 6 |
-| calls | 38.8 | 31.2 | 34.9 | 6 |
+| compute | 38.7 | 29 | 34.8 | 6.1 |
+| calls | 38.9 | 31.2 | 34.9 | 6.1 |
 | fcompute | 40.6 | 29 | 36.9 | 6 |
-| mathk | 39.9 | 30.7 | 36.8 | 6 |
-| url | 43.2 | 38.1 | 41.8 | 8.8 |
-| encoding | 41.9 | 30.7 | 38.3 | 7.5 |
-| crypto | 48.3 | 26.9 | 35.3 | 6 |
-| json | 40.5 | 29.3 | 36.8 | 6 |
-| strings | 41.6 | 52.1 | 39.3 | 8.6 |
-| reconcile | 47.9 | 55.2 | 42.6 | 9.7 |
+| mathk | 39.9 | 30.7 | 36.9 | 6 |
+| url | 43.2 | 38.2 | 41.7 | 8.9 |
+| encoding | 42 | 30.7 | 38.3 | 7.5 |
+| crypto | 48.2 | 26.9 | 35.3 | 6 |
+| json | 40.4 | 29.3 | 36.8 | 6 |
+| strings | 41.8 | 52 | 39.3 | 8.8 |
+| reconcile | 47.7 | 55.3 | 42.7 | 10.3 |
+| csv | 42.8 | 67.1 | 47.2 | 9.1 |
+| path | 48.1 | 43.6 | 46.4 | 27.3 |
