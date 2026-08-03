@@ -10953,6 +10953,63 @@ pub(crate) fn str_member_units(rc: &Rc<Vec<u16>>, name: &str, args: &[Value]) ->
             args.first().and_then(as_i64).unwrap_or(0),
             args.get(1).and_then(as_i64),
         ))))),
+        // Copying the receiver n times. `text.repeat(n)` did it on the UTF-8,
+        // so both the receiver and the whole result were transcoded.
+        "repeat" => Some({
+            let n = args
+                .first()
+                .and_then(as_i64)
+                .unwrap_or(0)
+                .clamp(0, 1_000_000) as usize;
+            // Doubling, not `n` appends. The first version pushed the receiver
+            // n times and was **24% slower than the transcode it replaced**:
+            // `str::repeat` copies by doubling, so a 3-unit string repeated 20
+            // times cost one bulk copy there and twenty small ones here, and
+            // that beat transcoding a 3-character string both ways. Copying
+            // from what has already been written gets the same shape.
+            let total = s.len().saturating_mul(n);
+            let mut out: Vec<u16> = Vec::with_capacity(total);
+            if total > 0 {
+                out.extend_from_slice(s);
+                while out.len() < total {
+                    let take = (total - out.len()).min(out.len());
+                    out.extend_from_within(..take);
+                }
+            }
+            Ok(Value::Str(Rc::new(out)))
+        }),
+        // Padding was already counting in code units — the width, and the pad
+        // itself — and was still below the transcode, so it paid for a UTF-8
+        // copy of the receiver that it then **never read**: `text` is dead in
+        // that arm. It also round-tripped the pad string through UTF-8 and back
+        // for no reason.
+        //
+        // And it built the answer with `out.insert(k, c)` into a vector that
+        // started as the receiver, which shifts everything after `k` on every
+        // unit — quadratic in the padding. Writing the prefix first and the
+        // receiver after is the same answer in one pass.
+        "padStart" | "padEnd" => Some({
+            let width = args.first().and_then(as_i64).unwrap_or(0).max(0) as usize;
+            // An empty or non-string pad falls back to one space, as before.
+            let pad: &[u16] = match args.get(1) {
+                Some(Value::Str(a)) if !a.is_empty() => a,
+                _ => &[0x20],
+            };
+            if s.len() >= width {
+                Ok(Value::Str(rc.clone()))
+            } else {
+                let need = width - s.len();
+                let mut out: Vec<u16> = Vec::with_capacity(width);
+                if name == "padStart" {
+                    out.extend((0..need).map(|k| pad[k % pad.len()]));
+                    out.extend_from_slice(s);
+                } else {
+                    out.extend_from_slice(s);
+                    out.extend((0..need).map(|k| pad[k % pad.len()]));
+                }
+                Ok(Value::Str(Rc::new(out)))
+            }
+        }),
         // Searching for a run of code units and copying around it. Below the
         // transcode this converted the receiver, the needle *and* the
         // replacement, then converted the answer back: 6.4x node.

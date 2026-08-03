@@ -203,3 +203,34 @@ test("replace works in code units, and only where that means the same thing", ()
     // every *character*, which is a different set of positions from every unit.
     assert("ab".replaceAll("", "-") == "-a-b-", "an empty needle still splits");
 });
+
+// `repeat`, `padStart` and `padEnd` answer from the code units too. Padding was
+// the worst of the three and for two reasons at once: it transcoded a receiver
+// it then never read, and it built the answer with `insert` into a vector that
+// began as the receiver, shifting everything after the cursor on every unit —
+// quadratic in the padding. 4.69x once written in one pass.
+//
+// `repeat` needed a second attempt: pushing the receiver n times was 24% slower
+// than the UTF-8 round trip it replaced, because `str::repeat` copies by
+// doubling. Copying from what is already written does the same and is 1.34x.
+test("repeat and pad answer in code units", () => {
+    assert("ab".repeat(0) == "", "zero repeats to nothing");
+    assert("ab".repeat(1) == "ab", "one is the string itself");
+    assert("ab".repeat(3) == "ababab", "the ordinary case");
+    assert("".repeat(5) == "", "an empty string stays empty");
+    // Doubling has to land on an odd count as exactly as an even one.
+    assert("xyz".repeat(7).length == 21, "an odd count");
+    assert("\u{1F600}".repeat(3).length == 6, "units, not characters");
+
+    assert("abc".padStart(6, "0") == "000abc", "pad on the left");
+    assert("abc".padEnd(6, "0") == "abc000", "pad on the right");
+    assert("abc".padStart(3, "0") == "abc", "already wide enough");
+    assert("abc".padStart(2, "0") == "abc", "narrower than the string");
+    assert("abc".padStart(6) == "   abc", "the default pad is a space");
+    // A multi-unit pad cycles and is cut off wherever the width lands.
+    assert("x".padStart(6, "ab") == "ababax", "the pad repeats");
+    assert("x".padEnd(6, "ab") == "xababa", "…on the right too");
+    assert("x".padStart(4, "abcdefg") == "abcx", "and is truncated");
+    // The width is counted in code units, which is what `length` reports.
+    assert("x".padStart(5, "\u{1F600}").length == 5, "a non-BMP pad fills by unit");
+});
