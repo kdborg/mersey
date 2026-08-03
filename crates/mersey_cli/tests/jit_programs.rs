@@ -981,3 +981,37 @@ fn nested_arrays_agree_across_the_tier_boundary() {
     assert!(ok >= 3, "only {ok} functions compiled");
     assert_eq!(no, 0, "{no} refused");
 }
+
+/// Module-level numbers, read and written from compiled code.
+///
+/// A read was a shim call per read, and the shim walks the scope chain
+/// comparing names — `env_get` and the `memcmp` under it were 21% of
+/// `bench/cli/csv`, whose parser reads four module-level `const`s several times
+/// per character. They are hoisted to the entry block now, the way the string,
+/// opaque and web globals already were, and `bench/cli/csv` went from 113.6ms to
+/// 71.5ms for it.
+///
+/// The hazard the hoist has and those three do not: a numeric global can be
+/// *written* from compiled code (`Op::StoreName` — "a counter, a cache, an id
+/// sequence"), and a hoisted read would answer with the value at entry forever.
+/// A name stored anywhere in the group keeps its per-read call, and the stored
+/// set is collected over every plan in the group so that a store inside an
+/// inlined callee counts.
+///
+/// The count is asserted because none of this is visible in the answers: the
+/// per-read call is *correct*, just slow, so a change that quietly stopped
+/// hoisting — or one that refused these functions outright — would pass every
+/// assertion above it.
+#[test]
+fn global_numbers_agree_across_the_tier_boundary() {
+    check("global-nums.mersey");
+    let out = run("global-nums.mersey", true);
+    // `writeThenRead` and `writeInCallee` count *through* their writes: hoisting
+    // either would freeze them at the value the global held on entry.
+    assert!(out.contains(" 46945 46975 "), "{out}");
+    // The counter's final value, and `bump`'s own tally of how often it ran.
+    assert!(out.trim_end().ends_with(" 47000 7500"), "{out}");
+    let (ok, no) = tier1_counts("global-nums.mersey");
+    assert_eq!(ok, 5, "only {ok} of 5 functions compiled");
+    assert_eq!(no, 0, "{no} refused");
+}

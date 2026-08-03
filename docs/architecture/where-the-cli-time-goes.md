@@ -349,3 +349,51 @@ spread across the per-slot guard, a hash lookup, and two `clear()`s, none of
 which is a majority of it, and the taken path's hash lookup is the only one with
 an obvious cheaper form (a memo on the chunk, the way `jit_refused` already
 memoises the refusal). At 3.5% total that is a fraction of a fraction.
+
+## Module-level numbers were read by name, per read
+
+The `csv` twin's profile put **~32% in resolving global names** — `env_get`
+13.9%, `memcmp` 7.5% comparing them, `jit_global_num` 6.2%, `heap::global_num`
+4.8%. `std/csv.mersey` opens with
+
+    const QUOTE: int32 = 34;
+    const COMMA: int32 = 44;
+    const LF: int32 = 10;
+    const CR: int32 = 13;
+
+and its parser reads them several times per character. Each read, *from compiled
+code*, was a shim call that walked the scope chain comparing name strings.
+
+The fix was already in the file, three times over. String globals, opaque
+globals and web globals are each read **once at the entry block** and reused —
+"reuse it rather than calling the shim each iteration". Numbers were the one
+kind that never got it, and they are the cheapest kind to hold.
+
+**Not unconditional, which is why it was not simply an oversight.** Unlike the
+other three, a numeric global can be *written* from compiled code — `Op::StoreName`
+compiles, for "a counter, a cache, an id sequence". Hoisting one of those would
+answer with the value it held at entry, forever. So a name stored anywhere in
+the group keeps its per-read call, and the stored set is collected across every
+plan in the group, not just the function's own — a store inside an inlined
+callee has to count, or the caller reading it back would see a stale value.
+
+| | before | after | |
+|---|---:|---:|---|
+| `bench/cli/csv` | 113.6ms | 71.5ms | **1.59×** |
+
+Six alternating pairs, not one overlapping, checksum `342272` throughout. The
+other five workloads are unmoved, which is the expected shape: none of them
+reads a module-level number in a hot loop. Against node, `csv` closes from 9.8×
+to 5.5×, and Tier 1's own ratio on it goes from 2.3× to **4.4×** (331.8ms
+interpreted).
+
+The residual hazard, stated plainly: a global written by something this group
+calls but did not inline would not be seen. That is the same exposure the string,
+opaque and web hoists have carried since they were written, and the numeric case
+narrows it further by excluding every name the group itself stores.
+
+`tests/jit/global-nums.mersey` guards it, and asserts the **count** of compiled
+functions as well as the answers — the per-read call is correct, only slow, so a
+change that quietly stopped hoisting would pass every assertion about output.
+That is the same reason `grow-param` exists, and the same class of regression
+that cost `reconcile` 10% for four commits.

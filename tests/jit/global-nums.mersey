@@ -1,0 +1,105 @@
+// Module-level numbers, read and written from compiled code.
+//
+// Reading one was a shim call per read, and the shim walks the scope chain
+// comparing names — `env_get` and the `memcmp` under it were 21% of
+// `bench/cli/csv`, whose parser reads four module-level `const`s several times
+// per character. They are hoisted to the entry block now, once per call, the way
+// the string, opaque and web globals already were.
+//
+// The hoist is what this file is guarding, and the thing it must not break is
+// the *other* use of a module-level number: a counter written from inside a
+// function. A written name keeps the per-read call, and the set of written names
+// is collected across the whole compiled group — so a store in a function that
+// was inlined into this one counts as a store here.
+//
+// Every answer below is one the interpreter already gives. The point is that
+// they stay the same with Tier 1 on, which is what `jit_programs` checks.
+
+import { console } from "std:console";
+
+// Read-only: these are the hoistable kind.
+const LIMIT: int32 = 97;
+const SCALE: int64 = 1000003;
+const RATIO: float64 = 1.5;
+const ON: bool = true;
+
+// Written from inside a function: these are not.
+let counter: int32 = 0;
+let total: int64 = 0;
+
+/// Reads only, and one of each hoistable type — `int32`, `int64`, `float64`,
+/// `bool`. Every one of these is hoisted, so the loop makes no call at all.
+///
+/// Written without an `as` cast on purpose: an earlier draft mixed the widths
+/// and converted, `CastOp` refused the function, and the one test of the hoisted
+/// path was testing the interpreter. A test that does not compile proves nothing
+/// about compiled code.
+function readOnly(n: int32): int64 {
+    let acc: int64 = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        if (ON && i % LIMIT != 0) {
+            acc = (acc + i) % SCALE;
+        }
+        if (RATIO * 2.0 > 2.5) {
+            acc = (acc + 3) % SCALE;
+        }
+    }
+    return acc;
+}
+
+/// Writes and then reads the same name in one call. Hoisting this would answer
+/// with the value the global had at entry, every time, and the loop would count
+/// nothing.
+function writeThenRead(n: int32): int32 {
+    for (let i: int32 = 0; i < n; i += 1) {
+        counter = counter + 1;
+        // The read has to see the write above it, not the entry value.
+        if (counter % 2 == 0) {
+            counter = counter + 1;
+        }
+    }
+    return counter;
+}
+
+/// The store is in here…
+function bump(by: int32): void {
+    counter = counter + by;
+    total = total + 1;
+}
+
+/// …and the read is out here, in the function that calls it. `bump` is small
+/// enough to be inlined, so its store belongs to this group — which is why the
+/// written-name set is collected over every plan in the group and not just this
+/// function's own.
+function writeInCallee(n: int32): int32 {
+    for (let i: int32 = 0; i < n; i += 1) {
+        bump(2);
+        if (counter > 1000000) {
+            counter = 0;
+        }
+    }
+    return counter;
+}
+
+/// A read-only global and a written one in the same function: one is hoisted,
+/// one is not, and they must not be confused for each other.
+function mixed(n: int32): int32 {
+    let acc = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        counter = counter + 1;
+        acc = (acc + counter % LIMIT) % 1000003;
+    }
+    return acc;
+}
+
+let a: int64 = 0;
+let b = 0;
+let c = 0;
+let d = 0;
+for (let r: int32 = 0; r < 500; r += 1) {
+    a = readOnly(60);
+    b = writeThenRead(20);
+    c = writeInCallee(15);
+    d = mixed(25);
+}
+console.log(`${a} ${b} ${c} ${d} ${counter} ${total}`);

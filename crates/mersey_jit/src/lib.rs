@@ -4317,6 +4317,41 @@ fn translate(
         })
         .collect();
 
+    // The same hoist, for the numbers — and the one kind that did *not* have it.
+    // A module-level `const` read inside a loop was a shim call and a walk of the
+    // scope chain comparing names, per read: `std/csv.mersey` reads four of them
+    // several times per character, and `env_get` plus the `memcmp` under it were
+    // 21% of `bench/cli/csv`.
+    //
+    // Not unconditional, because unlike a string global a numeric one can be
+    // *written* from compiled code (`Op::StoreName` — "a counter, a cache, an id
+    // sequence"). A name stored anywhere in the group keeps the per-read call, so
+    // a write is still seen by the read after it. `plans` is the whole group, so
+    // this sees the stores of every function inlined into this one, not just its
+    // own.
+    let stored: std::collections::HashSet<&str> = plans
+        .iter()
+        .flat_map(|q| q.global_set_at.values().map(|(n, _)| *n))
+        .collect();
+    let hoisted_nums: HashMap<u16, (ClValue, Ty)> = p
+        .num_globals
+        .iter()
+        .filter(|(_, (name, _))| !stored.contains(name))
+        .map(|(&ni, &(name, t))| {
+            let (nptr, nlen) = str_const(b, name);
+            let call = b
+                .ins()
+                .call(shim.global_num, &[arena_ptr, scope_ix, nptr, nlen]);
+            let bits = b.inst_results(call)[0];
+            let v = match t {
+                Ty::I64 => bits,
+                Ty::F64 => b.ins().bitcast(types::F64, MemFlags::new(), bits),
+                _ => b.ins().ireduce(types::I32, bits),
+            };
+            (ni, (v, t))
+        })
+        .collect();
+
     let opaque_handles: HashMap<u16, ClValue> = p
         .opaque_globals
         .iter()
@@ -4566,6 +4601,8 @@ fn translate(
                     stack.push(SlotV::StdNs);
                 } else if p.class_names.contains(&ni) {
                     stack.push(SlotV::ClassRef);
+                } else if let Some(&(v, t)) = hoisted_nums.get(&ni) {
+                    stack.push(SlotV::Val(v, t));
                 } else if let Some(&(name, t)) = p.num_globals.get(&ni) {
                     let (nptr, nlen) = str_const(b, name);
                     let call = b
