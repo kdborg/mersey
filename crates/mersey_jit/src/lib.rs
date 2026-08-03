@@ -6673,21 +6673,34 @@ fn box_arg(
 ) -> Option<ClValue> {
     Some(match v {
         SlotV::ValRef(h, _) => h,
-        // Nothing parked by `box_str` is ours to release: it is either the
-        // string's own arena entry handed straight back, or one the interpreter
-        // holds in a small bounded memo and frees when it displaces it.
+        // What `box_str` parks is not ours to free — it is either a handle the
+        // interpreter keeps in a small bounded memo and frees when it displaces
+        // it, or the string's *own* arena entry handed straight back. The
+        // argument itself is ours, though, and this is where it is consumed.
+        //
+        // That distinction was the bug. `have` is 0 for the borrow that almost
+        // every string argument is, and releasing 0 is a no-op — but an element
+        // read out of an array owns its entry, so `out.push(src[j])` in a loop
+        // parked one string per iteration and freed none of them until the
+        // outermost compiled call returned. `bench/cli/path` held 227 MiB.
         SlotV::Str(ptr, len, have) => {
             let c = b.ins().call(shim.box_str, &[arena_ptr, ptr, len, have]);
-            b.inst_results(c)[0]
+            let h = b.inst_results(c)[0];
+            boxed.push(have);
+            h
         }
         // An object. `clone_obj` is the same parking a returned borrow gets: a
         // reference of its own in the arena, released with the rest of `boxed`
         // once the call is done. Without this `xs.push(obj)` was refused, which
         // is most of what a collection of anything is written to do.
-        SlotV::Obj(ptr, _, _) => {
+        //
+        // `own` is the argument's own entry, released for the same reason the
+        // string's is: the call consumes it.
+        SlotV::Obj(ptr, _, own) => {
             let c = b.ins().call(shim.clone_obj, &[ptr, arena_ptr]);
             let h = b.inst_results(c)[0];
             boxed.push(h);
+            boxed.push(own);
             h
         }
         SlotV::Val(v, t) if t.is_num() => {

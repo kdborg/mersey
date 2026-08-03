@@ -747,3 +747,47 @@ not meaning. `gc.stats().live` cannot see it either — the arena is cleared whe
 the outermost compiled call returns, so the growth exists only *during* the
 call, as peak RSS. `bench/cli/run.mjs` already measures peak RSS per workload
 and does not assert on it; that is the shape the guard should take.
+
+### The third site, and the leak closed
+
+`box_arg` — the path a method *argument* takes. `out.push(src[j])` on a
+`string[]` local does not compile to `ArrayPush1` at all; it is an ordinary
+`CallMethod`, and its arguments go through:
+
+    SlotV::Str(ptr, len, have) => {
+        let c = b.ins().call(shim.box_str, …, have);
+        b.inst_results(c)[0]          // `have` is never released
+    }
+
+The comment above it was right about what `box_str` *parks* — that is either a
+handle the interpreter keeps in a bounded memo, or the string's own entry handed
+straight back, and neither is the caller's to free. What it missed is that the
+**argument itself** is consumed here. `have` is 0 for the borrow that almost
+every string argument is, so releasing it is a no-op; the one that owns is an
+element read out of an array. The object arm had the same omission.
+
+| | before | after |
+|---|---:|---:|
+| `bench/cli/path`, N=20k → 200k | 27.3 → 227 MiB | **9.86 → 9.86 MiB** |
+
+Flat, and in line with every other workload (6–10 MiB). Checksums unchanged
+across the arena, times unmoved.
+
+### Why there is still no regression guard
+
+An attempt is recorded here because it failed in an instructive way. `Arena`'s
+`slots` never shortens, so its length is a high-water mark that survives the
+call — exactly what is needed, since the arena is *cleared* when the outermost
+compiled call returns and any count taken afterwards sees nothing. An accessor
+plus a test in `crates/mersey_interp/tests/gc.rs` looked right and **passed with
+the fix reverted**.
+
+The peak was **zero**: `mersey_interp`'s own test crate has no Tier 1 wired in,
+so the program ran interpreted and the arena was never touched. The same mistake
+as timing a benchmark loop at module top level, and caught the same way — by
+checking that the number moves when the thing under test is removed.
+
+Both were reverted rather than kept as decoration. The guard has to live where
+the JIT actually runs, which is `crates/mersey_cli/tests/`, and that means the
+binary has to *report* its arena high-water mark — an env-gated line on stderr —
+because those tests see a subprocess's output and nothing else.
