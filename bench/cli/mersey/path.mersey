@@ -1,0 +1,49 @@
+// CLI twin of `bench/cli/js/path.js`, over `std:path`.
+//
+// The `url` convention rather than the `csv` one: node ships a `path` module, so
+// the JS side calls it instead of porting `std/path.mersey`. That module is
+// written in JavaScript (not native), so this is two engines running comparable
+// POSIX path code rather than one of them calling into C++ — and it is what a
+// program would actually reach for on either side.
+//
+// Path work is string scanning, splitting and rejoining, which is the part of
+// the engine `csv` reached only through one parser. The checksum is over the
+// lengths of every result, so a divergence in normalization shows up rather
+// than being averaged away.
+import { console } from "std:console";
+import { time } from "std:time";
+import {
+    basename,
+    dirname,
+    extname,
+    isAbsolute,
+    join,
+    normalize,
+    relative,
+} from "std:path";
+
+const N: int32 = 20000;
+
+function work(n: int32): int32 {
+    let sum = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        const p = `/usr/local/lib/mersey/${i}/../pkg/mod.mersey`;
+        sum = (sum + normalize(p).length) % 1000003;
+        sum = (sum + dirname(p).length) % 1000003;
+        sum = (sum + basename(p).length) % 1000003;
+        sum = (sum + extname(p).length) % 1000003;
+        const parts: string[] = ["a", `b${i}`, "..", "c/d", "e.txt"];
+        sum = (sum + join(parts).length) % 1000003;
+        sum = (sum + relative("/usr/local", p).length) % 1000003;
+        if (isAbsolute(p)) {
+            sum = (sum + 1) % 1000003;
+        }
+    }
+    return sum;
+}
+
+work(1000);
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT path ${t1 - t0} ${c}`);
