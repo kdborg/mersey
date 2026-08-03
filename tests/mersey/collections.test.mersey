@@ -126,3 +126,38 @@ test("a Map grown past any small-size threshold still behaves", () => {
     const keys = m.keys();
     assert(keys[0] == 0 && keys[499] == 499, "order held across rehashes");
 });
+
+// `join` builds its result in UTF-16 when every element is already a string —
+// nothing to convert, since that is how the engine holds both the parts and the
+// result. It used to go through `display`, making a Rust `String` per element,
+// joining those, and transcoding the answer back: over half a profile of nothing
+// but `join`, and 1.85x once removed.
+//
+// Two paths now, so both are pinned here. Anything that is *not* a string still
+// goes through `display` — which can run Mersey code, which is why that path
+// clones the array first and this one does not.
+test("join answers the same on both of its paths", () => {
+    const empty: string[] = [];
+    assert(empty.join(",") == "", "an empty array joins to nothing");
+
+    const one: string[] = ["only"];
+    assert(one.join(",") == "only", "one element gets no separator");
+
+    const three: string[] = ["a", "b", "c"];
+    assert(three.join(",") == "a,b,c", "the ordinary case");
+    assert(three.join("") == "abc", "an empty separator");
+    assert(three.join(" -- ") == "a -- b -- c", "a multi-unit separator");
+
+    // Non-BMP: the units have to be copied as units, not re-encoded.
+    const wide: string[] = ["\u{1F600}", "é", "\u{1F600}"];
+    assert(wide.join("|").length == 2 + 1 + 1 + 1 + 2, "surrogate pairs survive");
+    assert(wide.join("") == "\u{1F600}é\u{1F600}", "and read back identically");
+
+    // An empty string is a string: it must not be mistaken for a missing one.
+    const holes: string[] = ["", "x", ""];
+    assert(holes.join(",") == ",x,", "empty elements keep their separators");
+
+    // The other path: numbers are not strings, so `display` still runs.
+    const nums: int32[] = [1, 2, 3];
+    assert(nums.join("-") == "1-2-3", "numbers still format");
+});

@@ -8216,6 +8216,47 @@ impl Interp {
                         Ok(new_array((0..n).map(|i| Value::I32(i as i32)).collect()))
                     }
                     "join" => {
+                        // Strings in, a string out, and the engine holds both as
+                        // UTF-16 — so when every element already *is* a string
+                        // there is nothing to convert. The general path below
+                        // goes through `display`, which builds a Rust `String`
+                        // per element, joins those, and converts the result back:
+                        // `utf16_to_utf8_bytes` 10.4%, `from_utf8` 7.7%,
+                        // `join_generic_copy` 5.5% and `utf16_to_string` 4.8% of
+                        // a profile of nothing but `join`. It also cloned the
+                        // whole `Vec<Value>` first, because `display` can
+                        // re-enter the interpreter and mutate the array — which
+                        // an all-strings join cannot, so this borrows it.
+                        let sep: &[u16] = match args.first() {
+                            Some(Value::Str(s)) => s,
+                            _ => &[],
+                        };
+                        {
+                            let items = a.borrow();
+                            if items.iter().all(|v| matches!(v, Value::Str(_))) {
+                                let total: usize = items
+                                    .iter()
+                                    .map(|v| match v {
+                                        Value::Str(s) => s.len(),
+                                        _ => 0,
+                                    })
+                                    .sum::<usize>()
+                                    + sep.len() * items.len().saturating_sub(1);
+                                let mut out: Vec<u16> = Vec::with_capacity(total);
+                                for (i, v) in items.iter().enumerate() {
+                                    if i > 0 {
+                                        out.extend_from_slice(sep);
+                                    }
+                                    if let Value::Str(s) = v {
+                                        out.extend_from_slice(s);
+                                    }
+                                }
+                                return Ok(Value::Str(Rc::new(out)));
+                            }
+                        }
+                        // Anything else — numbers, nulls, instances with a
+                        // `toString` — still needs `display`, and still needs the
+                        // clone, because `display` can run Mersey code.
                         let sep = match args.first() {
                             Some(Value::Str(s)) => utf16_to_string(s),
                             _ => String::new(),

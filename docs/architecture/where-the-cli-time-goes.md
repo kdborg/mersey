@@ -791,3 +791,46 @@ Both were reverted rather than kept as decoration. The guard has to live where
 the JIT actually runs, which is `crates/mersey_cli/tests/`, and that means the
 binary has to *report* its arena high-water mark — an env-gated line on stderr —
 because those tests see a subprocess's output and nothing else.
+
+## `join` went through UTF-8 and did not need to
+
+`join` was 3.7× node in the primitive table, second only to `push`. Profiled on
+its own, the reason was not allocation:
+
+| symbol | share |
+|---|---:|
+| `utf16_to_utf8_bytes` | 10.4% |
+| `str::from_utf8` | 7.7% |
+| `join_generic_copy` | 5.5% |
+| `utf16_to_string` | 4.8% |
+| `Interp::display` | 3.1% |
+| `Vec<String>` growth | 2.6% |
+
+**Over a third of it was transcoding.** The implementation converted every
+element to a Rust `String`, joined those with Rust's `[String]::join`, and
+converted the answer back. The engine holds both the parts and the result as
+UTF-16, so none of that was needed — and it cloned the whole `Vec<Value>` first
+as well.
+
+An all-strings fast path builds the result directly: sum the lengths, allocate
+one `Vec<u16>` at exactly that size, copy the units in. It also borrows the array
+rather than cloning it, which the general path cannot do — `display` can run
+Mersey code (an instance's `toString`) and so can mutate the array underneath.
+
+| | before | after | |
+|---|---:|---:|---|
+| `join` alone | 81.3 | 44.0 | **1.85×** |
+| `bench/cli/path` | 141.3 | 130.8 | 7.4% |
+| `bench/cli/csv` | 67.7 | 65.1 | 3.9% |
+
+Four alternating pairs on each workload, none overlapping, checksums unchanged.
+
+`split` was checked for the same mistake and does not make it — it already works
+in code units. Its 5.8× is the array-allocation gap, which is where the profile
+of `push` also ended up.
+
+Both paths are pinned in `tests/mersey/collections.test.mersey`: empty, single,
+empty separator, multi-unit separator, non-BMP elements (the units have to be
+copied as units, not re-encoded), empty strings as elements (a string, not a
+missing one), and numbers to reach the `display` path. Inverting the
+separator guard in the fast path fails 13 tests, so they do discriminate.
