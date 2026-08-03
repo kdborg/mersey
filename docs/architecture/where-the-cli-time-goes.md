@@ -397,3 +397,67 @@ functions as well as the answers — the per-read call is correct, only slow, so
 change that quietly stopped hoisting would pass every assertion about output.
 That is the same reason `grow-param` exists, and the same class of regression
 that cost `reconcile` 10% for four commits.
+
+### After the hoist: what `csv` is now made of
+
+Same measurement, 2699 samples:
+
+| symbol | before | after |
+|---|---:|---:|
+| `env_get` | 13.9% | **4.1%** |
+| `memcmp` | 7.5% | — |
+| `jit_global_num` + `heap::global_num` | 11.0% | — |
+| `vm::exec` | 12.9% | 20.7% |
+| `heap::str_join` | — | 7.7% |
+| `memmove` | 5.5% | 6.3% |
+| `drop_glue<Value>` | 6.6% | 6.6% |
+| `Value::clone` | 6.3% | 6.3% |
+| `mi_malloc_aligned` | 2.7% | 4.1% |
+
+Global resolution went from about a third of the workload to 4%, and the name
+comparison under it is gone from the profile entirely. What was hiding behind it
+is now visible, and it is the thing the workload was chosen for.
+
+**1. Building a string one character at a time — ~18%.** `str_join` 7.7%,
+`memmove` 6.3%, `mi_malloc_aligned` 4.1%. `parse` accumulates a field with
+`field = ${field}${c}`, and every one of those allocates a fresh `Vec<u16>` at
+exactly the needed size and copies the whole field into it. That is quadratic in
+the field's length and one allocation per character. Every JS engine avoids it
+with a rope (V8's `ConsString`), which is why node runs this workload in a
+quarter of the time with the same algorithm.
+
+The cheaper answer than a rope, and the one that fits this engine: **append in
+place.** When a template's first part is the slot the result is being stored
+back into, the existing buffer can be extended rather than replaced — and
+`Vec`'s geometric growth turns the quadratic into linear.
+
+Two hazards, both already answered by machinery that exists:
+
+- *Another local holds the same string.* It cannot hold it unnoticed:
+  `Prov::FromSlot` marks a value borrowed from a re-assignable local, and
+  `clone_at` already parks a **clone** of it when it is stored, so the aliasing
+  copy owns its own arena reference. `Rc::get_mut` therefore sees a count above
+  one and declines — the check is sufficient, not merely a heuristic.
+- *A live borrow on the operand stack that was never stored.* Restricting the
+  pattern to a `TemplateJoin` immediately followed by a `StoreSlot` to the same
+  slot keeps it at statement level, where the operand stack below it cannot hold
+  a borrow of that slot.
+
+So: a new shim that takes the slot's arena handle, tries `Rc::get_mut`, extends
+in place when it is unique and copies when it is not.
+
+**2. `vm::exec` at 20.7%, which is one refused function.** `parse` (208 ops),
+`quoteField` (70) and `stringify` (59) all compile; the refusal is the harness
+loop, on `grid.length` where `grid = parse(text)`.
+
+`sig_of` recovers a declared return type's element only for `ArrayOf(Named)`
+resolving to a class — a `Row[]` return becomes `Ty::ObjArr`. Nothing recovers
+`string[]` (which `Ty::StrArr` already describes exactly, and which is a
+one-line fix) or `string[][]` (which would need an opaque-with-`Elem::StrArr`
+entry the lattice does not have). `std:csv`'s whole interface is the second one,
+so *every* caller of `parse` hands Tier 1 a bare opaque.
+
+Worth knowing before building it: the refused function here is the benchmark's
+own harness. Consuming a `string[][]` from `parse` is what real code does, so
+the gap is real — but a program that did more per row would spend proportionally
+less of itself in this loop than this one does.
