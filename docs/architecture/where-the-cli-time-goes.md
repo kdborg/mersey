@@ -511,3 +511,58 @@ and the buffer itself is never copied.
 `strings` is unmoved, which is worth recording rather than explaining away: its
 work is `charAt`, `slice` and comparison, not accumulation, so there is nothing
 here for it.
+
+## `path`: everything compiles, and it is still 7.6× off
+
+`std:path` against `node:path` — 233.1ms against 30.5ms, checksums agreeing at
+468884 on the first run across 20000 paths.
+
+Tier 1 cannot be the answer here, and that is what makes this workload
+different from the others: **9 functions compiled, 0 refused**, and the JIT is
+worth only 1.23× (286.2ms interpreted). There is no refusal to fix and no
+uncompiled hot function to reach. The time is in what compiled code *calls*.
+
+The profile is flat, which is the finding rather than an obstacle to it:
+
+| symbol | share |
+|---|---:|
+| `vm::exec` | 9.2% |
+| `drop_glue<Value>` | 8.4% |
+| `mi_malloc_aligned` | 6.6% |
+| `memmove` | 6.3% |
+| `GcCell` drop | 6.2% |
+| `mi_free` | 3.8% |
+| `Value::clone` | 3.6% |
+| `Arena::keep` | 3.1% |
+| `Arena::release` | 1.9% |
+
+About a third is allocating and destroying short-lived values, with no single
+hot spot. `normalize` is the shape: `p.split("/")` allocates an array, one
+string per segment, and a GC cell for the array; `out.push` grows it; `out.join`
+builds another string. Eight or so allocations per call, all dead by the end of
+it.
+
+### The obvious library fix was a pessimisation
+
+`normalize` popped its stack by copying — `out = out.slice(0, out.length - 1)`,
+a whole new array per `..`. `pop` exists on the engine's arrays and no std
+module used it, so it looked like a free win.
+
+**It was 6% slower**: ~250ms against ~235ms, checksum unchanged. `pop` is not in
+Tier 1's subset, so `CallMethod` refused it — and took `normalize`, `join` and
+`relative` with it. Coverage went from 9 compiled / 0 refused to **6 / 3**, and
+three compiled functions were worth more than the array copy they were spent on.
+
+Reverted. Two things worth keeping from it:
+
+- **A change to `std/` is a change to compiled code.** The refusal tool
+  (`tools/jit-refusals.mjs`) belongs in the loop for any edit to a standard
+  library module, not only for engine work. Nothing else would have said why
+  this got slower.
+- Even had `pop` compiled, the saving is *one* array allocation per call, which
+  four separate measurements in this session put below the floor where anything
+  is visible. The library was not the problem; the eight allocations around it
+  are, and they are a property of how strings and arrays are held.
+
+That is now the third distinct workload pointing at the same thing — `strings`,
+the `csv` append, and this.
