@@ -10953,6 +10953,78 @@ pub(crate) fn str_member_units(rc: &Rc<Vec<u16>>, name: &str, args: &[Value]) ->
             args.first().and_then(as_i64).unwrap_or(0),
             args.get(1).and_then(as_i64),
         ))))),
+        // Searching for a run of code units and copying around it. Below the
+        // transcode this converted the receiver, the needle *and* the
+        // replacement, then converted the answer back: 6.4x node.
+        //
+        // Guarded rather than universal. An **empty** needle is left to the old
+        // path because Rust's `replace` inserts between every *char* there,
+        // which is a different set of positions from between every code unit,
+        // and that is a semantic question rather than a speed one. A non-string
+        // needle or replacement goes there too, since those need `display`.
+        //
+        // No fidelity claim attached, because the obvious one does not hold:
+        // a lone surrogate reaching here has already become U+FFFD further up,
+        // so both paths answer identically for it. This is speed only.
+        "replace" | "replaceAll"
+            if matches!(args.first(), Some(Value::Str(n)) if !n.is_empty())
+                && matches!(args.get(1), None | Some(Value::Str(_))) =>
+        {
+            let needle: &[u16] = match args.first() {
+                Some(Value::Str(n)) => n,
+                _ => &[],
+            };
+            let with: &[u16] = match args.get(1) {
+                Some(Value::Str(w)) => w,
+                _ => &[],
+            };
+            let first_only = name == "replace";
+            let mut out: Vec<u16> = Vec::with_capacity(s.len());
+            let mut i = 0;
+            let mut replaced = false;
+            while i < s.len() {
+                let hit = !(first_only && replaced)
+                    && i + needle.len() <= s.len()
+                    && s[i..i + needle.len()] == *needle;
+                if hit {
+                    out.extend_from_slice(with);
+                    i += needle.len();
+                    replaced = true;
+                } else {
+                    out.push(s[i]);
+                    i += 1;
+                }
+            }
+            Some(Ok(Value::Str(Rc::new(out))))
+        }
+        // Trimming reads the two ends and copies what is between them. It sat
+        // below the transcode with `toUpperCase`, so `" x ".trim()` paid for a
+        // whole UTF-8 copy of the receiver to remove two spaces: 7.0x node,
+        // against the 0.6-3.1x band the units-native methods sit in.
+        //
+        // **Exactly** what `str::trim` did, not approximately. That uses
+        // `char::is_whitespace`, and every character it accepts is in the BMP —
+        // U+0009..U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000..U+200A,
+        // U+2028, U+2029, U+202F, U+205F, U+3000. So one code unit is one
+        // candidate character, and a surrogate (which `from_u32` rejects) is
+        // never whitespace. Testing per unit is equivalent rather than close.
+        "trim" | "trimStart" | "trimEnd" => Some({
+            let ws = |u: u16| char::from_u32(u32::from(u)).is_some_and(char::is_whitespace);
+            let start = if name == "trimEnd" {
+                0
+            } else {
+                s.iter().position(|&u| !ws(u)).unwrap_or(s.len())
+            };
+            let end = if name == "trimStart" {
+                s.len()
+            } else {
+                s[start..]
+                    .iter()
+                    .rposition(|&u| !ws(u))
+                    .map_or(start, |i| start + i + 1)
+            };
+            Ok(Value::Str(Rc::new(s[start..end].to_vec())))
+        }),
         "concat" => Some({
             let mut out: Vec<u16> = s.to_vec();
             for a in args {

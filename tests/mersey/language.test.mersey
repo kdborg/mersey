@@ -163,3 +163,43 @@ test("refute and assertThrows do what they say", () => {
         assert(false, "inner");
     }, "a failed assert throws");
 });
+
+// `trim`, `trimStart`, `trimEnd` and `replace`/`replaceAll` answer from the code
+// units now, above the UTF-8 transcode rather than below it. Trimming two spaces
+// used to pay for a whole UTF-8 copy of the receiver (7.0x node, 2.14x once
+// moved); `replace` converted the receiver, the needle *and* the replacement
+// (6.4x, 1.54x).
+//
+// These pin the answers, because "faster" is only interesting if it is the same.
+// The whitespace set is the one `char::is_whitespace` accepts — all of it in the
+// BMP, which is what makes a per-unit test equivalent rather than approximate.
+test("trim reads the ends without transcoding the middle", () => {
+    assert("  x  ".trim() == "x", "both ends");
+    assert("  x  ".trimStart() == "x  ", "leading only");
+    assert("  x  ".trimEnd() == "  x", "trailing only");
+    assert("x".trim() == "x", "nothing to do");
+    assert("".trim() == "", "an empty string");
+    assert("     ".trim() == "", "all whitespace trims to nothing");
+    assert("     ".trimStart() == "", "…from the front");
+    assert("     ".trimEnd() == "", "…and from the back");
+    assert("\t\n\r x \t\n\r".trim() == "x", "tabs, newlines and returns");
+    // Non-ASCII whitespace: NBSP and IDEOGRAPHIC SPACE are both `White_Space`.
+    assert("\u{00A0}x\u{3000}".trim() == "x", "non-ASCII whitespace counts");
+    // A surrogate pair is never whitespace and must survive at either end.
+    assert("\u{1F600}".trim() == "\u{1F600}", "a non-BMP character is kept");
+    assert(" \u{1F600} ".trim().length == 2, "…and keeps both its units");
+});
+
+test("replace works in code units, and only where that means the same thing", () => {
+    assert("a-b-c".replace("-", "+") == "a+b-c", "replace takes the first only");
+    assert("a-b-c".replaceAll("-", "+") == "a+b+c", "replaceAll takes them all");
+    assert("abc".replace("z", "!") == "abc", "a needle that is not there");
+    assert("aaa".replaceAll("aa", "b") == "ba", "matches do not overlap");
+    assert("-x".replace("-", "") == "x", "an empty replacement deletes");
+    assert("x-".replaceAll("-", "") == "x", "…at the end too");
+    assert("ab".replaceAll("ab", "abab") == "abab", "the replacement is not rescanned");
+    assert("aXbXc".replaceAll("X", "\u{1F600}").length == 3 + 2 + 2, "a non-BMP replacement");
+    // An empty needle keeps the old behaviour deliberately: it inserts between
+    // every *character*, which is a different set of positions from every unit.
+    assert("ab".replaceAll("", "-") == "-a-b-", "an empty needle still splits");
+});
