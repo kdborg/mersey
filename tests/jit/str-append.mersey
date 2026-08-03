@@ -1,0 +1,133 @@
+// `s = `${s}…`` — extending a string's buffer instead of rebuilding it.
+//
+// `str_join` sizes a fresh `Vec<u16>` exactly and copies every part in, so a
+// string built a piece at a time was quadratic in its own length and allocated
+// once per piece. Extending in place is linear, because `Vec` grows
+// geometrically: a builder loop went from 42.9ms to 14.0ms, 3.06x.
+//
+// It is only sound while nothing else can see the buffer, and there are four
+// ways something can:
+//
+//  - another local holds it — `Prov::FromSlot` and `clone_at` already park a
+//    *clone* when a borrow of a slot is stored, so the aliasing copy owns its
+//    own arena reference and `Rc::get_mut` sees the count;
+//  - another *part of the same template* reads the same slot, which no refcount
+//    can catch, because it is one borrow used twice — the analysis rejects it;
+//  - something in front of the base is non-empty, which appending cannot
+//    express — the shim checks it at run time and falls back;
+//  - the string was stored somewhere lasting, which again shows in the count.
+//
+// Every answer here is one the interpreter gives. `jit_programs` runs this file
+// on both tiers and asserts they agree, which is the only assertion that matters
+// for an optimisation whose failure mode is a plausible string of the right
+// length and the wrong contents.
+
+import { console } from "std:console";
+
+/// The shape this exists for: append in a loop, nothing else touching it.
+function builder(n: int32): string {
+    let s: string = "";
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `${s}ab`;
+    }
+    return s;
+}
+
+/// A second local holding the string from before the append. If the buffer were
+/// extended under it, `held` would grow too — or point into a reallocated one.
+function aliasedByLocal(n: int32): string {
+    let s: string = "x";
+    let held: string = s;
+    for (let i: int32 = 0; i < n; i += 1) {
+        held = s;
+        s = `${s}q`;
+        // `held` must still be the string as it was before this iteration's
+        // append: one shorter, and ending in whatever it ended in then.
+        if (held.length != s.length - 1) {
+            return "WRONG-LENGTH";
+        }
+    }
+    return `${s}|${held}`;
+}
+
+/// The same slot twice in one template. A refcount cannot see this — it is a
+/// single borrow read twice — so the analysis has to refuse it. Extending while
+/// the second part still points into the old buffer would double the wrong text.
+function selfConcat(n: int32): string {
+    let s: string = "ab";
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `${s}${s}`;
+        if (s.length > 4000) {
+            s = "ab";
+        }
+    }
+    return s;
+}
+
+/// Something in front of the base. The result is not the buffer plus a suffix,
+/// so appending cannot express it and the shim must fall back.
+function prefixed(n: int32): string {
+    let s: string = "";
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `<${s}>`;
+        if (s.length > 200) {
+            s = "";
+        }
+    }
+    return s;
+}
+
+/// Stored somewhere lasting between appends, so the arena is not its only owner.
+function escapesToArray(n: int32): int32 {
+    let s: string = "";
+    const kept: string[] = [];
+    let sum = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `${s}z`;
+        // Every third one is put where it outlives the loop: the buffer now has
+        // a second owner, and the next append must copy rather than extend.
+        if (i % 3 == 0) {
+            kept.push(s);
+        }
+    }
+    for (let i: int32 = 0; i < kept.length; i += 1) {
+        sum = (sum * 31 + kept[i].length) % 1000003;
+    }
+    return sum + s.length;
+}
+
+/// Numbers among the parts, which are formatted rather than copied.
+function withInts(n: int32): string {
+    let s: string = "";
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `${s}${i}-`;
+    }
+    return s;
+}
+
+/// Appending to a parameter rather than a local.
+function fromParam(seed: string, n: int32): string {
+    let s = seed;
+    for (let i: int32 = 0; i < n; i += 1) {
+        s = `${s}.`;
+    }
+    return s;
+}
+
+let a = "";
+let b = "";
+let c = "";
+let d = "";
+let e = 0;
+let f = "";
+let g = "";
+for (let r: int32 = 0; r < 400; r += 1) {
+    a = builder(40);
+    b = aliasedByLocal(20);
+    c = selfConcat(15);
+    d = prefixed(12);
+    e = escapesToArray(30);
+    f = withInts(12);
+    g = fromParam("seed", 10);
+}
+console.log(`${a.length} ${b} ${c.length} ${d} ${e} ${f} ${g}`);

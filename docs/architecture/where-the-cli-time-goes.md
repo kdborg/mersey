@@ -461,3 +461,53 @@ Worth knowing before building it: the refused function here is the benchmark's
 own harness. Consuming a `string[][]` from `parse` is what real code does, so
 the gap is real — but a program that did more per row would spend proportionally
 less of itself in this loop than this one does.
+
+### Building a string a piece at a time, in place
+
+`str_join` sizes a fresh `Vec<u16>` exactly and copies every part into it. For
+`s = ${s}x` that is a full copy of `s` per append — quadratic in the string's own
+length, and one allocation per piece. The fix is to extend the existing buffer,
+which `Vec`'s geometric growth makes linear.
+
+| | before | after | |
+|---|---:|---:|---|
+| a builder loop (400 appends × 2000) | 45.2ms | 15.0ms | **3.01×** |
+| `bench/cli/csv` | 76.0ms | 71.3ms | 6.3% |
+
+The gap between those two rows is the honest part. `csv` accumulates *fields*,
+which are ten or twenty characters, so its quadratic factor was always small —
+the profile's 18% was `str_join` being called constantly, not any single call
+being slow. The 3× is what the change is actually worth, and it needs a string
+long enough for the copying to dominate.
+
+**Where the safety comes from.** Three things can make extending in place wrong,
+and each is caught in a different place, which is why none of them is a matter of
+judgement:
+
+1. *Another local holds the buffer.* `Prov::FromSlot` plus `clone_at` already
+   park a **clone** whenever a borrow of a slot is stored, so an aliasing local
+   owns its own arena reference — `Rc::get_mut` sees a count above one and the
+   shim copies. The count is exact here, not a proxy.
+2. *The same slot appears twice in one template* — `s = ${s}${s}`. No refcount
+   can catch this: it is one borrow read twice, so the count is still one while
+   the second part points into the buffer the first is about to reallocate. The
+   **analysis** rejects it, and that is the only place that can.
+3. *Something non-empty precedes the base.* `s = <${s}>` cannot be expressed as
+   an append. The **shim** checks it at run time, because whether a part is empty
+   is not known until then — and it matters that this is a fallback rather than a
+   refusal, since a template that opens with its interpolation renders a leading
+   empty literal and would otherwise never qualify.
+
+That last one is also why the base is not simply part 0. `` `${s}x` `` compiles to
+*three* parts — an empty literal, the slot, then `"x"` — so the analysis records
+the base's index and the shim skips what precedes it.
+
+**The handle discipline.** The result comes back under a *new* handle holding a
+clone of the same `Rc`, never under the base's own. The `StoreSlot` that follows
+releases the slot's old handle; returning that handle would free the entry just
+extended. The clone takes the count to two and the release takes it back to one,
+and the buffer itself is never copied.
+
+`strings` is unmoved, which is worth recording rather than explaining away: its
+work is `charAt`, `slice` and comparison, not accumulation, so there is nothing
+here for it.

@@ -260,6 +260,121 @@ pub(crate) unsafe extern "C" fn str_join(
     }
 }
 
+/// `s = `${s}…`` — extend `s`'s buffer instead of building a new string.
+///
+/// `str_join` sizes a fresh `Vec<u16>` exactly and copies every part into it. For
+/// a field accumulated a character at a time — `std/csv.mersey`'s parser, and the
+/// shape of every string builder — that is quadratic in the field's length and
+/// one allocation per character. Extending in place makes it linear, because
+/// `Vec` grows geometrically.
+///
+/// `base` is the *slot's* arena handle (a `LoadSlot` of a string is a borrow with
+/// handle 0; the buffer it points at lives in the arena under the slot's own
+/// handle). Two things have to be true for the in-place path, and only one of
+/// them is checked here:
+///
+/// - Nothing else may hold the buffer. `Rc::get_mut` decides that, and it is
+///   sufficient rather than approximate: `Prov::FromSlot`/`clone_at` already park
+///   a *clone* whenever a borrow of a slot is stored, so an aliasing local owns
+///   its own arena reference and shows up in the count.
+/// - No other part of this template may read the same slot — `s = `${s}${s}``
+///   would extend the buffer while a later part still points into the old one.
+///   The analysis checks that, because it is the only place that knows.
+///
+/// The result is handed back under a **new** handle holding a clone of the same
+/// `Rc`, not under `base`: the `StoreSlot` that follows releases the slot's old
+/// handle, and returning `base` would free the entry just extended. The clone
+/// takes the count to two, the release takes it back to one, and the buffer is
+/// never copied.
+///
+/// # Safety
+/// As `str_join`, plus: `base` is 0 or a live handle in this call's arena.
+pub(crate) unsafe extern "C" fn str_append(
+    arena: *mut Arena,
+    base: u64,
+    at: usize,
+    parts: *const StrPart,
+    n: usize,
+    out: *mut u64,
+) {
+    let parts = unsafe { std::slice::from_raw_parts(parts, n) };
+    let arena = unsafe { &mut *arena };
+    // Anything in front of the base has to go in front of the buffer, which
+    // appending cannot do. It is empty in the shape this exists for — a template
+    // that opens with its interpolation renders a leading empty literal — so this
+    // is a run-time check rather than a reason to refuse.
+    let prefix_empty = parts[..at].iter().all(|p| p.kind == 0 && p.b == 0);
+    // The in-place path: the arena entry is a string, and nothing else holds it.
+    let grew = prefix_empty
+        && match arena.get_mut(base) {
+            Some(Value::Str(rc)) => match std::rc::Rc::get_mut(rc) {
+                Some(buf) => {
+                    for p in &parts[at + 1..] {
+                        match p.kind {
+                            0 => {
+                                let s = unsafe {
+                                    std::slice::from_raw_parts(p.a as *const u16, p.b as usize)
+                                };
+                                buf.extend_from_slice(s);
+                            }
+                            1 => append_int_utf16(buf, p.a),
+                            _ => {}
+                        }
+                    }
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        };
+    if grew {
+        let Some(Value::Str(rc)) = arena.get(base) else {
+            unreachable!("just extended it")
+        };
+        let rc = rc.clone();
+        let ptr = rc.as_ptr() as u64;
+        let len = rc.len() as u64;
+        let handle = arena.keep(Value::Str(rc));
+        unsafe {
+            *out = ptr;
+            *out.add(1) = len;
+            *out.add(2) = handle;
+        }
+        return;
+    }
+    // Shared, or not an arena string at all (the first `s = ""` is a const, whose
+    // handle is 0). Build it the way `str_join` does, and let the store release
+    // the old entry as it always has.
+    let cap: usize = parts
+        .iter()
+        .map(|p| match p.kind {
+            0 => p.b as usize,
+            1 => 20,
+            _ => 0,
+        })
+        .sum();
+    let mut buf: Vec<u16> = Vec::with_capacity(cap);
+    for p in parts {
+        match p.kind {
+            0 => {
+                let s = unsafe { std::slice::from_raw_parts(p.a as *const u16, p.b as usize) };
+                buf.extend_from_slice(s);
+            }
+            1 => append_int_utf16(&mut buf, p.a),
+            _ => {}
+        }
+    }
+    let rc = std::rc::Rc::new(buf);
+    let ptr = rc.as_ptr() as u64;
+    let len = rc.len() as u64;
+    let handle = arena.keep(Value::Str(rc));
+    unsafe {
+        *out = ptr;
+        *out.add(1) = len;
+        *out.add(2) = handle;
+    }
+}
+
 /// The string a heap cell holds: its UTF-16 data pointer and its length in code
 /// units. Unlike an array or instance a string is a plain `Rc<Vec<u16>>` with no
 /// GC cell, so the data address is read directly. A borrowed const string: its

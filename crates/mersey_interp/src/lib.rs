@@ -1814,6 +1814,15 @@ impl Arena {
         self.slots.get((h - 1) as usize)?.as_ref()
     }
 
+    /// Mutably borrow what a handle names. Only `str_append` uses this, to
+    /// extend a string's buffer in place when it can prove it owns it outright.
+    pub fn get_mut(&mut self, h: u64) -> Option<&mut Value> {
+        if h == 0 {
+            return None;
+        }
+        self.slots.get_mut((h - 1) as usize)?.as_mut()
+    }
+
     /// Take the value out, keeping it alive: how a compiled result crosses back
     /// to the interpreter as an owned `Value`.
     pub fn take(&mut self, h: u64) -> Option<Value> {

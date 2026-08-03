@@ -1015,3 +1015,44 @@ fn global_numbers_agree_across_the_tier_boundary() {
     assert_eq!(ok, 5, "only {ok} of 5 functions compiled");
     assert_eq!(no, 0, "{no} refused");
 }
+
+/// `s = `${s}…`` — extending a string's buffer instead of rebuilding it.
+///
+/// `str_join` sized a fresh `Vec<u16>` exactly and copied every part in, so a
+/// string built a piece at a time was quadratic in its own length and allocated
+/// once per piece. Extending in place is linear: a builder loop goes from 42.9ms
+/// to 14.0ms, 3.06x, and `bench/cli/csv` from 71.5ms to 66.5ms (its fields are
+/// short, so its quadratic factor was small).
+///
+/// Four ways something else can see the buffer, and this file has one of each:
+/// another local holding it (caught by the count, because `clone_at` parks a
+/// clone); the same slot twice in one template (caught by the *analysis* — one
+/// borrow read twice is invisible to a refcount); a non-empty prefix, which
+/// appending cannot express (caught at run time in the shim); and a string
+/// stored somewhere lasting (the count again).
+///
+/// The failure mode is a plausible string of the right length and the wrong
+/// contents, so the assertions read the contents.
+#[test]
+fn string_append_agrees_across_the_tier_boundary() {
+    check("str-append.mersey");
+    let out = run("str-append.mersey", true);
+    // `aliasedByLocal`: the held copy is exactly one append behind, and did not
+    // grow when the buffer it was taken from did.
+    assert!(
+        out.contains("xqqqqqqqqqqqqqqqqqqqq|xqqqqqqqqqqqqqqqqqqq "),
+        "{out}"
+    );
+    // `prefixed`: a prefix the append path cannot express, so it must fall back —
+    // and the brackets must still nest, not append.
+    assert!(out.contains(" <<<<<<<<<<<<>>>>>>>>>>>> "), "{out}");
+    // `withInts`, and `fromParam` appending to a parameter.
+    assert!(
+        out.trim_end()
+            .ends_with("0-1-2-3-4-5-6-7-8-9-10-11- seed.........."),
+        "{out}"
+    );
+    let (ok, no) = tier1_counts("str-append.mersey");
+    assert_eq!(ok, 7, "only {ok} of 7 functions compiled");
+    assert_eq!(no, 0, "{no} refused");
+}

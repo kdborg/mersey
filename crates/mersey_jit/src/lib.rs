@@ -780,6 +780,8 @@ struct Plan {
     /// borrowed through a re-assignable local, and the clone is what survives
     /// that local being overwritten. See [`Prov`].
     clone_at: std::collections::HashSet<usize>,
+    /// `s = `${s}…`` — the template at this pc extends slot `s` in place.
+    append_at: HashMap<usize, (u16, usize)>,
     /// Object-typed slots the body itself stores into. Overwriting one releases
     /// the arena's reference to its old value — and at an on-stack replacement,
     /// these are the slots whose interpreter values must be cloned *into* the
@@ -1107,6 +1109,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
     let mut field_at: HashMap<usize, (u32, Ty)> = HashMap::new();
     let mut new_at: HashMap<usize, (u32, Option<usize>)> = HashMap::new();
     let mut clone_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut append_at: HashMap<usize, (u16, usize)> = HashMap::new();
     let mut length_at: Vec<usize> = Vec::new();
     let mut time_at: HashMap<usize, bool> = HashMap::new();
     let mut global_set_at: HashMap<usize, (&'static str, i64)> = HashMap::new();
@@ -1599,10 +1602,49 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
             // integer parts are lowered (they append with no `display` call and
             // cannot throw); a float, bool, or Display class part bails.
             Op::TemplateJoin(n) => {
+                let mut parts: Vec<(Ty, Prov)> = Vec::with_capacity(n as usize);
                 for _ in 0..n {
-                    let t = tval(stack.pop()?)?;
+                    let top = stack.pop()?;
+                    let t = tval(top)?;
                     if !matches!(t, Ty::Str | Ty::I32 | Ty::I64) {
                         return None;
+                    }
+                    parts.push((t, prov(top)));
+                }
+                parts.reverse(); // popped last-first; part 0 is the base
+                                 // `s = `${s}…`` extends `s`'s buffer rather than building a new
+                                 // string — quadratic to linear for a builder loop. Two conditions,
+                                 // and this is the only place that can check the second:
+                                 //
+                                 //  - the result goes straight back into the slot the first part
+                                 //    read, so nothing else has come to depend on the old buffer;
+                                 //  - no *other* part reads that same slot. `s = `${s}${s}`` would
+                                 //    extend the buffer while the second part still points into
+                                 //    what the extension may have reallocated.
+                                 //
+                                 // The shim checks the third, that nothing else owns the buffer.
+                                 //
+                                 // The base is not always part 0. `` `${s}x` `` begins with an
+                                 // interpolation, and the compiler renders that as a leading
+                                 // *empty* literal — so the slot is part 1 of three. Its index is
+                                 // passed to the shim, which falls back unless every part before it
+                                 // is genuinely empty at run time; a non-empty prefix would have to
+                                 // go in front of the buffer, which appending cannot do.
+                if let Some(Op::StoreSlot(dst)) = chunk.code.get(pc + 1) {
+                    let base = parts
+                        .iter()
+                        .position(|&(t, pv)| t == Ty::Str && pv == Prov::FromSlot(*dst));
+                    if let Some(k) = base {
+                        let aliased = parts
+                            .iter()
+                            .enumerate()
+                            .any(|(i, &(_, pv))| i != k && pv == Prov::FromSlot(*dst));
+                        if !aliased {
+                            if *TRACE {
+                                eprintln!("jit:   append-in-place {pc} (slot {dst}, part {k})");
+                            }
+                            append_at.insert(pc, (*dst, k));
+                        }
                     }
                 }
                 stack.push(TSlot::Val(Ty::Str, Prov::Stable));
@@ -2915,6 +2957,7 @@ fn plan(g: &mut Group, me: usize) -> Option<Plan> {
         field_at,
         new_at,
         clone_at,
+        append_at,
         owned_slots,
         length_at,
         time_at,
@@ -3090,6 +3133,7 @@ struct Shims {
     own_str: FuncId,
     box_num: FuncId,
     str_join: FuncId,
+    str_append: FuncId,
     str_vec_parts: FuncId,
     web_get_num: FuncId,
     web_get_str_v: FuncId,
@@ -3190,6 +3234,7 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     builder.symbol("msy_box_num", heap::box_num as *const u8);
     builder.symbol("msy_web_bind_call", heap::web_bind_call as *const u8);
     builder.symbol("msy_str_join", heap::str_join as *const u8);
+    builder.symbol("msy_str_append", heap::str_append as *const u8);
     builder.symbol("msy_str_vec_parts", heap::str_vec_parts as *const u8);
     builder.symbol("msy_web_get_num", heap::web_get_num as *const u8);
     builder.symbol("msy_web_get_str_v", heap::web_get_str_v as *const u8);
@@ -3682,6 +3727,7 @@ fn declare_shims(module: &mut JITModule, ptr_ty: types::Type) -> Option<Shims> {
         web_bind_call: one("msy_web_bind_call", Some(types::I64), 7)?,
         // (arena, parts_ptr, n, out) -> writes (ptr, len, handle)
         str_join: one("msy_str_join", None, 4)?,
+        str_append: one("msy_str_append", None, 6)?,
         str_vec_parts: one("msy_str_vec_parts", None, 2)?,
         web_get_num: one("msy_web_get_num", Some(types::I64), 5)?,
         // (arena, target, id, name_ptr, name_len, out) -> writes (ptr, len, handle)
@@ -4232,6 +4278,7 @@ fn translate(
         box_num: module.declare_func_in_func(shims.box_num, b.func),
         web_bind_call: module.declare_func_in_func(shims.web_bind_call, b.func),
         str_join: module.declare_func_in_func(shims.str_join, b.func),
+        str_append: module.declare_func_in_func(shims.str_append, b.func),
         web_get_num: module.declare_func_in_func(shims.web_get_num, b.func),
         web_get_str_v: module.declare_func_in_func(shims.web_get_str_v, b.func),
         web_get_str_len_v: module.declare_func_in_func(shims.web_get_str_len_v, b.func),
@@ -4678,8 +4725,24 @@ fn translate(
                 ));
                 let out_ptr = b.ins().stack_addr(types::I64, out, 0);
                 let nv = b.ins().iconst(types::I64, n as i64);
-                b.ins()
-                    .call(shim.str_join, &[arena_ptr, desc_ptr, nv, out_ptr]);
+                match p.append_at.get(&pc) {
+                    // The base is the slot's own buffer: hand the shim the
+                    // *slot's* handle (part 0 is a borrow, whose handle is 0) so
+                    // it can extend in place. It returns a fresh handle either
+                    // way, because the `StoreSlot` after this releases the old one.
+                    Some(&(s, k)) => {
+                        let base = b.use_var(Variable::from_u32(p.var_at[s as usize] + 2));
+                        let kv = b.ins().iconst(types::I64, k as i64);
+                        b.ins().call(
+                            shim.str_append,
+                            &[arena_ptr, base, kv, desc_ptr, nv, out_ptr],
+                        );
+                    }
+                    None => {
+                        b.ins()
+                            .call(shim.str_join, &[arena_ptr, desc_ptr, nv, out_ptr]);
+                    }
+                }
                 for h in consumed {
                     release_if_owned(b, shim.release, arena_ptr, h);
                 }
@@ -6837,6 +6900,7 @@ struct ShimRefs {
     box_num: cranelift_codegen::ir::FuncRef,
     web_bind_call: cranelift_codegen::ir::FuncRef,
     str_join: cranelift_codegen::ir::FuncRef,
+    str_append: cranelift_codegen::ir::FuncRef,
     web_get_num: cranelift_codegen::ir::FuncRef,
     web_get_str_v: cranelift_codegen::ir::FuncRef,
     web_get_str_len_v: cranelift_codegen::ir::FuncRef,
