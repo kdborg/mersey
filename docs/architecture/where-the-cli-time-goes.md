@@ -834,3 +834,44 @@ empty separator, multi-unit separator, non-BMP elements (the units have to be
 copied as units, not re-encoded), empty strings as elements (a string, not a
 missing one), and numbers to reach the `display` path. Inverting the
 separator guard in the fast path fails 13 tests, so they do discriminate.
+
+### The allocation model, probed twice
+
+Two independent attempts to remove one of array allocation's five costs, both
+measured as ceilings before building anything:
+
+**The GC thread-locals.** `register` runs on every allocation and reached three
+of them. Folded into one lookup behind a single `Nursery` — `_tlv_get_addr`
+disappeared from the profile and the time did not move at all.
+
+**GC tracking itself.** Deleting `track_array` outright — unsound, purely to see
+the ceiling — is worth **7–10%** of allocation: `alloc` 87.1 → 79.0ms, `alloc2`
+184.4 → 171.1, `intpush` 123.3 → 110.8. A *sound* version (skipping registration
+only for arrays whose declared element type cannot hold a reference, so cannot
+be in a cycle) would get some fraction of that, on one of five costs, in a path
+that is itself perhaps a quarter of the workloads that are slow. Call it 2% and
+it is not worth the correctness surface.
+
+That is now two probes agreeing with the conclusion the first profile suggested:
+**the gap is the allocation model, not any of its parts.** Allocating an array
+here is a refcounted heap allocation plus four pieces of bookkeeping — arena
+park, arena release, GC registration, GC drop — and V8 does the equivalent by
+bumping a pointer into a nursery and registering nothing. Removing any single
+piece leaves the other four, which is exactly what both probes measured.
+
+The next real win on the four container-bound workloads is a different
+allocation model, not a cheaper version of this one. That is a design change
+rather than an optimisation, and it is written down here rather than started.
+
+### `toUpperCase` is not an outlier
+
+The primitive table put it at 25.5×, which was wrong: the receiver was a module
+constant and V8 hoisted the whole call out of the loop. Against a receiver built
+per iteration it is **3.5×** (49.3ms against 14.0), which is the band the other
+real-work methods sit in.
+
+Left below the transcode deliberately. `str::to_uppercase` implements
+context-sensitive rules — Greek final sigma, ß → SS — that a per-character
+`char::to_uppercase` does not, so a units version would be a *behaviour* change
+rather than the same answer faster. The rest of the survey moved because those
+methods were provably equivalent; this one is not.
