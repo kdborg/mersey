@@ -52,6 +52,30 @@ fn tier1_counts(name: &str) -> (usize, usize) {
     (n("jit: COMPILED"), n("jit: refused"))
 }
 
+/// The arena's high-water mark, read from the binary under `MERSEY_ARENA_PEAK`.
+///
+/// The only observable that catches a handle compiled code failed to give back.
+/// The answers stay correct — a leaked arena slot is memory, not meaning — so
+/// `check` above passes either way; and the arena is *cleared* when the
+/// outermost compiled call returns, so anything counted afterwards reads zero.
+/// The capacity survives that clear, and it is what grows.
+fn arena_peak(name: &str) -> usize {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/jit")
+        .join(name);
+    let out = Command::new(env!("CARGO_BIN_EXE_mersey"))
+        .arg("run")
+        .arg(&path)
+        .env("MERSEY_ARENA_PEAK", "1")
+        .output()
+        .expect("run mersey");
+    let err = String::from_utf8_lossy(&out.stderr);
+    err.lines()
+        .find_map(|l| l.strip_prefix("mersey: arena peak "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no arena peak line in:\n{err}"))
+}
+
 fn check(name: &str) {
     let jit = run(name, true);
     let interp = run(name, false);
@@ -1084,5 +1108,38 @@ fn returned_string_arrays_agree_across_the_tier_boundary() {
     assert!(out.trim_end().ends_with(" 30 a|bb|ccc|dddd"), "{out}");
     let (ok, no) = tier1_counts("str-array-return.mersey");
     assert_eq!(ok, 4, "only {ok} of 4 functions compiled");
+    assert_eq!(no, 0, "{no} refused");
+}
+
+/// Compiled code gives back the arena entry a consumed string owned.
+///
+/// Three sites dropped it: the string-comparison arm of `Op::Bin`,
+/// `Op::ArrayPush1`, and `box_arg`'s string and object arms — which is where an
+/// ordinary `xs.push(y)` goes, since that is a `CallMethod` and not
+/// `ArrayPush1`. Almost every string crossing those is a borrow whose handle is
+/// 0 and whose release is a no-op, so the omission was invisible; the one kind
+/// that owns its entry is an element read out of an array, handed over owning
+/// one deliberately so it survives the container reallocating.
+///
+/// `bench/cli/path` held 227 MiB at N=200000 and was flat under `MERSEY_JIT=0`.
+///
+/// The assertion is on the arena, not the output, and that is the whole point:
+/// every answer was already correct. With any one of the three releases removed
+/// this reads in the hundreds of thousands — 2,097,152 for the `box_arg` one —
+/// against 16 when they are all there.
+#[test]
+fn compiled_code_gives_back_the_arena_entries_it_consumes() {
+    check("consumed-strings.mersey");
+    let peak = arena_peak("consumed-strings.mersey");
+    assert!(
+        peak < 4_096,
+        "the arena grew with the loop: {peak} slots at its peak"
+    );
+    // …and it has to actually be compiled, or the arena is never touched at all
+    // and the assertion above passes on an empty measurement. An earlier version
+    // of this test lived in a crate with no Tier 1 wired in and read a peak of
+    // zero — it passed with the fix reverted.
+    let (ok, no) = tier1_counts("consumed-strings.mersey");
+    assert_eq!(ok, 2, "only {ok} of 2 functions compiled");
     assert_eq!(no, 0, "{no} refused");
 }

@@ -645,6 +645,12 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
     for (spec, module) in lazy {
         interp.register_lazy(spec, module);
     }
+    // `MERSEY_ARENA_PEAK=1`: how many arena slots compiled code needed at once.
+    // A handle Tier 1 fails to give back is invisible to every other kind of
+    // check — the answers stay right, and the arena is cleared on the way out of
+    // compiled code, so any count taken afterwards reads zero. This is the only
+    // number a test can assert on. Off unless asked for.
+    let report_peak = std::env::var_os("MERSEY_ARENA_PEAK").is_some();
     match interp.run_graph(eager) {
         // Top-level called `net.serve`: hand off to the accept loop, which
         // blocks re-entering the engine per request until killed.
@@ -658,6 +664,9 @@ fn run(path: &str, caps: Vec<String>) -> ExitCode {
                      in this host can settle it"
                 );
                 return ExitCode::FAILURE;
+            }
+            if report_peak {
+                eprintln!("mersey: arena peak {}", interp.jit_arena_peak());
             }
             ExitCode::SUCCESS
         }

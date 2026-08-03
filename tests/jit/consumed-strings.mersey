@@ -1,0 +1,64 @@
+// Compiled code must give back the arena entry a consumed string owned.
+//
+// Three places took a value that owned an arena entry and dropped the handle:
+// the string-comparison arm of `Op::Bin`, `Op::ArrayPush1`, and `box_arg`'s
+// string and object arms (which is where an ordinary `xs.push(y)` goes — it is
+// a `CallMethod`, not `ArrayPush1`).
+//
+// It stayed hidden because almost every string crossing those is a *borrow*,
+// whose handle is 0 and whose release is a no-op. The one kind that owns its
+// entry is an element read out of an array: the shim hands it over owning one
+// deliberately, so that it survives the container being reallocated.
+//
+// `bench/cli/path` grew to 227 MiB at N=200000 and was flat under
+// `MERSEY_JIT=0`, which is what said the leak was in Tier 1.
+//
+// **No other test can catch this.** Every answer here was already correct, so
+// the tier comparison passes either way, and the arena is cleared when the
+// outermost compiled call returns — a count taken afterwards reads zero. The
+// growth exists only *during* the call, which is why `jit_programs` asserts on
+// the arena's high-water mark (`MERSEY_ARENA_PEAK`) rather than on output.
+
+import { console } from "std:console";
+
+const P = "/usr/local/lib/mersey/pkg/module.mersey";
+
+function segs(p: string): string[] {
+    const out: string[] = [];
+    for (const s of p.split("/")) {
+        if (s.length > 0) {
+            out.push(s);
+        }
+    }
+    return out;
+}
+
+/// Each of the three sites, on an element read out of an array — the only kind
+/// of string that owns its arena entry.
+function churn(n: int32): int32 {
+    let acc = 0;
+    for (let i: int32 = 0; i < n; i += 1) {
+        const src = segs(P);
+        const out: string[] = [];
+        for (let j: int32 = 0; j < src.length; j += 1) {
+            // `box_arg`: the element is an argument to a method call.
+            out.push(src[j]);
+            // `Op::Bin`: the element is compared.
+            if (src[j] != "lib") {
+                acc = (acc + 1) % 1000003;
+            }
+        }
+        acc = (acc + out.length) % 1000003;
+    }
+    return acc;
+}
+
+// Warm past the tier threshold, then one long compiled call — which is what
+// makes a leak show: the arena is cleared per *entry* into compiled code, not
+// per iteration, so everything held is held until `churn` returns.
+let a = 0;
+for (let w: int32 = 0; w < 40; w += 1) {
+    a = a + churn(200);
+}
+a = a + churn(40000);
+console.log(`${a % 1000003}`);

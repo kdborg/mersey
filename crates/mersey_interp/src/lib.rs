@@ -1805,6 +1805,23 @@ impl Arena {
         }
     }
 
+    /// How many slots the arena has ever needed at once.
+    ///
+    /// The *capacity*, not the length: `clear` empties the vector on the way out
+    /// of every compiled call, so the length reads zero afterwards and says
+    /// nothing at all. Capacity survives a clear and only ever grows, which
+    /// makes it the high-water mark — rounded up to whatever the allocator grew
+    /// to, which is precise enough to tell one iteration's worth from one per
+    /// iteration for a million of them.
+    ///
+    /// It exists to be asserted on, because nothing else can see a handle that
+    /// compiled code failed to give back: the answers stay correct, and the
+    /// growth exists only *during* a call. Reading a capacity also costs nothing
+    /// on the allocation path, which maintaining a running maximum would not.
+    pub fn peak_slots(&self) -> usize {
+        self.slots.capacity()
+    }
+
     /// Borrow what a handle names, for a shim that reads an argument without
     /// taking ownership of it.
     pub fn get(&self, h: u64) -> Option<&Value> {
@@ -6134,6 +6151,11 @@ impl Interp {
             // discarded and rebuilt on every single call.
             matches!(env_get(&expected.env, name), Some(Value::Closure(c)) if Rc::ptr_eq(&c, expected))
         })
+    }
+
+    /// The arena's high-water mark — see `Arena::peak_slots`.
+    pub fn jit_arena_peak(&self) -> usize {
+        self.jit_arena.peak_slots()
     }
 
     /// Is this top-level function inside Tier 1's subset — really compiled, not
