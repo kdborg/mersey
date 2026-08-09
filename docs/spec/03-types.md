@@ -11,7 +11,7 @@
 | `char` | 4 | one Unicode scalar value |
 | `bigint` | heap | arbitrary-precision integer |
 | `bigdec` | heap | arbitrary-precision decimal (value + scale) |
-| `string` | heap | immutable sequence of `char` (UTF-32), §3.4 |
+| `string` | heap | immutable sequence of UTF-16 code units (WTF-16), §3.4 |
 | `void` | — | function-return only |
 
 `int` and `uint` are aliases for `int32`/`uint32`; `float` for `float64`.
@@ -132,16 +132,50 @@ valid conditions; write the comparison.
 
 ## 3.4 Strings and characters
 
-`string` is an immutable sequence of 4-byte code points.
+`string` is an immutable sequence of **UTF-16 code units**; `char` is one
+Unicode scalar value. A string may contain unpaired surrogates — the encoding
+is WTF-16, not strict UTF-16 — because the hosts Mersey shares strings with
+produce them, and a string type that cannot hold what the host handed it has
+to fail somewhere worse.
 
-- `s.length` is the code-point count; `s[i]` is a `char` in O(1). There are
-  no surrogate pairs to mis-handle and no “length in UTF-16 units” trap.
-- Comparison is by code points; `localeCompare` and normalization live in the
-  standard library, never implicitly.
+This is JS's string model, chosen deliberately: engine strings cross to a JS
+or DOM host constantly (§5 of `architecture/web-platform.md`), and any other
+representation puts a transcode on the hottest boundary the engine has.
+
+- `s.length` is the **code-unit** count, and every position — `s[i]`, `slice`,
+  `indexOf`, `split` — is a code-unit index. For `"a\u{1F600}b"`, `length` is
+  4 and `indexOf("b")` is 3.
+- `s[i]` is a `char` in O(1): the whole scalar value *beginning* at unit `i`.
+  At the lead unit of a surrogate pair that is the character the pair encodes;
+  at its trailing unit it is U+FFFD, because a lone surrogate is not a scalar
+  value and `char` holds nothing else. This is the one place Mersey does not
+  follow JS, which yields the unpaired half instead.
+- Iteration (`for (const c of s)`) is by **scalar value**, so a surrogate pair
+  is one step: `"a\u{1F600}b"` iterates three times, not four. JS's `for…of`
+  agrees.
+- `slice` and the other unit-indexed methods may cut a surrogate pair in half,
+  and the result is a string holding the unpaired half. JS does this too.
+- Comparison (`<`, `>`, and sort order) is by code unit. That is JS's order and
+  it is **not** code-point order: the two disagree whenever a non-BMP character
+  is compared against a BMP character at U+E000 or above, since the pair's lead
+  unit (U+D800–U+DBFF) sorts below it.
+- `localeCompare` and normalization live in the standard library, never
+  implicitly.
+- `trim`, `trimStart` and `trimEnd` remove the whitespace of §2.2 — the same
+  set the lexer skips between tokens — and nothing else. Notably U+FEFF (a
+  BOM leading a field) *is* removed and U+0085 (NEL) is *not*. Every member of
+  that set is in the BMP, so removing units and removing characters are the
+  same operation here.
 - The engine may transparently use a compact internal representation for
-  ASCII-only strings, but the semantics are always UTF-32.
-- Host boundaries (DOM, JS interop, files, network) transcode at the edge;
-  inside Mersey a string is always whole code points.
+  ASCII-only strings, but the semantics are always the ones above.
+- File and network boundaries transcode UTF-8 at the edge. DOM and JS interop
+  do not transcode at all, which is the point.
+
+> **Superseded design.** Through Phase 1 this section specified UTF-32 — a
+> sequence of 4-byte code points, `length` in code points, "no surrogate pairs
+> to mis-handle". The engine is UTF-16 and has been since the browser work;
+> checksum parity with the JS benchmark twins depends on the code-unit
+> reading. Documents written against the older model may still describe it.
 
 ## 3.5 Equality
 

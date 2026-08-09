@@ -302,8 +302,10 @@ The initial integration is complete. Beyond §5:
 - **Mersey promises cross the bridge as real JS promises** (found while
   building the SW: `event.respondWith(promise)` demanded it).
 - **String methods**: `indexOf`, `contains`, `startsWith`/`endsWith`,
-  `slice`, `split`, `toUpperCase`/`toLowerCase`, `trim` — code-point
-  indexed, per §3.4.
+  `slice`, `split`, `toUpperCase`/`toLowerCase`, `trim` — **code-unit**
+  indexed, per spec §3.4. Engine strings are UTF-16 (WTF-16) with JS-aligned
+  code-unit semantics, and checksum parity with the JS benchmark twins depends
+  on that reading. `trim`'s whitespace set is spec §2.2.
 
 ## Overload selection
 

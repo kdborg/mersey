@@ -171,8 +171,8 @@ test("refute and assertThrows do what they say", () => {
 // (6.4x, 1.54x).
 //
 // These pin the answers, because "faster" is only interesting if it is the same.
-// The whitespace set is the one `char::is_whitespace` accepts — all of it in the
-// BMP, which is what makes a per-unit test equivalent rather than approximate.
+// The whitespace set is the lexer's (spec §2.2) — all of it in the BMP, which is
+// what makes a per-unit test equivalent rather than approximate.
 test("trim reads the ends without transcoding the middle", () => {
     assert("  x  ".trim() == "x", "both ends");
     assert("  x  ".trimStart() == "x  ", "leading only");
@@ -188,6 +188,31 @@ test("trim reads the ends without transcoding the middle", () => {
     // A surrogate pair is never whitespace and must survive at either end.
     assert("\u{1F600}".trim() == "\u{1F600}", "a non-BMP character is kept");
     assert(" \u{1F600} ".trim().length == 2, "…and keeps both its units");
+});
+
+// The two code points that decide *whose* whitespace set this is. Rust's
+// `char::is_whitespace` is the Unicode `White_Space` property; JS trims
+// `WhiteSpace ∪ LineTerminator`. They differ on exactly these, in opposite
+// directions — so a set that gets both right cannot be either one by accident.
+//
+// The engine answered the wrong way on both for as long as `trim` went through
+// `str::trim`, while the lexer three files away already had the right list. A
+// BOM-prefixed field is the ordinary way to meet this: it is what a spreadsheet
+// puts at the front of a CSV, and the benchmark twins are checksum-compared
+// against JS bit for bit.
+test("trim uses the language's whitespace set, not Rust's", () => {
+    // ZWNBSP (U+FEFF): whitespace here and in JS, absent from `White_Space`.
+    assert("\u{FEFF}x\u{FEFF}".trim() == "x", "a BOM is whitespace");
+    assert("\u{FEFF}x".trimStart() == "x", "…at the front");
+    assert("x\u{FEFF}".trimEnd() == "x", "…and at the back");
+    // NEL (U+0085): in `White_Space`, and *not* whitespace here or in JS.
+    assert("\u{0085}x\u{0085}".trim() == "\u{0085}x\u{0085}", "NEL is not whitespace");
+    assert("\u{0085}x\u{0085}".trim().length == 3, "…so nothing is trimmed");
+    // OGHAM SPACE MARK (U+1680) is `Space_Separator`, which the hand-written
+    // lexer list had missed — the sharing is what surfaced it.
+    assert("\u{1680}x\u{1680}".trim() == "x", "every Space_Separator counts");
+    // ZWSP (U+200B) looks like a space and is not one, in either language.
+    assert("\u{200B}x".trim().length == 2, "a zero-width space is not whitespace");
 });
 
 test("replace works in code units, and only where that means the same thing", () => {

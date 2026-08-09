@@ -147,9 +147,15 @@ Precise, generational, moving GC:
 - Per-context heaps (see security spec §5.2) with pointer compression:
   32-bit compressed references within a 4 GiB cage.
 
-Strings: semantic model is UTF-32 (`s[i]` = code point, O(1)). Internal
+Strings: semantic model is UTF-16 code units (WTF-16), spec §3.4 — `length`
+and every index position count units, `s[i]` is the whole `char` beginning at
+unit `i` in O(1), and comparison is by unit, which is JS's order. Internal
 representation may narrow to 1-byte storage for Latin-1-only strings — the
 common case — while keeping O(1) indexing; this is invisible to programs.
+
+The UTF-32 model this line described until the browser work is gone: the
+engine hands strings to a JS or DOM host constantly, and code units are what
+that host holds. Benchmark checksum parity with the JS twins depends on it.
 
 ## Standard library
 

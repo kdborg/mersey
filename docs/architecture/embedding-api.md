@@ -54,8 +54,9 @@ void msy_context_notify_task(msy_context*, msy_task_id);
    explicit `msy_scope`, so the moving GC can update them; no raw pointers
    to heap objects ever cross the ABI.
 4. **Strings at the boundary** are (`ptr`, `len`, `encoding`) with UTF-8,
-   UTF-16, and UTF-32 accepted; the engine transcodes inward to UTF-32.
-   Chromium will pass UTF-16 (Blink's native), the CLI UTF-8.
+   UTF-16, and UTF-32 accepted; the engine holds UTF-16 code units (spec
+   §3.4), so a UTF-16 host hands its buffer over without transcoding at all.
+   Chromium passes UTF-16 (Blink's native), the CLI UTF-8.
 5. **Errors are values** (`msy_error`: type name, message, stack), never
    longjmp across the ABI; panics are caught at the boundary and surfaced as
    engine-bug errors.

@@ -8651,11 +8651,13 @@ impl Interp {
                     }
                 };
                 match name {
-                    "trimStart" => Ok(Value::Str(Rc::new(utf16(text.trim_start())))),
-                    "trimEnd" => Ok(Value::Str(Rc::new(utf16(text.trim_end())))),
+                    // No `trim`/`trimStart`/`trimEnd` here: `str_member_units`
+                    // answers all three above, unconditionally. They used to be
+                    // implemented twice — and the two copies disagreed about
+                    // U+FEFF and U+0085, which is why one of them is gone rather
+                    // than corrected.
                     "toUpperCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_uppercase()))))),
                     "toLowerCase" => Ok(Value::Str(Rc::new(utf16(&(text.to_lowercase()))))),
-                    "trim" => Ok(Value::Str(Rc::new(utf16(text.trim())))),
                     "replace" | "replaceAll" => {
                         let needle = arg0();
                         let with = match args.get(1) {
@@ -11059,14 +11061,17 @@ pub(crate) fn str_member_units(rc: &Rc<Vec<u16>>, name: &str, args: &[Value]) ->
         // whole UTF-8 copy of the receiver to remove two spaces: 7.0x node,
         // against the 0.6-3.1x band the units-native methods sit in.
         //
-        // **Exactly** what `str::trim` did, not approximately. That uses
-        // `char::is_whitespace`, and every character it accepts is in the BMP —
-        // U+0009..U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000..U+200A,
-        // U+2028, U+2029, U+202F, U+205F, U+3000. So one code unit is one
-        // candidate character, and a surrogate (which `from_u32` rejects) is
-        // never whitespace. Testing per unit is equivalent rather than close.
+        // The set is the lexer's (spec §2.2), not Rust's. Moving off the
+        // transcode faithfully preserved what `str::trim` did — and what it did
+        // was wrong in both directions, because `char::is_whitespace` is the
+        // Unicode `White_Space` property and JS trims
+        // `WhiteSpace ∪ LineTerminator`. They disagree on exactly two code
+        // points: `"\u{FEFF}x".trim()` kept a BOM that JS strips, and
+        // `"\u{85}x".trim()` dropped a NEL that JS keeps. Both are now the
+        // lexer's answer, so the compiler and the runtime mean one thing by
+        // "space".
         "trim" | "trimStart" | "trimEnd" => Some({
-            let ws = |u: u16| char::from_u32(u32::from(u)).is_some_and(char::is_whitespace);
+            let ws = mersey_front::lexer::is_whitespace_unit;
             let start = if name == "trimEnd" {
                 0
             } else {

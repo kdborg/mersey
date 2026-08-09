@@ -4,8 +4,13 @@
 
 A `.mersey` source file is encoded in UTF-8 — the encoding every common
 editor, VCS, and web server handles natively. The compiler decodes it once at
-the front door; from the lexer onward, and in the `string`/`char` types (§3.4),
-Mersey deals only in whole 4-byte code points.
+the front door, and from the lexer onward *source text* is a sequence of whole
+code points: identifiers, columns and escapes are all counted that way.
+
+That is the compiler's business only. The `string` **value** a program builds
+is a sequence of UTF-16 code units (§3.4) — a different model, for a different
+reason — so a string literal is transcoded from the source's code points to
+code units when it is lexed.
 
 - **Accepted encoding:** UTF-8 only. A leading UTF-8 BOM (`EF BB BF`) is
   accepted and ignored; `mersey fmt` removes it. UTF-16/UTF-32 files are
@@ -22,10 +27,32 @@ Mersey deals only in whole 4-byte code points.
 **Tooling:** `mersey convert <file>` transcodes UTF-16/UTF-32 → UTF-8;
 `mersey fmt` always writes UTF-8 without BOM.
 
-## 2.2 Line structure
+## 2.2 Whitespace and line structure
 
 Line terminators: U+000A (LF), U+000D U+000A (CRLF, counted as one
 terminator), U+2028, U+2029. `mersey fmt` normalizes to LF.
+
+**Whitespace** is exactly this set, and it may appear between any two tokens
+(§6.1):
+
+| | |
+|---|---|
+| U+0009, U+000B, U+000C | TAB, VT, FF |
+| U+000A, U+000D, U+2028, U+2029 | the line terminators above |
+| U+FEFF | ZWNBSP (a BOM anywhere but the first byte, §2.1) |
+| U+0020, U+00A0, U+1680, U+2000–U+200A, U+202F, U+205F, U+3000 | every `Space_Separator` (Zs) |
+
+This is JS's set — ECMA-262 `WhiteSpace ∪ LineTerminator` — and it is the
+**one** set the language means by "space". In particular, `trim`, `trimStart`
+and `trimEnd` (§3.4) remove these code points and no others, so a program and
+the compiler that reads it agree on the question.
+
+It is deliberately not Unicode's `White_Space` property, which the two differ
+from on exactly two code points: `White_Space` excludes U+FEFF and includes
+U+0085 (NEL). Neither is a judgement call left to the implementation.
+
+U+200B (ZWSP) is not whitespace. It is `Format`, not `Space_Separator`, and it
+is not in JS's set either.
 
 ## 2.3 Comments
 
@@ -64,15 +91,16 @@ Notably absent: `var`, `undefined`, `with`, `eval`, `arguments`, `delete`.
 - **Floating point:** `1.5`, `1e10`, default `float64`; suffix `f` → `float32`.
 - **Big numbers:** suffix `n` → `bigint` (`123n`); suffix `m` → `bigdec`
   (`1.05m`). `bigdec` literals are exact decimal, not binary-rounded.
-- **String:** `"…"` or `'…'`, immutable UTF-32 (§3.4). Template literals
+- **String:** `"…"` or `'…'`, immutable UTF-16 code units (§3.4). Template literals
   `` `a ${expr} b` `` require `expr` to have an explicit `string`-convertible
   type via its `toString(): string` — there is no implicit any-to-string.
 - **Character:** `c'A'`, `c'\u{1F600}'` — type `char`, a single code point
   (4 bytes). Distinct from a 1-length string.
 - **Boolean / null:** `true`, `false`, `null`.
 - **Escapes:** `\n \r \t \0 \\ \' \" \u{XXXXXX}`. Legacy `\uXXXX` (UTF-16
-  style) and octal escapes are not supported; `\u{…}` names code points
-  directly, matching the code-point string model.
+  style) and octal escapes are not supported; `\u{…}` names a code point
+  directly, and one above U+FFFF becomes the two code units that encode it
+  (§3.4). There is no escape that writes a lone surrogate into a literal.
 
 ## 2.7 Semicolons
 

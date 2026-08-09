@@ -84,8 +84,9 @@ Mersey and JS share the DOM but not a heap. Interop is opt-in and typed:
 
 - Mersey exports marked `export extern` become callable from JS as
   `mersey.modules["./main.mersey"].fn(args)` with arguments checked and
-  converted at the boundary (numbers, strings — transcoded UTF-16↔UTF-32 —,
-  ArrayBuffers zero-copy where alignment allows, DOM handles by identity).
+  converted at the boundary (numbers, strings — UTF-16 both sides, so no
+  transcode — ArrayBuffers zero-copy where alignment allows, DOM handles by
+  identity).
 - JS values never enter Mersey as `any`; a JS call that fails the declared
   signature throws a `TypeError` on the JS side.
 - No shared mutable objects other than DOM nodes and `SharedArrayBuffer`

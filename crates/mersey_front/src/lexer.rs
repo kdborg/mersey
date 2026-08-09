@@ -717,15 +717,40 @@ fn is_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
-fn is_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        ' ' | '\t' | '\u{000B}' | '\u{000C}' | '\u{00A0}' | '\u{FEFF}'
-    ) || is_line_terminator(c)
+/// The one whitespace set (spec §2.2), used *both* between tokens and by the
+/// runtime's `trim`/`trimStart`/`trimEnd`. It is ECMA-262's
+/// `WhiteSpace ∪ LineTerminator`: TAB/VT/FF/SP, NBSP, ZWNBSP (U+FEFF), every
+/// `Space_Separator` (Zs), and the four line terminators.
+///
+/// It is deliberately **not** Rust's `char::is_whitespace`, which is the Unicode
+/// `White_Space` property. The two differ on exactly two code points, in
+/// opposite directions: `White_Space` has U+0085 (NEL) and lacks U+FEFF. The
+/// runtime used to reach for `str::trim`, so `"\u{FEFF}x".trim()` kept the BOM
+/// that JS strips and `"\u{85}x".trim()` dropped a NEL that JS keeps — while the
+/// lexer, three files away, already had this set. One list, one answer.
+pub fn is_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\u{000B}' | '\u{000C}' | '\u{FEFF}')
+        || is_line_terminator(c)
+        // Space_Separator (Zs), in full — U+1680 included, which the
+        // hand-written list it replaces had missed.
         || matches!(
             c,
-            '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+            '\u{0020}'
+                | '\u{00A0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200A}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
         )
+}
+
+/// The same set, asked of one UTF-16 code unit — what the string methods hold.
+///
+/// Every member is in the BMP, so one unit is one candidate character and the
+/// question is total: a lone surrogate fails `from_u32` and is never whitespace.
+pub fn is_whitespace_unit(u: u16) -> bool {
+    char::from_u32(u32::from(u)).is_some_and(is_whitespace)
 }
 
 /// Render tokens in the conformance-dump format: one `line:col kind "text"`
