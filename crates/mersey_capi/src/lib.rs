@@ -284,11 +284,20 @@ fn as_parts(s: &str) -> (*const c_char, usize) {
 
 /// A host reply buffer as an owned String. NULL means "{}" — an empty reply,
 /// not an error — so a host may leave any hook unimplemented.
+///
+/// `.cast::<u8>()` rather than `as *const u8`, here and at the eight other
+/// `from_raw_parts` sites in this file, because `c_char` is signed on some of
+/// the targets that build this staticlib and unsigned on others (`i8` on macOS,
+/// x86-64 Linux and Windows; `u8` on aarch64 Linux). The `as` cast is *required*
+/// on the first group and an `unnecessary_cast` clippy error on the second, so
+/// with `-D warnings` there is no spelling of it that compiles everywhere.
+/// `.cast()` names the destination without naming the source and is right on
+/// both.
 fn read_reply(ptr: *const c_char, len: usize) -> String {
     if ptr.is_null() {
         return "{}".to_string();
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -693,7 +702,7 @@ impl Host for CHost {
         if ptr.is_null() {
             return None;
         }
-        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, out_len) };
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), out_len) };
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
     fn dom_add_listener(&mut self, id: &str, event: &str, cb: u32) {
@@ -920,7 +929,7 @@ pub unsafe extern "C" fn msy_context_scan_imports(
     let Some(ctx) = ctx.as_ref() else {
         return std::ptr::null();
     };
-    let bytes = std::slice::from_raw_parts(src as *const u8, len);
+    let bytes = std::slice::from_raw_parts(src.cast::<u8>(), len);
     let scratch = &mut *ctx.scratch.get();
     *scratch = embed::scan_imports_json(bytes);
     if !out_len.is_null() {
@@ -938,7 +947,7 @@ pub unsafe extern "C" fn msy_context_run_graph(
     len: usize,
 ) -> u32 {
     let Some(ctx) = ctx.as_ref() else { return 2 };
-    let bytes = std::slice::from_raw_parts(payload as *const u8, len);
+    let bytes = std::slice::from_raw_parts(payload.cast::<u8>(), len);
     let text = String::from_utf8_lossy(bytes).into_owned();
     embed::run_graph_json(ctx.interp(), &text, &mut |msg| ctx.report(msg))
 }
@@ -952,7 +961,7 @@ pub unsafe extern "C" fn msy_context_run(
     len: usize,
 ) -> u32 {
     let Some(ctx) = ctx.as_ref() else { return 2 };
-    let bytes = std::slice::from_raw_parts(src as *const u8, len);
+    let bytes = std::slice::from_raw_parts(src.cast::<u8>(), len);
     embed::run_single(ctx.interp(), "<host>", bytes, &mut |msg| ctx.report(msg))
 }
 
@@ -1039,7 +1048,7 @@ pub unsafe extern "C" fn msy_context_invoke_args(
     len: usize,
 ) -> u32 {
     let Some(ctx) = ctx.as_ref() else { return 2 };
-    let bytes = std::slice::from_raw_parts(args as *const u8, len);
+    let bytes = std::slice::from_raw_parts(args.cast::<u8>(), len);
     let json = String::from_utf8_lossy(bytes).into_owned();
     match ctx.interp().invoke_callback_json(cb, &json) {
         Ok(()) => 0,
@@ -1069,7 +1078,7 @@ pub unsafe extern "C" fn msy_context_repl_turn(
     out_len: *mut usize,
 ) -> *const c_char {
     let ctx = &*ctx;
-    let bytes = std::slice::from_raw_parts(src as *const u8, len);
+    let bytes = std::slice::from_raw_parts(src.cast::<u8>(), len);
     let fragment = String::from_utf8_lossy(bytes);
     let text = {
         use mersey_interp::ReplOutcome;
@@ -1171,7 +1180,7 @@ pub unsafe extern "C" fn msy_context_debug_set_breakpoints(
     let src = if source.is_null() || source_len == 0 {
         String::new()
     } else {
-        String::from_utf8_lossy(std::slice::from_raw_parts(source as *const u8, source_len))
+        String::from_utf8_lossy(std::slice::from_raw_parts(source.cast::<u8>(), source_len))
             .into_owned()
     };
     let lines = if lines.is_null() || count == 0 {
@@ -1264,7 +1273,7 @@ pub unsafe extern "C" fn msy_context_debug_evaluate(
     let expr_str = if expr.is_null() || expr_len == 0 {
         String::new()
     } else {
-        String::from_utf8_lossy(std::slice::from_raw_parts(expr as *const u8, expr_len))
+        String::from_utf8_lossy(std::slice::from_raw_parts(expr.cast::<u8>(), expr_len))
             .into_owned()
     };
     // Copy the pointer out and drop the borrow before the call: the evaluator

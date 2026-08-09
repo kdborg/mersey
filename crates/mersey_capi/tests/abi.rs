@@ -50,7 +50,11 @@ fn page<R>(f: impl FnOnce(&mut MockPage) -> R) -> R {
 }
 
 fn s(ptr: *const c_char, len: usize) -> String {
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    // `.cast()`, not `as *const u8`: `c_char` is signed on some targets that
+    // build this staticlib and unsigned on others, so the `as` cast is required
+    // on the first and an `unnecessary_cast` clippy error on the second. See the
+    // note on `read_reply` in the crate.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     String::from_utf8_lossy(bytes).into_owned()
 }
 
