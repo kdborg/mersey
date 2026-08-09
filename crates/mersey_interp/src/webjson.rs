@@ -43,8 +43,14 @@ pub fn write(out: &mut String, v: &Json) {
         Json::Bool(false) => out.push_str("false"),
         Json::Num(n) => {
             if n.is_finite() {
-                out.push_str(&format!("{n}"));
+                // `JSON.stringify` formats through the same `Number::toString`
+                // that `toString` uses, so this has to be that function and not
+                // Rust's `Display` — otherwise `Json.stringify(1e21)` answers
+                // with twenty-two digits where every JS host answers `1e+21`,
+                // and the bridge sends different bytes than the host expects.
+                out.push_str(&crate::f64_to_js_string(*n));
             } else {
+                // NaN and the infinities have no JSON spelling; JS emits null.
                 out.push_str("null");
             }
         }

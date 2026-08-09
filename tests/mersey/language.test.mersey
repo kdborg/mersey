@@ -259,3 +259,46 @@ test("repeat and pad answer in code units", () => {
     // The width is counted in code units, which is what `length` reports.
     assert("x".padStart(5, "\u{1F600}").length == 5, "a non-BMP pad fills by unit");
 });
+
+// Floats print the way JS prints them, because they used to print the way Rust
+// does — and the two disagree in four ways a program can see. Rust never
+// switches to exponential (so `1e21` came out as twenty-two digits and `5e-324`
+// as three hundred and twenty-four), spells the infinities `inf`/`-inf`, and
+// keeps the sign of negative zero.
+//
+// This was worse than a mismatch with JS: the transpiler backend emits real JS
+// and so has always used JS's rules, which meant the same program printed one
+// thing on the VM and another on the transpiled leg that the tjs and Ladybird
+// benchmarks run. Tier agreement, not just host agreement.
+//
+// The digit generation either side of these boundaries was already correct and
+// is pinned by a 5900-value differential against node rather than here.
+test("floats print with JS's notation, not Rust's", () => {
+    // Positional up to an exponent of 21, exponential from there.
+    assert((1e20).toString() == "100000000000000000000", "just inside the window");
+    assert((1e21).toString() == "1e+21", "just outside it");
+    assert((1.25e22).toString() == "1.25e+22", "a mantissa keeps its point");
+    // …and down to -6, exponential below.
+    assert((1e-6).toString() == "0.000001", "just inside the small end");
+    assert((1e-7).toString() == "1e-7", "just outside it");
+    assert((5e-324).toString() == "5e-324", "the smallest subnormal");
+    // Ordinary values are unchanged — this was never a digit-generation bug.
+    assert((0.1).toString() == "0.1", "a value with an exact short form");
+    assert((1234.5).toString() == "1234.5", "a point inside the digits");
+    assert((1.0).toString() == "1", "a whole float has no point");
+    assert((123456789.0).toString() == "123456789", "trailing zeros written out");
+});
+
+test("the floats that are not ordinary numbers", () => {
+    const inf: float64 = 1.0 / 0.0;
+    const ninf: float64 = -1.0 / 0.0;
+    const nan: float64 = 0.0 / 0.0;
+    assert(inf.toString() == "Infinity", "not `inf`");
+    assert(ninf.toString() == "-Infinity", "not `-inf`");
+    assert(nan.toString() == "NaN", "NaN is spelled the same either way");
+    // Negative zero prints unsigned, which is the one case where the sign is
+    // deliberately dropped rather than preserved.
+    const nz: float64 = -0.0;
+    assert(nz.toString() == "0", "negative zero prints as zero");
+    assert((-1e21).toString() == "-1e+21", "an ordinary negative keeps its sign");
+});

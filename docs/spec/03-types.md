@@ -197,6 +197,30 @@ Mersey adopts C's conversion *rules* but none of its undefined behavior:
   common hardware, and specified as such.
 - Float operations follow IEEE 754 exactly; no fast-math.
 
+### Printing a float
+
+`float32`/`float64` `toString()` — and therefore `console.log`, template
+literals, string concatenation and `Json.stringify` — produces exactly what
+ECMA-262 `Number::toString` (§6.1.6.1.20) produces:
+
+- the **shortest** digit string that reads back as the same value;
+- written positionally while the decimal exponent is in `(-6, 21]`, and in
+  exponential form outside it, with the exponent always signed — so `1e21`
+  prints as `1e+21` and `1e-7` as `1e-7`, while `1e20` and `1e-6` are written
+  out in full;
+- `Infinity`, `-Infinity`, `NaN` spelled that way;
+- negative zero as `0`, the one place the sign is dropped rather than kept.
+
+This is pinned rather than left to the implementation because there is more
+than one reasonable answer and the engine has to give the *same* one on every
+tier. Rust's own float formatting — which the interpreter used until this was
+written down — differs on all four points, while the transpiler backend emits
+JS and so always followed the rule above; the same program printed different
+text depending on which tier ran it.
+
+Explicit-precision formatting (`format.fixed` and friends) is a standard
+library concern and is not this.
+
 ## 3.7 Big numbers
 
 - `bigint`: arbitrary-precision integer. All integer operators work; mixing

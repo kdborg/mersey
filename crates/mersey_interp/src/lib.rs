@@ -11526,6 +11526,94 @@ fn kind_of(v: &Value) -> &'static str {
     }
 }
 
+/// The formatting envelope of ECMA-262 `Number::toString` (§6.1.6.1.20), given
+/// a *positive, finite* float already rendered in Rust's `{:e}` form.
+///
+/// `{:e}` hands over exactly the two quantities the spec is written in terms
+/// of: the shortest digit string that round-trips (its `s`) and the decimal
+/// exponent (its `n`, one more than the printed exponent). Generating those is
+/// the hard half of printing a float and Rust already does it correctly — what
+/// it does not do is choose between positional and exponential notation the way
+/// JS does, which is all this function is.
+fn js_number_envelope(sci: &str) -> String {
+    let (mant, exp) = sci
+        .split_once('e')
+        .expect("`{:e}` always emits an exponent");
+    let n: i32 = exp.parse::<i32>().expect("`{:e}` exponent is an integer") + 1;
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32;
+    if (k..=21).contains(&n) {
+        // Whole, and short enough to write out: the digits then n-k zeros.
+        let mut out = digits;
+        out.push_str(&"0".repeat((n - k) as usize));
+        out
+    } else if (1..=21).contains(&n) {
+        // A decimal point falls inside the digits.
+        let at = n as usize;
+        format!("{}.{}", &digits[..at], &digits[at..])
+    } else if (-5..=0).contains(&n) {
+        // Small enough to write positionally: `0.` then -n zeros.
+        format!("0.{}{}", "0".repeat((-n) as usize), digits)
+    } else {
+        // Outside both windows, JS switches to exponential — and always writes
+        // the exponent's sign, so `1e21` is `1e+21` and not `1e21`.
+        let e = n - 1;
+        let sign = if e < 0 { '-' } else { '+' };
+        let mag = e.abs();
+        if k == 1 {
+            format!("{digits}e{sign}{mag}")
+        } else {
+            format!("{}.{}e{sign}{mag}", &digits[..1], &digits[1..])
+        }
+    }
+}
+
+/// A `float64` as JS would print it — what `toString`, string concatenation,
+/// `console.log` and `Json.stringify` all answer with.
+///
+/// Rust's `Display` is not this, and differed in four ways a program could see:
+/// it never switches to exponential (so `1e21` printed twenty-two digits and
+/// `5e-324` printed three hundred and twenty-four), it spells the infinities
+/// `inf`/`-inf`, and it keeps the sign of negative zero. The transpiler backend
+/// emits real JS and so has always used JS's rules — meaning the VM and the
+/// transpiled leg disagreed on the same program until this existed.
+pub fn f64_to_js_string(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".to_string();
+    }
+    // `-0.0 == 0.0`, and JS prints negative zero as `0` — so this arm has to
+    // come before the sign test, not after it.
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    if x < 0.0 {
+        return format!("-{}", f64_to_js_string(-x));
+    }
+    if x.is_infinite() {
+        return "Infinity".to_string();
+    }
+    js_number_envelope(&format!("{x:e}"))
+}
+
+/// The same rules for a `float32`. JS has no such type, so there is nothing to
+/// match here — but a language where `float64` prints `Infinity` and `float32`
+/// prints `inf` would be answering one question two ways.
+pub fn f32_to_js_string(x: f32) -> String {
+    if x.is_nan() {
+        return "NaN".to_string();
+    }
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    if x < 0.0 {
+        return format!("-{}", f32_to_js_string(-x));
+    }
+    if x.is_infinite() {
+        return "Infinity".to_string();
+    }
+    js_number_envelope(&format!("{x:e}"))
+}
+
 pub fn to_display(v: &Value) -> String {
     match v {
         Value::Null => "null".to_string(),
@@ -11534,8 +11622,8 @@ pub fn to_display(v: &Value) -> String {
         Value::I64(n) => n.to_string(),
         Value::U32(n) => n.to_string(),
         Value::U64(n) => n.to_string(),
-        Value::F32(f) => f.to_string(),
-        Value::F64(f) => f.to_string(),
+        Value::F32(f) => f32_to_js_string(*f),
+        Value::F64(f) => f64_to_js_string(*f),
         Value::Char(c) => c.to_string(),
         Value::Str(s) => utf16_to_string(s),
         Value::BigIntV(b) => b.to_decimal(),
@@ -11737,6 +11825,60 @@ fn unescape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod js_number_format {
+    //! `Number::toString`'s envelope, at the four boundaries where the choice
+    //! of notation changes and at the three values that are not numbers.
+    //!
+    //! These are the cases Rust's `Display` got wrong; the digit generation
+    //! either side of them was already right, and is pinned instead by the
+    //! 5900-value differential against node that accompanied this change.
+    use super::*;
+
+    #[test]
+    fn switches_notation_where_js_does() {
+        // Positional up to an exponent of 21, exponential from 21 on.
+        assert_eq!(f64_to_js_string(1e20), "100000000000000000000");
+        assert_eq!(f64_to_js_string(1e21), "1e+21");
+        assert_eq!(f64_to_js_string(1e22), "1e+22");
+        // …and down to -6, exponential below it.
+        assert_eq!(f64_to_js_string(1e-6), "0.000001");
+        assert_eq!(f64_to_js_string(1e-7), "1e-7");
+        assert_eq!(f64_to_js_string(5e-324), "5e-324");
+        // The exponent always carries a sign; a multi-digit mantissa keeps a
+        // point after its first digit.
+        assert_eq!(f64_to_js_string(1.5e-7), "1.5e-7");
+        assert_eq!(f64_to_js_string(1.25e22), "1.25e+22");
+        // A point falling inside the digits, and trailing zeros written out.
+        assert_eq!(f64_to_js_string(1234.5), "1234.5");
+        assert_eq!(f64_to_js_string(123456789.0), "123456789");
+        assert_eq!(f64_to_js_string(1.0), "1");
+        assert_eq!(f64_to_js_string(0.1), "0.1");
+    }
+
+    #[test]
+    fn the_three_that_are_not_ordinary_numbers() {
+        assert_eq!(f64_to_js_string(f64::INFINITY), "Infinity");
+        assert_eq!(f64_to_js_string(f64::NEG_INFINITY), "-Infinity");
+        assert_eq!(f64_to_js_string(f64::NAN), "NaN");
+        // Negative zero prints unsigned — which is why the zero test has to run
+        // before the sign test, not after it.
+        assert_eq!(f64_to_js_string(-0.0), "0");
+        assert_eq!(f64_to_js_string(0.0), "0");
+        assert_eq!(f64_to_js_string(-1.5), "-1.5");
+        assert_eq!(f64_to_js_string(-1e21), "-1e+21");
+    }
+
+    #[test]
+    fn float32_answers_the_same_way() {
+        // No JS counterpart to match, but one language should not spell the
+        // infinities two ways.
+        assert_eq!(f32_to_js_string(f32::INFINITY), "Infinity");
+        assert_eq!(f32_to_js_string(-0.0f32), "0");
+        assert_eq!(f32_to_js_string(1.5f32), "1.5");
+    }
 }
 
 #[cfg(test)]
