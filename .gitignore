@@ -16,3 +16,11 @@ test-dumps/
 # any tree that has run them — and it is exactly the sort of thing a `git add -A`
 # sweeps up by accident.
 fuzz-current.mersey
+
+# Per-machine Claude Code state (tool permissions, local settings). Anything in
+# here worth sharing goes in the checked-in CLAUDE.md instead.
+.claude/
+
+# Claude Code session transcripts, which land in the working directory when a
+# session is exported. Same `git add -A` hazard as the fuzzer's reproducer.
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
