@@ -3267,6 +3267,20 @@ fn compile_group(env: &dyn JitEnv, root: &JitFn) -> Option<Rc<JitCode>> {
     let mut ids: Vec<FuncId> = Vec::new();
     for (n, p) in plans.iter().enumerate() {
         let mut sig = module.make_signature();
+        // The `tail` convention, not the platform default, because an object
+        // returns as three registers and **x86-64 SystemV has two**. Cranelift
+        // answers that with `Unsupported("Too many return values to fit in
+        // registers. Use a StructReturn argument instead")`, and the compiler
+        // reports it as an ordinary refusal — so on x86-64 every function
+        // returning an object was silently declined by Tier 1, on the
+        // architecture almost everything runs. aarch64 has eight return
+        // registers and never hit it, which is why no machine here saw it and
+        // CI did.
+        //
+        // Safe to change because these are `Linkage::Local` bodies reached only
+        // from wrappers this compiler also generates: the ABI is private. The
+        // wrapper itself keeps the platform default, since Rust calls it.
+        sig.call_conv = cranelift_codegen::isa::CallConv::Tail;
         for t in &p.slots {
             for part in t.parts() {
                 sig.params.push(AbiParam::new(part));
