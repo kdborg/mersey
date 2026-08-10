@@ -1143,3 +1143,96 @@ fn compiled_code_gives_back_the_arena_entries_it_consumes() {
     assert_eq!(ok, 2, "only {ok} of 2 functions compiled");
     assert_eq!(no, 0, "{no} refused");
 }
+
+/// Tier 1's **coverage** over the whole suite, as a golden — how many functions
+/// it took in each program, not what they answered.
+///
+/// Every other gate in this repository checks answers, and a refusal keeps the
+/// answers right: the function is simply interpreted. So a coverage regression
+/// is invisible to every golden, every checksum and the fuzzer, and the two the
+/// project has recorded were both found by profiling a workload weeks later —
+/// `grow-param` above, and `Ty::ObjArr` missing from the `Return` coercions,
+/// which `where-the-cli-time-goes.md` describes as having "twice regressed
+/// coverage without any test noticing".
+///
+/// What made this worth writing rather than adding a third hand-written count:
+/// on x86-64, Cranelift cannot return three values in registers (SystemV has
+/// two; aarch64 has eight), so **every object-returning function was refused**
+/// on the architecture almost everything runs on. It was caught by one
+/// `assert_eq!(ok, 7)` that happened to exist in one test, a week after it
+/// landed, and only because CI runs x86-64 while every machine the language is
+/// developed on is arm64. Nothing was checking the other forty-seven programs.
+///
+/// The golden is per-program so a regression names the program rather than a
+/// total moving by three, and the total is there so a whole file appearing or
+/// vanishing is visible too. Counts are deterministic: same binary, same
+/// program, same thresholds. Re-bless with `MERSEY_BLESS=1`, and read the diff
+/// as a *claim about the compiler*, because that is what it is.
+#[test]
+fn tier1_coverage_matches_its_golden() {
+    use std::fmt::Write as _;
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/jit");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("tests/jit")
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()? != "mersey" {
+                return None;
+            }
+            Some(p.file_name()?.to_str()?.to_owned())
+        })
+        .collect();
+    names.sort();
+    assert!(!names.is_empty(), "no programs in tests/jit");
+
+    let mut got = String::from("# Tier 1 coverage: program, compiled, refused.\n");
+    let (mut tc, mut tr) = (0usize, 0usize);
+    for n in &names {
+        let (ok, no) = tier1_counts(n);
+        tc += ok;
+        tr += no;
+        writeln!(got, "{n} {ok} {no}").unwrap();
+    }
+    writeln!(got, "TOTAL {tc} {tr}").unwrap();
+
+    let golden = dir.join("tier1-coverage.expect");
+    if std::env::var_os("MERSEY_BLESS").is_some() {
+        std::fs::write(&golden, &got).expect("bless");
+        return;
+    }
+    let want = std::fs::read_to_string(&golden)
+        .unwrap_or_else(|e| panic!("{}: {e} (bless with MERSEY_BLESS=1)", golden.display()));
+    if got == want {
+        return;
+    }
+
+    // Only the rows that moved. `assert_eq!` on the whole table prints two
+    // forty-nine-line strings and leaves the reader to spot the one number that
+    // differs, which is the same failure the JIT tracer had before it started
+    // naming the module.
+    let rows = |s: &str| -> std::collections::BTreeMap<String, String> {
+        s.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .filter_map(|l| Some((l.split_whitespace().next()?.to_owned(), l.to_owned())))
+            .collect()
+    };
+    let (g, w) = (rows(&got), rows(&want));
+    let mut msg = String::from(
+        "Tier 1 coverage changed. A drop is a regression no answer can show — the \
+         function is still correct, just interpreted; a rise is a win worth \
+         recording. Re-bless with MERSEY_BLESS=1.\n\n  program: golden -> now\n",
+    );
+    let mut keys: Vec<&String> = w.keys().chain(g.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for k in keys {
+        match (w.get(k), g.get(k)) {
+            (Some(a), Some(b)) if a != b => writeln!(msg, "  {a}  ->  {b}").unwrap(),
+            (Some(a), None) => writeln!(msg, "  {a}  ->  (program gone)").unwrap(),
+            (None, Some(b)) => writeln!(msg, "  (new program)  ->  {b}").unwrap(),
+            _ => {}
+        }
+    }
+    panic!("{msg}");
+}
