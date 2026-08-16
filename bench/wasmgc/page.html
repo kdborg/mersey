@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WasmGC probes</title>
+<pre id="out">running…</pre>
+<script type="module">
+const SAMPLES = 7, WARMUP = 3;
+// Safari (and Firefox by default) clamp performance.now() to 1ms, which turns
+// any row under ~50ms into noise. `?scale=N` multiplies the iteration counts so
+// every row is large enough that the clamp is under a percent.
+const SCALE = +(new URLSearchParams(location.search).get("scale") || 1);
+const results = [];
+const rec = (impl, label, ms, check) => results.push({ impl, label, ms: +ms.toFixed(2), check: check | 0 });
+
+function bench(impl, label, fn, ...args) {
+  let c = 0;
+  for (let i = 0; i < WARMUP; i++) c = fn(...args);
+  let best = Infinity;
+  for (let i = 0; i < SAMPLES; i++) {
+    const t0 = performance.now(); c = fn(...args); const t1 = performance.now();
+    if (t1 - t0 < best) best = t1 - t0;
+  }
+  rec(impl, label, best, c);
+}
+
+const get = async (n) => new Uint8Array(await (await fetch(n)).arrayBuffer());
+
+// ---- A: allocation -------------------------------------------------------
+const N = 2_000_000 * SCALE, WINDOW = 1000;
+class Row { constructor(id, v) { this.id = id; this.v = v; } }
+let sink = null;
+const jsTransient = (n) => { let s = 0; for (let i = 0; i < n; i++) { const r = new Row(i, i*2); sink = r; s = (s + r.id + r.v) | 0; } return s | 0; };
+const jsRing = (n, w) => { const a = new Array(w).fill(null); let s = 0; for (let i = 0; i < n; i++) { const r = new Row(i, i*2); a[i % w] = r; s = (s + r.id + r.v) | 0; } return s | 0; };
+const jsRetained = (n) => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = new Row(i, i*2); let s = 0; for (let i = 0; i < n; i++) { const r = a[i]; s = (s + r.id + r.v) | 0; } return s | 0; };
+
+const alloc = (await WebAssembly.instantiate(await get("probes/alloc.wasm"), {})).instance.exports;
+bench("js", "alloc transient", jsTransient, N);
+bench("js", "alloc ring", jsRing, N, WINDOW);
+bench("js", "alloc retained", jsRetained, N);
+bench("wasmgc", "alloc transient", alloc.transient, N);
+bench("wasmgc", "alloc ring", alloc.ring, N, WINDOW);
+bench("wasmgc", "alloc retained", alloc.retained, N);
+
+// ---- B: growable array ---------------------------------------------------
+const ROUNDS = 20_000 * SCALE, EACH = 800;
+const jsBuild = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); let s = 0; for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0; return s | 0; };
+const jsChurn = (r0, each) => { let s = 0; for (let r = 0; r < r0; r++) { const a = []; for (let i = 0; i < each; i++) a.push(i); for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0; } return s | 0; };
+const arr = (await WebAssembly.instantiate(await get("probes/arr.wasm"), {})).instance.exports;
+bench("js", "array build", jsBuild, N);
+bench("js", "array churn", jsChurn, ROUNDS, EACH);
+bench("wasmgc", "array build", arr.build, N);
+bench("wasmgc", "array churn", arr.churn, ROUNDS, EACH);
+
+// ---- C: keyed map --------------------------------------------------------
+const MROUNDS = 4000 * SCALE, KEYS = 200;
+const mapx = (await WebAssembly.instantiate(await get("probes/map.wasm"), {})).instance.exports;
+function makeJsApi() {
+  let m = null;
+  return {
+    reset: () => { m = new Map(); },
+    set: (k, node, v) => { const c = m.get(k); if (c !== undefined) { c.node = node; c.v = v; } else m.set(k, { node, v }); },
+    get: (k) => { const e = m.get(k); return e === undefined ? 0 : (e.node + e.v) | 0; },
+    remove: (k) => m.delete(k) ? 1 : 0,
+    iterate: () => { let s = 0; for (const [k, e] of m.entries()) s = (s + k + e.v) | 0; return s | 0; },
+  };
+}
+const wasmApi = { reset: () => mapx.reset(), set: (k,n,v) => mapx.set(k,n,v), get: (k) => mapx.get(k), remove: (k) => mapx.remove(k), iterate: () => mapx.iterate() };
+const mapRun = (api) => (rounds, keys) => {
+  let s = 0;
+  for (let r = 0; r < rounds; r++) {
+    api.reset();
+    for (let i = 0; i < keys; i++) api.set(i, i*3, i);
+    for (let i = 0; i < keys; i++) s = (s + api.get(i)) | 0;
+    s = (s + api.iterate()) | 0;
+    for (let i = 0; i < keys; i += 10) s = (s + api.remove(i)) | 0;
+    s = (s + api.iterate()) | 0;
+  }
+  return s | 0;
+};
+bench("js", "map", mapRun(makeJsApi()), MROUNDS, KEYS);
+bench("wasmgc", "map", mapRun(wasmApi), MROUNDS, KEYS);
+
+// ---- D: strings ----------------------------------------------------------
+let strOK = true, strErr = "";
+try {
+  const mod = await WebAssembly.compile(await get("probes/str.wasm"), { builtins: ["js-string"] });
+  const sx = (await WebAssembly.instantiate(mod, {})).exports;
+  bench("js", "string build+handoff", (n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + `row ${i} v${i%7}`.length) | 0; return s; }, N);
+  bench("wasmgc", "string build+handoff", (n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + sx.rowLabel(i, i%7).length) | 0; return s; }, N);
+  bench("wasmgc", "string build only", (n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + sx.rowLabelNoHandoff(i, i%7)) | 0; return s; }, N);
+} catch (e) { strOK = false; strErr = String(e).slice(0, 160); }
+
+// ---- E: host call --------------------------------------------------------
+const CN = 5_000_000 * SCALE;
+let acc = 0;
+const hsink = (x) => { acc = (acc ^ x) | 0; return x & 1; };
+const callx = (await WebAssembly.instantiate(await get("probes/call.wasm"), { h: { sink: hsink } })).instance.exports;
+bench("js", "host call", (n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + hsink(i)) | 0; return s | 0; }, CN);
+bench("wasmgc", "host call", callx.loop, CN);
+
+window.__results = { results, strOK, strErr, ua: navigator.userAgent };
+document.getElementById("out").textContent = JSON.stringify(window.__results, null, 1);
+// Report back for the driverless runs (real Chrome / real Firefox, no debugger
+// attached — Playwright's would force SpiderMonkey to baseline-compile all wasm).
+try { fetch("/__result", { method: "POST", body: JSON.stringify(window.__results) }); } catch {}
+</script>

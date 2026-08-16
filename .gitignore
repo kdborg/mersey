@@ -24,3 +24,7 @@ fuzz-current.mersey
 # Claude Code session transcripts, which land in the working directory when a
 # session is exported. Same `git add -A` hazard as the fuzzer's reproducer.
 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# WasmGC probes: assembled from the .wat by bench/wasmgc/build.sh, like every
+# other generated artifact here — the source is the .wat.
+bench/wasmgc/probes/*.wasm

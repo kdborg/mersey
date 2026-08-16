@@ -1,0 +1,155 @@
+=== waiting for the machine to go quiet ===
+load1=1.94
+load1=1.86
+load1=1.79
+load1=1.73
+load1=1.59
+load1=1.46
+load1=1.42
+load1=1.39
+load1=1.28
+load1=1.18
+load1=1.40
+load1=1.45
+load1=1.49
+load1=1.53
+load1=1.41
+load1=2.10
+load1=1.93
+load1=1.78
+load1=1.79
+load1=1.97
+load1=1.81
+load1=1.75
+load1=1.61
+load1=1.48
+load1=1.44
+load1=1.32
+load1=1.22
+load1=1.12
+load1=1.03
+load1=1.03
+load1=1.02
+load1=1.02
+load1=0.94
+load1=0.86
+quiet after 170s
+=== measuring (load1=0.86) ===
+##### chrome run 1  (load1=0.86)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient              33.7        32.2   1.05x faster    match
+alloc ring                   34.2        21.7   1.58x faster    match
+alloc retained              205.9       184.6   1.12x faster    match
+array build                  25.1        23.6   1.06x faster    match
+array churn                 153.5       109.9   1.40x faster    match
+map                          95.2       107.2   1.13x SLOWER    match
+string build+handoff         90.4       254.6   2.82x SLOWER    match
+host call                    16.3        88.2   5.41x SLOWER    match
+string build only                       142.9   (construction alone)
+##### chrome run 2  (load1=3.78)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient              34.4        31.5   1.09x faster    match
+alloc ring                   35.6        21.3   1.67x faster    match
+alloc retained              209.2       187.5   1.12x faster    match
+array build                  24.9        24.7   1.01x faster    match
+array churn                   153       113.1   1.35x faster    match
+map                            90       109.5   1.22x SLOWER    match
+string build+handoff         91.2       259.7   2.85x SLOWER    match
+host call                    16.6        88.2   5.31x SLOWER    match
+string build only                       147.2   (construction alone)
+##### chrome run 3  (load1=3.11)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient              34.9        32.7   1.07x faster    match
+alloc ring                   35.9        22.3   1.61x faster    match
+alloc retained              208.8       186.6   1.12x faster    match
+array build                  26.4          26   1.02x faster    match
+array churn                 160.9       116.1   1.39x faster    match
+map                          96.2       109.7   1.14x SLOWER    match
+string build+handoff         93.1       263.9   2.83x SLOWER    match
+host call                    16.4        88.8   5.41x SLOWER    match
+string build only                       145.2   (construction alone)
+##### firefox run 1  (load1=2.58)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient                49       43.86   1.12x faster    match
+alloc ring                  65.44      108.36   1.66x SLOWER    match
+alloc retained              78.12       81.78   1.05x SLOWER    match
+array build                 27.56       16.68   1.65x faster    match
+array churn                194.16       147.2   1.32x faster    match
+map                        205.64      122.44   1.68x faster    match
+string build+handoff       188.68      379.42   2.01x SLOWER    match
+host call                   51.52        87.4   1.70x SLOWER    match
+string build only                      125.46   (construction alone)
+##### firefox run 2  (load1=2.11)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient             48.08       43.92   1.09x faster    match
+alloc ring                  64.56       105.1   1.63x SLOWER    match
+alloc retained              91.18       83.06   1.10x faster    match
+array build                 28.02       15.74   1.78x faster    match
+array churn                197.46      147.54   1.34x faster    match
+map                        207.04      122.46   1.69x faster    match
+string build+handoff       188.54      381.66   2.02x SLOWER    match
+host call                   49.64       88.34   1.78x SLOWER    match
+string build only                      125.58   (construction alone)
+##### firefox run 3  (load1=1.77)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient             48.74          44   1.11x faster    match
+alloc ring                  65.26      109.92   1.68x SLOWER    match
+alloc retained              82.92       81.12   1.02x faster    match
+array build                 29.84       16.38   1.82x faster    match
+array churn                196.64      147.28   1.34x faster    match
+map                         206.2      122.44   1.68x faster    match
+string build+handoff       189.56      375.44   1.98x SLOWER    match
+host call                    47.6        85.6   1.80x SLOWER    match
+string build only                      125.62   (construction alone)
+##### safari run 1  (load1=1.77)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Safari/605.1.15
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient                19          22   1.16x SLOWER    match
+alloc ring                     19          20   1.05x SLOWER    match
+alloc retained                 35          30   1.17x faster    match
+array build                    38          21   1.81x faster    match
+array churn                   195         174   1.12x faster    match
+map                            85         115   1.35x SLOWER    match
+string build+handoff          201         363   1.81x SLOWER    match
+host call                       9          79   8.78x SLOWER    match
+string build only                         200   (construction alone)
+##### safari run 2  (load1=1.67)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Safari/605.1.15
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient                22          22   1.00x faster    match
+alloc ring                     23          22   1.05x faster    match
+alloc retained                 40          39   1.03x faster    match
+array build                    36          20   1.80x faster    match
+array churn                   198         178   1.11x faster    match
+map                            88         113   1.28x SLOWER    match
+string build+handoff          213         363   1.70x SLOWER    match
+host call                       8          79   9.88x SLOWER    match
+string build only                         194   (construction alone)
+##### safari run 3  (load1=1.44)
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Safari/605.1.15
+
+label                       JS ms   WasmGC ms   verdict         checksums
+alloc transient                22          23   1.05x SLOWER    match
+alloc ring                     22          23   1.05x SLOWER    match
+alloc retained                 42          40   1.05x faster    match
+array build                    35          18   1.94x faster    match
+array churn                   197         177   1.11x faster    match
+map                            88         113   1.28x SLOWER    match
+string build+handoff          218         358   1.64x SLOWER    match
+host call                       8          79   9.88x SLOWER    match
+string build only                         196   (construction alone)
+=== SUITE DONE ===
