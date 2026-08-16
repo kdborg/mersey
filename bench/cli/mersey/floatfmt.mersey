@@ -1,0 +1,82 @@
+// Turning float64 into text, across the boundaries where the notation changes.
+//
+// This workload exists because a bug lived here and no benchmark could see it.
+// The engine formatted floats with Rust's `Display`, which is not ECMA-262
+// `Number::toString`, and differed four ways a program can observe: it never
+// switched to exponential (`1e21` printed twenty-two digits, `5e-324` printed
+// three hundred and twenty-four), it spelled the infinities `inf`/`-inf`, and
+// it kept the sign of negative zero.
+//
+// Every twin in this arena prints `RESULT <name> <ms> <checksum>` — and the
+// `ms` is a float that is never compared, so twenty-five workloads stringified
+// a float each and not one of them would have noticed. Worse, the transpiler
+// backend emits real JS and therefore always used JS's rules, so the same
+// program printed different text on the VM and on the transpiled leg. This is
+// the regression net for that: the checksum is folded from the *characters*, so
+// any difference in notation, spelling or sign changes it.
+//
+// The values are chosen to sit on both sides of every boundary: 1e20 against
+// 1e21 (positional becomes exponential), 1e-6 against 1e-7 (the same at the
+// small end), the smallest subnormal, and the three that are not ordinary
+// numbers.
+import { console } from "std:console";
+import { time } from "std:time";
+
+const N: int32 = 20000;
+
+/// Both sides of every notation boundary, plus ordinary values that were always
+/// correct — those are here so a change that only moved the extremes is still
+/// visibly a change to this row.
+function corpus(): float64[] {
+    const xs: float64[] = [];
+    xs.push(1e20);          // positional, the largest that stays so
+    xs.push(1e21);          // exponential, the smallest that becomes so
+    xs.push(1.25e22);       // a mantissa that keeps its point
+    xs.push(1e-6);          // positional, the smallest that stays so
+    xs.push(1e-7);          // exponential, the largest that becomes so
+    xs.push(1.5e-7);
+    xs.push(5e-324);        // the smallest subnormal: 324 digits, written wrong
+    xs.push(1e300);
+    xs.push(0.1);           // exact short form
+    xs.push(1.0 / 3.0);     // the digits either side were never the bug
+    xs.push(1234.5);        // a point inside the digits
+    xs.push(1.0);           // a whole float has no point
+    xs.push(123456789.0);   // trailing zeros written out
+    xs.push(0.0);
+    xs.push(-0.0);          // prints unsigned: the one dropped sign
+    xs.push(-1.5);
+    xs.push(-1e21);
+    xs.push(1.0 / 0.0);     // Infinity, not inf
+    xs.push(-1.0 / 0.0);    // -Infinity, not -inf
+    xs.push(0.0 / 0.0);     // NaN, spelled the same either way
+    return xs;
+}
+
+/// Fold every character of every rendering into the sum. Reading the characters
+/// rather than the length is the point: the failure mode this guards against is
+/// a plausible string of the wrong shape, and two of the four differences
+/// (`inf` for `Infinity`, `-0` for `0`) change the length too — but `1e+21`
+/// against twenty-two digits is caught by the characters alone.
+function work(n: int32): int32 {
+    const xs = corpus();
+    let sum: int32 = 0;
+    for (let r: int32 = 0; r < n; r += 1) {
+        for (let k: int32 = 0; k < xs.length; k += 1) {
+            const s = xs[k].toString();
+            sum = sum + s.length;
+            for (let i: int32 = 0; i < s.length; i += 1) {
+                const c = s.codePointAt(i);
+                if (c != null) {
+                    sum = sum * 31 + c;
+                }
+            }
+        }
+    }
+    return sum;
+}
+
+work(1000); // warm up (parity with the .js warm-up round)
+const t0 = time.monotonic();
+const c = work(N);
+const t1 = time.monotonic();
+console.log(`RESULT floatfmt ${t1 - t0} ${c}`);
